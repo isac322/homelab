@@ -1,0 +1,17 @@
+apiVersion: v1
+kind: Pod
+metadata:
+  name: "{{ include "blackd.fullname" . }}-test-connection"
+  labels:
+    {{- include "blackd.labels" . | nindent 4 }}
+  annotations:
+    "helm.sh/hook": test
+spec:
+  containers:
+    - name: netcat
+      image: busybox
+      command: ['sh']
+      args:
+        - -c
+        - echo -e 'POST / HTTP/1.0\n\n' | nc {{ include "blackd.fullname" . }} {{ .Values.service.port }}
+  restartPolicy: Never
