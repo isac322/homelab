@@ -38,12 +38,14 @@ spec:
               containerPort: 80
               protocol: TCP
           livenessProbe:
+            initialDelaySeconds: 2
             exec:
               command:
                 - sh
                 - -c
                 - echo -e 'POST / HTTP/1.0\n\n' | nc 127.0.0.1 80
           readinessProbe:
+            initialDelaySeconds: 2
             exec:
               command:
                 - sh

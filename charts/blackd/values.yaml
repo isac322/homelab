@@ -23,18 +23,25 @@ serviceAccount:
   # If not set and create is true, a name is generated using the fullname template
   name: ""
 
+podDisruptionBudget:
+  #  maxUnavailable: 1
+  minAvailable: 1
+
 podAnnotations: {}
 
-podSecurityContext: {}
-  # fsGroup: 2000
+podSecurityContext:
+  fsGroup: 1000
 
-securityContext: {}
-  # capabilities:
-  #   drop:
-  #   - ALL
-  # readOnlyRootFilesystem: true
-  # runAsNonRoot: true
-  # runAsUser: 1000
+securityContext:
+#  capabilities:
+#    add:
+#      - NET_ADMIN
+#      - NET_BIND_SERVICE
+#      - SYS_TIME
+#      - SYS_ADMIN
+  readOnlyRootFilesystem: true
+#  runAsNonRoot: true
+#  runAsUser: 1000
 
 service:
   type: ClusterIP

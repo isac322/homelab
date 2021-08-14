@@ -1,0 +1,14 @@
+{{- if .Values.podDisruptionBudget -}}
+apiVersion: policy/v1beta1
+kind: PodDisruptionBudget
+metadata:
+  name: {{ template "blackd.fullname" . }}
+  labels:
+    {{- include "blackd.labels" . | nindent 4 }}
+spec:
+  selector:
+    matchLabels:
+      {{- include "blackd.selectorLabels" . | nindent 6 }}
+  minAvailable: {{ toYaml .Values.podDisruptionBudget.minAvailable | default "" }}
+  maxUnavailable: {{ toYaml .Values.podDisruptionBudget.maxUnavailable | default "" }}
+{{- end -}}
