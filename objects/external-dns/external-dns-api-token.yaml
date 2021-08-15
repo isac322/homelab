@@ -1,0 +1,16 @@
+apiVersion: bitnami.com/v1alpha1
+kind: SealedSecret
+metadata:
+  creationTimestamp: null
+  name: external-dns-api-token
+  namespace: kube-system
+spec:
+  encryptedData:
+    cloudflare_api_token: AgCd1S7IqqXd6YD80Y2d6hJtO7jDZEzwzFpfcxmnTiCo1a5/NbQ/Tzzjoci4yJeThPR4k9m9BxUK+ZQALlevpn/tnUaLR6bR5zjoS8JfCFafUySGdDUZ49xwXLg0uw3b+H83jLV2cIeqCx8pSNaZ2Nw5CAXcRrsI7AZFGNLxqh3/iNO3AvD08ezPSv9u4WaPVHaLvA73m3VOqvgkfLy5R40xOQq8KABKjyyMznDZQAjeU7CEYj57Jdb/FpVNYmld8D/ir4wrApTlVwgKb8uCXucDAc0vaByO8L7nozrOogf1XC3Qkmm5sfE4Vkwad5xT6qYDKPtwC4QrpqdVHZ8O7cKOg9TmUqcb2C921nDGcoq4gzBTXHmbASNA/4ocUvmBgYx9dNz0Xt5VHOu0c/vMPHNn0ilkJhI1xIzdu9jUs5EDIEFiKoEA1ucgyWUKzs9dcX4Nfr7rLcnDwAmVBlkyoFoA959SX+P4vD0QELyrKz6MBLJCZoXTTHzJPM9vjmLMNFGaTxkRzj1lCCieaXmvZimY/qd6Y2uijDzaQIyaCaIMLR1sWYmtwJleKdBSMpMHK4fKj4fSBlEJyf8Wwax6e9yyme5/HhpbLj5X01WBK+fA0MBbwLVM+qFxCKCkrm6H1XOqGkW9uV8XCbwUKjdBJYc1a8Lb5c0o7lsSPfCq4zqo1YvOmbANFTUk2uN8r1hIQwAl5+JrIm2op7ZKJVKi58FEw/YWHExhLDMalMky5W5NWABT97YK4L/j
+  template:
+    data: null
+    metadata:
+      creationTimestamp: null
+      name: external-dns-api-token
+      namespace: kube-system
+
