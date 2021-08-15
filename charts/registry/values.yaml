@@ -1,0 +1,133 @@
+# Default values for registry.
+# This is a YAML-formatted file.
+# Declare variables to be passed into your templates.
+
+podAnnotations: {}
+
+image:
+  repository: registry
+  tag: 2.7.1
+  pullPolicy: IfNotPresent
+    # imagePullSecrets:
+    # - name: docker
+
+
+imagePullSecrets: []
+nameOverride: ""
+fullnameOverride: ""
+
+resources: {}
+  # We usually recommend not to specify default resources and to leave this as a conscious
+  # choice for the user. This also increases chances charts run on environments with little
+  # resources, such as Minikube. If you do want to specify resources, uncomment the following
+  # lines, adjust them as necessary, and remove the curly braces after 'resources:'.
+  # limits:
+  #  cpu: 100m
+  #  memory: 128Mi
+  # requests:
+  #  cpu: 100m
+  #  memory: 128Mi
+
+sealedSecret:
+  auth: AgBpYnx78W838WVUZSN+wyeGVDOIRMwKO9tBEA21sZURsmEgTRP2EUTFsDFbHAHU12C+ALBYUOZFpj3X53DhI3+CDzyjQgGEqlc796RnZC2x/CxWIBaBFsFPiTZwzsAKUu2x7wPViJpo5e7lSH97YEmIyAPUtNUcB8lf6uLw8E+s9W1cHu2lkzhemSQN3zWyl/2X+1OafvijuV6ZXGEsryPCJCBGHVNL4cr3Mlzido8RkbNNuJCdFQrdoGboGKANQjlOVDg9t1B4pprvSTrCE9/DB85HpEsLxqMWk5Mj53pCVP4cXK2/A5i+pcT/8Zmzy5HGLFaVdLUf/3Oh89dtoiltxaacVeMgz/Gyl/X3s1XAqxxIF0Wtc0VN76sl0eTzz+aL6nW+lET3PL+JSQrAZrvsWktRJHnVL0VVZDPHJhyMQHQIS8Rul6w/8v/0n1zPUK/ksHgTA1eFPn0pcDC6mvCpCn1I9pWBHSyzH/HOHmoRjcv7+NAE60ebt3baBLwWgvaiLwFSCkCFG6UiQXSigRtVnJP7mwAxLDmpO+WNfrV80e3V9glfj4K6dB1b1UMLl/txpcBPqyB+NCzPy30BGdTwtJSLB9/+/lNN6zgtt1rWyzDBAxjTRC9ZO/2FB3rs56Dl0TKugPk6fTY1OlLhj3XE7sM3yttYYJjEPBE2NhE5w1tOPVmeS+NYF891uJIs2VapNuLKC/0CTEuXt3GVJPWegusBLVuL5pIwcXRPthnT8LAVKHZ5bKZWJcyz8sZAnFyfS2pVDu+MmG7NGbEjoylObQg=
+  haSharedSecret: AgBajPrSCezsS50ykZAQ40S3cETpq7MF2WiX/ZXKIW1QMa0B6vkfN6kMSEdw2MBqohNztcO12BjyYek9h202YPp1OkgYnyP2wn3AFf3VyP3+pa0CBhKbzAgpvZPZcTYIFHCMMbbfRcz4Atbny6PInu+h6IpN/fVgFJcJtEwYd9MdE0PeXbgeML3Vfb4P7QR83xv8vNTkyjWZ1Ow70JiS0XdxG8wr0l6YzjoLhXdRh258oyMyvMLO+CfLAPSUbhDHbJ6CQ+Dj8pI9a+sD3/oAVYyKjLHOL2fvyPpOgCH6IOSbtsmXTJ54Xal8ATFQ4gpnmcUPnihAd9OrZe3HjCp8CBczS78f3i04vHiOVEXJu6Kv0DOTDTLZIAcy9zkkGm7Yz61Kzruaddk9fR8Xz+VZ4CQNupbjG2t/SKnCiUnf2u2fuoysP5v4u2gL8H83slF/75KvkUcPVYbvGd4IQ4P+NKlEfibcxWLbT9l/n73DPKz8N7HjMEvdUi9ADx9MbM1c3vZOfliHDGQ3snup1UmxrWqmNfednzEHn/jUL3erkO7RvnSU31lMp4GyUzRV2QgZVq/QD6qpK++DSlFY1L1EfpbnQkcj5u5DmqPssJZDkgn7pYsySjnrFCih8rO5sBlcC+ZIC/M4CNNGmXYwyPQFCB1BufIzS18je+NL2SY5lJXNC3Kl2mnKhDHN/DB1q5Rj+sH8Wel1z0Hmma2KxTnsvKQdgrcMKV1yJu/8H01WphBSHrObZXw=
+
+
+# https://docs.docker.com/registry/recipes/mirror/
+proxy:
+  enabled: false
+  remoteurl: https://registry-1.docker.io
+  username: ""
+  password: ""
+  # the ref for a secret stored outside of this chart
+  # Keys: proxyUsername, proxyPassword
+  secretRef: ""
+
+
+nodeSelector:
+  oracle-instance-type: a1.flex
+
+affinity: {}
+
+tolerations: []
+
+replicaCount: 1
+
+ingress:
+  enabled: true
+  className: ""
+  annotations:
+    kubernetes.io/ingress.class: traefik
+    traefik.ingress.kubernetes.io/router.entrypoints: websecure
+    traefik.ingress.kubernetes.io/router.pathmatcher: PathPrefix
+    cert-manager.io/issuer: cloudflare-origin-issuer
+    cert-manager.io/issuer-kind: OriginIssuer
+    cert-manager.io/issuer-group: cert-manager.k8s.cloudflare.com
+  hosts:
+    - host: registry.bhyoo.com
+      paths:
+        - path: /
+          pathType: Prefix
+  tls:
+    - hosts:
+        - registry.bhyoo.com
+      secretName: registry-com
+
+service:
+  type: ClusterIP
+  port: 80
+
+# set the type of filesystem to use: filesystem, s3
+storage:
+  type: filesystem
+  deleteEnabled: true
+  persistence:
+    enabled: true
+    accessMode: ReadWriteOnce
+    size: 20Gi
+    existingClaim: ""
+    storageClass: ceph-block
+  s3:
+    cephStorageClassName: ceph-object-storage
+    encrypt: false
+    secure: false
+    v4auth: false
+  swift: {}
+
+configData:
+  version: 0.1
+  storage:
+    cache:
+      blobdescriptor: inmemory
+
+securityContext:
+  # capabilities:
+  #   drop:
+  #   - ALL
+#  readOnlyRootFilesystem: true
+#  runAsNonRoot: true
+#  runAsUser: 1000
+#  runAsGroup: 1000
+
+podSecurityContext:
+  fsGroup: 1000
+
+podDisruptionBudget:
+#  maxUnavailable: 1
+  minAvailable: 1
+
+extraVolumeMounts: []
+## Additional volumeMounts to the registry container.
+#  - mountPath: /secret-data
+#    name: cloudfront-pem-secret
+#    readOnly: true
+
+extraVolumes: []
+## Additional volumes to the pod.
+#  - name: cloudfront-pem-secret
+#    secret:
+#      secretName: cloudfront-credentials
+#      items:
+#        - key: cloudfront.pem
+#          path: cloudfront.pem
+#          mode: 511

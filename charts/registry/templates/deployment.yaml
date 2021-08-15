@@ -1,0 +1,174 @@
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: {{ template "registry.fullname" . }}
+  labels:
+    {{- include "registry.labels" . | nindent 4 }}
+spec:
+  selector:
+    matchLabels:
+  {{- include "registry.selectorLabels" . | nindent 6 }}
+  replicas: {{ .Values.replicaCount }}
+  minReadySeconds: 5
+  template:
+    metadata:
+      labels:
+      {{- include "registry.selectorLabels" . | nindent 8 }}
+      annotations:
+      {{- with .Values.podAnnotations }}
+        {{- toYaml . | nindent 8 }}
+      {{- end }}
+    spec:
+      {{- if .Values.imagePullSecrets }}
+      imagePullSecrets:
+      {{ toYaml .Values.imagePullSecrets | indent 8 }}
+      {{- end }}
+      securityContext:
+      {{- toYaml .Values.podSecurityContext | nindent 8 }}
+      containers:
+        - name: {{ .Chart.Name }}
+          image: "{{ .Values.image.repository }}:{{ .Values.image.tag }}"
+          imagePullPolicy: {{ .Values.image.pullPolicy }}
+          securityContext:
+            {{- toYaml .Values.securityContext | nindent 12 }}
+          command:
+            - /bin/registry
+          args:
+            - serve
+            - /etc/docker/registry/config.yml
+          ports:
+            - containerPort: 5000
+          livenessProbe:
+            httpGet:
+              path: /
+              port: 5000
+          readinessProbe:
+            httpGet:
+              path: /
+              port: 5000
+          resources:
+          {{- toYaml .Values.resources | nindent 12 }}
+          env:
+            - name: REGISTRY_HTTP_HOST
+              value: https://registry.bhyoo.com
+            - name: REGISTRY_HTTP_SECRET
+              valueFrom:
+                secretKeyRef:
+                  name: {{ include "registry.fullname" . }}
+                  key: haSharedSecret
+            {{- if eq .Values.storage.type "filesystem" }}
+            - name: REGISTRY_STORAGE_FILESYSTEM_ROOTDIRECTORY
+              value: "/var/lib/registry"
+            {{- else if eq .Values.storage.type "s3" }}
+            - name: REGISTRY_STORAGE_S3_ACCESSKEY
+              valueFrom:
+                secretKeyRef:
+                  name: {{ include "registry.fullname" . }}-bucket
+                  key: AWS_ACCESS_KEY_ID
+            - name: REGISTRY_STORAGE_S3_SECRETKEY
+              valueFrom:
+                secretKeyRef:
+                  name: {{ include "registry.fullname" . }}-bucket
+                  key: AWS_SECRET_ACCESS_KEY
+            - name: REGISTRY_STORAGE_S3_REGION
+              valueFrom:
+                configMapKeyRef:
+                  name: {{ include "registry.fullname" . }}-bucket
+                  key: BUCKET_REGION
+            - name: REGISTRY_STORAGE_S3_REGIONENDPOINT
+              valueFrom:
+                configMapKeyRef:
+                  name: {{ include "registry.fullname" . }}-bucket
+                  key: BUCKET_HOST
+            - name: REGISTRY_STORAGE_S3_BUCKET
+              valueFrom:
+                configMapKeyRef:
+                  name: {{ include "registry.fullname" . }}-bucket
+                  key: BUCKET_NAME
+            - name: REGISTRY_STORAGE_S3_ENCRYPT
+              value: {{ .Values.storage.s3.encrypt | quote }}
+            - name: REGISTRY_STORAGE_S3_SECURE
+              value: {{ .Values.storage.s3.secure | quote }}
+            - name: REGISTRY_STORAGE_S3_V4AUTH
+              value: {{ .Values.storage.s3.v4auth | quote }}
+            {{- else if eq .Values.storage.type "swift" }}
+            - name: REGISTRY_STORAGE_SWIFT_AUTHURL
+              value: http://rook-ceph-rgw-object-store.rook-ceph.svc.cluster.local/auth/v1
+            - name: REGISTRY_STORAGE_SWIFT_USERNAME
+              value: ceph-user-8LMvhg6e:swift
+            - name: REGISTRY_STORAGE_SWIFT_PASSWORD
+              value: XOFo5iorz4QDxxmmkaEjB379pKAh3iXrAe5emznw
+            - name: REGISTRY_STORAGE_SWIFT_AUTHVERSION
+              value: "3"
+            - name: REGISTRY_STORAGE_SWIFT_CONTAINER
+              valueFrom:
+                configMapKeyRef:
+                  name: {{ include "registry.fullname" . }}-bucket
+                  key: BUCKET_NAME
+            {{- end }}
+            {{- if .Values.proxy.enabled }}
+            - name: REGISTRY_PROXY_REMOTEURL
+              value: {{ required ".Values.proxy.remoteurl is required" .Values.proxy.remoteurl }}
+            - name: REGISTRY_PROXY_USERNAME
+              valueFrom:
+                secretKeyRef:
+                  name: {{ if .Values.proxy.secretRef }}{{ .Values.proxy.secretRef }}{{ else }}{{ template "registry.fullname" . }}-secret{{ end }}
+                  key: proxyUsername
+            - name: REGISTRY_PROXY_PASSWORD
+              valueFrom:
+                secretKeyRef:
+                  name: {{ if .Values.proxy.secretRef }}{{ .Values.proxy.secretRef }}{{ else }}{{ template "registry.fullname" . }}-secret{{ end }}
+                  key: proxyPassword
+            {{- end }}
+            {{- if .Values.storage.deleteEnabled }}
+            - name: REGISTRY_STORAGE_DELETE_ENABLED
+              value: "true"
+            {{- end }}
+          volumeMounts:
+            {{- with .Values.extraVolumeMounts }}
+            {{- toYaml . | nindent 12 }}
+            {{- end }}
+            - name: auth
+              mountPath: /auth
+              readOnly: true
+            {{- if eq .Values.storage.type "filesystem" }}
+            - name: data
+              mountPath: /var/lib/registry/
+            {{- end }}
+            - name: "{{ template "registry.fullname" . }}-config"
+              mountPath: "/etc/docker/registry"
+
+      {{- with .Values.nodeSelector }}
+      nodeSelector:
+        {{- toYaml . | nindent 8 }}
+      {{- end }}
+      {{- with .Values.affinity }}
+      affinity:
+        {{- toYaml . | nindent 8 }}
+      {{- end }}
+      {{- with .Values.tolerations }}
+      tolerations:
+        {{- toYaml . | nindent 8 }}
+      {{- end }}
+      volumes:
+        - name: auth
+          secret:
+            secretName: {{ include "registry.fullname" . }}
+            items:
+              - key: auth
+                path: htpasswd
+        {{- if eq .Values.storage.type "filesystem" }}
+        - name: data
+          {{- if .Values.storage.persistence.enabled }}
+          persistentVolumeClaim:
+            claimName: {{ if .Values.storage.persistence.existingClaim }}{{ .Values.storage.persistence.existingClaim }}{{- else }}{{ template "registry.fullname" . }}{{- end }}
+          {{- else }}
+          emptyDir: {}
+          {{- end -}}
+        {{- end }}
+        - name: {{ template "registry.fullname" . }}-config
+          configMap:
+            name: {{ template "registry.fullname" . }}-config
+        {{- with .Values.extraVolumes }}
+        {{- toYaml . | nindent 8 }}
+        {{- end }}

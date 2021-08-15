@@ -1,0 +1,23 @@
+{{- if .Values.storage.persistence.enabled }}
+{{- if not .Values.storage.persistence.existingClaim -}}
+kind: PersistentVolumeClaim
+apiVersion: v1
+metadata:
+  name: {{ template "registry.fullname" . }}
+  labels:
+    {{- include "registry.labels" . | nindent 4 }}
+spec:
+  accessModes:
+    - {{ .Values.storage.persistence.accessMode | quote }}
+  resources:
+    requests:
+      storage: {{ .Values.storage.persistence.size | quote }}
+{{- if .Values.storage.persistence.storageClass }}
+{{- if (eq "" .Values.storage.persistence.storageClass) }}
+  storageClassName: ""
+{{- else }}
+  storageClassName: "{{ .Values.storage.persistence.storageClass }}"
+{{- end }}
+{{- end }}
+{{- end }}
+{{- end -}}

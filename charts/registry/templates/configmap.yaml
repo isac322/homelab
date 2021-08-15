@@ -1,0 +1,31 @@
+apiVersion: v1
+kind: ConfigMap
+metadata:
+  name: {{ template "registry.fullname" . }}-config
+  labels:
+    {{- include "registry.labels" . | nindent 4 }}
+data:
+  config.yml: |-
+    auth:
+      htpasswd:
+        realm: basic-realm
+        path: /auth/htpasswd
+    http:
+      addr: :5000
+      headers:
+        X-Content-Type-Options: [nosniff]
+      http2:
+        disabled: false
+      relativeurls: true
+    log:
+      accesslog:
+        disabled: false
+    health:
+      storagedriver:
+        enabled: true
+        interval: 10s
+        threshold: 3
+    storage:
+      delete:
+        enabled: true
+{{ toYaml .Values.configData | indent 4 }}
