@@ -1,0 +1,17 @@
+apiVersion: bitnami.com/v1alpha1
+kind: SealedSecret
+metadata:
+  creationTimestamp: null
+  name: bhyoo-registry-key
+  namespace: default
+spec:
+  encryptedData:
+    .dockerconfigjson: AgBX50izaaSPCCGIBrJMnnxOvBh2MHNSORqnetT9hVmpUA+yZKL3OtQAXsE5dUeLgBpvo61hFMQ/Ok9MtOimIIfwtqpGAPkTXsPrXN5E9lI6siI+HLd+wtfqwqkoq5/NWMKEfHbjVGJxeKlmsxtYS+iGpujCctATAQgI1ZVeEPnybZeADHu1s4cvfK4P0UZ7yRehtlZTjp/JgpKr1IT6uqG8h4lIs5qMJBc9Tp1Dg1EKQQ/Pc0M3kbRINwCFIEEoLdjzry4Yx1l65SrxhEmwZJ1e5m/F5Qh02ETaeM31+DVbF+WbgcCOSZVNgOJShd2i4hLwRryYefkJxod59nBxsOXtqWWr4PU8ZXZRS4PT3ye61unF01KM3hsHM1N4D0zBoJtGBQjMqyk0Dxz548JVHmwRgCX/UgSAUrr0pstiKfvBGcL7BoV/bKCDkmEGA+5ERbG5my4uicyMV7ySzQ3J7zgrQY1+GesmqYjTixvOlE1k3gkUzk4A5XB+yNJEzH/KkDtSWiyYn6xv1UE0Bg4tFCaHzuZKllcyjQSB17wzskB5tMt6JqJjdJYxmGU6TrqZkKmKbmD9L2Bi3H81HzlE3i+OzgBdGI3DqAeAv1b7isMyx4ppoGG46jQfr3kvmGMpeq8WnGIKwjCSKrr61Q1AGQTMV/zgRfVTMGYca3pePtMcZ0bfFJDfTYRzyQ9C9ahkAty0ec0/rfXpz59bHw0uREzNhNA83hnuCNakjQ6J1dAsNNtC6ZNitCZUyLV0HTM656ULhsMFapM06YmUYIH9CGuF94WRvl1fAg+2X/dNxsOvG8BwbDI76MY=
+  template:
+    data: null
+    metadata:
+      creationTimestamp: null
+      name: bhyoo-registry-key
+      namespace: default
+    type: kubernetes.io/dockerconfigjson
+
