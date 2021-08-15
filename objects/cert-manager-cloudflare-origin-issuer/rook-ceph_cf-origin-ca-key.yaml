@@ -1,0 +1,16 @@
+apiVersion: bitnami.com/v1alpha1
+kind: SealedSecret
+metadata:
+  creationTimestamp: null
+  name: cf-origin-ca-key
+  namespace: rook-ceph
+spec:
+  encryptedData:
+    cloudflare_origin_ca_key: AgC4vhFcZmPaucqaMlc0w8CF/fuR2TGFWuZWuoJNKjUcmeugFWZzXHpy/Ec3bTXJAgOkepXsf//+7k2DgYmoy39DVmng3ljEuBefP/Xdx4zM/HWSqzSYQrq+p8QULAx+cTSCFynwSPJBwbvmwICbE4BxRcfy2h9DPBBtkOHhZ2D3lnvTg8wN+WeWhCqQTOwOa4fc1qgiQ6peHQJBiaGHr1wzGZtXTe/m7EfBDH045lb6YTyWvKgoixCSDz6+b6gSR9T9Jzj4kNZ2VEJ2ctaS4sShsv2Rm0LO0h+k6mxvFIpdEj+NTh/mmWoGcrOLuJHHP9X9XMRoA7nXV6zwqQl3IpTt/wdMRsKTsv5Wc+Qnb9cwC+5zV1WfbbBvzXb7tAEwADEy1I85IOPB0ysR2l5a3kV5otz68ET4W1XreeN+MF7P8WWHVmYk7aqU8FAb8n2zRpafpymU2lOsBp+s/iYPc+H2UBm44eWYshnHgEdw0MdA7l6pbWRM4/iQwD+KkiZ0rjlvrAnYK0knyOOoqFOfEc7DuYLOKS+k4hb692HZpdHJWuaOi0Qns9X0cRt9DuPeRftMkCkq4E0qs36yAB1CAR7pA5o637mV8tjHdTT5YF2DiKbQI8eZyFY0QexrUNWTeRTDN5d35mSEZm/7xMIr1uSaW9xteKrqZQfMcw9oYjWqyksM47GdlFFgZ6a/SAeIRKGdRN0ki1vBS7uJ4l1vIWJMT2UmoMUiXNv4499Hcy48RqVXG2qCob2sdFZN9cOT3lVQmsHSKGp4b96yzAttK5UAxL1379oabdy0GW2i6Xi3puNDnHVWkRBZpo9IW0w2y929DtRDQspNBaHJEI1ZGi3D1+WlbSU0lv71/3YgkhgMoRO8Lr1gulpbFRCHRaMSO1SzVKuaDgBQJwmP2fFKEdFNdh4XDWSKjXTro7CALU0=
+  template:
+    data: null
+    metadata:
+      creationTimestamp: null
+      name: cf-origin-ca-key
+      namespace: rook-ceph
+

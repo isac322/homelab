@@ -1,0 +1,16 @@
+apiVersion: bitnami.com/v1alpha1
+kind: SealedSecret
+metadata:
+  creationTimestamp: null
+  name: cf-origin-ca-key
+  namespace: default
+spec:
+  encryptedData:
+    cloudflare_origin_ca_key: AgBTAEz/p5G2zoCVHUvC4pmTadrR/jtgJ/MaLcOzvgRfBcs2Ag4HXDlUhAdKsAJtd8ESTscFT5KL+dyo9yElfrHpG5cWOP4OYrH3pXtm7aAyFl4I2MQtZ/W1i/2qFKrr6zSOZLVUJ+vbt29B+SAvLMG00Z3QL9E5Dzm4adWgMcGYT9YC841vb/c9UOavuHlKafgo3Xt54itW1wRM+IZ0c9HeoWj4tlt0ahxhar3Rh1U40GM6lBZeip9fZDNXMNiFevtDG52KS2050Z2t/6C4T91vb3KaNucumeKUiJ97YtvFUWDL70UlJa4jYpjlZq9m5BfQ80nwLwPVPrU+21Yew725eDb1NPGFEqEwRBoPQyYnydjPTZolQfFZ6vw+4hsPblOZ9uGl/95IxCSfzJVaVGfvvequ7xysLbolLYAtGrOyIENr8Gr8JaEej+V+8VrCWzlsrloayQjsYwqHihItXilu4ZhrCoBwMZ+CbdCi1Hr0UVE9mH+TjBMFtyM/RPB6XvXoL6zoSJc1ZstrkuG4/ItgowoBDxiFpiej0Zkl6+37xLJv2x7/96PqtSXwZm670cD5DSjCO7OrdyI60dYeHGR/Uo5NOAp5TDUfp0jQr91obARnmbbYIzSPufSM2/3u2AQKNNbk+TdwufC5XCSZuVv+XArS9K70vdgAfOz0o/mdUoX6uehHUiTLeLDYJg+eo6pHPW5q/wO6vhhgQOlVTt5YmginxHKJtmEHSjosGu6pidgw+1oqu8vpRY5j/xoQ7UN4imqgnYu/eOUU8lPv40jJQmMYXruJXY6GcvNcZpIDosCO3+yJULK+AfKVmjwOuIqcRHQHMTFt63vfSAlenJoKvk6ZawQP+7Wxz90SQ4+blYq38lzYz6wiMUGHULUrQTgRSD0i/ps3sedAbj4YA7mgu2BlFygjnGjsFMVp2v4=
+  template:
+    data: null
+    metadata:
+      creationTimestamp: null
+      name: cf-origin-ca-key
+      namespace: default
+
