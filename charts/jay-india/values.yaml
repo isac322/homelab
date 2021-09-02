@@ -6,7 +6,7 @@ replicaCount: 1
 
 image:
   repository: registry.bhyoo.com/india
-  pullPolicy: IfNotPresent
+  pullPolicy: Always
   # Overrides the image tag whose default is the chart appVersion.
   tag: "latest"
 
@@ -80,8 +80,14 @@ autoscaling:
   targetCPUUtilizationPercentage: 80
   # targetMemoryUtilizationPercentage: 80
 
+persistence:
+  enabled: true
+  accessMode: ReadWriteOnce
+  size: 500Mi
+  storageClass: ceph-block
+
 nodeSelector:
-  oracle-instance-type: e2.1.micro # a1.flex
+  oracle-instance-type: a1.flex
 
 tolerations: []
 

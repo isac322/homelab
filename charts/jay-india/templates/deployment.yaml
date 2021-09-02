@@ -47,6 +47,9 @@ spec:
               port: http
           resources:
             {{- toYaml .Values.resources | nindent 12 }}
+          volumeMounts:
+            - name: data
+              mountPath: /india/india-photos
       {{- with .Values.nodeSelector }}
       nodeSelector:
         {{- toYaml . | nindent 8 }}
@@ -59,3 +62,11 @@ spec:
       tolerations:
         {{- toYaml . | nindent 8 }}
       {{- end }}
+      volumes:
+        - name: data
+          {{- if .Values.persistence.enabled }}
+          persistentVolumeClaim:
+            claimName: {{ template "jay-india.fullname" . }}
+          {{- else }}
+          emptyDir: {}
+        {{- end -}}
