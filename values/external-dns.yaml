@@ -1,0 +1,164 @@
+## Bitnami external-dns image version
+## ref: https://hub.docker.com/r/bitnami/external-dns/tags/
+## @param image.registry ExternalDNS image registry
+## @param image.repository ExternalDNS image repository
+## @param image.tag ExternalDNS Image tag (immutable tags are recommended)
+## @param image.pullPolicy ExternalDNS image pull policy
+## @param image.pullSecrets ExternalDNS image pull secrets
+##
+image:
+  registry: docker.io
+  repository: isac322/external-dns
+  tag: 0.9.0
+
+## @param sources [array] K8s resources type to be observed for new DNS entries by ExternalDNS
+##
+sources:
+  # - crd
+  - service
+  - ingress
+  # - contour-httpproxy
+
+## @param provider DNS provider where the DNS records will be created.
+## Available providers are:
+## - alibabacloud, aws, azure, azure-private-dns, cloudflare, coredns, designate, digitalocean, google, hetzner, infoblox, linode, rfc2136, transip
+##
+provider: cloudflare
+
+## @param publishInternalServices Allow external-dns to publish DNS records for ClusterIP services
+##
+publishInternalServices: false
+
+## @param publishHostIP Allow external-dns to publish host-ip for headless services
+##
+publishHostIP: false
+
+## @param serviceTypeFilter The service types to take care about (default: all, options: ClusterIP, NodePort, LoadBalancer, ExternalName)
+##
+serviceTypeFilter: []
+#  - LoadBalancer
+#  - ClusterIP
+
+## Cloudflare configuration to be set via arguments/env. variables
+##
+cloudflare:
+  ## @param cloudflare.secretName When using the Cloudflare provider, it's the name of the secret containing cloudflare_api_token or cloudflare_api_key.
+  ## This ignores cloudflare.apiToken, and cloudflare.apiKey
+  ##
+  secretName: "external-dns-api-token"
+  ## @param cloudflare.proxied When using the Cloudflare provider, enable the proxy feature (DDOS protection, CDN...) (optional)
+  ##
+  proxied: true
+
+## @param domainFilters Limit possible target zones by domain suffixes (optional)
+##
+domainFilters:
+  - bhyoo.com
+## @param triggerLoopOnEvent When enabled, triggers run loop on create/update/delete events in addition to regular interval (optional)
+##
+triggerLoopOnEvent: false
+## @param interval Interval update period to use
+##
+interval: "1m"
+## @param logLevel Verbosity of the logs (options: panic, debug, info, warning, error, fatal, trace)
+##
+logLevel: debug
+## @param logFormat Which format to output logs in (options: text, json)
+##
+logFormat: text
+## @param policy Modify how DNS records are synchronized between sources and providers (options: sync, upsert-only )
+##
+policy: sync
+## @param registry Registry method to use (options: txt, aws-sd, noop)
+## ref: https://github.com/kubernetes-sigs/external-dns/blob/master/docs/proposal/registry.md
+##
+registry: "txt"
+## @param txtPrefix When using the TXT registry, a prefix for ownership records that avoids collision with CNAME entries (optional)<CNAME record> (Mutual exclusive with txt-suffix)
+##
+txtPrefix: ""
+## @param txtSuffix When using the TXT registry, a suffix for ownership records that avoids collision with CNAME entries (optional)<CNAME record>.suffix (Mutual exclusive with txt-prefix)
+##
+txtSuffix: ""
+## @param txtOwnerId A name that identifies this instance of ExternalDNS. Currently used by registry types: txt & aws-sd (optional)
+## But other registry types might be added in the future.
+##
+txtOwnerId: "k8s-oracle-bhyoo"
+## @param forceTxtOwnerId (backward compatibility) When using the non-TXT registry, it will pass the value defined by `txtOwnerId` down to the application (optional)
+## This setting added for backward compatibility for
+## customers who already used bitnami/external-dns helm chart
+## to privision 'aws-sd' registry type.
+## Previously bitnami/external-dns helm chart did not pass
+## txtOwnerId value down to the external-dns application
+## so the app itself sets that value to be a string 'default'.
+## If existing customers force the actual txtOwnerId value to be
+## passed properly, their external-dns updates will stop working
+## because the owner's value for exting DNS records in
+## AWS Service Discovery would remain 'default'.
+## NOTE: It is up to the end user to update AWS Service Discovery
+## 'default' values in description fields to make it work with new
+## value passed as txtOwnerId when forceTxtOwnerId=true
+forceTxtOwnerId: false
+## @param replicas Desired number of ExternalDNS replicas
+##
+replicas: 1
+## Options for the source type "crd"
+##
+crd:
+  ## @param crd.create Install and use the integrated DNSEndpoint CRD
+  ##
+  create: true
+  ## @param crd.apiversion Sets the API version for the CRD to watch
+  ##
+  apiversion: ""
+  ## @param crd.kind Sets the kind for the CRD to watch
+  ##
+  kind: ""
+
+## @param securityContext Security context for the container
+## https://kubernetes.io/docs/tasks/configure-pod-container/security-context/
+## Example:
+## securityContext:
+##   allowPrivilegeEscalation: false
+##   readOnlyRootFilesystem: true
+##   capabilities:
+##     drop: ["ALL"]
+##
+securityContext: {}
+## @param podSecurityContext.fsGroup Group ID for the container
+## @param podSecurityContext.runAsUser User ID for the container
+##
+podSecurityContext:
+  fsGroup: 1001
+  runAsUser: 1001
+
+metrics:
+  ## @param metrics.enabled Enable prometheus to access external-dns metrics endpoint
+  ##
+  enabled: false
+  ## @param metrics.podAnnotations Annotations for enabling prometheus to access the metrics endpoint
+  ##
+  podAnnotations: {}
+  ## Prometheus Operator ServiceMonitor configuration
+  ##
+  serviceMonitor:
+    ## @param metrics.serviceMonitor.enabled Create ServiceMonitor object
+    ##
+    enabled: false
+    ## @param metrics.serviceMonitor.namespace Namespace in which Prometheus is running
+    ##
+    namespace: ""
+    ## @param metrics.serviceMonitor.interval Interval at which metrics should be scraped
+    ## ref: https://github.com/coreos/prometheus-operator/blob/master/Documentation/api.md#endpoint
+    ##
+    interval: ""
+    ## @param metrics.serviceMonitor.scrapeTimeout Timeout after which the scrape is ended
+    ## ref: https://github.com/coreos/prometheus-operator/blob/master/Documentation/api.md#endpoint
+    ##
+    scrapeTimeout: ""
+    ## @param metrics.serviceMonitor.selector Additional labels for ServiceMonitor object
+    ## ref: https://github.com/bitnami/charts/tree/master/bitnami/prometheus-operator#prometheus-configuration
+    ## e.g:
+    ## selector:
+    ##   prometheus: my-prometheus
+    ##
+    selector: {}
