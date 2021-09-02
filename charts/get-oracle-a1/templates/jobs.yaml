@@ -1,0 +1,73 @@
+apiVersion: batch/v1
+kind: Job
+metadata:
+  name: {{ include "get-oracle-a1.fullname" . }}
+  labels:
+    {{- include "get-oracle-a1.labels" . | nindent 4 }}
+spec:
+  template:
+    metadata:
+      {{- with .Values.podAnnotations }}
+      annotations:
+        {{- toYaml . | nindent 8 }}
+      {{- end }}
+      labels:
+        {{- include "get-oracle-a1.selectorLabels" . | nindent 8 }}
+    spec:
+      {{- with .Values.imagePullSecrets }}
+      imagePullSecrets:
+        {{- toYaml . | nindent 8 }}
+      {{- end }}
+      serviceAccountName: {{ include "get-oracle-a1.serviceAccountName" . }}
+      securityContext:
+        {{- toYaml .Values.podSecurityContext | nindent 8 }}
+      containers:
+        {{- range $job := .Values.jobs }}
+        - name: {{ first $job.command }}
+          securityContext:
+            {{- toYaml $.Values.securityContext | nindent 12 }}
+          image: "{{ $.Values.image.repository }}:{{ $.Values.image.tag | default $.Chart.AppVersion }}"
+          imagePullPolicy: {{ $.Values.image.pullPolicy }}
+          args:
+            {{- toYaml $job.command | nindent 12 }}
+            - --profile
+            - {{ $job.profile | default "DEFAULT" }}
+            - --api-config-file
+            - {{ $.Values.ociConfig.mountPath }}/config
+          resources:
+            {{- toYaml $.Values.resources | nindent 12 }}
+          volumeMounts:
+            {{- with $job.extraVolumeMounts }}
+              {{- toYaml . | nindent 12 }}
+            {{- end }}
+            - name: api-key
+              mountPath: {{ $.Values.ociConfig.mountPath }}
+              readOnly: true
+        {{- end }}
+      restartPolicy: {{ $.Values.restartPolicy }}
+      {{- with $.Values.nodeSelector }}
+      nodeSelector:
+        {{- toYaml . | nindent 8 }}
+      {{- end }}
+      {{- with .Values.affinity }}
+      affinity:
+        {{- toYaml . | nindent 8 }}
+      {{- end }}
+      {{- with .Values.tolerations }}
+      tolerations:
+        {{- toYaml . | nindent 8 }}
+      {{- end }}
+      volumes:
+        - name: api-key
+          secret:
+            secretName: {{ include "get-oracle-a1.fullname" . }}
+            items:
+              - key: config
+                path: config
+              - key: cert
+                path: cert
+      {{- with .Values.extraVolumes }}
+        {{- toYaml . | nindent 8 }}
+      {{- end }}
+  backoffLimit: {{ .Values.backoffLimit }}
+  completions: 1
