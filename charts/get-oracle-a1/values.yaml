@@ -60,7 +60,7 @@ tolerations: []
 
 affinity: {}
 
-backoffLimit: 1
+backoffLimit: 6
 
 restartPolicy: OnFailure
 
