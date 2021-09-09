@@ -1,0 +1,48 @@
+image:
+  repository: isac322/jay-india
+  pullPolicy: Always
+  # Overrides the image tag whose default is the chart appVersion.
+  tag: "master"
+
+
+imagePullSecrets:
+  - name: bhyoo-registry-key
+
+
+ingress:
+  enabled: true
+  className: ""
+  annotations:
+    kubernetes.io/ingress.class: traefik
+    traefik.ingress.kubernetes.io/router.entrypoints: websecure
+    traefik.ingress.kubernetes.io/router.tls: 'true'
+    cert-manager.io/issuer: cloudflare-origin-issuer
+    cert-manager.io/issuer-kind: OriginIssuer
+    cert-manager.io/issuer-group: cert-manager.k8s.cloudflare.com
+  hosts:
+    - host: jay.bhyoo.com
+      paths:
+        - path: /
+          pathType: ImplementationSpecific
+  tls:
+    - hosts:
+        - jay.bhyoo.com
+      secretName: india-jay-com
+
+
+autoscaling:
+  enabled: true
+  minReplicas: 1
+  maxReplicas: 2
+  targetCPUUtilizationPercentage: 80
+
+
+nodeSelector:
+  oracle-instance-type: a1.flex
+
+
+persistence:
+  enabled: false
+  accessMode: ReadWriteOnce
+  size: 500Mi
+  storageClass: ceph-block

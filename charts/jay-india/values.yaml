@@ -5,13 +5,12 @@
 replicaCount: 1
 
 image:
-  repository: registry.bhyoo.com/india
-  pullPolicy: Always
+  repository: isac322/jay-india
+  pullPolicy: IfNotPresent
   # Overrides the image tag whose default is the chart appVersion.
-  tag: "latest"
+  tag: ""
 
-imagePullSecrets:
-  - name: bhyoo-registry-key
+imagePullSecrets: []
 nameOverride: ""
 fullnameOverride: ""
 
@@ -42,24 +41,20 @@ service:
   port: 80
 
 ingress:
-  enabled: true
+  enabled: false
   className: ""
-  annotations:
-    kubernetes.io/ingress.class: traefik
-    traefik.ingress.kubernetes.io/router.entrypoints: websecure
-    traefik.ingress.kubernetes.io/router.tls: 'true'
-    cert-manager.io/issuer: cloudflare-origin-issuer
-    cert-manager.io/issuer-kind: OriginIssuer
-    cert-manager.io/issuer-group: cert-manager.k8s.cloudflare.com
+  annotations: {}
+    # kubernetes.io/ingress.class: nginx
+  # kubernetes.io/tls-acme: "true"
   hosts:
-    - host: jay.bhyoo.com
+    - host: chart-example.local
       paths:
         - path: /
           pathType: ImplementationSpecific
-  tls:
-    - hosts:
-        - jay.bhyoo.com
-      secretName: india-jay-com
+  tls: []
+  #  - secretName: chart-example-tls
+  #    hosts:
+  #      - chart-example.local
 
 resources: {}
   # We usually recommend not to specify default resources and to leave this as a conscious
@@ -74,21 +69,21 @@ resources: {}
   #   memory: 128Mi
 
 autoscaling:
-  enabled: true
+  enabled: false
   minReplicas: 1
-  maxReplicas: 2
+  maxReplicas: 100
   targetCPUUtilizationPercentage: 80
   # targetMemoryUtilizationPercentage: 80
 
-persistence:
-  enabled: true
-  accessMode: ReadWriteOnce
-  size: 500Mi
-  storageClass: ceph-block
-
-nodeSelector:
-  oracle-instance-type: a1.flex
+nodeSelector: {}
 
 tolerations: []
 
 affinity: {}
+
+
+persistence:
+  enabled: false
+  accessMode: ReadWriteOnce
+  size: 500Mi
+  storageClass: ""
