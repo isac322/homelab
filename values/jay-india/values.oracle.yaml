@@ -1,13 +1,5 @@
-image:
-  repository: isac322/jay-india
-  pullPolicy: Always
-  # Overrides the image tag whose default is the chart appVersion.
-  tag: "master"
-
-
 imagePullSecrets:
   - name: bhyoo-registry-key
-
 
 ingress:
   enabled: true
@@ -29,20 +21,15 @@ ingress:
         - jay.bhyoo.com
       secretName: india-jay-com
 
-
 autoscaling:
   enabled: true
   minReplicas: 1
   maxReplicas: 2
   targetCPUUtilizationPercentage: 80
 
-
 nodeSelector:
   oracle-instance-type: a1.flex
 
-
 persistence:
   enabled: false
-  accessMode: ReadWriteOnce
-  size: 500Mi
   storageClass: ceph-block

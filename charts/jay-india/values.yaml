@@ -5,7 +5,7 @@
 replicaCount: 1
 
 image:
-  repository: isac322/jay-india
+  repository: registry.bhyoo.com/india
   pullPolicy: IfNotPresent
   # Overrides the image tag whose default is the chart appVersion.
   tag: ""
@@ -84,6 +84,6 @@ affinity: {}
 
 persistence:
   enabled: false
-  accessMode: ReadWriteOnce
+  accessMode: ReadWriteMany
   size: 500Mi
   storageClass: ""
