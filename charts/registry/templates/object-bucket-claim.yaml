@@ -1,4 +1,4 @@
-{{- if eq .Values.storage.type "s3" }}
+{{- if and (eq .Values.storage.type "s3") .Values.storage.s3.ceph.enabled }}
 apiVersion: objectbucket.io/v1alpha1
 kind: ObjectBucketClaim
 metadata:
@@ -7,5 +7,5 @@ metadata:
     {{- include "registry.labels" . | nindent 4 }}
 spec:
   generateBucketName: {{ include "registry.fullname" . }}
-  storageClassName: {{ .Values.storage.s3.cephStorageClassName | quote }}
+  storageClassName: {{ .Values.storage.s3.ceph.storageClass | quote }}
 {{- end }}

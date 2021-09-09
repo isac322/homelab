@@ -27,7 +27,7 @@ spec:
       {{- toYaml .Values.podSecurityContext | nindent 8 }}
       containers:
         - name: {{ .Chart.Name }}
-          image: "{{ .Values.image.repository }}:{{ .Values.image.tag }}"
+          image: "{{ .Values.image.repository }}:{{ .Values.image.tag | default .Chart.AppVersion }}"
           imagePullPolicy: {{ .Values.image.pullPolicy }}
           securityContext:
             {{- toYaml .Values.securityContext | nindent 12 }}
@@ -47,7 +47,7 @@ spec:
               path: /
               port: 5000
           resources:
-          {{- toYaml .Values.resources | nindent 12 }}
+            {{- toYaml .Values.resources | nindent 12 }}
           env:
             - name: REGISTRY_HTTP_HOST
               value: https://registry.bhyoo.com
@@ -56,35 +56,55 @@ spec:
                 secretKeyRef:
                   name: {{ include "registry.fullname" . }}
                   key: haSharedSecret
-            {{- if eq .Values.storage.type "filesystem" }}
+            {{- if eq (required ".Values.storage.type is required" .Values.storage.type) "filesystem" }}
             - name: REGISTRY_STORAGE_FILESYSTEM_ROOTDIRECTORY
               value: "/var/lib/registry"
             {{- else if eq .Values.storage.type "s3" }}
             - name: REGISTRY_STORAGE_S3_ACCESSKEY
               valueFrom:
                 secretKeyRef:
+                  {{- if .Values.storage.s3.ceph.enabled }}
                   name: {{ include "registry.fullname" . }}-bucket
+                  {{- else }}
+                  name: {{ .Values.storage.s3.secretRef | default (include "registry.fullname" .) }}
+                  {{- end }}
                   key: AWS_ACCESS_KEY_ID
             - name: REGISTRY_STORAGE_S3_SECRETKEY
               valueFrom:
                 secretKeyRef:
+                  {{- if .Values.storage.s3.ceph.enabled }}
                   name: {{ include "registry.fullname" . }}-bucket
+                  {{- else }}
+                  name: {{ .Values.storage.s3.secretRef | default (include "registry.fullname" .) }}
+                  {{- end }}
                   key: AWS_SECRET_ACCESS_KEY
             - name: REGISTRY_STORAGE_S3_REGION
+              {{- if .Values.storage.s3.ceph.enabled }}
               valueFrom:
                 configMapKeyRef:
                   name: {{ include "registry.fullname" . }}-bucket
                   key: BUCKET_REGION
+              {{- else }}
+              value: {{ required ".Values.storage.s3.region is required unless ceph is enabled" .Values.storage.s3.region }}
+              {{- end }}
             - name: REGISTRY_STORAGE_S3_REGIONENDPOINT
+              {{- if .Values.storage.s3.ceph.enabled }}
               valueFrom:
                 configMapKeyRef:
                   name: {{ include "registry.fullname" . }}-bucket
                   key: BUCKET_HOST
+              {{- else }}
+              value: {{ required ".Values.storage.s3.regionEndpoint is required unless ceph is enabled" .Values.storage.s3.regionEndpoint }}
+              {{- end }}
             - name: REGISTRY_STORAGE_S3_BUCKET
+              {{- if .Values.storage.s3.ceph.enabled }}
               valueFrom:
                 configMapKeyRef:
                   name: {{ include "registry.fullname" . }}-bucket
                   key: BUCKET_NAME
+              {{- else }}
+              value: {{ required ".Values.storage.s3.bucket is required unless ceph is enabled" .Values.storage.s3.bucket }}
+              {{- end }}
             - name: REGISTRY_STORAGE_S3_ENCRYPT
               value: {{ .Values.storage.s3.encrypt | quote }}
             - name: REGISTRY_STORAGE_S3_SECURE
@@ -93,18 +113,21 @@ spec:
               value: {{ .Values.storage.s3.v4auth | quote }}
             {{- else if eq .Values.storage.type "swift" }}
             - name: REGISTRY_STORAGE_SWIFT_AUTHURL
-              value: http://rook-ceph-rgw-object-store.rook-ceph.svc.cluster.local/auth/v1
+              value: {{ required ".Values.storage.swift.authUrl is required" .Values.storage.swift.authUrl }}
             - name: REGISTRY_STORAGE_SWIFT_USERNAME
-              value: ceph-user-8LMvhg6e:swift
-            - name: REGISTRY_STORAGE_SWIFT_PASSWORD
-              value: XOFo5iorz4QDxxmmkaEjB379pKAh3iXrAe5emznw
-            - name: REGISTRY_STORAGE_SWIFT_AUTHVERSION
-              value: "3"
-            - name: REGISTRY_STORAGE_SWIFT_CONTAINER
               valueFrom:
-                configMapKeyRef:
-                  name: {{ include "registry.fullname" . }}-bucket
-                  key: BUCKET_NAME
+                secretKeyRef:
+                  name: {{ .Values.storage.swift.secretRef | default (include "registry.fullname" .) }}
+                  key: swift_user_name
+            - name: REGISTRY_STORAGE_SWIFT_PASSWORD
+              valueFrom:
+                secretKeyRef:
+                  name: {{ .Values.storage.swift.secretRef | default (include "registry.fullname" .) }}
+                  key: swift_user_password
+            - name: REGISTRY_STORAGE_SWIFT_AUTHVERSION
+              value: {{ .Values.storage.swift.authVer | quote }}
+            - name: REGISTRY_STORAGE_SWIFT_CONTAINER
+              value: {{ required ".Values.storage.swift.container is required" .Values.storage.swift.container }}
             {{- end }}
             {{- if .Values.proxy.enabled }}
             - name: REGISTRY_PROXY_REMOTEURL
@@ -112,7 +135,7 @@ spec:
             - name: REGISTRY_PROXY_USERNAME
               valueFrom:
                 secretKeyRef:
-                  name: {{ if .Values.proxy.secretRef }}{{ .Values.proxy.secretRef }}{{ else }}{{ template "registry.fullname" . }}-secret{{ end }}
+                  name: {{ if .Values.proxy.secretRef }}{{ .Values.proxy.secretRef }}{{ else }}{{ template "registry.fullname" . }}{{ end }}
                   key: proxyUsername
             - name: REGISTRY_PROXY_PASSWORD
               valueFrom:
@@ -120,14 +143,10 @@ spec:
                   name: {{ if .Values.proxy.secretRef }}{{ .Values.proxy.secretRef }}{{ else }}{{ template "registry.fullname" . }}-secret{{ end }}
                   key: proxyPassword
             {{- end }}
-            {{- if .Values.storage.deleteEnabled }}
-            - name: REGISTRY_STORAGE_DELETE_ENABLED
-              value: "true"
-            {{- end }}
           volumeMounts:
-            {{- with .Values.extraVolumeMounts }}
-            {{- toYaml . | nindent 12 }}
-            {{- end }}
+            - name: config
+              mountPath: "/etc/docker/registry"
+              readOnly: true
             - name: auth
               mountPath: /auth
               readOnly: true
@@ -135,8 +154,9 @@ spec:
             - name: data
               mountPath: /var/lib/registry/
             {{- end }}
-            - name: "{{ template "registry.fullname" . }}-config"
-              mountPath: "/etc/docker/registry"
+            {{- with .Values.extraVolumeMounts }}
+              {{- toYaml . | nindent 12 }}
+            {{- end }}
 
       {{- with .Values.nodeSelector }}
       nodeSelector:
@@ -151,6 +171,9 @@ spec:
         {{- toYaml . | nindent 8 }}
       {{- end }}
       volumes:
+        - name: config
+          configMap:
+            name: {{ template "registry.fullname" . }}-config
         - name: auth
           secret:
             secretName: {{ include "registry.fullname" . }}
@@ -166,9 +189,6 @@ spec:
           emptyDir: {}
           {{- end -}}
         {{- end }}
-        - name: {{ template "registry.fullname" . }}-config
-          configMap:
-            name: {{ template "registry.fullname" . }}-config
         {{- with .Values.extraVolumes }}
-        {{- toYaml . | nindent 8 }}
+          {{- toYaml . | nindent 8 }}
         {{- end }}

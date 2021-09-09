@@ -2,19 +2,59 @@
 # This is a YAML-formatted file.
 # Declare variables to be passed into your templates.
 
-podAnnotations: {}
+replicaCount: 1
 
 image:
   repository: registry
-  tag: 2.7.1
   pullPolicy: IfNotPresent
-    # imagePullSecrets:
-    # - name: docker
-
+  # Overrides the image tag whose default is the chart appVersion.
+  tag: ""
 
 imagePullSecrets: []
 nameOverride: ""
 fullnameOverride: ""
+
+serviceAccount:
+  # Specifies whether a service account should be created
+  create: true
+  # Annotations to add to the service account
+  annotations: {}
+  # The name of the service account to use.
+  # If not set and create is true, a name is generated using the fullname template
+  name: ""
+
+podAnnotations: {}
+
+podSecurityContext: {}
+  # fsGroup: 2000
+
+securityContext: {}
+  # capabilities:
+  #   drop:
+  #   - ALL
+  # readOnlyRootFilesystem: true
+  # runAsNonRoot: true
+  # runAsUser: 1000
+
+service:
+  type: ClusterIP
+  port: 80
+
+ingress:
+  enabled: false
+  className: ""
+  annotations: {}
+  # kubernetes.io/ingress.class: nginx
+  # kubernetes.io/tls-acme: "true"
+  hosts:
+    - host: chart-example.local
+      paths:
+        - path: /
+          pathType: ImplementationSpecific
+  tls: []
+  #  - secretName: chart-example-tls
+  #    hosts:
+  #      - chart-example.local
 
 resources: {}
   # We usually recommend not to specify default resources and to leave this as a conscious
@@ -22,16 +62,37 @@ resources: {}
   # resources, such as Minikube. If you do want to specify resources, uncomment the following
   # lines, adjust them as necessary, and remove the curly braces after 'resources:'.
   # limits:
-  #  cpu: 100m
-  #  memory: 128Mi
+  #   cpu: 100m
+  #   memory: 128Mi
   # requests:
-  #  cpu: 100m
-  #  memory: 128Mi
+  #   cpu: 100m
+  #   memory: 128Mi
+
+podDisruptionBudget:
+  #  maxUnavailable: 1
+  minAvailable: 1
+
+autoscaling:
+  enabled: false
+  minReplicas: 1
+  maxReplicas: 100
+  targetCPUUtilizationPercentage: 80
+  # targetMemoryUtilizationPercentage: 80
+
+nodeSelector: {}
+
+tolerations: []
+
+affinity: {}
+
 
 sealedSecret:
-  auth: AgBK/WW6KhHoGoChzenkdVW9F/WDSmMRHDNxIhOJ/2Yt9KnG1ScNqj/3ygk7hZ8twLk/pOJ3kX/sTZbTs+oNsHE/CM3R9N2bOcp9jMMY/XxCTvAd58mkM1hX0iLaVgnnnlPPQ3FKBrb6ZaCO+0HeLZOWlFcIfbkOGoBbotmN/YyVNQB//CWrWZYcuzyIHXf+wAJqCWNKP45CBLCPaoA+k0BA8+T1nq3P/q7AWLrUk9nJoUAn19Gamcn/x5IsagJMTJO10g+WHEdlxs5Luk68k8BMyQAo/36oLn8EjG6kRWwb6jz7ohqXg+Mo+wzCnU3U0qR7gHa1NOzvCph4x7C0f84l6syl+2l3aJc+fJ8tWQ+gCoC3eUYLYTlDR4m/V0JQ9uUzCbTVQKnq48h2JxTZ8+PM6A45YJvPNzuEkA53jd4AuWZVzCAT4yXmbXIEDzGZwu35jJQE9hYa4zKIk/hjG8fLBKs6zIm9hKpIFzc6Vx6+tFBSjXVAAu0ymAzKCY4fDTBr6vV8yWqLm2Yvc956+UDIM0xzXu3+E2WoADAdnhYrW2q492SczC9vfL6foKh0aBJa18k47jT8mam0ZEhSJkE+rMIpqTHF1vpLWKDYrtFXoAnQEO93OLY8gj4bofSbLIa12x0tRj1CZvj4AwRJzDSAZNj4hGvgry4c1j+OBde6SuoFe4+mi0DUKKXADonwFPhMvuXOFfXQqooRE2Z8Ofyh6ql66At5YWVRAPJbKXKimWVtSJVSdP/ewKpwAJAOSZNVZz033rvCh/T0ARIlJnOs2uMZpd+F9yh5Z4TXABAOMF7KJz0QqsjC5KgCJ6A3uPoUO3+25lJh3ggfS5a8YDWb6TBHf99wGODXJldwGnBUKShDcQ==
-  haSharedSecret: AgBajPrSCezsS50ykZAQ40S3cETpq7MF2WiX/ZXKIW1QMa0B6vkfN6kMSEdw2MBqohNztcO12BjyYek9h202YPp1OkgYnyP2wn3AFf3VyP3+pa0CBhKbzAgpvZPZcTYIFHCMMbbfRcz4Atbny6PInu+h6IpN/fVgFJcJtEwYd9MdE0PeXbgeML3Vfb4P7QR83xv8vNTkyjWZ1Ow70JiS0XdxG8wr0l6YzjoLhXdRh258oyMyvMLO+CfLAPSUbhDHbJ6CQ+Dj8pI9a+sD3/oAVYyKjLHOL2fvyPpOgCH6IOSbtsmXTJ54Xal8ATFQ4gpnmcUPnihAd9OrZe3HjCp8CBczS78f3i04vHiOVEXJu6Kv0DOTDTLZIAcy9zkkGm7Yz61Kzruaddk9fR8Xz+VZ4CQNupbjG2t/SKnCiUnf2u2fuoysP5v4u2gL8H83slF/75KvkUcPVYbvGd4IQ4P+NKlEfibcxWLbT9l/n73DPKz8N7HjMEvdUi9ADx9MbM1c3vZOfliHDGQ3snup1UmxrWqmNfednzEHn/jUL3erkO7RvnSU31lMp4GyUzRV2QgZVq/QD6qpK++DSlFY1L1EfpbnQkcj5u5DmqPssJZDkgn7pYsySjnrFCih8rO5sBlcC+ZIC/M4CNNGmXYwyPQFCB1BufIzS18je+NL2SY5lJXNC3Kl2mnKhDHN/DB1q5Rj+sH8Wel1z0Hmma2KxTnsvKQdgrcMKV1yJu/8H01WphBSHrObZXw=
-
+  auth: ""
+  haSharedSecret: ""
+  AWS_ACCESS_KEY_ID: ""
+  AWS_SECRET_ACCESS_KEY: ""
+  swift_user_name: ""
+  swift_user_password: ""
 
 # https://docs.docker.com/registry/recipes/mirror/
 proxy:
@@ -44,77 +105,66 @@ proxy:
   secretRef: ""
 
 
-nodeSelector:
-  oracle-instance-type: a1.flex
-
-affinity: {}
-
-tolerations: []
-
-replicaCount: 1
-
-ingress:
-  enabled: true
-  className: ""
-  annotations:
-    kubernetes.io/ingress.class: traefik
-    traefik.ingress.kubernetes.io/router.entrypoints: websecure
-    traefik.ingress.kubernetes.io/router.pathmatcher: PathPrefix
-    cert-manager.io/issuer: cloudflare-origin-issuer
-    cert-manager.io/issuer-kind: OriginIssuer
-    cert-manager.io/issuer-group: cert-manager.k8s.cloudflare.com
-  hosts:
-    - host: registry.bhyoo.com
-      paths:
-        - path: /
-          pathType: Prefix
-  tls:
-    - hosts:
-        - registry.bhyoo.com
-      secretName: registry-com
-
-service:
-  type: ClusterIP
-  port: 80
-
-# set the type of filesystem to use: filesystem, s3
+# set the type of filesystem to use: filesystem, s3, swift
 storage:
-  type: filesystem
-  deleteEnabled: true
+  type: ""
   persistence:
-    enabled: true
-    accessMode: ReadWriteOnce
+    enabled: false
+    accessMode: ReadWriteMany
     size: 20Gi
     existingClaim: ""
-    storageClass: ceph-block
+    storageClass: ""
   s3:
-    cephStorageClassName: ceph-object-storage
+    ceph:
+      enabled: false
+      storageClass: ""
     encrypt: false
-    secure: false
-    v4auth: false
-  swift: {}
+    secure: true
+    v4auth: true
+    # required if .Values.storage.s3.ceph.enabled is false
+    bucket: ""
+    # required if .Values.storage.s3.ceph.enabled is false
+    regionEndpoint: ""
+    # required if .Values.storage.s3.ceph.enabled is false
+    region: ""
+    # the ref for a secret stored outside of this chart
+    # Keys: AWS_ACCESS_KEY_ID, AWS_SECRET_ACCESS_KEY
+    secretRef: ""
+  swift:
+    authUrl: ""
+    authVer: 3
+    container: ""
+    # the ref for a secret stored outside of this chart
+    # Keys: swift_user_name, swift_user_password
+    secretRef: ""
 
 configData:
   version: 0.1
+  auth:
+    htpasswd:
+      realm: basic-realm
+      path: /auth/htpasswd
+  http:
+    addr: :5000
+    headers:
+      X-Content-Type-Options: [ nosniff ]
+    http2:
+      disabled: false
+    relativeurls: true
+  log:
+    accesslog:
+      disabled: false
+  health:
+    storagedriver:
+      enabled: true
+      interval: 10s
+      threshold: 3
   storage:
+    delete:
+      enabled: true
     cache:
       blobdescriptor: inmemory
 
-securityContext:
-  # capabilities:
-  #   drop:
-  #   - ALL
-#  readOnlyRootFilesystem: true
-#  runAsNonRoot: true
-#  runAsUser: 1000
-#  runAsGroup: 1000
-
-podSecurityContext:
-  fsGroup: 1000
-
-podDisruptionBudget:
-#  maxUnavailable: 1
-  minAvailable: 1
 
 extraVolumeMounts: []
 ## Additional volumeMounts to the registry container.
