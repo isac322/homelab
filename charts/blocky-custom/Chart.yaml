@@ -1,0 +1,18 @@
+apiVersion: v2
+name: blocky-custom
+description: DNS proxy as ad-blocker for local network
+kubeVersion: ">=1.16.0-0"
+
+type: application
+
+version: 9.0.3
+
+appVersion: v0.16
+
+sources:
+  - https://github.com/0xERR0R/blocky
+
+dependencies:
+  - name: blocky
+    repository: https://k8s-at-home.com/charts/
+    version: 9.0.3

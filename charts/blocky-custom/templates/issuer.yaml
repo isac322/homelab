@@ -1,0 +1,22 @@
+apiVersion: cert-manager.io/v1
+kind: Issuer
+metadata:
+  name: {{ include "blocky-custom.fullname" . }}
+  labels:
+  {{- include "blocky-custom.labels" . | nindent 4 }}
+  namespace: {{ .Release.Namespace }}
+spec:
+  acme:
+    email: {{ .Values.issuer.email }}
+    server: {{ .Values.issuer.server | default "https://acme-v02.api.letsencrypt.org/directory" }}
+    preferredChain: "ISRG Root X1"
+    privateKeySecretRef:
+      # Secret resource that will be used to store the account's private key.
+      name: {{ include "blocky-custom.fullname" . }}-issuer-account-key
+    solvers:
+      - dns01:
+          cloudflare:
+            email: {{ .Values.issuer.email }}
+            apiTokenSecretRef:
+              name: {{ include "blocky-custom.fullname" . }}
+              key: cloudflare-api-token
