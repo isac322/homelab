@@ -9,7 +9,7 @@
 image:
   registry: docker.io
   repository: isac322/external-dns
-  tag: 0.9.0
+  tag: 0.10.1
 
 ## @param sources [array] K8s resources type to be observed for new DNS entries by ExternalDNS
 ##
@@ -35,8 +35,8 @@ publishHostIP: false
 
 ## @param serviceTypeFilter The service types to take care about (default: all, options: ClusterIP, NodePort, LoadBalancer, ExternalName)
 ##
-serviceTypeFilter: []
-#  - LoadBalancer
+serviceTypeFilter:
+  - LoadBalancer
 #  - ClusterIP
 
 ## Cloudflare configuration to be set via arguments/env. variables
@@ -82,7 +82,7 @@ txtSuffix: ""
 ## @param txtOwnerId A name that identifies this instance of ExternalDNS. Currently used by registry types: txt & aws-sd (optional)
 ## But other registry types might be added in the future.
 ##
-txtOwnerId: "k8s-oracle-bhyoo"
+txtOwnerId: "k8s-oracle-cloud-bhyoo"
 ## @param forceTxtOwnerId (backward compatibility) When using the non-TXT registry, it will pass the value defined by `txtOwnerId` down to the application (optional)
 ## This setting added for backward compatibility for
 ## customers who already used bitnami/external-dns helm chart
