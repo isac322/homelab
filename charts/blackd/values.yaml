@@ -8,7 +8,7 @@ image:
   repository: isac322/blackd
   pullPolicy: IfNotPresent
   # Overrides the image tag whose default is the chart appVersion.
-  tag: "21.7b0"
+  tag: "21.10b0"
 
 imagePullSecrets: []
 nameOverride: ""
@@ -49,14 +49,14 @@ service:
 
 ingress:
   enabled: true
-  className: ""
+  className: "traefik"
   annotations:
-    kubernetes.io/ingress.class: traefik
     traefik.ingress.kubernetes.io/router.entrypoints: websecure
-    traefik.ingress.kubernetes.io/router.tls: 'true'
     cert-manager.io/issuer: cloudflare-origin-issuer
     cert-manager.io/issuer-kind: OriginIssuer
     cert-manager.io/issuer-group: cert-manager.k8s.cloudflare.com
+    cert-manager.io/duration: 168h
+    cert-manager.io/renew-before: 24h
   hosts:
     - host: black.bhyoo.com
       paths:
