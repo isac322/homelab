@@ -1,0 +1,18 @@
+apiService:
+  create: true
+
+image:
+  registry: k8s.gcr.io
+  repository: metrics-server/metrics-server
+  tag: v0.5.0
+
+command:
+  - /metrics-server
+
+extraVolumes:
+  - name: temporal-cert
+    emptyDir: {}
+
+extraVolumeMounts:
+  - mountPath: /apiserver.local.config
+    name: temporal-cert
