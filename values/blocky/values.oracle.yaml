@@ -6,7 +6,7 @@ blocky:
     # -- image repository
     repository: spx01/blocky
     # -- image tag
-    tag: development
+    tag: v0.17
     # -- image pull policy
     pullPolicy: Always
 
