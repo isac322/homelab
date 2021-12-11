@@ -33,9 +33,14 @@ spec:
             {{- toYaml .Values.securityContext | nindent 12 }}
           image: "{{ .Values.image.repository }}:{{ .Values.image.tag | default .Chart.AppVersion }}"
           imagePullPolicy: {{ .Values.image.pullPolicy }}
+          args:
+            - --bind-host
+            - 0.0.0.0
+            - --bind-port
+            - "8080"
           ports:
             - name: http
-              containerPort: 80
+              containerPort: 8080
               protocol: TCP
           livenessProbe:
             initialDelaySeconds: 2
@@ -43,14 +48,16 @@ spec:
               command:
                 - sh
                 - -c
-                - echo -e 'POST / HTTP/1.0\n\n' | nc 127.0.0.1 80
+                - >-
+                  echo -e 'POST / HTTP/1.1\nConnection: close\n\n' | nc -v 127.0.0.1 8080
           readinessProbe:
             initialDelaySeconds: 2
             exec:
               command:
                 - sh
                 - -c
-                - echo -e 'POST / HTTP/1.0\n\n' | nc 127.0.0.1 80
+                - >-
+                  echo -e 'POST / HTTP/1.1\nConnection: close\n\n' | nc -v 127.0.0.1 8080
           resources:
             {{- toYaml .Values.resources | nindent 12 }}
       {{- with .Values.nodeSelector }}

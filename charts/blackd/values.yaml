@@ -8,7 +8,7 @@ image:
   repository: isac322/blackd
   pullPolicy: IfNotPresent
   # Overrides the image tag whose default is the chart appVersion.
-  tag: "21.10b0"
+  tag: ""
 
 imagePullSecrets: []
 nameOverride: ""
@@ -30,42 +30,32 @@ podDisruptionBudget:
 podAnnotations: {}
 
 podSecurityContext:
-  fsGroup: 1000
+  fsGroup: 65534
 
 securityContext:
-#  capabilities:
-#    add:
-#      - NET_ADMIN
-#      - NET_BIND_SERVICE
-#      - SYS_TIME
-#      - SYS_ADMIN
+  capabilities:
+    add:
+      - SYS_TIME
   readOnlyRootFilesystem: true
-#  runAsNonRoot: true
-#  runAsUser: 1000
+  runAsNonRoot: true
+  runAsUser: 65534
 
 service:
   type: ClusterIP
   port: 80
 
 ingress:
-  enabled: true
-  className: "traefik"
-  annotations:
-    traefik.ingress.kubernetes.io/router.entrypoints: websecure
-    cert-manager.io/issuer: cloudflare-origin-issuer
-    cert-manager.io/issuer-kind: OriginIssuer
-    cert-manager.io/issuer-group: cert-manager.k8s.cloudflare.com
-    cert-manager.io/duration: 168h
-    cert-manager.io/renew-before: 24h
+  enabled: false
+  className: ""
+  annotations: {}
+  # kubernetes.io/ingress.class: nginx
+  # kubernetes.io/tls-acme: "true"
   hosts:
-    - host: black.bhyoo.com
+    - host: chart-example.local
       paths:
         - path: /
           pathType: ImplementationSpecific
-  tls:
-    - hosts:
-        - black.bhyoo.com
-      secretName: black-com
+  tls: []
   #  - secretName: chart-example-tls
   #    hosts:
   #      - chart-example.local
