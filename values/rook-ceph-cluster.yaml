@@ -60,13 +60,11 @@ cephClusterSpec:
   # The option to automatically remove OSDs that are out and are safe to destroy.
   removeOSDsIfOutAndSafeToRemove: true
 
-dashboard:
-  enabled: true
-  # serve the dashboard under a subpath (useful when you are accessing the dashboard via a reverse proxy)
-  urlPrefix: ""
-  # serve the dashboard at the given port.
-  port: 8443
-  ssl: false
+  dashboard:
+    enabled: true
+    # serve the dashboard under a subpath (useful when you are accessing the dashboard via a reverse proxy)
+    urlPrefix: ""
+    ssl: false
 
 ingress:
   dashboard:
