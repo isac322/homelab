@@ -9,7 +9,7 @@
 image:
   registry: docker.io
   repository: isac322/external-dns
-  tag: 0.10.1
+  tag: 0.10.2
 
 ## @param sources [array] K8s resources type to be observed for new DNS entries by ExternalDNS
 ##
