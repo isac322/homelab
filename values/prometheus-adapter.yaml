@@ -1,14 +1,5 @@
 logLevel: 4
 
-
-## Additional annotations to add to all resources
-customAnnotations: {}
-  # role: custom-metrics
-
-## Additional labels to add to all resources
-customLabels: {}
-  # monitoring: prometheus-adapter
-
 # Url to access prometheus
 prometheus:
   # Value is templated
@@ -16,32 +7,17 @@ prometheus:
   port: 80
   path: ""
 
-psp:
-  # Specifies whether PSP resources should be created
-  create: true
-
-# Custom DNS configuration to be added to prometheus-adapter pods
-dnsConfig: {}
-# nameservers:
-#   - 1.2.3.4
-# searches:
-#   - ns1.svc.cluster-domain.example
-#   - my.dns.search.suffix
-# options:
-#   - name: ndots
-#     value: "2"
-#   - name: edns0
-resources: {}
-  # requests:
-  #   cpu: 100m
-  #   memory: 128Mi
-  # limits:
-  #   cpu: 100m
-  #   memory: 128Mi
+resources:
+  requests:
+    cpu: 100m
+    memory: 256Mi
+  limits:
+    cpu: 100m
+    memory: 256Mi
 
 rules:
   default: true
-  custom: []
+#  custom: []
 # - seriesQuery: '{__name__=~"^some_metric_count$"}'
 #   resources:
 #     template: <<.Resource>>
@@ -51,7 +27,7 @@ rules:
 #   metricsQuery: sum(<<.Series>>{<<.LabelMatchers>>}) by (<<.GroupBy>>)
   # Mounts a configMap with pre-generated rules for use. Overrides the
   # default, custom, external and resource entries
-  existing:
+#  existing:
   external:
     - seriesQuery: '{__name__=~"^.*_queue_(length|size)$",namespace!=""}'
       resources:
@@ -104,38 +80,6 @@ rules:
             resource: pod
       containerLabel: container
     window: 1m
-
-# Any extra arguments
-extraArguments: []
-  # - --tls-private-key-file=/etc/tls/tls.key
-  # - --tls-cert-file=/etc/tls/tls.crt
-
-# Any extra volumes
-extraVolumes: []
-  # - name: example-name
-  #   hostPath:
-  #     path: /path/on/host
-  #     type: DirectoryOrCreate
-  # - name: ssl-certs
-  #   hostPath:
-  #     path: /etc/ssl/certs/ca-bundle.crt
-  #     type: File
-
-# Any extra volume mounts
-extraVolumeMounts: []
-  #   - name: example-name
-  #     mountPath: /path/in/container
-  #   - name: ssl-certs
-  #     mountPath: /etc/ssl/certs/ca-certificates.crt
-  #     readOnly: true
-
-tolerations: []
-
-# Labels added to the pod
-podLabels: {}
-
-# Annotations added to the pod
-podAnnotations: {}
 
 # Deployment strategy type
 strategy:
