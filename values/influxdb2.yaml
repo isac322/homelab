@@ -1,0 +1,36 @@
+resources:
+  limits:
+   cpu: 1000m
+   memory: 1Gi
+  requests:
+   cpu: 100m
+   memory: 512Mi
+
+
+## Create default user through docker entrypoint
+## Defaults indicated below
+adminUser:
+  organization: "influxdata"
+  bucket: "default"
+  user: "admin"
+
+persistence:
+  enabled: true
+  storageClass: ceph-filesystem
+  accessMode: ReadWriteMany
+  size: 50Gi
+
+ingress:
+  enabled: true
+  className: traefik
+  tls: true
+  secretName: influxdb-com
+  hostname: influxdb.bhyoo.com
+  annotations:
+    traefik.ingress.kubernetes.io/router.entrypoints: websecure
+    cert-manager.io/issuer: cloudflare-origin-issuer
+    cert-manager.io/issuer-kind: OriginIssuer
+    cert-manager.io/issuer-group: cert-manager.k8s.cloudflare.com
+    cert-manager.io/duration: 168h
+    cert-manager.io/renew-before: 24h
+  path: /

@@ -1,0 +1,16 @@
+apiVersion: bitnami.com/v1alpha1
+kind: SealedSecret
+metadata:
+  creationTimestamp: null
+  name: cf-origin-ca-key
+  namespace: crybot
+spec:
+  encryptedData:
+    cloudflare_origin_ca_key: AgBGsC2e5GsZ26VG2gqvPYinbRFkHbEyzXc0AA1u3RtjzQX76Fy7rpRkjoIhB2hM6Jm5T0+fdsj5lBhq+siagBj5hwyKyNpOgjKTnqaNR2lgU5lV86vSfzylEfEHZqRA9MArXuQJAToRUG8rnEIyG9mQhNvZSIZEQM/FNgYQafrZVRaZtCXdy6Br/rmZAmn18EsWATJ1WvE4wXFzHLpIjX7qfyVaRkR/OuIfifee87TOzL2RHFPLujv0sZpTZlg7feDsMDXPEInd5zmsB6vcfgc5gI0vtzbGD9j23HrIlej/8K4eTggfnqcswVOHKD9YkX0G6DW6XpUd256z82vug1Q+r4QSKGf+pvg0gsQ3AJb4WxxL7vG0LziqiQcl/zfoJhPeUIPRmKYe2oVNNcG3HaLcO7399UvsXckQWr/Sq636QzN2KS425zQ9rNtpBpOZ8+K/4BxkdHICjmOn5vMdNwmfkz2qN9KqciQ+JaK/ZYn08T+L52H8+T+qh5QiBhzlisDAR9i5aUrrmOrookyTxZHZw/Xen7HRHjgpvcm+l/gKGoA8H2kaCW9LkIFL1mqJ4qFtmBsEWUnqrtLohXH1X6AlgFpgB2nrBwLChQfvlkRRQIAeAq7bYRsT2zenbXGQRK29zcTcUqQAFXld7BfYtF8qlZIAhXowDdcAOozTpJ9cgdPY0jMMQTAZjhYuahWF6dGBDzaqM7hsSyNx4mLjErOsV1Y+aqNN1jeS52yxqa32uyRy1FFDiR+txhlLxFwd4NXb8bhpHI4teDK8UyA8n+NjUbkqCsv961MaxoCZDs53y+SNzHE8Q2Lum2K+OBXacQNS9cn6vD3t4q8NtoM6GtnQIcbPdXSnqpiwPeYeUS0iIY26WKOnSRsr0eyzUVifnQgaiKr/ed1XMdyQUUAXzE9wKoFMRVEkHUnqlgCvaHc=
+  template:
+    data: null
+    metadata:
+      creationTimestamp: null
+      name: cf-origin-ca-key
+      namespace: crybot
+
