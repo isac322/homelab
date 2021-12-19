@@ -137,21 +137,9 @@ kube-state-metrics:
     enabled: true
 
 nodeExporter:
-  ## If false, node-exporter will not be installed
-  ##
-  enabled: true
-
   ## If true, node-exporter pods share the host network namespace
   ##
-  hostNetwork: true
-
-  ## If true, node-exporter pods share the host PID namespace
-  ##
-  hostPID: true
-
-  ## If true, node-exporter pods mounts host / at /host/root
-  ##
-  hostRootfs: true
+  hostNetwork: false
 
   ## node-exporter container name
   ##
@@ -160,58 +148,21 @@ nodeExporter:
   ## node-exporter resource limits & requests
   ## Ref: https://kubernetes.io/docs/user-guide/compute-resources/
   ##
-  resources: {}
-    # limits:
-    #   cpu: 200m
-    #   memory: 50Mi
-    # requests:
-    #   cpu: 100m
-    #   memory: 30Mi
-
-  # Custom DNS configuration to be added to node-exporter pods
-  dnsConfig: {}
-    # nameservers:
-    #   - 1.2.3.4
-    # searches:
-    #   - ns1.svc.cluster-domain.example
-    #   - my.dns.search.suffix
-    # options:
-    #   - name: ndots
-    #     value: "2"
-  #   - name: edns0
-
-  ## Security context to be added to node-exporter pods
-  ##
-  securityContext:
-    fsGroup: 65534
-    runAsGroup: 65534
-    runAsNonRoot: true
-    runAsUser: 65534
+  resources:
+    limits:
+      cpu: 200m
+      memory: 50Mi
+    requests:
+      cpu: 100m
+      memory: 30Mi
 
   service:
-    annotations:
-      prometheus.io/scrape: "true"
-    labels: {}
-
-    # Exposed as a headless service:
-    # https://kubernetes.io/docs/concepts/services-networking/service/#headless-services
-    clusterIP: None
-
-    ## List of IP addresses at which the node-exporter service is available
-    ## Ref: https://kubernetes.io/docs/user-guide/services/#external-ips
-    ##
-    externalIPs: []
-
-    hostPort: 9100
-    loadBalancerIP: ""
-    loadBalancerSourceRanges: []
-    servicePort: 9100
-    type: ClusterIP
+    hostPort: null
 
 server:
   ## External URL which can access prometheus
   ## Maybe same with Ingress host name
-  baseURL: ""
+  baseURL: https://prometheus.bhyoo.com
 
   extraFlags:
     - web.enable-lifecycle
@@ -224,17 +175,6 @@ server:
     ##
     ## storage.tsdb.wal-compression flag enables compression of the write-ahead log (WAL)
     # - storage.tsdb.wal-compression
-
-  global:
-    ## How frequently to scrape targets by default
-    ##
-    scrape_interval: 1m
-    ## How long until a scrape request times out
-    ##
-    scrape_timeout: 10s
-    ## How frequently to evaluate rules
-    ##
-    evaluation_interval: 1m
 
   ingress:
     ## If true, Prometheus server Ingress will be created
@@ -255,10 +195,6 @@ server:
       cert-manager.io/duration: 168h
       cert-manager.io/renew-before: 24h
 
-    ## Prometheus server Ingress additional labels
-    ##
-    extraLabels: {}
-
     ## Prometheus server Ingress hostnames with optional path
     ## Must be provided if Ingress is enabled
     ##
@@ -270,30 +206,17 @@ server:
     # pathType is only for k8s >= 1.18
     pathType: Prefix
 
-    ## Extra paths to prepend to every host configuration. This is useful when working with annotation based services.
-    extraPaths: []
-    # - path: /*
-    #   backend:
-    #     serviceName: ssl-redirect
-    #     servicePort: use-annotation
-
     ## Prometheus server Ingress TLS configuration
     ## Secrets must be manually created in the namespace
     ##
-    tls: []
-    #   - secretName: prometheus-server-tls
-    #     hosts:
-    #       - prometheus.domain.com
+    tls:
+      - secretName: prometheus-com
+        hosts:
+          - prometheus.bhyoo.com
 
   ## Server Deployment Strategy type
   strategy:
     type: Recreate
-
-  ## hostAliases allows adding entries to /etc/hosts inside the containers
-  hostAliases: []
-  #   - ip: "127.0.0.1"
-  #     hostnames:
-  #       - "example.com"
 
   persistentVolume:
     ## If true, Prometheus server will create/use a Persistent Volume Claim
@@ -307,10 +230,6 @@ server:
     ##
     accessModes:
       - ReadWriteMany
-
-    ## Prometheus server data Persistent Volume annotations
-    ##
-    annotations: {}
 
     ## Prometheus server data Persistent Volume existing claim name
     ## Requires server.persistentVolume.enabled: true
@@ -341,43 +260,16 @@ server:
     ##
     # volumeBindingMode: ""
 
-    ## Subdirectory of Prometheus server data Persistent Volume to mount
-    ## Useful if the volume's root directory is not empty
-    ##
-    subPath: ""
-
-    ## Persistent Volume Claim Selector
-    ## Useful if Persistent Volumes have been provisioned in advance
-    ## Ref: https://kubernetes.io/docs/concepts/storage/persistent-volumes/#selector
-    ##
-    # selector:
-    #  matchLabels:
-    #    release: "stable"
-    #  matchExpressions:
-    #    - { key: environment, operator: In, values: [ dev ] }
-
-  ## Prometheus AlertManager configuration
-  ##
-  alertmanagers: []
-
   ## Prometheus server resource requests and limits
   ## Ref: http://kubernetes.io/docs/user-guide/compute-resources/
   ##
-  resources: {}
-    # limits:
-    #   cpu: 500m
-    #   memory: 512Mi
-    # requests:
-    #   cpu: 500m
-    #   memory: 512Mi
-
-  # Required for use in managed kubernetes clusters (such as AWS EKS) with custom CNI (such as calico),
-  # because control-plane managed by AWS cannot communicate with pods' IP CIDR and admission webhooks are not working
-  ##
-  hostNetwork: false
-
-  # When hostNetwork is enabled, you probably want to set this to ClusterFirstWithHostNet
-  dnsPolicy: ClusterFirst
+  resources:
+    limits:
+      cpu: 1000m
+      memory: 4Gi
+    requests:
+      cpu: 500m
+      memory: 1Gi
 
   ## Vertical Pod Autoscaler config
   ## Ref: https://github.com/kubernetes/autoscaler/tree/master/vertical-pod-autoscaler

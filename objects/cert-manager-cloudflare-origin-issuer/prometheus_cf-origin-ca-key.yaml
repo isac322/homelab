@@ -1,0 +1,15 @@
+apiVersion: bitnami.com/v1alpha1
+kind: SealedSecret
+metadata:
+  creationTimestamp: null
+  name: cf-origin-ca-key
+  namespace: prometheus
+spec:
+  encryptedData:
+    cloudflare_origin_ca_key: AgA9fnNBn1e4plSdgZygL1yY68reNd5s+XdTLoHrf2BNb0W4Hk7sozBJtILeaDWdMeTLKIxjnDCQMo8+mMZBRtO89NzFrmsG7TqKq3N/8HZsfQF+YbL82lvUnHg7muoFjgqfw/a4v56f6gNVBmHYDUzUaw22lxkI3inGdqyFFlgDi4do9klU/++5kyBgTqPW4aUmAbjNO4Nmb8LCxfAY3cai6vQeL0mOWNUox/krragZUvf11jylYBT3wIuFv5nJOHg5i9yLDuFLWlzw0zHbJOcTOoV+Ej/5hUAUSaDq/K49zD3F5vpXEZl1PbOGYtOmZCZ46yQNacZcZp0c9kin0keHcVMNJQdXGZ4iJLsFx8th57YpTQS2BmVypy1aj3mK3zl6pRM0+LK2Fp1Ib1Q7IW7jP42wO1+cCI41pIQBncy8ZKXly20MECbxzDth0FtERqf2PFv5OWYbYs9fJw6jHyRhk3sp1sQxmymoE0PzKmWKbQMkThJ0M4tB/yGix6sAEvC98p6s7esk0B+28qOe3VZR9NW1z9TtptiXwIZtI/7Cj4wPXRZI2tLiGFg6fXIqvMqUi2LNpI7DIOkvkmNoFAdoO+xlCk9t95Lut+7CdZN2Y5WEDUDbyKxZ4WjLk1JB7oPErEkIkcGHlv1MNHWf0B+gF78AvgRYO/aRgj3RlmgyX58IRWuAxG1gsCBUe6sYMUUhfNiwHHpPuTg34RtH9jqs9QYUxYWz2XMWfBAAwy+pSE06OzAZeDnhhkNi7BBog5ot72lB26/IEC2tLPdvIXZPfoSLTtvaATJ58mf4I08SCOjU4ScXh6y0HgSHnIJxxlkRlPgFzpnmzbLqCM14UhbLhjfLGUX9mbwHFVn62QAm0h1HZoR5HC5NEs7AKFG3wA5Bw9WWWffiq72C9PNNTY/cTGNvzTr+WAigUMPhK4s=
+  template:
+    data: null
+    metadata:
+      creationTimestamp: null
+      name: cf-origin-ca-key
+      namespace: prometheus
