@@ -2,14 +2,6 @@ blocky:
   controller:
     type: daemonset
 
-  image:
-    # -- image repository
-    repository: spx01/blocky
-    # -- image tag
-    tag: v0.17
-    # -- image pull policy
-    pullPolicy: Always
-
   env:
     # -- Set the container timezone
     TZ: Asia/Seoul
@@ -72,7 +64,7 @@ blocky:
     upstream:
       # these external DNS resolvers will be used. Blocky picks 2 random resolvers from the list for each query
       # format for resolver: [net:]host:[port][/path]. net could be empty (default, shortcut for tcp+udp), tcp+udp, tcp, udp, tcp-tls or https (DoH). If port is empty, default port will be used (53 for udp and tcp, 853 for tcp-tls, 443 for https (Doh))
-      externalResolvers:
+      default:
         - tcp-tls:1.1.1.1
         - tcp-tls:1.0.0.1
         - tcp-tls:8.8.8.8
@@ -150,7 +142,7 @@ blocky:
       # amount in minutes, how long a response must be cached (min value).
       # If <=0, use response's TTL, if >0 use this value, if TTL is smaller
       # Default: 0
-      minTime: 5
+      minTime: 5m
       # amount in minutes, how long a response must be cached (max value).
       # If <0, do not cache responses
       # If 0, use TTL

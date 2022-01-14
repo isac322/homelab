@@ -1,6 +1,6 @@
 dependencies:
 - name: blocky
   repository: https://k8s-at-home.com/charts/
-  version: 9.1.0
-digest: sha256:f68a7524a6a96f9f3013231c12d106c2caf852228254ef28462a4ee3e01b3f0b
-generated: "2021-12-07T22:52:35.242671892+09:00"
+  version: 10.1.0
+digest: sha256:657dc41f5897280c741ac5f2fac32f7d2d194b7f4ef0af5386d003fa953d9c80
+generated: "2022-01-15T01:27:00.814910222+09:00"

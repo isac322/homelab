@@ -5,7 +5,7 @@ kubeVersion: ">=1.16.0-0"
 
 type: application
 
-version: 9.0.3
+version: 10.1.0
 
 appVersion: v0.17
 
@@ -15,4 +15,4 @@ sources:
 dependencies:
   - name: blocky
     repository: https://k8s-at-home.com/charts/
-    version: 9.1.0
+    version: 10.1.0
