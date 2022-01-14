@@ -1,11 +1,3 @@
-# Default values for Traefik
-image:
-  name: "rancher/library-traefik"
-  # defaults to appVersion
-  tag: "2.4.9"
-  pullPolicy: Always
-
-
 globalArguments: []
 
 # Pod disruption budget
