@@ -1,0 +1,87 @@
+applicationSet:
+  # -- [Node selector]
+  nodeSelector:
+    kubernetes.io/arch: amd64
+
+
+server:
+#  certificate:
+#    # -- Deploy a Certificate resource (requires cert-manager)
+#    enabled: false
+#    # -- Certificate primary domain (commonName)
+#    domain: argocd.example.com
+#    # -- The requested 'duration' (i.e. lifetime) of the Certificate. Value must be in units accepted by Go time.ParseDuration
+#    duration: ""
+#    # -- How long before the currently issued certificate's expiry cert-manager should renew the certificate. Value must be in units accepted by Go time.ParseDuration
+#    renewBefore: ""
+#    issuer:
+#      # -- Certificate issuer kind. Either `Issuer` or `ClusterIssuer`
+#      kind: ""
+#      # -- Certificate isser name. Eg. `letsencrypt`
+#      name: ""
+#    # -- Certificate manager additional hosts
+#    additionalHosts: [ ]
+#    # -- The name of the Secret that will be automatically created and managed by this Certificate resource
+#    secretName: argocd-server-tls
+
+  ingress:
+    # -- Enable an ingress resource for the Argo CD server
+    enabled: true
+    # -- Additional ingress annotations
+    annotations:
+      traefik.ingress.kubernetes.io/router.entrypoints: websecure
+      cert-manager.io/issuer: cloudflare-origin-issuer
+      cert-manager.io/issuer-kind: OriginIssuer
+      cert-manager.io/issuer-group: cert-manager.k8s.cloudflare.com
+      cert-manager.io/duration: 168h
+      cert-manager.io/renew-before: 24h
+
+    # -- Defines which ingress controller will implement the resource
+    ingressClassName: traefik
+
+    # -- List of ingress hosts
+    ## Argo Ingress.
+    ## Hostnames must be provided if Ingress is enabled.
+    ## Secrets must be manually created in the namespace
+    hosts:
+      - argocd.bhyoo.com
+
+    # -- Ingress TLS configuration
+    tls:
+      - hosts:
+          - argocd.bhyoo.com
+        secretName: argocd-tls-certificate
+
+    # -- Uses `server.service.servicePortHttps` instead `server.service.servicePortHttp`
+    https: false
+
+  ingressGrpc:
+    # -- Enable an ingress resource for the Argo CD server for dedicated [gRPC-ingress]
+    enabled: true
+    # -- Additional ingress annotations for dedicated [gRPC-ingress]
+    annotations:
+      traefik.ingress.kubernetes.io/router.entrypoints: websecure
+      cert-manager.io/issuer: cloudflare-origin-issuer
+      cert-manager.io/issuer-kind: OriginIssuer
+      cert-manager.io/issuer-group: cert-manager.k8s.cloudflare.com
+      cert-manager.io/duration: 168h
+      cert-manager.io/renew-before: 24h
+    # -- Defines which ingress controller will implement the resource [gRPC-ingress]
+    ingressClassName: traefik
+
+    # -- List of ingress hosts for dedicated [gRPC-ingress]
+    ## Argo Ingress.
+    ## Hostnames must be provided if Ingress is enabled.
+    ## Secrets must be manually created in the namespace
+    ##
+    hosts:
+      - argocd.bhyoo.com
+
+    # -- Ingress TLS configuration for dedicated [gRPC-ingress]
+    tls:
+      - hosts:
+          - argocd.bhyoo.com
+        secretName: argocd-tls-certificate
+
+    # -- Uses `server.service.servicePortHttps` instead `server.service.servicePortHttp`
+    https: false

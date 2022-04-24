@@ -1,0 +1,11 @@
+apiVersion: cert-manager.k8s.cloudflare.com/v1
+kind: OriginIssuer
+metadata:
+  name: cloudflare-origin-issuer
+  namespace: argocd
+spec:
+  requestType: OriginECC
+  auth:
+    serviceKeyRef:
+      name: cf-origin-ca-key
+      key: cloudflare_origin_ca_key
