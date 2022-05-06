@@ -25,6 +25,9 @@ parent:
         - name: homelab
           type: helm
           url: https://isac322.github.io/homelab/
+        - name: traefik
+          type: helm
+          url: https://helm.traefik.io/traefik
 
     additionalApplications:
       - name: argocd
