@@ -8,7 +8,7 @@ spec:
     namespace: kube-system
   project: ingress-controller
   source:
-    chart: echo-server
+    chart: traefik
     helm:
       valueFiles:
         - values.yaml
