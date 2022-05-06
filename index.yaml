@@ -2,6 +2,20 @@ apiVersion: v1
 entries:
   argocd:
   - apiVersion: v2
+    created: "2022-05-06T17:39:34.462186951Z"
+    dependencies:
+    - alias: parent
+      name: argo-cd
+      repository: https://argoproj.github.io/argo-helm
+      version: 4.5.10
+    description: Extend official argo-cd with Cloudflare's Origin CA Issuer
+    digest: 54d3d7660d35b1e730f8737b7c33512132552f4ffb9aff1552583f7fa6109af6
+    name: argocd
+    type: application
+    urls:
+    - https://github.com/isac322/homelab/releases/download/argocd-0.1.1/argocd-0.1.1.tgz
+    version: 0.1.1
+  - apiVersion: v2
     created: "2022-05-06T15:51:41.659525368Z"
     dependencies:
     - alias: parent
@@ -94,4 +108,4 @@ entries:
     urls:
     - https://github.com/isac322/homelab/releases/download/registry-1.13.0/registry-1.13.0.tgz
     version: 1.13.0
-generated: "2022-05-06T15:51:41.65954227Z"
+generated: "2022-05-06T17:39:34.462197851Z"
