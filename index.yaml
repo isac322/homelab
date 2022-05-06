@@ -1,0 +1,82 @@
+apiVersion: v1
+entries:
+  blackd:
+  - apiVersion: v2
+    appVersion: 22.3.0
+    created: "2022-05-06T10:38:49.467707102Z"
+    description: A Helm chart for Kubernetes
+    digest: a20502ca32e175bc6c991b649d3018c9d464b4b4c4d78081f0e8c9a85bbd0952
+    home: https://github.com/isac322/helm-charts
+    keywords:
+    - python
+    - black
+    - lint
+    - formatter
+    maintainers:
+    - email: bh322yoo@gmail.com
+      name: Byeonghoon Isac Yoo
+      url: https://github.com/isac322
+    name: blackd
+    sources:
+    - https://github.com/isac322/helm-charts
+    type: application
+    urls:
+    - https://github.com/isac322/homelab/releases/download/blackd-1.0.0/blackd-1.0.0.tgz
+    version: 1.0.0
+  blocky-custom:
+  - apiVersion: v2
+    created: "2022-05-06T10:38:49.582700592Z"
+    dependencies:
+    - name: blocky
+      repository: https://k8s-at-home.com/charts/
+      version: 10.2.2
+    description: DNS proxy as ad-blocker for local network
+    digest: 35acdfb587b57ea1b6d8fede843e1fdd3ef757ff99aec8f6ad8c2ced9aa115a9
+    kubeVersion: '>=1.16.0-0'
+    name: blocky-custom
+    sources:
+    - https://github.com/0xERR0R/blocky
+    type: application
+    urls:
+    - https://github.com/isac322/homelab/releases/download/blocky-custom-10.2.2/blocky-custom-10.2.2.tgz
+    version: 10.2.2
+  get-oracle-a1:
+  - apiVersion: v2
+    appVersion: 0.2.0
+    created: "2022-05-06T10:38:49.696451368Z"
+    description: Get A1.Flex instance automatically
+    digest: d994cb39015d5ac88137034958c1465e5b7830b652e9d1043686aa684d1ccb17
+    name: get-oracle-a1
+    type: application
+    urls:
+    - https://github.com/isac322/homelab/releases/download/get-oracle-a1-0.1.0/get-oracle-a1-0.1.0.tgz
+    version: 0.1.0
+  jay-india:
+  - apiVersion: v2
+    appVersion: 0.2.0
+    created: "2022-05-06T10:38:49.843060612Z"
+    description: A Helm chart for Kubernetes
+    digest: 207c52c55053e5e95965b5d321fb2b23e584753e70aa2a8d7ee33d591771af17
+    name: jay-india
+    type: application
+    urls:
+    - https://github.com/isac322/homelab/releases/download/jay-india-0.1.0/jay-india-0.1.0.tgz
+    version: 0.1.0
+  registry:
+  - apiVersion: v1
+    appVersion: 2.7.1
+    created: "2022-05-06T10:38:49.955658775Z"
+    description: A Helm chart for Docker Registry
+    digest: ad483d5d30f2da536c942ccece3080b39ba8b7c726a54fa8160cdd10a47fbe57
+    home: https://hub.docker.com/_/registry/
+    icon: https://hub.docker.com/public/images/logos/mini-logo.svg
+    maintainers:
+    - email: bh322yoo@gmail.com
+      name: Isac Yoo
+    name: registry
+    sources:
+    - https://github.com/docker/distribution-library-image
+    urls:
+    - https://github.com/isac322/homelab/releases/download/registry-1.13.0/registry-1.13.0.tgz
+    version: 1.13.0
+generated: "2022-05-06T10:38:49.955775276Z"
