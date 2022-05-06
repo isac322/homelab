@@ -31,6 +31,9 @@ parent:
         - name: cert-manager
           type: helm
           url: https://charts.jetstack.io
+        - name: sealed-secrets
+          type: helm
+          url: https://bitnami-labs.github.io/sealed-secrets
 
     additionalApplications:
       - name: argocd
