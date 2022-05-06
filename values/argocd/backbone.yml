@@ -24,10 +24,7 @@ parent:
           url: https://github.com/isac322/homelab.git
         - name: homelab
           type: helm
-          url: https://isac322.github.io/homelab
-        - name: echo-server
-          type: helm
-          urL: https://ealenn.github.io/charts
+          url: https://isac322.github.io/homelab/
 
     additionalApplications:
       - name: argocd
