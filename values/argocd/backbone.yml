@@ -1,0 +1,142 @@
+certificate:
+  # -- Certificate primary domain (commonName)
+  domain: argocd.bhyoo.com
+  # -- The name of the Secret that will be automatically created and managed by this Certificate resource
+  secretName: argocd-server-cert
+  email: "bh322yoo@gmail.com"
+  organizations:
+    - ByeonghoonYoo
+
+cloudflareOriginIssuer:
+  apiToken: AgBh8ARc8MZvn2PBfdb68lPyNlOXAmt+9bbz/ub6XgVbnT/5DGdBvcVV8/+TaRm1Ln+6m5L5I7KEiGFpaW9OBmIVb3KvVEufnOAutskATbwhCHQNJnVgGzj7F59jcJGobPq/V0/traeheip3PLY/cYoS8iPVbU2ZXWRNbjG9CzX5QvkbaXi0IaDM1dx0wRigb1urEfqfXL9bmhXkzGn2qBZvL4OzvUDxb2Qq4zzEsQb49MsDooFEy75cAMI9ezZTKMeztndAgpwxhbkAk8Gk4OQbWK6nqr+1HZhFmgnOosMTXA807M3DWITdPsdf9EybML/uLOPgKboXjhCFXMqFAZs1qylDkyOS8vb+HpKfHspY4kwD/PvSPJDsRP0HA/MFCkADd771hTaVerbSQ00jy7io7iJmaa0evcYWHk2/Mousu0l0MMP8N6O/dZtUE2cgwV8Z+fNZo4HuB59n4i6nKgtWbEXpckeNB9atRc05q6FftzzVa6CSnioeX2TM69i+zyx8dT9MPj9F8NHbRX6ikMAZYk8sRISPRmHpBB9q3TAOznkSl0RowJ4Dqxuq1fOFce2n+m15iZqwQfYu1fHF6v872hhS3ESaqPiykdUU7g01zqcRbr7vpR4B8ChMd8fOz7Yc09toPVY1ItM/+DkMifHsydzXvorL2ctWVEs46JCJfcNuTxqF2gvf6Hh3RCPgtoh499PDPC4OLf0w/8auDizZjubVQgkH7X/cZbrZopGfPMM+dtqxcREokxrDKdLcH0NBLlGm/GNoVGNlVpOM0nbEJ/T5uCnsutcC1Riv5ukgo2gOuVpfEB76UsdaD2b8xhc8J5tsQyH05tulHBoJJ52t/TO111ZN6tlV0aTRLjngT3VQql3mFpL7f4Y6ocBf6AeThesUibRP87fmSMxQOFRWMLJo6nkM2tAErTRJJ7o=
+
+parent:
+  applicationSet:
+    # -- [Node selector]
+    nodeSelector:
+      kubernetes.io/arch: amd64
+
+
+  server:
+    config:
+      repositories: |
+        - type: git
+          url: https://github.com/isac322/homelab.git
+        - name: homelab
+          type: helm
+          url: https://isac322.github.io/homelab/
+
+    additionalApplications:
+      - name: argocd
+        namespace: argocd
+        destination:
+          namespace: argocd
+          server: https://kubernetes.default.svc
+        project: argocd
+        source:
+          chart: argocd
+          helm:
+            valueFiles:
+              - https://raw.githubusercontent.com/isac322/homelab/HEAD/values/argocd/backbone.yaml
+          repoURL: https://isac322.github.io/homelab
+          targetRevision: 0.1.0
+        syncPolicy:
+          automated:
+            prune: true
+            selfHeal: true
+          retry:
+            backoff:
+              duration: 5s
+              factor: 2
+              maxDuration: 3m0s
+            limit: 2
+          syncOptions:
+            - CreateNamespace=true
+      - name: argocd-apps
+        namespace: argocd
+        destination:
+          namespace: argocd
+          server: https://kubernetes.default.svc
+        project: argocd
+        source:
+          path: argocd/backbone/apps
+          repoURL: https://github.com/isac322/homelab.git
+          targetRevision: HEAD
+          directory:
+            recurse: true
+            jsonnet: { }
+        syncPolicy:
+          automated:
+            prune: true
+            selfHeal: true
+          retry:
+            backoff:
+              duration: 5s
+              factor: 2
+              maxDuration: 3m0s
+            limit: 2
+      - name: argocd-appprojects
+        namespace: argocd
+        destination:
+          namespace: argocd
+          server: https://kubernetes.default.svc
+        project: argocd
+        source:
+          path: argocd/backbone/appprojects
+          repoURL: https://github.com/isac322/homelab.git
+          targetRevision: HEAD
+          directory:
+            recurse: true
+            jsonnet: { }
+        syncPolicy:
+          automated:
+            prune: true
+            selfHeal: true
+          retry:
+            backoff:
+              duration: 5s
+              factor: 2
+              maxDuration: 3m0s
+            limit: 2
+
+    additionalProjects:
+      - name: argocd
+        namespace: argocd
+        description: Argocd Project
+        sourceRepos:
+          - '*'
+        destinations:
+          - namespace: argocd
+            server: https://kubernetes.default.svc
+        clusterResourceWhitelist:
+          - group: '*'
+            kind: '*'
+
+    extraArgs:
+      - --insecure
+
+    ingress:
+      # -- Enable an ingress resource for the Argo CD server
+      enabled: true
+      # -- Additional ingress annotations
+      annotations:
+        traefik.ingress.kubernetes.io/router.entrypoints: websecure
+
+      # -- Defines which ingress controller will implement the resource
+      ingressClassName: traefik
+
+      # -- List of ingress hosts
+      ## Argo Ingress.
+      ## Hostnames must be provided if Ingress is enabled.
+      ## Secrets must be manually created in the namespace
+      hosts:
+        - argocd.bhyoo.com
+
+      # -- Ingress TLS configuration
+      tls:
+        - hosts:
+            - argocd.bhyoo.com
+          secretName: argocd-server-cert
+
+      # -- Uses `server.service.servicePortHttps` instead `server.service.servicePortHttp`
+      https: false
