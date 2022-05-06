@@ -3,6 +3,7 @@
 # Declare variables to be passed into your templates.
 
 certificate:
+  enabled: true
   # -- Certificate primary domain (commonName)
   domain: argocd.example.com
   # -- The requested 'duration' (i.e. lifetime) of the Certificate. Value must be in units accepted by Go time.ParseDuration
