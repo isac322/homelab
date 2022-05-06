@@ -28,6 +28,9 @@ parent:
         - name: traefik
           type: helm
           url: https://helm.traefik.io/traefik
+        - name: cert-manager
+          type: helm
+          url: https://charts.jetstack.io
 
     additionalApplications:
       - name: argocd
