@@ -1,0 +1,29 @@
+apiVersion: argoproj.io/v1alpha1
+kind: Application
+metadata:
+  name: cert-manager
+spec:
+  destination:
+    name: https://kubernetes.default.svc
+    namespace: cert-manager
+  project: cert-manager
+  source:
+    chart: cert-manager
+    helm:
+      valueFiles:
+        - values.yaml
+        - https://raw.githubusercontent.com/isac322/homelab/HEAD/values/cert-manager/backbone.yml
+    repoURL: https://charts.jetstack.io
+    targetRevision: v1.8.0
+  syncPolicy:
+    automated:
+      prune: true
+      selfHeal: true
+    retry:
+      backoff:
+        duration: 5s
+        factor: 2
+        maxDuration: 3m0s
+      limit: 2
+    syncOptions:
+      - CreateNamespace=true
