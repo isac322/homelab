@@ -1,0 +1,10 @@
+apiVersion: cert-manager.k8s.cloudflare.com/v1
+kind: OriginIssuer
+metadata:
+  name: {{ include "argocd.fullname" . }}
+spec:
+  requestType: OriginECC
+  auth:
+    serviceKeyRef:
+      name: {{ include "argocd.fullname" . }}-cloudflare-api-token
+      key: token

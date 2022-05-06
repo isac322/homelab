@@ -1,0 +1,43 @@
+{{- if .Capabilities.APIVersions.Has "cert-manager.io/v1" }}
+apiVersion: cert-manager.io/v1
+{{- else if .Capabilities.APIVersions.Has "cert-manager.io/v1alpha3" }}
+apiVersion: cert-manager.io/v1alpha3
+{{- else if .Capabilities.APIVersions.Has "cert-manager.io/v1alpha2" }}
+apiVersion: cert-manager.io/v1alpha2
+{{- else }}
+apiVersion: certmanager.k8s.io/v1alpha1
+{{- end }}
+kind: Certificate
+metadata:
+  name: {{ include "argocd.fullname" . }}
+  labels:
+    {{- include "argocd.labels" . | nindent 4 }}
+spec:
+  secretName: {{ .Values.certificate.secretName | quote }}
+  secretTemplate:
+    labels:
+      {{- include "argocd.labels" . | nindent 6 }}
+  {{- with .Values.certificate.duration }}
+  duration: {{ . | quote }}
+  {{- end }}
+  {{- with .Values.certificate.renewBefore }}
+  renewBefore: {{ . | quote }}
+  {{- end }}
+  subject:
+    organizations:
+      {{- with .Values.certificate.organizations }}
+        {{- toYaml . | nindent 6 }}
+      {{- end }}
+  privateKey:
+    algorithm: ECDSA
+    size: 384
+  dnsNames:
+    - {{ .Values.certificate.domain | quote }}
+    {{- range .Values.certificate.additionalHosts }}
+    - {{ . | quote }}
+    {{- end }}
+  issuerRef:
+    name: {{ include "argocd.fullname" . }}
+    # We can reference ClusterIssuers by changing the kind here.
+    # The default value is Issuer (i.e. a locally namespaced Issuer)
+    kind: Issuer
