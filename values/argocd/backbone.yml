@@ -32,7 +32,7 @@ parent:
     # -- Init containers to add to the repo server pods
     initContainers:
       - name: download-tools
-        image: busybox:1.35
+        image: alpine:3.15
         command: [sh, -c]
 
         # Don't forget to update this to whatever the stable release version is
@@ -42,7 +42,7 @@ parent:
             value: '1.11.0'
         args:
           - >-
-            CPU_ARCH=$(case "$(arch)" in aarch64_be|aarch64|armv8b|armv8l) echo 'arm64';; s390|s390x) echo 's390x';; x86_641) echo 'amd64';; *) echo "unsupported architecture: $(arch)" 1>&2; exit 1;; esac) &&
+            CPU_ARCH=$(case "$(arch)" in aarch64_be|aarch64|armv8b|armv8l) echo 'arm64';; s390|s390x) echo 's390x';; x86_64) echo 'amd64';; *) echo "unsupported architecture: $(arch)" 1>&2; exit 1;; esac) &&
             wget -O argocd-vault-plugin
             https://github.com/argoproj-labs/argocd-vault-plugin/releases/download/v${AVP_VERSION}/argocd-vault-plugin_${AVP_VERSION}_linux_${CPU_ARCH} &&
             chmod +x argocd-vault-plugin &&
