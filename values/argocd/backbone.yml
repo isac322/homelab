@@ -73,6 +73,11 @@ parent:
           url: https://cloudflare.github.io/origin-ca-issuer/charts
         - type: git
           url: https://github.com/cloudflare/origin-ca-issuer.git
+      configManagementPlugins:
+        - name: argocd-vault-plugin
+          generate:
+            command: [ "argocd-vault-plugin" ]
+            args: [ "generate", "./" ]
 
     additionalApplications:
       - name: argocd
