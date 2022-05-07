@@ -12,7 +12,7 @@ spec:
     helm:
       valueFiles:
         - values.yaml
-        - https://raw.githubusercontent.com/isac322/homelab/HEAD/values/cert-manager/backbone.yml
+        - https://raw.githubusercontent.com/isac322/homelab/HEAD/values/cert-manager/backbone.yaml
     repoURL: https://charts.jetstack.io
     targetRevision: v1.8.0
   syncPolicy:
