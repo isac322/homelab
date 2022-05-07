@@ -59,6 +59,12 @@ parent:
         syncPolicy:
           syncOptions:
             - CreateNamespace=true
+        ignoreDifferences:
+          - kind: Certificate
+            group: cert-manager.io
+            jsonPointers:
+              - /spec/duration
+              - /spec/renewBefore
       - name: argocd-apps
         namespace: argocd
         destination:
