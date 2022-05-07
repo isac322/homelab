@@ -1,0 +1,28 @@
+apiVersion: argoproj.io/v1alpha1
+kind: Application
+metadata:
+  name: cf-origin-ca-issuer
+spec:
+  destination:
+    server: https://kubernetes.default.svc
+    namespace: cert-manager
+  project: cert-manager
+  source:
+    chart: origin-ca-issuer
+    helm:
+      valueFiles:
+        - values.yaml
+    repoURL: https://cloudflare.github.io/origin-ca-issuer/charts
+    targetRevision: 0.5.0
+  syncPolicy:
+    automated:
+      prune: true
+      selfHeal: true
+    retry:
+      backoff:
+        duration: 5s
+        factor: 2
+        maxDuration: 3m0s
+      limit: 2
+    syncOptions:
+      - CreateNamespace=true
