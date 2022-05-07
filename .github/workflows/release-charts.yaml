@@ -7,6 +7,8 @@ on:
 
 jobs:
   release:
+    env:
+      CHART_DIR: charts
     permissions:
       contents: write
     runs-on: ubuntu-latest
@@ -24,14 +26,15 @@ jobs:
       - name: Install Helm
         uses: azure/setup-helm@v1
 
-      - name: Add helm repos
+      - name: Helm Deps
         run: |
-          helm repo add argo https://argoproj.github.io/argo-helm
-          helm repo add k8s-at-home https://k8s-at-home.com/charts/
+          for dir in $(ls -d '${{ env.CHART_DIR }}'/*); do
+            helm dependency update $dir;
+          done
 
       - name: Run chart-releaser
         uses: helm/chart-releaser-action@v1.4.0
         with:
-          charts_dir: charts
+          charts_dir: ${{ env.CHART_DIR }}
         env:
           CR_TOKEN: "${{ secrets.GITHUB_TOKEN }}"
