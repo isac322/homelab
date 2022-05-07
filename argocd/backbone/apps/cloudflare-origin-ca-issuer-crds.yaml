@@ -9,7 +9,7 @@ spec:
   project: cert-manager
   source:
     path: deploy/crds
-    targetRevision: HEAD
+    targetRevision: v0.6.1
     repoURL: https://github.com/cloudflare/origin-ca-issuer.git
   syncPolicy:
     automated:
