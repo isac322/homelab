@@ -133,8 +133,6 @@ parent:
         clusterResourceWhitelist:
           - group: '*'
             kind: '*'
-        orphanedResources:
-          warn: false
 
     extraArgs:
       - --insecure
