@@ -6,13 +6,15 @@ metadata:
   finalizers:
     - resources-finalizer.argocd.argoproj.io
 spec:
-  description: Certficate manager
+  description: Certificate manager
   sourceRepos:
     - https://charts.jetstack.io
     - https://cloudflare.github.io/origin-ca-issuer/charts
     - https://github.com/cloudflare/origin-ca-issuer.git
   destinations:
     - namespace: cert-manager
+      server: https://kubernetes.default.svc
+    - namespace: kube-system
       server: https://kubernetes.default.svc
   clusterResourceWhitelist:
     - group: '*'
