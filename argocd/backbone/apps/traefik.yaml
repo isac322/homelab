@@ -4,7 +4,7 @@ metadata:
   name: traefik
 spec:
   destination:
-    name: https://kubernetes.default.svc
+    server: https://kubernetes.default.svc
     namespace: kube-system
   project: ingress-controller
   source:
