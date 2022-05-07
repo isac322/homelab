@@ -34,6 +34,11 @@ parent:
         - name: sealed-secrets
           type: helm
           url: https://bitnami-labs.github.io/sealed-secrets
+        - name: cloudflare-origin-ca-issuer
+          type: helm
+          url: https://cloudflare.github.io/origin-ca-issuer/charts
+        - type: git
+          url: https://github.com/cloudflare/origin-ca-issuer.git
 
     additionalApplications:
       - name: argocd
