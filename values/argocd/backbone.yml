@@ -57,6 +57,15 @@ parent:
           repoURL: https://isac322.github.io/homelab
           targetRevision: 0.1.3
         syncPolicy:
+          automated:
+            prune: true
+            selfHeal: true
+          retry:
+            backoff:
+              duration: 5s
+              factor: 2
+              maxDuration: 3m0s
+            limit: 2
           syncOptions:
             - CreateNamespace=true
         ignoreDifferences:
