@@ -10,7 +10,7 @@ module "oracle" {
   region                = var.oracle_region
   tenancy_ocid          = var.oracle_tenancy_ocid
   user_ocid             = var.oracle_user_ocid
-  cloudflare_ca_api_key = module.cloudflare.external_dns_api_token
+  cloudflare_ca_api_key = var.cloudflare_ca_api_key
 }
 
 module "cloudflare" {

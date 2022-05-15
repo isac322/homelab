@@ -15,6 +15,7 @@ resource "oci_vault_secret" "cloudflare_ca_api_key" {
   secret_content {
     content_type = "BASE64"
     content      = base64encode(var.cloudflare_ca_api_key)
+    name         = "k8s_backbone_cloudflare_ca_api_key"
   }
   secret_name = "k8s_backbone_cloudflare_ca_api_key"
   vault_id    = oci_kms_vault.vault.id
