@@ -30,6 +30,7 @@ jobs:
         run: |
           for dir in $(ls -d '${{ env.CHART_DIR }}'/*); do
             helm dependency update $dir;
+            helm dependency build $dir;
           done
 
       - name: Run chart-releaser
