@@ -25,8 +25,8 @@ bootstrap:  ## Bootstrap given cluster onto current kubectl context. (Possible C
 	@test -r 'values/argocd/$(CLUSTER_NAME).yml' || (echo 'Specify valid cluster name via CLUSTER_NAME'; exit 1)
 	@echo 'bootstrap $(CLUSTER_NAME) cluster for context: "$(CONTEXT)"'
 	@while [ -z "$$CONTINUE" ]; do \
-        read -r -p "Type anything but Y or y to exit. [y/N]: " CONTINUE; \
-    done ; \
+		read -r -p "Type anything but Y or y to exit. [y/N]: " CONTINUE; \
+	done ; \
     [ $$CONTINUE = "y" ] || [ $$CONTINUE = "Y" ] || (echo "Exiting."; exit 1;)
 
 	# boostrap via ArgoCD
