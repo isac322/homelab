@@ -1,7 +1,7 @@
 {{/*
 Expand the name of the chart.
 */}}
-{{- define "cluster-secret-store.name" -}}
+{{- define "cluster-secrets.name" -}}
 {{- default .Chart.Name .Values.nameOverride | trunc 63 | trimSuffix "-" }}
 {{- end }}
 
@@ -10,7 +10,7 @@ Create a default fully qualified app name.
 We truncate at 63 chars because some Kubernetes name fields are limited to this (by the DNS naming spec).
 If release name contains chart name it will be used as a full name.
 */}}
-{{- define "cluster-secret-store.fullname" -}}
+{{- define "cluster-secrets.fullname" -}}
 {{- if .Values.fullnameOverride }}
 {{- .Values.fullnameOverride | trunc 63 | trimSuffix "-" }}
 {{- else }}
@@ -26,24 +26,24 @@ If release name contains chart name it will be used as a full name.
 {{/*
 Create chart name and version as used by the chart label.
 */}}
-{{- define "cluster-secret-store.chart" -}}
+{{- define "cluster-secrets.chart" -}}
 {{- printf "%s-%s" .Chart.Name .Chart.Version | replace "+" "_" | trunc 63 | trimSuffix "-" }}
 {{- end }}
 
 {{/*
 Common labels
 */}}
-{{- define "cluster-secret-store.labels" -}}
-helm.sh/chart: {{ include "cluster-secret-store.chart" . }}
-{{ include "cluster-secret-store.selectorLabels" . }}
+{{- define "cluster-secrets.labels" -}}
+helm.sh/chart: {{ include "cluster-secrets.chart" . }}
+{{ include "cluster-secrets.selectorLabels" . }}
 app.kubernetes.io/managed-by: {{ .Release.Service }}
 {{- end }}
 
 {{/*
 Selector labels
 */}}
-{{- define "cluster-secret-store.selectorLabels" -}}
-app.kubernetes.io/name: {{ include "cluster-secret-store.name" . }}
+{{- define "cluster-secrets.selectorLabels" -}}
+app.kubernetes.io/name: {{ include "cluster-secrets.name" . }}
 app.kubernetes.io/instance: {{ .Release.Name }}
 {{- end }}
 
