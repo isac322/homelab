@@ -12,4 +12,6 @@ clusterSecretStore:
 clusterExternalSecret:
   cloudflareCAAPIKey:
     externalKeyName: ""
-    secretName: cloudflare-ca-api-key
+    secret:
+      name: cloudflare-ca-api-key
+      key: cloudflare_origin_ca_key
