@@ -22,7 +22,7 @@ clean:  ## Remove generated files
 ##@ Setup
 
 .terraform:
-	terraform init
+	@terraform init
 
 
 init: .terraform  ## Initialize terraform.
@@ -33,13 +33,13 @@ init: .terraform  ## Initialize terraform.
 TMP_PLAN_PATH := /tmp/tfplan
 
 $(TMP_PLAN_PATH): .terraform
-	terraform plan -out $(TMP_PLAN_PATH)
+	@terraform plan -out $(TMP_PLAN_PATH)
 
 plan: $(TMP_PLAN_PATH)  ## generate plan file.
 
 apply: $(TMP_PLAN_PATH)  ## plan and apply the plan.
-	terraform apply $(TMP_PLAN_PATH) || true
-	rm -f $(TMP_PLAN_PATH)
+	@terraform apply $(TMP_PLAN_PATH) || true
+	@rm -f $(TMP_PLAN_PATH)
 
 output: .terraform  ## print outputs.
-	terraform output -json
+	@terraform output -json
