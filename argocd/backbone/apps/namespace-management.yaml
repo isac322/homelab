@@ -1,0 +1,23 @@
+# TODO: migrate to AppProject config when https://github.com/argoproj/argo-cd/issues/7799 is fixed
+apiVersion: argoproj.io/v1alpha1
+kind: Application
+metadata:
+  name: namespace-management
+spec:
+  destination:
+    namespace: kube-system
+    server: https://kubernetes.default.svc
+  project: namespace-management
+  source:
+    path: namespace-configs/backbone
+    repoURL: https://github.com/isac322/homelab.git
+    targetRevision: HEAD
+  syncPolicy:
+    automated:
+      selfHeal: true
+    retry:
+      backoff:
+        duration: 5s
+        factor: 2
+        maxDuration: 3m0s
+      limit: 2

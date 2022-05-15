@@ -1,0 +1,18 @@
+# TODO: migrate to AppProject config when https://github.com/argoproj/argo-cd/issues/7799 is fixed
+apiVersion: argoproj.io/v1alpha1
+kind: AppProject
+metadata:
+  name: namespace-management
+  # Finalizer that ensures that project is not deleted until it is not referenced by any application
+  finalizers:
+    - resources-finalizer.argocd.argoproj.io
+spec:
+  description: Namespace management
+  sourceRepos:
+    - https://github.com/isac322/homelab.git
+  destinations:
+    - namespace: kube-system
+      server: https://kubernetes.default.svc
+  clusterResourceWhitelist:
+    - group: '*'
+      kind: '*'
