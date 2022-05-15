@@ -7,6 +7,6 @@ spec:
   requestType: OriginECC
   auth:
     serviceKeyRef:
-      name: {{ include "argocd.fullname" . }}-cloudflare-api-token
-      key: token
+      name: {{ .Values.cloudflareOriginIssuer.apiKeySecret.name }}
+      key: {{ .Values.cloudflareOriginIssuer.apiKeySecret.key }}
 {{- end }}
