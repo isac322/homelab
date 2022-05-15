@@ -26,12 +26,15 @@ jobs:
       - name: Install Helm
         uses: azure/setup-helm@v1
 
+      - name: Install yq - portable yaml processor
+        uses: mikefarah/yq@v4.25.1
+
       - name: Helm Deps
         run: |
           for dir in $(ls -d '${{ env.CHART_DIR }}'/*); do
             helm dependency update $dir;
             if [ -f "$dir/Chart.lock" ]; then
-              cat "$dir/Chart.lock" | grep repository | awk '{print $2}' | while read -r line ; do helm repo add $line $line; done;
+              yq --indent 0 '.dependencies | map(["helm", "repo", "add", .name, .repository] | join(" ")) | .[]' "$dir/Chart.lock"  | sh --;
             fi
           done
 
