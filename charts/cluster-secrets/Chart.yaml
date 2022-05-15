@@ -1,0 +1,7 @@
+apiVersion: v2
+name: cluster-secret-store
+description: Create ClusterSecretStore
+
+type: application
+
+version: 0.1.0
