@@ -1,8 +1,8 @@
 certificate:
   # -- Certificate primary domain (commonName)
-  domain: argocd.bhyoo.com
+  domain: &domain argocd.bhyoo.com
   # -- The name of the Secret that will be automatically created and managed by this Certificate resource
-  secretName: argocd-server-cert
+  secretName: &certName argocd-server-cert
   email: "bh322yoo@gmail.com"
   organizations:
     - ByeonghoonYoo
@@ -22,7 +22,7 @@ parent:
           url: https://github.com/isac322/homelab.git
         - name: homelab
           type: helm
-          url: https://isac322.github.io/homelab/
+          url: https://isac322.github.io/homelab
         - name: traefik
           type: helm
           url: https://helm.traefik.io/traefik
@@ -149,13 +149,13 @@ parent:
       ## Hostnames must be provided if Ingress is enabled.
       ## Secrets must be manually created in the namespace
       hosts:
-        - argocd.bhyoo.com
+        - *domain
 
       # -- Ingress TLS configuration
       tls:
         - hosts:
-            - argocd.bhyoo.com
-          secretName: argocd-server-cert
+            - *domain
+          secretName: *certName
 
       # -- Uses `server.service.servicePortHttps` instead `server.service.servicePortHttp`
       https: false
