@@ -30,7 +30,9 @@ jobs:
         run: |
           for dir in $(ls -d '${{ env.CHART_DIR }}'/*); do
             helm dependency update $dir;
-            helm dependency build $dir;
+            if [ -f "$dir./Chart.lock" ]; then
+              cat "$dir./Chart.lock" | grep repository | awk '{print $2}' | while read -r line ; do helm repo add $line $line; done;
+            fi
           done
 
       - name: Run chart-releaser
