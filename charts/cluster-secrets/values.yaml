@@ -1,0 +1,15 @@
+clusterSecretStore:
+  oracle:
+    enabled: true
+    region: ""
+    vaultOCID: ""
+    tenancyOCID: ""
+    userOCID: ""
+    fingerprint: ""
+    privateKey: ""
+    privateKeyB64: ""
+
+clusterExternalSecret:
+  cloudflareCAAPIKey:
+    externalKeyName: ""
+    secretName: cloudflare-ca-api-key
