@@ -97,6 +97,16 @@ entries:
     urls:
     - https://github.com/isac322/homelab/releases/download/blocky-custom-10.2.2/blocky-custom-10.2.2.tgz
     version: 10.2.2
+  cluster-secret-store:
+  - apiVersion: v2
+    created: "2022-05-15T13:49:07.93345559Z"
+    description: Create ClusterSecretStore
+    digest: 408bfce26d055292b1529b0c89c6507bc63ed39ae820cd4bceb23579287523d1
+    name: cluster-secret-store
+    type: application
+    urls:
+    - https://github.com/isac322/homelab/releases/download/cluster-secret-store-0.1.0/cluster-secret-store-0.1.0.tgz
+    version: 0.1.0
   get-oracle-a1:
   - apiVersion: v2
     appVersion: 0.2.0
@@ -136,4 +146,4 @@ entries:
     urls:
     - https://github.com/isac322/homelab/releases/download/registry-1.13.0/registry-1.13.0.tgz
     version: 1.13.0
-generated: "2022-05-07T07:04:01.730505488Z"
+generated: "2022-05-15T13:49:07.933468791Z"
