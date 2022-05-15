@@ -1,4 +1,4 @@
-.PHONY: help init plan apply output
+.PHONY: help clean init plan apply output cluster-secrets
 
 ##@ General
 
@@ -43,3 +43,6 @@ apply: $(TMP_PLAN_PATH)  ## plan and apply the plan.
 
 output: .terraform  ## print outputs.
 	@terraform output -json
+
+cluster-secrets: .terraform  ## Print values YAML of cluster-secrets charts
+	@terraform output -raw cluster_secrets_values
