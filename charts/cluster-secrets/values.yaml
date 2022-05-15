@@ -1,6 +1,4 @@
 clusterSecretStore:
-  name: ""
-
   oracle:
     enabled: true
     region: ""
