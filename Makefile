@@ -27,7 +27,7 @@ bootstrap:  ## Bootstrap given cluster onto current kubectl context. (Possible C
 	@while [ -z "$$CONTINUE" ]; do \
 		read -r -p "Type anything but Y or y to exit. [y/N]: " CONTINUE; \
 	done ; \
-    [ $$CONTINUE = "y" ] || [ $$CONTINUE = "Y" ] || (echo "Exiting."; exit 1;)
+	[ $$CONTINUE = "y" ] || [ $$CONTINUE = "Y" ] || (echo "Exiting."; exit 1;)
 
 	# boostrap via ArgoCD
 	helm install \
