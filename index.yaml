@@ -107,6 +107,16 @@ entries:
     urls:
     - https://github.com/isac322/homelab/releases/download/cluster-secret-store-0.1.0/cluster-secret-store-0.1.0.tgz
     version: 0.1.0
+  cluster-secrets:
+  - apiVersion: v2
+    created: "2022-05-15T15:07:24.908914298Z"
+    description: Create ClusterSecretStore
+    digest: 08019a3f1eaad591e264cbdcdbbc314e4dd62b1e67f28fe4995733e51ec6bc1a
+    name: cluster-secrets
+    type: application
+    urls:
+    - https://github.com/isac322/homelab/releases/download/cluster-secrets-0.1.1/cluster-secrets-0.1.1.tgz
+    version: 0.1.1
   get-oracle-a1:
   - apiVersion: v2
     appVersion: 0.2.0
@@ -146,4 +156,4 @@ entries:
     urls:
     - https://github.com/isac322/homelab/releases/download/registry-1.13.0/registry-1.13.0.tgz
     version: 1.13.0
-generated: "2022-05-15T13:49:07.933468791Z"
+generated: "2022-05-15T15:07:24.908934199Z"
