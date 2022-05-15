@@ -52,7 +52,7 @@ parent:
               - values.yaml
               - https://raw.githubusercontent.com/isac322/homelab/HEAD/values/argocd/backbone.yml
           repoURL: https://isac322.github.io/homelab
-          targetRevision: 0.1.3
+          targetRevision: 0.1.4
         syncPolicy:
           automated:
             prune: true
