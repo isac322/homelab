@@ -17,3 +17,6 @@ variable "region" {
 variable "cloudflare_ca_api_key" {
   type = string
 }
+variable "external_dns_api_token" {
+  type = string
+}

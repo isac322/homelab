@@ -21,7 +21,6 @@ output "cluster_secrets_values" {
   sensitive = true
 }
 
-output "external_dns_api_token" {
-  value     = module.cloudflare.external_dns_api_token
-  sensitive = true
+output "secret_name_external_dns_api_token" {
+  value = module.oracle.secret_name_external_dns_api_token
 }
