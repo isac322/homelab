@@ -1,0 +1,29 @@
+apiVersion: argoproj.io/v1alpha1
+kind: Application
+metadata:
+  name: external-dns
+spec:
+  destination:
+    server: https://kubernetes.default.svc
+    namespace: dns-manager
+  project: dns-manager
+  source:
+    chart: external-dns
+    helm:
+      valueFiles:
+        - values.yaml
+        - https://raw.githubusercontent.com/isac322/homelab/HEAD/values/external-dns/backbone.yaml
+    repoURL: https://isac322.github.io/homelab
+    targetRevision: 0.1.0
+  syncPolicy:
+    automated:
+      prune: true
+      selfHeal: true
+    retry:
+      backoff:
+        duration: 5s
+        factor: 2
+        maxDuration: 3m0s
+      limit: 2
+    syncOptions:
+      - CreateNamespace=true
