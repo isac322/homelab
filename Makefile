@@ -44,9 +44,9 @@ bootstrap:  ## Bootstrap given cluster onto current kubectl context. (Possible C
 	# provision via terraform and install the secrets to cluster
 	make -C terraform/$(CLUSTER_NAME) apply
 	make -C terraform/$(CLUSTER_NAME) cluster-secrets > /tmp/cluster-secrets.yaml
-	# FIXME: In fact, all we need is the CRD of external-secrets.
-	# wait for external-secrets ready
-	kubectl wait --namespace kube-system --for=condition=Available deployment external-secrets
+
+	# install CRDs of external-secrets
+	kubectl apply -f https://raw.githubusercontent.com/external-secrets/external-secrets/HEAD/deploy/crds/bundle.yaml
 	helm install \
 		--namespace kube-system \
 		--create-namespace \
