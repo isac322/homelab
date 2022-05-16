@@ -131,6 +131,20 @@ entries:
     urls:
     - https://github.com/isac322/homelab/releases/download/cluster-secrets-0.1.1/cluster-secrets-0.1.1.tgz
     version: 0.1.1
+  external-dns:
+  - apiVersion: v2
+    created: "2022-05-16T15:14:03.500744337Z"
+    dependencies:
+    - name: external-dns
+      repository: https://kubernetes-sigs.github.io/external-dns/
+      version: 1.9.0
+    description: External-DNS
+    digest: 3723a05f1de5f5cd8f3dae954efe133fc522b4189b958e252782ab338fc9cc6f
+    name: external-dns
+    type: application
+    urls:
+    - https://github.com/isac322/homelab/releases/download/external-dns-0.1.0/external-dns-0.1.0.tgz
+    version: 0.1.0
   get-oracle-a1:
   - apiVersion: v2
     appVersion: 0.2.0
@@ -170,4 +184,4 @@ entries:
     urls:
     - https://github.com/isac322/homelab/releases/download/registry-1.13.0/registry-1.13.0.tgz
     version: 1.13.0
-generated: "2022-05-15T15:20:44.647538855Z"
+generated: "2022-05-16T15:14:03.500944541Z"
