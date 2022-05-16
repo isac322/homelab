@@ -1,0 +1,9 @@
+targetSecret:
+  name: ""
+  key: ""
+
+externalSecrets:
+  remoteSecretName: ""
+  secretStore:
+    name: ""
+    kind: ClusterSecretStore
