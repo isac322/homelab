@@ -26,6 +26,23 @@ resource "oci_vault_secret" "cloudflare_ca_api_key" {
   }
 }
 
+resource "oci_vault_secret" "external_dns_api_token" {
+  compartment_id = var.tenancy_ocid
+
+  secret_content {
+    content_type = "BASE64"
+    content      = base64encode(var.external_dns_api_token)
+    name         = "k8s_backbone_external_dns_api_token"
+  }
+  secret_name = "k8s_backbone_external_dns_api_token"
+  vault_id    = oci_kms_vault.vault.id
+  key_id      = oci_kms_key.vault_key.id
+
+  defined_tags = {
+    "${oci_identity_tag_namespace.backbone.name}.${oci_identity_tag.managed_by_terraform.name}" = "TRUE"
+  }
+}
+
 resource "oci_kms_key" "vault_key" {
   compartment_id = var.tenancy_ocid
   display_name   = "k8s_backbone_key"

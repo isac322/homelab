@@ -7,3 +7,7 @@ output "vault_ocid" {
 output "secret_name_cf_ca_api_key" {
   value = oci_vault_secret.cloudflare_ca_api_key.secret_name
 }
+
+output "secret_name_external_dns_api_token" {
+  value = oci_vault_secret.external_dns_api_token.secret_name
+}

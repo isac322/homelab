@@ -1,0 +1,47 @@
+external-dns:
+  env:
+    - name: CF_API_TOKEN
+      valueFrom:
+        secretKeyRef:
+          name: &secretName cloudflare-api-token
+          key: &secretKey cloudflare_api_token
+
+  resources:
+    requests:
+      cpu: 100m
+      memory: 32Mi
+    limits:
+      cpu: 500m
+      memory: 100Mi
+
+  logLevel: info
+  logFormat: text
+
+  interval: 1m
+
+  sources:
+    - service
+    - ingress
+
+  policy: sync
+
+  registry: txt
+  txtOwnerId: k8s-backbone
+
+  domainFilters:
+    - bhyoo.com
+
+  provider: cloudflare
+
+  extraArgs:
+    - "--cloudflare-proxied"
+
+targetSecret:
+  name: *secretName
+  key: *secretKey
+
+externalSecrets:
+  remoteSecretName: k8s_backbone_external_dns_api_token
+  secretStore:
+    name: cluster-secrets
+    kind: ClusterSecretStore
