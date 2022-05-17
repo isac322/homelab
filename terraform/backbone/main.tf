@@ -1,5 +1,13 @@
 terraform {
   required_version = ">= 1.1.8, < 2.0.0"
+
+  cloud {
+    organization = "bhyoo"
+
+    workspaces {
+      name = "homelab-backbone"
+    }
+  }
 }
 
 
