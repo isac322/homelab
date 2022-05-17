@@ -1,0 +1,33 @@
+apiVersion: argoproj.io/v1alpha1
+kind: Application
+metadata:
+  name: argocd
+spec:
+  destination:
+    server: https://kubernetes.default.svc
+    namespace: argocd
+  project: argocd
+  source:
+    chart: argocd
+    helm:
+      valueFiles:
+        - values.yaml
+        - https://raw.githubusercontent.com/isac322/homelab/HEAD/values/argocd/backbone.yml
+    repoURL: https://isac322.github.io/homelab
+    targetRevision: 0.1.5
+  syncPolicy:
+    automated:
+      prune: true
+      selfHeal: true
+    retry:
+      backoff:
+        duration: 5s
+        factor: 2
+        maxDuration: 3m0s
+      limit: 2
+  ignoreDifferences:
+    - kind: Certificate
+      group: cert-manager.io
+      jsonPointers:
+        - /spec/duration
+        - /spec/renewBefore
