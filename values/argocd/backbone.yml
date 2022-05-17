@@ -39,38 +39,6 @@ parent:
           url: https://github.com/cloudflare/origin-ca-issuer.git
 
     additionalApplications:
-      - name: argocd
-        namespace: argocd
-        destination:
-          namespace: argocd
-          server: https://kubernetes.default.svc
-        project: argocd
-        source:
-          chart: argocd
-          helm:
-            valueFiles:
-              - values.yaml
-              - https://raw.githubusercontent.com/isac322/homelab/HEAD/values/argocd/backbone.yml
-          repoURL: https://isac322.github.io/homelab
-          targetRevision: 0.1.5
-        syncPolicy:
-          automated:
-            prune: true
-            selfHeal: true
-          retry:
-            backoff:
-              duration: 5s
-              factor: 2
-              maxDuration: 3m0s
-            limit: 2
-          syncOptions:
-            - CreateNamespace=true
-        ignoreDifferences:
-          - kind: Certificate
-            group: cert-manager.io
-            jsonPointers:
-              - /spec/duration
-              - /spec/renewBefore
       - name: argocd-apps
         namespace: argocd
         destination:
@@ -83,7 +51,6 @@ parent:
           targetRevision: HEAD
           directory:
             recurse: true
-            jsonnet: { }
         syncPolicy:
           automated:
             prune: true
@@ -106,7 +73,6 @@ parent:
           targetRevision: HEAD
           directory:
             recurse: true
-            jsonnet: { }
         syncPolicy:
           automated:
             prune: true
@@ -123,7 +89,8 @@ parent:
         namespace: argocd
         description: Argocd Project
         sourceRepos:
-          - '*'
+          - https://isac322.github.io/homelab
+          - https://github.com/isac322/homelab.git
         destinations:
           - namespace: argocd
             server: https://kubernetes.default.svc
