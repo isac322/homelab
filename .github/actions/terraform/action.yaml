@@ -44,7 +44,7 @@ runs:
       shell: bash
 
     - uses: actions/github-script@v6
-      if: github.event_name == 'pull_request' && (succeeded() || failed())
+      if: github.event_name == 'pull_request' && (success() || failure())
       env:
         PLAN: "terraform\n${{ steps.plan.outputs.stdout }}"
       with:
