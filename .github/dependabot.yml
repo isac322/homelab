@@ -9,6 +9,10 @@ updates:
     directory: "/" # Location of package manifests
     schedule:
       interval: "daily"
+  - package-ecosystem: "github-actions" # See documentation for possible values
+    directory: "/.github/actions/terraform" # Location of package manifests
+    schedule:
+      interval: "daily"
   - package-ecosystem: "terraform" # See documentation for possible values
     directory: "/terraform/backbone" # Location of package manifests
     schedule:
