@@ -1,0 +1,87 @@
+name: Terraform
+description: Format & Lint & Plan & Apply Terraform
+author: isac322
+
+inputs:
+  github-token:
+    description: 'Github token'
+    required: false
+    default: ${{ github.token }}
+  token:
+    description: 'Terraform API token'
+    required: true
+  path:
+    description: 'Path to terraform'
+    required: true
+
+runs:
+  using: 'composite'
+  steps:
+    - name: Setup Terraform
+      uses: hashicorp/setup-terraform@v1
+      with:
+        cli_config_credentials_token: ${{ inputs.token }}
+
+    - name: Terraform Format
+      id: fmt
+      run: terraform -chdir=${{ inputs.path }} fmt -check
+      shell: bash
+
+    - name: Terraform Init
+      id: init
+      run: terraform -chdir=${{ inputs.path }} init
+      shell: bash
+
+    - name: Terraform Validate
+      id: validate
+      run: terraform -chdir=${{ inputs.path }} validate -no-color
+      shell: bash
+
+    - name: Terraform Plan
+      id: plan
+      if: github.event_name == 'pull_request'
+      run: terraform -chdir=${{ inputs.path }} plan -no-color -input=false
+      shell: bash
+
+    - uses: actions/github-script@v6
+      if: github.event_name == 'pull_request' && always()
+      env:
+        PLAN: "terraform\n${{ steps.plan.outputs.stdout }}"
+      with:
+        github-token: ${{ inputs.github-token }}
+        script: |
+          const output = `#### Terraform Format and Style 🖌\`${{ steps.fmt.outcome }}\`
+          #### Terraform Initialization ⚙️\`${{ steps.init.outcome }}\`
+          #### Terraform Validation 🤖\`${{ steps.validate.outcome }}\`
+          #### Terraform Plan 📖\`${{ steps.plan.outcome }}\`
+
+          <details><summary>Show Plan</summary>
+
+          \`\`\`\n
+          ${process.env.PLAN}
+          \`\`\`
+
+          </details>
+
+          *Pushed by: @${{ github.actor }}, Action: \`${{ github.event_name }}\`*`;
+
+          github.rest.issues.createComment({
+            issue_number: context.issue.number,
+            owner: context.repo.owner,
+            repo: context.repo.repo,
+            body: output
+          })
+
+    - name: Terraform Plan Status
+      if: steps.plan.outcome == 'failure'
+      run: exit 1
+      shell: bash
+
+    - name: Terraform Apply
+      if: github.ref == 'refs/heads/master' && github.event_name == 'push'
+      run: terraform -chdir=${{ inputs.path }} apply -auto-approve -input=false
+      shell: bash
+
+branding:
+  icon: file-text
+  color: white
