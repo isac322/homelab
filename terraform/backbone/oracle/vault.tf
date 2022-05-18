@@ -26,6 +26,7 @@ resource "oci_vault_secret" "cloudflare_ca_api_key" {
   }
 }
 
+
 resource "oci_vault_secret" "external_dns_api_token" {
   compartment_id = var.tenancy_ocid
 
