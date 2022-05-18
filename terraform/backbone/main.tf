@@ -12,13 +12,14 @@ terraform {
 
 
 module "oracle" {
-  source                = "./oracle"
-  fingerprint           = var.oracle_fingerprint
-  private_key_b64       = var.oracle_private_key_b64
-  region                = var.oracle_region
-  tenancy_ocid          = var.oracle_tenancy_ocid
-  user_ocid             = var.oracle_user_ocid
-  cloudflare_ca_api_key = var.cloudflare_ca_api_key
+  source                 = "./oracle"
+  fingerprint            = var.oracle_fingerprint
+  private_key_b64        = var.oracle_private_key_b64
+  region                 = var.oracle_region
+  tenancy_ocid           = var.oracle_tenancy_ocid
+  user_ocid              = var.oracle_user_ocid
+  cloudflare_ca_api_key  = var.cloudflare_ca_api_key
+  external_dns_api_token = module.cloudflare.external_dns_api_token
 }
 
 module "cloudflare" {
