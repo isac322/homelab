@@ -1,4 +1,4 @@
-name: "Terraform"
+name: Terraform
 
 on:
   push:
@@ -7,7 +7,7 @@ on:
   pull_request:
 
 jobs:
-  terraform:
+  backbone:
     name: "Terraform"
     runs-on: ubuntu-latest
     permissions:
@@ -25,15 +25,15 @@ jobs:
 
       - name: Terraform Format
         id: fmt
-        run: terraform fmt -check
+        run: terraform -chdir=terraform/backbone fmt -check
 
       - name: Terraform Init
         id: init
-        run: terraform init
+        run: terraform -chdir=terraform/backbone init
 
       - name: Terraform Validate
         id: validate
-        run: terraform validate -no-color
+        run: terraform -chdir=terraform/backbone validate -no-color
 
       - name: Terraform Plan
         id: plan
