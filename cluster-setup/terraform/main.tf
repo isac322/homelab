@@ -12,6 +12,7 @@ terraform {
 
 
 module "vultr" {
-  source  = "./vultr"
-  api_key = var.vultr_api_key
+  source   = "./vultr"
+  api_key  = var.vultr_api_key
+  ssh_keys = var.vultr_admin_ssh_keys
 }
