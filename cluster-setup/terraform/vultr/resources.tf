@@ -14,7 +14,7 @@ resource "vultr_instance" "backbone-master" {
   script_id = vultr_startup_script.init_ubuntu_22_04.id
 
   ssh_key_ids      = [for k in vultr_ssh_key.admin_ssh_key : k.id]
-  backups          = false
+  backups          = 'disabled'
   enable_ipv6      = false
   ddos_protection  = false
   activation_email = false
