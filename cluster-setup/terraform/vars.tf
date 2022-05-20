@@ -19,13 +19,10 @@ variable "backbone_master_subdomain" {
   description = "Subdomain of backbone cluster's master instance"
 }
 
-variable "cloudflare_email" {
+# Required permissions for this token: "Zone Read", "DNS Write"
+variable "cloudflare_api_token" {
   type        = string
-  description = "Cloudflare email address"
-}
-variable "cloudflare_api_key" {
-  type        = string
-  description = "Cloudflare API Key"
+  description = "API token of Cloudflare. This token must have permission `DNS Write` and `Zone Read` at least. Follow https://developers.cloudflare.com/api/tokens/create/"
 }
 variable "cloudflare_host" {
   type        = string

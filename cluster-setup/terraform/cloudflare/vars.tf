@@ -1,10 +1,7 @@
-variable "api_key" {
+# Required permissions for this token: "Zone Read", "DNS Write"
+variable "api_token" {
   type        = string
-  description = "Cloudflare API Key"
-}
-variable "email" {
-  type        = string
-  description = "Cloudflare email address"
+  description = "API token of Cloudflare. This token must have permission `DNS Write` and `Zone Read` at least. Follow https://developers.cloudflare.com/api/tokens/create/"
 }
 variable "zone_name" {
   type        = string
