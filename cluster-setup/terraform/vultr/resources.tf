@@ -22,11 +22,11 @@ resource "vultr_instance" "backbone-master" {
 
 resource "vultr_startup_script" "init_ubuntu_22_04" {
   name   = "init_ubuntu_22_04"
-  script = join(
+  script = base64encode(join(
     "\n",
     [
       file("${path.module}/startup_scripts/init_ubuntu_22_04.sh"),
       file("${path.module}/startup_scripts/ssh_hardening.sh")
     ],
-  )
+  ))
 }
