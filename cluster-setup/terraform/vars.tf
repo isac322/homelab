@@ -9,8 +9,25 @@ variable "vultr_admin_ssh_keys" {
 }
 variable "vultr_backbone_master_instance" {
   type = object({
-    region   = string
-    plan     = string
-    hostname = string
+    region = string
+    plan   = string
   })
+}
+
+variable "backbone_master_subdomain" {
+  type        = string
+  description = "Subdomain of backbone cluster's master instance"
+}
+
+variable "cloudflare_email" {
+  type        = string
+  description = "Cloudflare email address"
+}
+variable "cloudflare_api_key" {
+  type        = string
+  description = "Cloudflare API Key"
+}
+variable "cloudflare_host" {
+  type        = string
+  description = "Cloudflare Zone (host)"
 }
