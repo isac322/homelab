@@ -6,6 +6,7 @@ apt purge snapd cron -y
 apt autoremove -y
 
 sed -i -E '/\Wswap\W/d' /etc/fstab
+rm -f /swapfile
 
 sed -i -E 's/^\s*#?\s*SystemMaxUse\s*=.*$/SystemMaxUse=500M/' /etc/systemd/journald.conf
 systemctl daemon-reload
