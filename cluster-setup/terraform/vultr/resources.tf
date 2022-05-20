@@ -22,5 +22,11 @@ resource "vultr_instance" "backbone-master" {
 
 resource "vultr_startup_script" "init_ubuntu_22_04" {
   name   = "init_ubuntu_22_04"
-  script = join("\n", [file("startup_scripts/init_ubuntu_22_04.sh"), file("startup_scripts/ssh_hardening.sh")])
+  script = join(
+    "\n",
+    [
+      file("${path.module}/startup_scripts/init_ubuntu_22_04.sh"),
+      file("${path.module}/startup_scripts/ssh_hardening.sh")
+    ],
+  )
 }
