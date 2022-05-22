@@ -12,15 +12,16 @@ terraform {
 
 
 module "vultr" {
-  source   = "./vultr"
-  api_key  = var.vultr_api_key
-  ssh_keys = var.vultr_admin_ssh_keys
+  source           = "./vultr"
+  api_key          = var.vultr_api_key
+  initial_ssh_keys = var.vultr_admin_ssh_keys
 
   backbone_master_instance = {
     region   = var.vultr_backbone_master_instance.region
     plan     = var.vultr_backbone_master_instance.plan
     hostname = join(".", [var.backbone_master_subdomain, var.cloudflare_host])
   }
+  wireguard_ip_subnet = cidrsubnet(var.backbone_wireguard_ip_subnet, 0, 0)
 }
 
 

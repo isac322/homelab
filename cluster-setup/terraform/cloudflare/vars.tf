@@ -2,6 +2,7 @@
 variable "api_token" {
   type        = string
   description = "API token of Cloudflare. This token must have permission `DNS Write` and `Zone Read` at least. Follow https://developers.cloudflare.com/api/tokens/create/"
+  sensitive   = true
 }
 variable "zone_name" {
   type        = string

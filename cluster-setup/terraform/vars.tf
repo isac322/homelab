@@ -2,6 +2,7 @@
 variable "vultr_api_key" {
   type        = string
   description = "Vultr API Key."
+  sensitive   = true
 }
 variable "vultr_admin_ssh_keys" {
   type        = map(string)
@@ -18,11 +19,17 @@ variable "backbone_master_subdomain" {
   type        = string
   description = "Subdomain of backbone cluster's master instance"
 }
+variable "backbone_wireguard_ip_subnet" {
+  type        = string
+  description = "Subnet for VPN only for kubectl"
+  default     = "10.222.0.0/24"
+}
 
 # Required permissions for this token: "Zone Read", "DNS Write"
 variable "cloudflare_api_token" {
   type        = string
   description = "API token of Cloudflare. This token must have permission `DNS Write` and `Zone Read` at least. Follow https://developers.cloudflare.com/api/tokens/create/"
+  sensitive   = true
 }
 variable "cloudflare_host" {
   type        = string
