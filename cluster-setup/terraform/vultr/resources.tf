@@ -38,7 +38,7 @@ resource "vultr_instance" "backbone_master" {
 
 resource "vultr_startup_script" "init_ubuntu_22_04" {
   name   = "init_ubuntu_22_04"
-  script = base64encode(join(
+  script = sensitive(base64encode(join(
     "\n",
     [
       file("${path.module}/startup_scripts/init_ubuntu_22_04.sh"),
@@ -56,5 +56,5 @@ resource "vultr_startup_script" "init_ubuntu_22_04" {
         },
       ),
     ],
-  ))
+  )))
 }
