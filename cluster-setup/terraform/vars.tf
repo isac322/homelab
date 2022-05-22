@@ -28,10 +28,6 @@ variable "backbone_worker_count" {
   type        = number
   description = "Number of worker to create client wireguard profile"
 }
-variable "backbone_wireguard_non_worker_count" {
-  type        = number
-  description = "Number of non worker clients. (e.g. Laptop of admin to access cluster using kubectl)"
-}
 
 # Required permissions for this token: "Zone Read", "DNS Write"
 variable "cloudflare_api_token" {

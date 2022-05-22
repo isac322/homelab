@@ -9,6 +9,9 @@ output "preshared_key" {
   value     = wireguard_preshared_key.global.key
   sensitive = true
 }
+output "interface_name" {
+  value = var.interface_name
+}
 
 locals {
   server_ip = cidrhost(var.ip_subnet_cidr, 1)
