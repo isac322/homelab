@@ -2,12 +2,12 @@
 
 set -ex
 
-rm /etc/ssh/ssh_host_*
+rm -f /etc/ssh/ssh_host_*
 
 ssh-keygen -t rsa -b 4096 -f /etc/ssh/ssh_host_rsa_key -N ""
 ssh-keygen -t ed25519 -f /etc/ssh/ssh_host_ed25519_key -N ""
 
-awk '$5 >= 3071' /etc/ssh/moduli > /etc/ssh/moduli.safe
+awk '$5 >= 3071' /etc/ssh/moduli | tee /etc/ssh/moduli.safe > /dev/null
 
 mv /etc/ssh/moduli.safe /etc/ssh/moduli
 sed -i 's/^\#HostKey \/etc\/ssh\/ssh_host_\(rsa\|ed25519\)_key$/HostKey \/etc\/ssh\/ssh_host_\1_key/g' /etc/ssh/sshd_config
@@ -21,7 +21,6 @@ HostKeyAlgorithms ssh-ed25519,ssh-ed25519-cert-v01@openssh.com,sk-ssh-ed25519@op
 EOF
 
 cat << EOF | tee /etc/ssh/sshd_config.d/ssh_hardening.conf > /dev/null
-
 PermitRootLogin no
 StrictModes yes
 MaxAuthTries 1
