@@ -1,0 +1,15 @@
+[NetDev]
+Name = ${interface_name}
+Kind = wireguard
+Description = ${interface_name} server ${subnet}
+
+[WireGuard]
+PrivateKey = ${private_key}
+ListenPort = ${port}
+
+%{ for client in clients ~}
+[WireGuardPeer]
+PublicKey = ${client.public_key}
+AllowedIPs = ${client.ip}/32
+PresharedKey = ${preshared_key}
+%{ endfor ~}

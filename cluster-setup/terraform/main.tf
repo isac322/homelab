@@ -35,3 +35,11 @@ module "cloudflare" {
     ip_address = module.vultr.ip_backbone_master
   }
 }
+
+module "wireguard" {
+  source           = "./wireguard"
+  worker_count     = var.backbone_worker_count
+  non_worker_count = var.backbone_wireguard_non_worker_count
+  ip_subnet_cidr   = cidrsubnet(var.backbone_wireguard_ip_subnet, 0, 0)
+  server_host      = "${var.backbone_master_subdomain}.${var.cloudflare_host}"
+}
