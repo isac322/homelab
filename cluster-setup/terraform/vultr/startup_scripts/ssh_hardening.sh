@@ -29,3 +29,5 @@ PubkeyAuthentication yes
 PasswordAuthentication no
 PermitEmptyPasswords no
 EOF
+
+systemctl restart sshd
