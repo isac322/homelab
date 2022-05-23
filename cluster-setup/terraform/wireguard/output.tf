@@ -1,16 +1,14 @@
-output "server_private_key" {
-  value     = wireguard_asymmetric_key.server.private_key
-  sensitive = true
-}
 output "server_public_key" {
   value = wireguard_asymmetric_key.server.public_key
 }
-output "preshared_key" {
-  value     = wireguard_preshared_key.global.key
-  sensitive = true
-}
 output "interface_name" {
   value = var.interface_name
+}
+output "route_cidr" {
+  value = var.ip_subnet_cidr
+}
+output "gateway_ip" {
+  value = local.server_ip
 }
 
 locals {
