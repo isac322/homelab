@@ -38,7 +38,7 @@ resource "vultr_instance" "backbone_master" {
 
 resource "vultr_startup_script" "init_ubuntu_22_04" {
   name   = "init_ubuntu_22_04"
-  script = base64encode(join(
+  script = sensitive(base64encode(join(
     "\n",
     [
       file("${path.module}/startup_scripts/init_ubuntu_22_04.sh"),
@@ -46,15 +46,11 @@ resource "vultr_startup_script" "init_ubuntu_22_04" {
       templatefile(
         "${path.module}/startup_scripts/wireguard.sh",
         {
-          interface_name = var.wireguard_interface_name
-          subnet         = var.wireguard_ip_subnet
-          port           = var.wireguard_master_port
-          private_key    = wireguard_asymmetric_key.backbone_master.private_key
-          public_key     = wireguard_asymmetric_key.backbone_master.public_key
-          preshared_key  = wireguard_preshared_key.backbone.key
-          ip             = cidrhost(var.wireguard_ip_subnet, 1)
+          interface_name   = var.wireguard_interface_name
+          networkd_netdev  = var.wireguard_server_systemd_networkd_netdev
+          networkd_network = var.wireguard_server_systemd_networkd_network
         },
       ),
     ],
-  ))
+  )))
 }

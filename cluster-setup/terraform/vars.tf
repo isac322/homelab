@@ -4,10 +4,6 @@ variable "vultr_api_key" {
   description = "Vultr API Key."
   sensitive   = true
 }
-variable "vultr_admin_ssh_keys" {
-  type        = map(string)
-  description = "list of SSH public key and its name"
-}
 variable "vultr_backbone_master_instance" {
   type = object({
     region = string
@@ -23,6 +19,10 @@ variable "backbone_wireguard_ip_subnet" {
   type        = string
   description = "Subnet for VPN only for kubectl"
   default     = "10.222.0.0/24"
+}
+variable "backbone_worker_count" {
+  type        = number
+  description = "Number of worker to create client wireguard profile"
 }
 
 # Required permissions for this token: "Zone Read", "DNS Write"

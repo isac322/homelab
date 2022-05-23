@@ -16,17 +16,16 @@ variable "backbone_master_instance" {
   })
 }
 
-variable "wireguard_ip_subnet" {
-  type        = string
-  description = "Subnet for VPN only for kubectl"
-}
-variable "wireguard_master_port" {
-  type        = number
-  description = "Wireguard listening port"
-  default     = 51820
-}
+
 variable "wireguard_interface_name" {
   type        = string
   description = "Network interface name for wireguard"
-  default     = "wg0"
+}
+variable "wireguard_server_systemd_networkd_netdev" {
+  type      = string
+  sensitive = true
+}
+variable "wireguard_server_systemd_networkd_network" {
+  type      = string
+  sensitive = true
 }
