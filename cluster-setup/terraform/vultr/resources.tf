@@ -53,6 +53,7 @@ resource "vultr_startup_script" "init_ubuntu_22_04" {
           interface_name   = var.wireguard_interface_name
         },
       ),
+      file("${path.module}/startup_scripts/reboot.sh"),
     ],
   )))
 }
