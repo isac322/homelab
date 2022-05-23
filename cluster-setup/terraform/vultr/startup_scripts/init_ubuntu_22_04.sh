@@ -7,10 +7,6 @@ apt autoremove -y
 apt install nftables -y
 systemctl enable nftables.service
 
-sed -i -E '/\Wswap\W/d' /etc/fstab
-swapoff /swapfile
-rm -f /swapfile
-
 sed -i -E 's/^\s*#?\s*SystemMaxUse\s*=.*$/SystemMaxUse=500M/' /etc/systemd/journald.conf
 systemctl daemon-reload
 

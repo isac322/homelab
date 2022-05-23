@@ -2,6 +2,11 @@
 
 set -ex
 
+# disable swap
+sed -i -E '/\Wswap\W/d' /etc/fstab
+swapoff /swapfile
+rm -f /swapfile
+
 apt update
 apt install -y apparmor
 
