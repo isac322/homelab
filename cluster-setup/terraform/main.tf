@@ -11,10 +11,17 @@ terraform {
 }
 
 
+locals {
+  admin_ssh_keys = {
+    for f in fileset("${path.module}/ssh_keys", "*.pub") : trimsuffix(f, ".pub") => file("${path.module}/ssh_keys/${f}")
+  }
+}
+
+
 module "vultr" {
   source           = "./vultr"
   api_key          = var.vultr_api_key
-  initial_ssh_keys = var.vultr_admin_ssh_keys
+  initial_ssh_keys = local.admin_ssh_keys
 
   backbone_master_instance = {
     region   = var.vultr_backbone_master_instance.region
@@ -40,9 +47,9 @@ module "cloudflare" {
 }
 
 module "wireguard" {
-  source           = "./wireguard"
-  worker_count     = var.backbone_worker_count
-  non_worker_count = length(var.vultr_admin_ssh_keys)
-  ip_subnet_cidr   = cidrsubnet(var.backbone_wireguard_ip_subnet, 0, 0)
-  server_host      = "${var.backbone_master_subdomain}.${var.cloudflare_host}"
+  source         = "./wireguard"
+  worker_count   = var.backbone_worker_count
+  non_workers    = keys(local.admin_ssh_keys)
+  ip_subnet_cidr = cidrsubnet(var.backbone_wireguard_ip_subnet, 0, 0)
+  server_host    = "${var.backbone_master_subdomain}.${var.cloudflare_host}"
 }

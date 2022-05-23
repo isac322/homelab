@@ -8,6 +8,6 @@ resource "wireguard_asymmetric_key" "worker_clients" {
   count = var.worker_count
 }
 
-resource "wireguard_asymmetric_key" "non_worker_clients" {
-  count = var.non_worker_count
+resource "wireguard_asymmetric_key" "non_worker_client" {
+  for_each = toset(var.non_workers)
 }

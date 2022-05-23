@@ -11,5 +11,5 @@ ListenPort = ${port}
 [WireGuardPeer]
 PublicKey = ${client.public_key}
 AllowedIPs = ${client.ip}/32
-PresharedKey = ${preshared_key}
+PresharedKey = ${client.preshared_key}
 %{ endfor ~}

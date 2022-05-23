@@ -18,17 +18,20 @@ locals {
 
   worker_clients = [
   for i, c in wireguard_asymmetric_key.worker_clients : {
-    private_key = c.private_key
-    public_key  = c.public_key
-    ip          = cidrhost(var.ip_subnet_cidr, i + 2)  # IP must start from 1 and avoid master's IP
+    private_key   = c.private_key
+    public_key    = c.public_key
+    preshared_key = wireguard_preshared_key.global.key
+    ip            = cidrhost(var.ip_subnet_cidr, i + 2)  # IP must start from 1 and avoid master's IP
   }
   ]
 
   non_worker_clients = [
-  for i, c in wireguard_asymmetric_key.non_worker_clients : {
-    private_key = c.private_key
-    public_key  = c.public_key
-    ip          = cidrhost(var.ip_subnet_cidr, i + 100)
+  for k, c in wireguard_asymmetric_key.non_worker_client : {
+    private_key   = c.private_key
+    public_key    = c.public_key
+    preshared_key = wireguard_preshared_key.global.key
+    ip            = cidrhost(var.ip_subnet_cidr, index(var.non_workers, k) + 100)
+    name          = k
   }
   ]
 }
@@ -41,7 +44,6 @@ output "server_systemd_networkd_netdev" {
       subnet         = var.ip_subnet_cidr
       private_key    = wireguard_asymmetric_key.server.private_key
       port           = var.server_port
-      preshared_key  = wireguard_preshared_key.global.key
       clients        = concat(local.worker_clients, local.non_worker_clients)
     }
   )
@@ -96,6 +98,6 @@ output "workers_systemd_networkd_netdev" {
 }
 
 output "non_worker_clients" {
-  value     = [for c in local.non_worker_clients : merge(c, { preshared_key = wireguard_preshared_key.global.key })]
+  value     = local.non_worker_clients
   sensitive = true
 }

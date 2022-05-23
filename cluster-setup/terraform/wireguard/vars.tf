@@ -21,7 +21,7 @@ variable "worker_count" {
   type        = number
   description = "Number of worker to create client wireguard profile"
 }
-variable "non_worker_count" {
-  type        = number
-  description = "Number of non worker clients. (e.g. Laptop of admin to access cluster using kubectl)"
+variable "non_workers" {
+  type        = list(string)
+  description = "Name of non worker clients. (e.g. Laptop of admin to access cluster using kubectl)"
 }
