@@ -7,6 +7,9 @@ output "interface_name" {
 output "route_cidr" {
   value = var.ip_subnet_cidr
 }
+output "server_ip" {
+  value = local.server_ip
+}
 output "gateway_ip" {
   value = local.server_ip
 }

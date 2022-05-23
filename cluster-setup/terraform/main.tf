@@ -17,6 +17,14 @@ locals {
   }
 }
 
+module "wireguard" {
+  source         = "./wireguard"
+  worker_count   = var.backbone_worker_count
+  non_workers    = keys(local.admin_ssh_keys)
+  ip_subnet_cidr = cidrsubnet(var.backbone_wireguard_ip_subnet, 0, 0)
+  server_host    = "${var.backbone_master_subdomain}.${var.cloudflare_host}"
+}
+
 
 module "vultr" {
   source           = "./vultr"
@@ -29,6 +37,7 @@ module "vultr" {
     hostname = join(".", [var.backbone_master_subdomain, var.cloudflare_host])
   }
 
+  wireguard_server_ip                       = module.wireguard.server_ip
   wireguard_interface_name                  = module.wireguard.interface_name
   wireguard_server_systemd_networkd_netdev  = module.wireguard.server_systemd_networkd_netdev
   wireguard_server_systemd_networkd_network = module.wireguard.server_systemd_networkd_network
@@ -44,12 +53,4 @@ module "cloudflare" {
     subdomain  = var.backbone_master_subdomain
     ip_address = module.vultr.ip_backbone_master
   }
-}
-
-module "wireguard" {
-  source         = "./wireguard"
-  worker_count   = var.backbone_worker_count
-  non_workers    = keys(local.admin_ssh_keys)
-  ip_subnet_cidr = cidrsubnet(var.backbone_wireguard_ip_subnet, 0, 0)
-  server_host    = "${var.backbone_master_subdomain}.${var.cloudflare_host}"
 }

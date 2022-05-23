@@ -17,6 +17,10 @@ variable "backbone_master_instance" {
 }
 
 
+variable "wireguard_server_ip" {
+  type        = string
+  description = "IP for wireguard"
+}
 variable "wireguard_interface_name" {
   type        = string
   description = "Network interface name for wireguard"

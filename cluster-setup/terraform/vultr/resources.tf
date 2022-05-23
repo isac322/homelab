@@ -44,6 +44,15 @@ resource "vultr_startup_script" "init_ubuntu_22_04" {
           networkd_network = var.wireguard_server_systemd_networkd_network
         },
       ),
+      templatefile(
+        "${path.module}/startup_scripts/k3s.sh",
+        {
+          k3s_token        = random_id.k3s_token.hex
+          node_id          = var.wireguard_server_ip
+          node_external_ip = ""
+          interface_name   = var.wireguard_interface_name
+        },
+      ),
     ],
   )))
 }
