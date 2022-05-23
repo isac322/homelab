@@ -14,13 +14,6 @@ resource "random_id" "k3s_token" {
   byte_length = 16
 }
 
-resource "wireguard_asymmetric_key" "backbone_master" {
-  bind = var.api_key
-}
-
-resource "wireguard_preshared_key" "backbone" {
-}
-
 resource "vultr_instance" "backbone_master" {
   region    = var.backbone_master_instance.region
   plan      = var.backbone_master_instance.plan
