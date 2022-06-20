@@ -24,7 +24,6 @@ spec:
         duration: 5s
         factor: 2
         maxDuration: 3m0s
-      limit: 2
   ignoreDifferences:
     - kind: Certificate
       group: cert-manager.io
