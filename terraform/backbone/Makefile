@@ -33,11 +33,12 @@ init: .terraform  ## Initialize terraform.
 plan: .terraform  ## generate plan file.
 	@terraform plan
 
-apply: plan  ## plan and apply the plan.
+apply: .terraform  ## plan and apply the plan.
 	@terraform apply
 
 output: .terraform  ## print outputs.
 	@terraform output -json
 
+cluster-secrets: DEST=/dev/stdout
 cluster-secrets: .terraform  ## Print values YAML of cluster-secrets charts
-	@terraform output -raw cluster_secrets_values
+	@terraform output -raw cluster_secrets_values > '$(DEST)'
