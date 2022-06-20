@@ -29,6 +29,10 @@ bootstrap:  ## Bootstrap given cluster onto current kubectl context. (Possible C
 	done ; \
 	[ $$CONTINUE = "y" ] || [ $$CONTINUE = "Y" ] || (echo "Exiting."; exit 1;)
 
+	# provision via terraform and install the secrets to cluster
+	make -C terraform/$(CLUSTER_NAME) apply
+	make -C terraform/$(CLUSTER_NAME) cluster-secrets DEST=/tmp/cluster-secrets.yaml
+
 	# boostrap via ArgoCD
 	helm install \
 		--namespace argocd \
@@ -39,11 +43,6 @@ bootstrap:  ## Bootstrap given cluster onto current kubectl context. (Possible C
 		--values values/argocd/$(CLUSTER_NAME).yml \
 		--set certificate.enabled=false \
 		--set cloudflareOriginIssuer.enabled=false
-
-
-	# provision via terraform and install the secrets to cluster
-	make -C terraform/$(CLUSTER_NAME) apply
-	make -C terraform/$(CLUSTER_NAME) cluster-secrets > /tmp/cluster-secrets.yaml
 
 	# install CRDs of external-secrets
 	kubectl apply -f https://raw.githubusercontent.com/external-secrets/external-secrets/HEAD/deploy/crds/bundle.yaml
@@ -57,5 +56,5 @@ bootstrap:  ## Bootstrap given cluster onto current kubectl context. (Possible C
 	rm -f /tmp/cluster-secrets.yaml
 
 
-bootstrap-backbone: CLUSTER_NAME='backbone'
+bootstrap-backbone: CLUSTER_NAME=backbone
 bootstrap-backbone: bootstrap  ## Bootstrap backbone cluster onto current kubectl context.
