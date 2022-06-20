@@ -60,6 +60,7 @@ parent:
               duration: 5s
               factor: 2
               maxDuration: 3m0s
+          limit: -1
       - name: argocd-appprojects
         namespace: argocd
         destination:
@@ -81,6 +82,7 @@ parent:
               duration: 5s
               factor: 2
               maxDuration: 3m0s
+          limit: -1
 
     additionalProjects:
       - name: argocd
