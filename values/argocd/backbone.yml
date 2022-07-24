@@ -8,11 +8,11 @@ certificate:
     - ByeonghoonYoo
 
 parent:
-  # FIXME: remove this after https://github.com/argoproj/argo-cd/issues/8394 merges
-  applicationSet:
-    image:
-      repository: ghcr.io/jr64/argocd-applicationset
-      tag: v0.4.0
+#  # FIXME: remove this after https://github.com/argoproj/argo-cd/issues/8394 merges
+#  applicationSet:
+#    image:
+#      repository: ghcr.io/jr64/argocd-applicationset
+#      tag: v0.4.0
 
 
   server:
