@@ -1,0 +1,64 @@
+---
+- name: Remove netplan & NetworkManager & networkd-dispatcher & cron
+  become: yes
+  ansible.builtin.apt:
+    pkg:
+    - netplan.io
+    - network-manager
+    - networkd-dispatcher
+    - cron
+    - snapd
+    purge: true
+    state: absent
+    autoremove: true
+    autoclean: true
+  when: ansible_facts['os_family'] == "Debian"
+  notify:
+  - Enable and start systemd-networkd
+
+- name: Set a hostname
+  become: yes
+  ansible.builtin.hostname:
+    name: "{{ inventory_hostname }}"
+
+- name: Install systemd-resolved confg
+  become: yes
+  ansible.builtin.copy:
+    src: files/resolved.conf
+    dest: /etc/systemd/resolved.conf
+    owner: root
+    group: root
+    mode: u=rw,g=r,o=r
+  notify:
+  - Restart systemd-resolved
+
+- name: Install monitoring tools
+  become: yes
+  ansible.builtin.apt:
+    pkg:
+    - htop
+    - vim
+    state: latest
+    install_recommends: no
+    update_cache: yes
+  when: ansible_facts['os_family'] == "Debian"
+
+- name: Add admin user
+  become: yes
+  ansible.builtin.user:
+    name: "{{ admin_user }}"
+    append: yes
+    groups: sudo
+    comment: Admin User
+    uid: 1000
+    shell: /bin/bash
+    password: "{{ admin_user_passwd | password_hash('sha512') }}"
+    update_password: on_create
+
+- name: Update dependencies
+  become: yes
+  ansible.builtin.apt:
+    upgrade: full
+    autoremove: yes
+    autoclean: yes
+  when: ansible_facts['os_family'] == "Debian"

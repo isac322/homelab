@@ -1,0 +1,10 @@
+- name: robertdebock.locale
+  version: 3.3.4
+- name: stackhpc.systemd_networkd
+  version: v1.0.1
+- name: robertdebock.sysctl
+  version: 2.1.3
+- name: xanmanning.k3s
+  version: v3.2.0
+- name: githubixx.ansible_role_wireguard
+  version: 9.3.0
