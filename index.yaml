@@ -2,6 +2,20 @@ apiVersion: v1
 entries:
   argocd:
   - apiVersion: v2
+    created: "2022-07-24T17:23:38.567110714Z"
+    dependencies:
+    - alias: parent
+      name: argo-cd
+      repository: https://argoproj.github.io/argo-helm
+      version: 4.10.0
+    description: Extend official argo-cd with Cloudflare's Origin CA Issuer
+    digest: d548faa0a6484b72645e4c2159870a8aa110887a311cb9df82561c95bad09f3f
+    name: argocd
+    type: application
+    urls:
+    - https://github.com/isac322/homelab/releases/download/argocd-0.1.7/argocd-0.1.7.tgz
+    version: 0.1.7
+  - apiVersion: v2
     created: "2022-05-15T15:20:44.647504255Z"
     dependencies:
     - alias: parent
@@ -73,6 +87,28 @@ entries:
     version: 0.1.0
   blackd:
   - apiVersion: v2
+    appVersion: 22.6.0
+    created: "2022-07-24T17:23:38.706991491Z"
+    description: A Helm chart for Kubernetes
+    digest: b9a5aa3b41584f2e330e03493f56c596522bb4a6dbcb11f86fde996ff591ec87
+    home: https://github.com/isac322/helm-charts
+    keywords:
+    - python
+    - black
+    - lint
+    - formatter
+    maintainers:
+    - email: bh322yoo@gmail.com
+      name: Byeonghoon Isac Yoo
+      url: https://github.com/isac322
+    name: blackd
+    sources:
+    - https://github.com/isac322/helm-charts
+    type: application
+    urls:
+    - https://github.com/isac322/homelab/releases/download/blackd-1.0.1/blackd-1.0.1.tgz
+    version: 1.0.1
+  - apiVersion: v2
     appVersion: 22.3.0
     created: "2022-05-06T10:38:49.467707102Z"
     description: A Helm chart for Kubernetes
@@ -95,6 +131,22 @@ entries:
     - https://github.com/isac322/homelab/releases/download/blackd-1.0.0/blackd-1.0.0.tgz
     version: 1.0.0
   blocky-custom:
+  - apiVersion: v2
+    created: "2022-07-24T17:23:38.88253495Z"
+    dependencies:
+    - name: blocky
+      repository: https://k8s-at-home.com/charts/
+      version: 10.4.0
+    description: DNS proxy as ad-blocker for local network
+    digest: f70a2a858fb506412175fda5dd7bd82325e1445bd24e021219dbb812d0a11940
+    kubeVersion: '>=1.16.0-0'
+    name: blocky-custom
+    sources:
+    - https://github.com/0xERR0R/blocky
+    type: application
+    urls:
+    - https://github.com/isac322/homelab/releases/download/blocky-custom-10.4.0/blocky-custom-10.4.0.tgz
+    version: 10.4.0
   - apiVersion: v2
     created: "2022-05-06T10:38:49.582700592Z"
     dependencies:
@@ -132,6 +184,19 @@ entries:
     - https://github.com/isac322/homelab/releases/download/cluster-secrets-0.1.1/cluster-secrets-0.1.1.tgz
     version: 0.1.1
   external-dns:
+  - apiVersion: v2
+    created: "2022-07-24T17:23:39.028261139Z"
+    dependencies:
+    - name: external-dns
+      repository: https://kubernetes-sigs.github.io/external-dns/
+      version: 1.10.1
+    description: External-DNS
+    digest: 3c8ed441f3d82ac7fff10f74a0d9b27ad7c022bb042302c6836c61e9e6a4de7a
+    name: external-dns
+    type: application
+    urls:
+    - https://github.com/isac322/homelab/releases/download/external-dns-0.1.2/external-dns-0.1.2.tgz
+    version: 0.1.2
   - apiVersion: v2
     created: "2022-05-16T15:14:03.500744337Z"
     dependencies:
@@ -184,4 +249,4 @@ entries:
     urls:
     - https://github.com/isac322/homelab/releases/download/registry-1.13.0/registry-1.13.0.tgz
     version: 1.13.0
-generated: "2022-05-16T15:14:03.500944541Z"
+generated: "2022-07-24T17:23:39.028669747Z"
