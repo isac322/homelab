@@ -8,3 +8,5 @@
   version: v3.2.0
 - name: githubixx.ansible_role_wireguard
   version: 9.3.0
+- name: GROG.authorized-key
+  version: v1.1.5

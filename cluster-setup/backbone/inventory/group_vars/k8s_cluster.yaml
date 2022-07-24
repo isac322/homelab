@@ -7,3 +7,17 @@ wireguard_interface_restart: true
 wireguard_address: "{{ vpn_ip }}/32"
 wireguard_allowed_ips: "10.222.1.0/24"
 wireguard_endpoint: "{{ desired_ip }}"
+
+authorized_key_list_group:
+  - name: root
+    authorized_keys:
+      - key: "{{ lookup('file', './ssh_pub_keys/desktop.pub') }}"
+      - key: "{{ lookup('file', './ssh_pub_keys/laptop.pub') }}"
+      - key: "{{ lookup('file', './ssh_pub_keys/mobile.pub') }}"
+      - key: "{{ lookup('file', './ssh_pub_keys/office.pub') }}"
+  - name: "{{ admin_user }}"
+    authorized_keys:
+      - key: "{{ lookup('file', './ssh_pub_keys/desktop.pub') }}"
+      - key: "{{ lookup('file', './ssh_pub_keys/laptop.pub') }}"
+      - key: "{{ lookup('file', './ssh_pub_keys/mobile.pub') }}"
+      - key: "{{ lookup('file', './ssh_pub_keys/office.pub') }}"
