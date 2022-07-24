@@ -14,7 +14,7 @@ spec:
         - values.yaml
         - https://raw.githubusercontent.com/isac322/homelab/HEAD/values/external-dns/backbone.yaml
     repoURL: https://isac322.github.io/homelab
-    targetRevision: 0.1.0
+    targetRevision: 0.1.1
   syncPolicy:
     automated:
       prune: true
