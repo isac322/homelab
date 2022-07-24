@@ -1,0 +1,9 @@
+n2p1
+n2p2
+
+[nas]
+n2p1
+
+[k8s_cluster]
+n2p1
+n2p2

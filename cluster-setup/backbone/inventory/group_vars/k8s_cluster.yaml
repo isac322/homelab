@@ -1,0 +1,9 @@
+default_iface: eth0
+locale_lang: ko_KR.UTF-8
+locale_timezone: Asia/Seoul
+
+wireguard_interface_restart: true
+
+wireguard_address: "{{ vpn_ip }}/32"
+wireguard_allowed_ips: "10.222.1.0/24"
+wireguard_endpoint: "{{ desired_ip }}"

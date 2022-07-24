@@ -1,0 +1,57 @@
+- hosts: k8s_cluster
+  tasks:
+    - ansible.builtin.include_vars: "admin_user_info.yaml"
+
+- hosts: k8s_cluster
+  become: yes
+  gather_facts: yes
+  roles:
+    - role: robertdebock.locale
+
+- hosts: k8s_cluster
+  vars:
+    systemd_networkd_network:
+      "{{ default_iface }}":
+        - Match:
+            - Name: "{{ default_iface }}"
+        - Network:
+            - DHCP: "no"
+            - MulticastDNS: "yes"
+            - Address: "{{ desired_ip }}/24"
+        - Route:
+            - Destination: "0.0.0.0/0"
+            - Gateway: "{{ gateway_ip }}"
+            - GatewayOnlink: "true"
+  roles:
+    - role: stackhpc.systemd_networkd
+
+- hosts: k8s_cluster
+  roles:
+    - role: init-os
+
+- hosts: k8s_cluster
+  roles:
+    - role: robertdebock.sysctl
+      sysctl_items:
+        - name: net.ipv4.ip_forward
+          value: 1
+
+- hosts: k8s_cluster
+  become: yes
+  roles:
+    - role: githubixx.ansible_role_wireguard
+
+- hosts: k8s_cluster
+  vars:
+    k3s_release_version: stable
+    k3s_state: installed
+    k3s_server:
+      flannel-backend: 'host-gw'  # This needs to be in quotes
+      disable:
+        - traefik
+      advertise-address: "{{ desired_ip }}"
+      node-external-ip: "{{ vpn_ip }}"
+    k3s_agent:
+      node-external-ip: "{{ vpn_ip }}"
+  roles:
+    - role: xanmanning.k3s
