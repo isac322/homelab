@@ -8,6 +8,7 @@
     - networkd-dispatcher
     - cron
     - snapd
+    - ufw
     purge: true
     state: absent
     autoremove: true

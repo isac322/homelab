@@ -3,6 +3,11 @@
     - ansible.builtin.include_vars: "admin_user_info.yaml"
 
 - hosts: k8s_cluster
+  roles:
+    - role: GROG.authorized-key
+      become: yes
+
+- hosts: k8s_cluster
   become: yes
   gather_facts: yes
   roles:
