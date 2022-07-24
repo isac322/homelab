@@ -33,9 +33,6 @@ external-dns:
 
   provider: cloudflare
 
-  extraArgs:
-    - "--cloudflare-proxied"
-
 targetSecret:
   name: *secretName
   key: *secretKey
