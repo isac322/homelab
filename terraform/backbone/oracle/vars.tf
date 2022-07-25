@@ -20,3 +20,6 @@ variable "cloudflare_ca_api_key" {
 variable "external_dns_api_token" {
   type = string
 }
+variable "cert_manager_api_token" {
+  type = string
+}

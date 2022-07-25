@@ -43,6 +43,23 @@ resource "oci_vault_secret" "external_dns_api_token" {
   }
 }
 
+resource "oci_vault_secret" "cert_manager_api_token" {
+  compartment_id = var.tenancy_ocid
+
+  secret_content {
+    content_type = "BASE64"
+    content      = base64encode(var.cert_manager_api_token)
+    name         = "k8s_backbone_cert_manager_api_token"
+  }
+  secret_name = "k8s_backbone_cert_manager_api_token"
+  vault_id    = oci_kms_vault.vault.id
+  key_id      = oci_kms_key.vault_key.id
+
+  defined_tags = {
+    "${oci_identity_tag_namespace.backbone.name}.${oci_identity_tag.managed_by_terraform.name}" = "TRUE"
+  }
+}
+
 resource "oci_kms_key" "vault_key" {
   compartment_id = var.tenancy_ocid
   display_name   = "k8s_backbone_key"

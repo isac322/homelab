@@ -20,6 +20,7 @@ module "oracle" {
   user_ocid              = var.oracle_user_ocid
   cloudflare_ca_api_key  = var.cloudflare_ca_api_key
   external_dns_api_token = module.cloudflare.external_dns_api_token
+  cert_manager_api_token = module.cloudflare.cert_manager_api_token
 }
 
 module "cloudflare" {
