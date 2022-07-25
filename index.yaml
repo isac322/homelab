@@ -163,6 +163,17 @@ entries:
     urls:
     - https://github.com/isac322/homelab/releases/download/blocky-custom-10.2.2/blocky-custom-10.2.2.tgz
     version: 10.2.2
+  cluster-issuer:
+  - apiVersion: v2
+    appVersion: 1.16.0
+    created: "2022-07-25T15:03:41.369562163Z"
+    description: cert-manager ClusterIsser
+    digest: 58758ba333ad58b911e11b219cb8ecb012d7967a2dc08c135ca661b649e017c9
+    name: cluster-issuer
+    type: application
+    urls:
+    - https://github.com/isac322/homelab/releases/download/cluster-issuer-0.1.0/cluster-issuer-0.1.0.tgz
+    version: 0.1.0
   cluster-secret-store:
   - apiVersion: v2
     created: "2022-05-15T13:49:07.93345559Z"
@@ -249,4 +260,4 @@ entries:
     urls:
     - https://github.com/isac322/homelab/releases/download/registry-1.13.0/registry-1.13.0.tgz
     version: 1.13.0
-generated: "2022-07-24T17:23:39.028669747Z"
+generated: "2022-07-25T15:03:41.369586363Z"
