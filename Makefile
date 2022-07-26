@@ -33,16 +33,17 @@ bootstrap:  ## Bootstrap given cluster onto current kubectl context. (Possible C
 	make -C terraform/$(CLUSTER_NAME) apply
 	make -C terraform/$(CLUSTER_NAME) cluster-secrets DEST=/tmp/cluster-secrets.yaml
 
+	helm repo add argo https://argoproj.github.io/argo-helm
+	helm repo update argo
+
 	# boostrap via ArgoCD
 	helm install \
 		--namespace argocd \
 		--create-namespace \
 		argocd \
-		charts/argocd \
+		argo/argo-cd \
 		--atomic --wait \
-		--values values/argocd/$(CLUSTER_NAME).yml \
-		--set certificate.enabled=false \
-		--set cloudflareOriginIssuer.enabled=false
+		--values values/argocd/$(CLUSTER_NAME).yml
 
 	# install CRDs of external-secrets
 	kubectl apply -f https://raw.githubusercontent.com/external-secrets/external-secrets/HEAD/deploy/crds/bundle.yaml
