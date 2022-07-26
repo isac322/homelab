@@ -9,5 +9,9 @@ wireguard_allowed_ips: "10.222.1.0/24"
 wireguard_unmanaged_peers:
   GS20:
     public_key: GAJfXx2GWXBTQLI4Ikez5LSVmm79Bc6ODNGe0Y12+0I=
-    # preshared_key: ... e.g. from ansible-vault?
+    preshared_key: "{{ preshared_key }}"
     allowed_ips: "10.222.1.100/32"
+  desktop:
+    public_key: Y9ChQazERulBVkm4KjkdiTNVhVfhSOkSp37PDeSbmlQ=
+    preshared_key: "{{ preshared_key }}"
+    allowed_ips: "10.222.1.101/32"
