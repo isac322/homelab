@@ -34,7 +34,7 @@ plan: .terraform  ## generate plan file.
 	@terraform plan
 
 apply: .terraform  ## plan and apply the plan.
-	@terraform apply
+	@terraform apply -auto-approve
 
 output: .terraform  ## print outputs.
 	@terraform output -json
