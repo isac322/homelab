@@ -1,4 +1,5 @@
 terraform.tfstate filter=git-crypt diff=git-crypt
 terraform.tfvars filter=git-crypt diff=git-crypt
 admin_user_info.yaml filter=git-crypt diff=git-crypt
+wireguard_preshared_key.yaml filter=git-crypt diff=git-crypt
 .gitattributes !filter !diff

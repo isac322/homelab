@@ -3,6 +3,10 @@
     - ansible.builtin.include_vars: "admin_user_info.yaml"
 
 - hosts: k8s_cluster
+  tasks:
+    - ansible.builtin.include_vars: "wireguard_preshared_key.yaml"
+
+- hosts: k8s_cluster
   roles:
     - role: GROG.authorized-key
       become: yes
