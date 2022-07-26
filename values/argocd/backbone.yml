@@ -1,128 +1,133 @@
-certificate:
-  # -- Certificate primary domain (commonName)
-  domain: &domain argocd.bhyoo.com
-  # -- The name of the Secret that will be automatically created and managed by this Certificate resource
-  secretName: &certName argocd-server-cert
-  email: "bh322yoo@gmail.com"
-  organizations:
-    - ByeonghoonYoo
+#certificate:
+#  # -- Certificate primary domain (commonName)
+#  domain: &domain argocd.bhyoo.com
+#  # -- The name of the Secret that will be automatically created and managed by this Certificate resource
+#  secretName: &certName argocd-server-cert
+#  email: "bh322yoo@gmail.com"
+#  organizations:
+#    - ByeonghoonYoo
+#
+#parent:
+##  # FIXME: remove this after https://github.com/argoproj/argo-cd/issues/8394 merges
+##  applicationSet:
+##    image:
+##      repository: ghcr.io/jr64/argocd-applicationset
+##      tag: v0.4.0
 
-parent:
-#  # FIXME: remove this after https://github.com/argoproj/argo-cd/issues/8394 merges
-#  applicationSet:
-#    image:
-#      repository: ghcr.io/jr64/argocd-applicationset
-#      tag: v0.4.0
 
-
-  server:
-    config:
-      repositories: |
-        - type: git
-          url: https://github.com/isac322/homelab.git
-        - name: homelab
-          type: helm
-          url: https://isac322.github.io/homelab
-        - name: traefik
-          type: helm
-          url: https://helm.traefik.io/traefik
-        - name: cert-manager
-          type: helm
-          url: https://charts.jetstack.io
-        - name: sealed-secrets
-          type: helm
-          url: https://bitnami-labs.github.io/sealed-secrets
-        - name: cloudflare-origin-ca-issuer
-          type: helm
-          url: https://cloudflare.github.io/origin-ca-issuer/charts
-        - type: git
-          url: https://github.com/cloudflare/origin-ca-issuer.git
-
-    additionalApplications:
-      - name: argocd-apps
-        namespace: argocd
-        destination:
-          namespace: argocd
-          server: https://kubernetes.default.svc
-        project: argocd
-        source:
-          path: argocd/backbone/apps
-          repoURL: https://github.com/isac322/homelab.git
-          targetRevision: HEAD
-          directory:
-            recurse: true
-        syncPolicy:
-          automated:
-            prune: true
-            selfHeal: true
-          retry:
-            backoff:
-              duration: 5s
-              factor: 2
-              maxDuration: 3m0s
-            limit: -1
-      - name: argocd-appprojects
-        namespace: argocd
-        destination:
-          namespace: argocd
-          server: https://kubernetes.default.svc
-        project: argocd
-        source:
-          path: argocd/backbone/appprojects
-          repoURL: https://github.com/isac322/homelab.git
-          targetRevision: HEAD
-          directory:
-            recurse: true
-        syncPolicy:
-          automated:
-            prune: true
-            selfHeal: true
-          retry:
-            backoff:
-              duration: 5s
-              factor: 2
-              maxDuration: 3m0s
-            limit: -1
-
-    additionalProjects:
+server:
+  config:
+    repositories: |
+      - type: git
+        url: https://github.com/isac322/homelab.git
+      - name: homelab
+        type: helm
+        url: https://isac322.github.io/homelab
       - name: argocd
+        type: helm
+        url: https://argoproj.github.io/argo-helm
+      - name: traefik
+        type: helm
+        url: https://helm.traefik.io/traefik
+      - name: cert-manager
+        type: helm
+        url: https://charts.jetstack.io
+      - name: sealed-secrets
+        type: helm
+        url: https://bitnami-labs.github.io/sealed-secrets
+      - name: cloudflare-origin-ca-issuer
+        type: helm
+        url: https://cloudflare.github.io/origin-ca-issuer/charts
+      - type: git
+        url: https://github.com/cloudflare/origin-ca-issuer.git
+
+  additionalApplications:
+    - name: argocd-apps
+      namespace: argocd
+      destination:
         namespace: argocd
-        description: Argocd Project
-        sourceRepos:
-          - https://isac322.github.io/homelab
-          - https://github.com/isac322/homelab.git
-        destinations:
-          - namespace: argocd
-            server: https://kubernetes.default.svc
-        clusterResourceWhitelist:
-          - group: '*'
-            kind: '*'
+        server: https://kubernetes.default.svc
+      project: argocd
+      source:
+        path: argocd/backbone/apps
+        repoURL: https://github.com/isac322/homelab.git
+        targetRevision: HEAD
+        directory:
+          recurse: true
+      syncPolicy:
+        automated:
+          prune: true
+          selfHeal: true
+        retry:
+          backoff:
+            duration: 5s
+            factor: 2
+            maxDuration: 3m0s
+          limit: -1
+    - name: argocd-appprojects
+      namespace: argocd
+      destination:
+        namespace: argocd
+        server: https://kubernetes.default.svc
+      project: argocd
+      source:
+        path: argocd/backbone/appprojects
+        repoURL: https://github.com/isac322/homelab.git
+        targetRevision: HEAD
+        directory:
+          recurse: true
+      syncPolicy:
+        automated:
+          prune: true
+          selfHeal: true
+        retry:
+          backoff:
+            duration: 5s
+            factor: 2
+            maxDuration: 3m0s
+          limit: -1
 
-    extraArgs:
-      - --insecure
+  additionalProjects:
+    - name: argocd
+      namespace: argocd
+      description: Argocd Project
+      sourceRepos:
+        - https://isac322.github.io/homelab
+        - argocd
+      destinations:
+        - namespace: argocd
+          server: https://kubernetes.default.svc
+      clusterResourceWhitelist:
+        - group: '*'
+          kind: '*'
 
-    ingress:
-      # -- Enable an ingress resource for the Argo CD server
-      enabled: true
-      # -- Additional ingress annotations
-      annotations:
-        traefik.ingress.kubernetes.io/router.entrypoints: websecure
+  extraArgs:
+    - --insecure
 
-      # -- Defines which ingress controller will implement the resource
-      ingressClassName: traefik
+  ingress:
+    # -- Enable an ingress resource for the Argo CD server
+    enabled: true
+    # -- Additional ingress annotations
+    annotations:
+      cert-manager.io/cluster-issuer: cert-manager-cluster-issuer
+      cert-manager.io/private-key-algorithm: Ed25519
+      traefik.ingress.kubernetes.io/router.entrypoints: websecure
 
-      # -- List of ingress hosts
-      ## Argo Ingress.
-      ## Hostnames must be provided if Ingress is enabled.
-      ## Secrets must be manually created in the namespace
-      hosts:
-        - *domain
+    # -- Defines which ingress controller will implement the resource
+    ingressClassName: traefik
 
-      # -- Ingress TLS configuration
-      tls:
-        - hosts:
-            - *domain
-          secretName: *certName
+    # -- List of ingress hosts
+    ## Argo Ingress.
+    ## Hostnames must be provided if Ingress is enabled.
+    ## Secrets must be manually created in the namespace
+    hosts:
+      - argocd.bhyoo.com
 
-      # -- Uses `server.service.servicePortHttps` instead `server.service.servicePortHttp`
-      https: false
+    # -- Ingress TLS configuration
+    tls:
+      - hosts:
+          - argocd.bhyoo.com
+        secretName: argocd-server-cert
+
+    # -- Uses `server.service.servicePortHttps` instead `server.service.servicePortHttp`
+    https: false
