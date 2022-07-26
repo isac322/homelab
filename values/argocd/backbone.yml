@@ -93,7 +93,8 @@ server:
     # -- Additional ingress annotations
     annotations:
       cert-manager.io/cluster-issuer: cert-manager-cluster-issuer
-      cert-manager.io/private-key-algorithm: Ed25519
+      cert-manager.io/private-key-algorithm: ECDSA
+      cert-manager.io/private-key-size: 384
       traefik.ingress.kubernetes.io/router.entrypoints: websecure
 
     # -- Defines which ingress controller will implement the resource
