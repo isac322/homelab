@@ -93,7 +93,7 @@ server:
       description: Argocd Project
       sourceRepos:
         - https://isac322.github.io/homelab
-        - argocd
+        - https://argoproj.github.io/argo-helm
       destinations:
         - namespace: argocd
           server: https://kubernetes.default.svc

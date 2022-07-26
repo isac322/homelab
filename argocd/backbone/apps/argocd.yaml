@@ -13,7 +13,7 @@ spec:
       valueFiles:
         - values.yaml
         - https://raw.githubusercontent.com/isac322/homelab/HEAD/values/argocd/backbone.yml
-    repoURL: argocd
+    repoURL: https://argoproj.github.io/argo-helm
     targetRevision: 4.10.0
   syncPolicy:
     automated:
