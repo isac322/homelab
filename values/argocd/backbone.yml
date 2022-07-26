@@ -1,20 +1,3 @@
-#certificate:
-#  # -- Certificate primary domain (commonName)
-#  domain: &domain argocd.bhyoo.com
-#  # -- The name of the Secret that will be automatically created and managed by this Certificate resource
-#  secretName: &certName argocd-server-cert
-#  email: "bh322yoo@gmail.com"
-#  organizations:
-#    - ByeonghoonYoo
-#
-#parent:
-##  # FIXME: remove this after https://github.com/argoproj/argo-cd/issues/8394 merges
-##  applicationSet:
-##    image:
-##      repository: ghcr.io/jr64/argocd-applicationset
-##      tag: v0.4.0
-
-
 server:
   config:
     repositories: |
@@ -92,7 +75,7 @@ server:
       namespace: argocd
       description: Argocd Project
       sourceRepos:
-        - https://isac322.github.io/homelab
+        - https://github.com/isac322/homelab.git
         - https://argoproj.github.io/argo-helm
       destinations:
         - namespace: argocd
