@@ -17,7 +17,3 @@ updates:
     directory: "/terraform/backbone" # Location of package manifests
     schedule:
       interval: "daily"
-  - package-ecosystem: "terraform" # See documentation for possible values
-    directory: "/cluster-setup/terraform" # Location of package manifests
-    schedule:
-      interval: "daily"
