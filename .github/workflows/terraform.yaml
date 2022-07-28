@@ -25,3 +25,22 @@ jobs:
         with:
           token: ${{ secrets.TF_API_TOKEN }}
           path: terraform/backbone
+
+  prod:
+    runs-on: ubuntu-latest
+    permissions:
+      pull-requests: write
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v3
+      - name: Get changed files
+        id: changed-files
+        uses: tj-actions/changed-files@v24
+        with:
+          files: terraform/prod/**/*.tf
+      - name: Terraform
+        if: steps.changed-files.outputs.any_changed == 'true'
+        uses: ./.github/actions/terraform
+        with:
+          token: ${{ secrets.TF_API_TOKEN }}
+          path: terraform/prod
