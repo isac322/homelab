@@ -14,7 +14,7 @@ Kubernetes 클러스터 (재)생성이 가능한 THE BIG RED BUTTON을 목표로
 ## TODO list
 
 - [ ] provisioning + k8s 설치 자동화
-    - [ ] backbone 클러스터
+    - [x] backbone 클러스터
     - [ ] prod 클러스터
 - [ ] 클러스터 운영 자동화 (k8s 설치 이후 모든 작업)
     - [x] backbone 클러스터
