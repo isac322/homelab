@@ -5,8 +5,8 @@ data "cloudflare_zone" "zone" {
 data "cloudflare_api_token_permission_groups" "zone" {}
 
 
-resource "cloudflare_api_token" "external_dns_api_token" {
-  name = "k8s_backbone_external_dns_api_token"
+resource "cloudflare_api_token" "k8s_external_dns" {
+  name = "backbone_k8s_external_dns"
 
   policy {
     permission_groups = [
@@ -20,8 +20,8 @@ resource "cloudflare_api_token" "external_dns_api_token" {
 }
 
 
-resource "cloudflare_api_token" "cert_manager_api_token" {
-  name = "k8s_backbone_cert_manager_api_token"
+resource "cloudflare_api_token" "k8s_cert_manager" {
+  name = "backbone_k8s_cert_manager"
 
   policy {
     permission_groups = [
