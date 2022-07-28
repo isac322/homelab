@@ -16,9 +16,12 @@ Kubernetes 클러스터 (재)생성이 가능한 THE BIG RED BUTTON을 목표로
 - [ ] provisioning + k8s 설치 자동화
     - [x] backbone 클러스터
     - [ ] prod 클러스터
+    - [ ] prod 클러스터의 노드들 LPG 대신 DRG로 피어링
+    - [ ] prod와 backbone을 DRG의 site-to-site VPN으로 연결
+    - [ ] backbone, prod 클러스터 각각 생성 이후에 argocd 연결 자동화
 - [ ] 클러스터 운영 자동화 (k8s 설치 이후 모든 작업)
     - [x] backbone 클러스터
-    - [ ] prd 클러스터
+    - [ ] prod 클러스터
 - [ ] Secret를 클러스터 외부로 분리
     - [x] backbone 클러스터에서 secret 추출
     - [ ] prod 클러스터에서 secret 추출
