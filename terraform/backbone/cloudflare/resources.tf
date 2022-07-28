@@ -1,7 +1,3 @@
-data "cloudflare_zone" "zone" {
-  name = var.zone_name
-}
-
 data "cloudflare_api_token_permission_groups" "zone" {}
 
 
@@ -14,7 +10,7 @@ resource "cloudflare_api_token" "k8s_external_dns" {
       data.cloudflare_api_token_permission_groups.zone.permissions["DNS Write"],
     ]
     resources = {
-      "com.cloudflare.api.account.zone.${data.cloudflare_zone.zone.id}" = "*"
+      "com.cloudflare.api.account.${var.account_id}" = "*"
     }
   }
 }
@@ -29,7 +25,7 @@ resource "cloudflare_api_token" "k8s_cert_manager" {
       data.cloudflare_api_token_permission_groups.zone.permissions["DNS Write"],
     ]
     resources = {
-      "com.cloudflare.api.account.zone.${data.cloudflare_zone.zone.id}" = "*"
+      "com.cloudflare.api.account.${var.account_id}" = "*"
     }
   }
 }

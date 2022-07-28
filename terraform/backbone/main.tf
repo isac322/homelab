@@ -24,7 +24,7 @@ module "oracle" {
 }
 
 module "cloudflare" {
-  source    = "./cloudflare"
-  api_token = var.cloudflare_api_token
-  zone_name = var.cloudflare_host
+  source     = "./cloudflare"
+  api_token  = var.cloudflare_api_token
+  account_id = var.cloudflare_account_id
 }

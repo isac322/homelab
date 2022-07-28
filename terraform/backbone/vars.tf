@@ -28,9 +28,10 @@ variable "cloudflare_api_token" {
   description = "API token of Cloudflare. This token must have permission `API Tokens Write` and `Zone Read` at least. Follow https://developers.cloudflare.com/api/tokens/create/"
   sensitive   = true
 }
-variable "cloudflare_host" {
+variable "cloudflare_account_id" {
   type        = string
-  description = "Cloudflare Zone (host)"
+  description = "Cloudflare account id"
+  sensitive   = true
 }
 variable "cloudflare_ca_api_key" {
   type        = string
