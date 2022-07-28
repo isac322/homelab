@@ -51,15 +51,20 @@ variable "oci_vault_api_key_auth" {
   sensitive = true
 }
 
-# Required permissions for this token: "Zone Read", "API Tokens Write"
+# Required permissions for this token: "DNS Write", "Zone Read", "API Tokens Write"
 variable "cloudflare_api_token" {
   type        = string
-  description = "API token of Cloudflare. This token must have permission `API Tokens Write` and `Zone Read` at least. Follow https://developers.cloudflare.com/api/tokens/create/"
+  description = "API token of Cloudflare. This token must have permission `DNS Write`, `API Tokens Write` and `Zone Read` at least. Follow https://developers.cloudflare.com/api/tokens/create/"
   sensitive   = true
 }
 variable "cloudflare_account_id" {
   type        = string
   description = "Cloudflare account id"
+  sensitive   = true
+}
+variable "cloudflare_zone_id" {
+  type        = string
+  description = "Cloudflare zone id"
   sensitive   = true
 }
 variable "cloudflare_ca_api_key" {

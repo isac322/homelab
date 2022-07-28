@@ -52,6 +52,14 @@ provider "cloudflare" {
 module "cloudflare" {
   source     = "./cloudflare"
   account_id = var.cloudflare_account_id
+  zone_id    = var.cloudflare_zone_id
+
+  k8s_nodes = {
+    (var.oci_instance_details[var.oci_api_key_auth[0].alias].host_name) = module.oracle_instance_0.node_public_ip
+    (var.oci_instance_details[var.oci_api_key_auth[1].alias].host_name) = module.oracle_instance_1.node_public_ip
+    (var.oci_instance_details[var.oci_api_key_auth[2].alias].host_name) = module.oracle_instance_2.node_public_ip
+  }
+  k8s_controlplane_host = "oracle-cloud"
 }
 
 
