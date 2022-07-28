@@ -50,8 +50,8 @@ provider "cloudflare" {
 }
 
 module "cloudflare" {
-  source    = "./cloudflare"
-  zone_name = var.cloudflare_host
+  source     = "./cloudflare"
+  account_id = var.cloudflare_account_id
 }
 
 
