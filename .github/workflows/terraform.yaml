@@ -20,7 +20,7 @@ jobs:
         with:
           files: terraform/backbone/**/*.tf
       - name: Terraform
-        if: steps.changed-files.outputs.any_changed == 'true'
+        if: steps.changed-files.outputs.any_changed == 'true' || (github.ref == 'refs/heads/master' && github.event_name == 'push')
         uses: ./.github/actions/terraform
         with:
           token: ${{ secrets.TF_API_TOKEN }}
