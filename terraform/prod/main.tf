@@ -98,7 +98,7 @@ module "oracle_instance_0" {
 
   instance_detail = var.oci_instance_details[var.oci_api_key_auth[0].alias]
 
-  homelab_cidr_block  = var.oci_homelab_vcn_cidr[var.oci_api_key_auth[0].alias]
+  homelab_cidr_block = var.oci_homelab_vcn_cidr[var.oci_api_key_auth[0].alias]
   lpg_peer_requesters = [
     {
       destination_cidr = var.oci_homelab_vcn_cidr[var.oci_api_key_auth[1].alias]
@@ -140,7 +140,7 @@ module "oracle_instance_1" {
 
   instance_detail = var.oci_instance_details[var.oci_api_key_auth[1].alias]
 
-  homelab_cidr_block  = var.oci_homelab_vcn_cidr[var.oci_api_key_auth[1].alias]
+  homelab_cidr_block = var.oci_homelab_vcn_cidr[var.oci_api_key_auth[1].alias]
   lpg_peer_requesters = [
     {
       destination_cidr = var.oci_homelab_vcn_cidr[var.oci_api_key_auth[2].alias]
@@ -182,7 +182,7 @@ module "oracle_instance_2" {
 
   instance_detail = var.oci_instance_details[var.oci_api_key_auth[2].alias]
 
-  homelab_cidr_block  = var.oci_homelab_vcn_cidr[var.oci_api_key_auth[2].alias]
+  homelab_cidr_block = var.oci_homelab_vcn_cidr[var.oci_api_key_auth[2].alias]
   lpg_peer_requesters = [
     {
       destination_cidr = var.oci_homelab_vcn_cidr[var.oci_api_key_auth[0].alias]
