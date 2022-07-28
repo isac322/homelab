@@ -1,6 +1,5 @@
 output "vault_ocid" {
   value      = oci_kms_vault.vault.id
-  depends_on = [oci_kms_vault.vault]
   sensitive  = true
 }
 
