@@ -33,6 +33,9 @@ external-dns:
 
   provider: cloudflare
 
+  extraArgs:
+    - --service-type-filter=LoadBalancer
+
 targetSecret:
   name: *secretName
   key: *secretKey
