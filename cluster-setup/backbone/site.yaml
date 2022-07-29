@@ -77,7 +77,5 @@
         - traefik
       advertise-address: "{{ desired_ip }}"
       node-external-ip: "{{ vpn_ip }}"
-    k3s_agent:
-      node-external-ip: "{{ vpn_ip }}"
   roles:
     - role: xanmanning.k3s

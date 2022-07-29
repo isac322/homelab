@@ -8,6 +8,9 @@ wireguard_interface_restart: true
 wireguard_address: "{{ vpn_ip }}/32"
 wireguard_endpoint: "{{ desired_ip }}"
 
+k3s_agent:
+  node-external-ip: "{{ vpn_ip }}"
+
 authorized_key_list_group:
   - name: root
     authorized_keys:

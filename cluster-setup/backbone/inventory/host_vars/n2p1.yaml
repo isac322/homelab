@@ -16,3 +16,8 @@ wireguard_unmanaged_peers:
     public_key: Y9ChQazERulBVkm4KjkdiTNVhVfhSOkSp37PDeSbmlQ=
     preshared_key: "{{ preshared_key }}"
     allowed_ips: "10.222.1.101/32"
+
+k3s_agent:
+  node-external-ip: "{{ vpn_ip }}"
+  node-label:
+    - "node-role.bhyoo.com/nas=true"
