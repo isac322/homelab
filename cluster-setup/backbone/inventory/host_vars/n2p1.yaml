@@ -5,6 +5,7 @@ desired_ip: 172.30.1.3
 gateway_ip: 172.30.1.254
 
 vpn_ip: "10.222.1.1"
+wireguard_remote_directory: "/etc/wireguard.ansible"
 wireguard_allowed_ips: "10.222.1.0/24"
 wireguard_unmanaged_peers:
   GS20:

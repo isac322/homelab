@@ -45,10 +45,27 @@
         - name: net.ipv4.ip_forward
           value: 1
 
+- hosts: k8s_cluster:&nas
+  become: yes
+  tasks:
+    - name: create temporary wireguard directory
+      ansible.builtin.file:
+        path: "{{ wireguard_remote_directory }}"
+        state: directory
+        owner: root
+        group: root
+        mode: '0700'
+
 - hosts: k8s_cluster
   become: yes
   roles:
     - role: githubixx.ansible_role_wireguard
+
+- hosts: k8s_cluster:&nas
+  become: yes
+  tasks:
+    - name: deploy generated wireguard config without overwriting
+      shell: cp -n "{{ wireguard_remote_directory }}/wg0.conf" "/etc/wireguard/wg0.conf"
 
 - hosts: k8s_cluster
   vars:
