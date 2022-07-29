@@ -14,6 +14,7 @@ ingressRoute:
   dashboard:
     enabled: false
 
+# https://github.com/argoproj/argo-cd/issues/1704
 providers:
   kubernetesIngress:
     publishedService:
