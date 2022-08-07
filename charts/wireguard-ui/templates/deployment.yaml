@@ -1,0 +1,201 @@
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: {{ include "wireguard-ui.fullname" . }}
+  labels:
+    {{- include "wireguard-ui.labels" . | nindent 4 }}
+spec:
+  {{- if not .Values.autoscaling.enabled }}
+  replicas: {{ .Values.replicaCount }}
+  {{- end }}
+  selector:
+    matchLabels:
+      {{- include "wireguard-ui.selectorLabels" . | nindent 6 }}
+  template:
+    metadata:
+      {{- with .Values.podAnnotations }}
+      annotations:
+        {{- toYaml . | nindent 8 }}
+      {{- end }}
+      labels:
+        {{- include "wireguard-ui.selectorLabels" . | nindent 8 }}
+    spec:
+      {{- with .Values.imagePullSecrets }}
+      imagePullSecrets:
+        {{- toYaml . | nindent 8 }}
+      {{- end }}
+      serviceAccountName: {{ include "wireguard-ui.serviceAccountName" . }}
+      securityContext:
+        {{- toYaml .Values.podSecurityContext | nindent 8 }}
+      containers:
+        - name: {{ .Chart.Name }}
+          env:
+            - name: SESSION_SECRET
+              valueFrom:
+                secretKeyRef:
+                  name: {{ include "wireguard-ui.fullname" . }}
+                  key: session-secret
+            - name: BASE_PATH
+              value: {{ .Values.webServer.basePath | quote }}
+
+            {{- if .Values.webServer.username }}
+            - name: WGUI_USERNAME
+              value: {{ .Values.webServer.username | quote }}
+            {{- end }}
+            - name: WGUI_PASSWORD
+              valueFrom:
+                secretKeyRef:
+                  name: {{ include "wireguard-ui.fullname" . }}
+                  key: web-password
+
+            {{- $allowed_cidr_blocks := compact .Values.wgConfig.allowedIps }}
+            - name: WGUI_DEFAULT_CLIENT_ALLOWED_IPS
+              value: {{ join "," $allowed_cidr_blocks | quote }}
+            {{- $extra_allowed_cidr_blocks := compact .Values.wgConfig.extraAllowedIps }}
+            - name: WGUI_DEFAULT_CLIENT_EXTRA_ALLOWED_IPS
+              value: {{ join "," $extra_allowed_cidr_blocks | quote }}
+            - name: WGUI_DEFAULT_CLIENT_USE_SERVER_DNS
+              value: {{ .Values.wgConfig.useServerDns | quote }}
+            - name: WGUI_DEFAULT_CLIENT_ENABLE_AFTER_CREATION
+              value: {{ .Values.wgConfig.enableClientAfterCreation | quote }}
+
+            {{- if .Values.initialConfigs.wgServer.endpointAddress }}
+            - name: WGUI_ENDPOINT_ADDRESS
+              value: {{ .Values.initialConfigs.wgServer.endpointAddress | quote }}
+            {{- end }}
+            {{- if .Values.initialConfigs.wgServer.listenPort }}
+            - name: WGUI_SERVER_LISTEN_PORT
+              value: {{ .Values.initialConfigs.wgServer.listenPort | quote }}
+            {{- end }}
+            {{- $cidr_block := compact .Values.initialConfigs.wgServer.cidrBlock }}
+            {{- if $cidr_block }}
+            - name: WGUI_SERVER_INTERFACE_ADDRESSES
+              value: {{ join "," $cidr_block | quote }}
+            {{- end }}
+
+            {{- if .Values.initialConfigs.wgConfig.dns }}
+            - name: WGUI_DNS
+              value: {{ .Values.initialConfigs.wgConfig.dns | quote }}
+            {{- end }}
+            {{- if .Values.initialConfigs.wgConfig.mtu }}
+            - name: WGUI_MTU
+              value: {{ .Values.initialConfigs.wgConfig.mtu | quote }}
+            {{- end }}
+            {{- if .Values.initialConfigs.wgConfig.persistentKeepalive }}
+            - name: WGUI_PERSISTENT_KEEPALIVE
+              value: {{ .Values.initialConfigs.wgConfig.persistentKeepalive | quote }}
+            {{- end }}
+            {{- if .Values.initialConfigs.wgConfig.mtu }}
+            - name: WGUI_FORWARD_MARK
+              value: {{ .Values.initialConfigs.wgConfig.mtu | quote }}
+            {{- end }}
+          securityContext:
+            {{- toYaml .Values.securityContext | nindent 12 }}
+          image: "{{ .Values.image.repository }}:{{ .Values.image.tag | default .Chart.AppVersion }}"
+          command: []
+          args:
+            - /app/wg-ui
+          imagePullPolicy: {{ .Values.image.pullPolicy }}
+          ports:
+            - name: http
+              containerPort: 5000
+              protocol: TCP
+          livenessProbe:
+            httpGet:
+              path: /_health
+              port: http
+          readinessProbe:
+            httpGet:
+              path: /_health
+              port: http
+          resources:
+            {{- toYaml .Values.resources | nindent 12 }}
+          volumeMounts:
+            - name: db
+              mountPath: /app/db
+            - name: wg-conf
+              mountPath: /etc/wireguard
+      initContainers:
+        - name: take-dir-ownership
+          image: busybox:latest
+          command:
+            - chown
+            - -R
+            - 100:101
+            - /app/db
+            - /etc/wireguard
+          volumeMounts:
+            - name: db
+              mountPath: /app/db
+            - name: wg-conf
+              mountPath: /etc/wireguard
+        {{- if .Values.wgConfig.serverKey.enabled }}
+        - name: write-server-key
+          image: python:3.10-alpine
+          command:
+            - /bin/sh
+            - -c
+          args:
+            - |
+              set -ex;
+              apk add --update wireguard-tools-wg
+              mkdir -p /app/db/server
+              python -c "
+              import json
+              import sys
+              from datetime import datetime, timezone
+              json.dump(
+                dict(
+                  private_key=open('/mnt/private-key').read(),
+                  public_key=sys.argv[1],
+                  updated_at=datetime.now(timezone.utc).strftime('%Y-%m-%dT%H:%M:%S.%fZ'),
+                ),
+                open('/app/db/server/keypair.json', 'w'),
+              )
+              " "$(wg pubkey < /mnt/private-key)"
+          volumeMounts:
+            - name: db
+              mountPath: /app/db
+            - name: wg-private-key
+              mountPath: /mnt
+        {{- end }}
+      {{- with .Values.nodeSelector }}
+      nodeSelector:
+        {{- toYaml . | nindent 8 }}
+      {{- end }}
+      {{- with .Values.affinity }}
+      affinity:
+        {{- toYaml . | nindent 8 }}
+      {{- end }}
+      {{- with .Values.tolerations }}
+      tolerations:
+        {{- toYaml . | nindent 8 }}
+      {{- end }}
+      volumes:
+        - name: db
+          {{- if .Values.persistence.db.enabled }}
+          persistentVolumeClaim:
+            {{- if .Values.persistence.db.existingClaim }}
+            claimName: {{ .Values.persistence.db.existingClaim }}
+            {{- else }}
+            claimName: {{ template "wireguard-ui.fullname" . }}-db
+            {{- end }}
+          {{- else }}
+          emptyDir: {}
+          {{- end }}
+        - name: wg-conf
+          {{- if .Values.persistence.wgConf.enabled }}
+          persistentVolumeClaim:
+            {{- if .Values.persistence.wgConf.existingClaim }}
+            claimName: {{ .Values.persistence.wgConf.existingClaim }}
+            {{- else }}
+            claimName: {{ template "wireguard-ui.fullname" . }}-cfg
+            {{- end }}
+          {{- else }}
+          emptyDir: {}
+          {{- end }}
+        {{- if .Values.wgConfig.serverKey.enabled }}
+        - name: wg-private-key
+          secret:
+            secretName: {{ include "wireguard-ui.fullname" . }}-server-private-key
+        {{- end }}

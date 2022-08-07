@@ -1,0 +1,60 @@
+ingress:
+  enabled: true
+  className: traefik
+  annotations:
+    cert-manager.io/cluster-issuer: cert-manager-cluster-issuer
+    cert-manager.io/private-key-algorithm: ECDSA
+    cert-manager.io/private-key-size: "384"
+    traefik.ingress.kubernetes.io/router.entrypoints: websecure
+  hosts:
+    - host: wg.bhyoo.com
+      paths:
+        - path: /
+          pathType: Prefix
+  tls:
+    - hosts:
+        - wg.bhyoo.com
+      secretName: wireguard-server-cert
+
+nodeSelector:
+  node-role.bhyoo.com/nas: "true"
+
+
+wgConfig:
+  # Comma-separated-list of CIDRs for the Allowed IPs field. (default 0.0.0.0/0)
+  allowedIps:
+    - 10.222.1.0/24
+  useServerDns: false
+  enableClientAfterCreation: true
+  serverKey:
+    enabled: true
+    privateKey: "aPHtEm/yK8mYElUMmaOGYiud5qwISj6uHgak2BkSoUY="
+
+initialConfigs:
+  wgServer:
+    # The default endpoint address used in global settings. (default is your public IP address)
+    endpointAddress: backbone.bhyoo.com
+    # The default server listen port.
+    listenPort: 51902
+    # The default interface addresses (comma-separated-list) for the WireGuard server configuration.
+    cidrBlock:
+      - 10.222.1.3/24
+
+  wgConfig:
+    persistentKeepalive: 25
+
+resources:
+  limits:
+    cpu: 100m
+    memory: 128Mi
+  requests:
+    cpu: 100m
+    memory: 32Mi
+
+persistence:
+  wgConf:
+    enabled: true
+    storageClass: local-path
+  db:
+    enabled: true
+    storageClass: local-path

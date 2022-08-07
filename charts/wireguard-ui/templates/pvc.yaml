@@ -1,0 +1,31 @@
+{{- if and .Values.persistence.db.enabled (not .Values.persistence.db.existingClaim) }}
+kind: PersistentVolumeClaim
+apiVersion: v1
+metadata:
+  name: {{ template "wireguard-ui.fullname" . }}-db
+  labels:
+    {{- include "wireguard-ui.labels" . | nindent 4 }}
+spec:
+  accessModes:
+    - {{ .Values.persistence.db.accessMode | quote }}
+  resources:
+    requests:
+      storage: {{ .Values.persistence.db.size | quote }}
+  storageClassName: {{ required "A valid .Values.persistence.db.storageClass entry required!" .Values.persistence.db.storageClass | quote }}
+{{- end }}
+---
+{{- if and .Values.persistence.wgConf.enabled (not .Values.persistence.wgConf.existingClaim) }}
+kind: PersistentVolumeClaim
+apiVersion: v1
+metadata:
+  name: {{ template "wireguard-ui.fullname" . }}-cfg
+  labels:
+    {{- include "wireguard-ui.labels" . | nindent 4 }}
+spec:
+  accessModes:
+    - {{ .Values.persistence.wgConf.accessMode | quote }}
+  resources:
+    requests:
+      storage: {{ .Values.persistence.wgConf.size | quote }}
+  storageClassName: {{ required "A valid .Values.persistence.wgConf.storageClass entry required!" .Values.persistence.wgConf.storageClass | quote }}
+{{- end }}
