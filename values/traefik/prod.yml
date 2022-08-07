@@ -1,5 +1,3 @@
-globalArguments: []
-
 # Pod disruption budget
 podDisruptionBudget:
   enabled: true
@@ -16,6 +14,11 @@ ingressRoute:
   dashboard:
     enabled: false
 
+# https://github.com/argoproj/argo-cd/issues/1704
+providers:
+  kubernetesIngress:
+    publishedService:
+      enabled: true
 
 # Logs
 # https://docs.traefik.io/observability/logs/
@@ -41,11 +44,6 @@ logs:
 metrics:
   prometheus:
     entryPoint: metrics
-
-resources:
-  requests:
-    cpu: 2000m
-    memory: 128Mi
 
 #
 # Configure Traefik static configuration
@@ -89,6 +87,15 @@ service:
     externalTrafficPolicy: Local
 
 
+resources:
+  requests:
+    cpu: "100m"
+    memory: "50Mi"
+  limits:
+    cpu: "2000m"
+    memory: "512Mi"
+
+
 ## Create HorizontalPodAutoscaler object.
 ##
 autoscaling:
@@ -106,14 +113,6 @@ autoscaling:
         targetAverageUtilization: 60
 
 priorityClassName: "system-cluster-critical"
-
-nodeSelector:
-  oracle-instance-type: a1.flex
-
-providers:
-  kubernetesIngress:
-    publishedService:
-      enabled: true
 
 tolerations:
   - key: "CriticalAddonsOnly"
