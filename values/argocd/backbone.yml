@@ -32,7 +32,7 @@ server:
         name: backbone
       project: argocd
       source:
-        path: argocd/backbone/apps
+        path: argocd/apps
         repoURL: https://github.com/isac322/homelab.git
         targetRevision: HEAD
         directory:
@@ -54,7 +54,7 @@ server:
         name: backbone
       project: argocd
       source:
-        path: argocd/backbone/appprojects
+        path: argocd/appprojects
         repoURL: https://github.com/isac322/homelab.git
         targetRevision: HEAD
         directory:
@@ -76,7 +76,7 @@ server:
         name: backbone
       project: argocd
       source:
-        path: argocd/backbone/appsets
+        path: argocd/appsets
         repoURL: https://github.com/isac322/homelab.git
         targetRevision: HEAD
         directory:
