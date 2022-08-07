@@ -4,7 +4,7 @@ metadata:
   name: external-dns
 spec:
   destination:
-    server: https://kubernetes.default.svc
+    name: in-cluster
     namespace: dns-manager
   project: dns-manager
   source:

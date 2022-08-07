@@ -12,7 +12,7 @@ spec:
     - https://github.com/isac322/homelab.git
   destinations:
     - namespace: kube-system
-      server: https://kubernetes.default.svc
+      name: in-cluster
   clusterResourceWhitelist:
     - group: '*'
       kind: '*'

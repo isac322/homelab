@@ -6,7 +6,7 @@ metadata:
 spec:
   destination:
     namespace: kube-system
-    server: https://kubernetes.default.svc
+    name: in-cluster
   project: namespace-management
   source:
     path: namespace-configs/backbone
