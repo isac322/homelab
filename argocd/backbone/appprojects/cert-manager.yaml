@@ -14,9 +14,9 @@ spec:
     - https://github.com/cloudflare/origin-ca-issuer.git
   destinations:
     - namespace: cert-manager
-      server: https://kubernetes.default.svc
-    - namespace: kube-system
-      server: https://kubernetes.default.svc
+      name: prod
+    - namespace: cert-manager
+      name: in-cluster
   clusterResourceWhitelist:
     - group: '*'
       kind: '*'
