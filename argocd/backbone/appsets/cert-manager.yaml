@@ -1,0 +1,38 @@
+apiVersion: argoproj.io/v1alpha1
+kind: ApplicationSet
+metadata:
+  name: cert-manager
+  # Finalizer that ensures that project is not deleted until it is not referenced by any application
+  finalizers:
+    - resources-finalizer.argocd.argoproj.io
+spec:
+  generators:
+    - clusters: {}
+  template:
+    metadata:
+      name: cert-manager
+    spec:
+      destination:
+        name: '{{name}}'
+        namespace: cert-manager
+      project: cert-manager
+      source:
+        chart: cert-manager
+        helm:
+          valueFiles:
+            - values.yaml
+            - 'https://raw.githubusercontent.com/isac322/homelab/HEAD/values/cert-manager/{{name}}.yaml'
+        repoURL: https://charts.jetstack.io
+        targetRevision: v1.9.0
+      syncPolicy:
+        automated:
+          prune: true
+          selfHeal: true
+        retry:
+          backoff:
+            duration: 5s
+            factor: 2
+            maxDuration: 3m0s
+          limit: 100
+        syncOptions:
+          - CreateNamespace=true
