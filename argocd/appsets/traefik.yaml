@@ -1,0 +1,40 @@
+apiVersion: argoproj.io/v1alpha1
+kind: ApplicationSet
+metadata:
+  name: traefik
+  # Finalizer that ensures that project is not deleted until it is not referenced by any application
+  finalizers:
+    - resources-finalizer.argocd.argoproj.io
+spec:
+  generators:
+    - list:
+        elements:
+          - cluster: backbone
+          - cluster: prod
+  template:
+    metadata:
+      name: '{{cluster}}-traefik'
+    spec:
+      destination:
+        name: '{{cluster}}'
+        namespace: kube-system
+      project: ingress-controller
+      source:
+        chart: traefik
+        helm:
+          releaseName: traefik
+          valueFiles:
+            - values.yaml
+            - 'https://raw.githubusercontent.com/isac322/homelab/HEAD/values/traefik/{{cluster}}.yml'
+        repoURL: https://helm.traefik.io/traefik
+        targetRevision: 10.24.0
+      syncPolicy:
+        automated:
+          prune: true
+          selfHeal: true
+        retry:
+          backoff:
+            duration: 5s
+            factor: 2
+            maxDuration: 3m0s
+          limit: -1
