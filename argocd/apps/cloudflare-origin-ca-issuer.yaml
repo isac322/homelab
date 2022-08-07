@@ -6,7 +6,7 @@ metadata:
 spec:
   destination:
     name: prod
-    namespace: cert-manager
+    namespace: origin-ca-issuer
   project: cert-manager
   source:
     path: deploy/crds
@@ -32,7 +32,7 @@ metadata:
 spec:
   destination:
     name: prod
-    namespace: cert-manager
+    namespace: origin-ca-issuer
   project: cert-manager
   source:
     chart: origin-ca-issuer

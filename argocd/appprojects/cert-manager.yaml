@@ -17,6 +17,8 @@ spec:
       name: prod
     - namespace: cert-manager
       name: backbone
+    - namespace: origin-ca-issuer
+      name: prod
     # some roles and role bindings require to access kube-system
     - namespace: kube-system
       name: prod
