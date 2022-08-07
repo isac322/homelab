@@ -37,6 +37,7 @@ spec:
   source:
     chart: origin-ca-issuer
     helm:
+      releaseName: origin-ca-issuer
       valueFiles:
         - values.yaml
     repoURL: https://cloudflare.github.io/origin-ca-issuer/charts
