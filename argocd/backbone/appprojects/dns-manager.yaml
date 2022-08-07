@@ -11,7 +11,7 @@ spec:
     - https://isac322.github.io/homelab
   destinations:
     - namespace: dns-manager
-      name: in-cluster
+      name: backbone
   clusterResourceWhitelist:
     - group: '*'
       kind: '*'

@@ -11,7 +11,7 @@ spec:
     - https://helm.traefik.io/traefik
   destinations:
     - namespace: kube-system
-      name: in-cluster
+      name: backbone
   clusterResourceWhitelist:
     - group: '*'
       kind: '*'

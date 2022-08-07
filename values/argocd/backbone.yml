@@ -29,7 +29,7 @@ server:
       namespace: argocd
       destination:
         namespace: argocd
-        name: in-cluster
+        name: backbone
       project: argocd
       source:
         path: argocd/backbone/apps
@@ -51,7 +51,7 @@ server:
       namespace: argocd
       destination:
         namespace: argocd
-        name: in-cluster
+        name: backbone
       project: argocd
       source:
         path: argocd/backbone/appprojects
@@ -73,7 +73,7 @@ server:
       namespace: argocd
       destination:
         namespace: argocd
-        name: in-cluster
+        name: backbone
       project: argocd
       source:
         path: argocd/backbone/appsets
@@ -101,7 +101,7 @@ server:
         - https://argoproj.github.io/argo-helm
       destinations:
         - namespace: argocd
-          name: in-cluster
+          name: backbone
       clusterResourceWhitelist:
         - group: '*'
           kind: '*'

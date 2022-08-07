@@ -4,7 +4,7 @@ metadata:
   name: argocd
 spec:
   destination:
-    name: in-cluster
+    name: backbone
     namespace: argocd
   project: argocd
   source:

@@ -4,7 +4,7 @@ metadata:
   name: cf-origin-ca-issuer
 spec:
   destination:
-    name: in-cluster
+    name: backbone
     namespace: cert-manager
   project: cert-manager
   source:

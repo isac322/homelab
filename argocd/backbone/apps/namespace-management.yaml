@@ -6,7 +6,7 @@ metadata:
 spec:
   destination:
     namespace: kube-system
-    name: in-cluster
+    name: backbone
   project: namespace-management
   source:
     path: namespace-configs/backbone
