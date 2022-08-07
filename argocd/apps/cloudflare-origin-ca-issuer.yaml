@@ -1,10 +1,37 @@
+# CRDs
+apiVersion: argoproj.io/v1alpha1
+kind: Application
+metadata:
+  name: cf-origin-ca-issuer-crds
+spec:
+  destination:
+    name: prod
+    namespace: cert-manager
+  project: cert-manager
+  source:
+    path: deploy/crds
+    targetRevision: v0.6.1
+    repoURL: https://github.com/cloudflare/origin-ca-issuer.git
+  syncPolicy:
+    automated:
+      prune: true
+      selfHeal: true
+    retry:
+      backoff:
+        duration: 5s
+        factor: 2
+        maxDuration: 3m0s
+      limit: 100
+    syncOptions:
+      - CreateNamespace=true
+---
 apiVersion: argoproj.io/v1alpha1
 kind: Application
 metadata:
   name: cf-origin-ca-issuer
 spec:
   destination:
-    name: backbone
+    name: prod
     namespace: cert-manager
   project: cert-manager
   source:
