@@ -101,7 +101,7 @@ server:
         - https://argoproj.github.io/argo-helm
       destinations:
         - namespace: argocd
-          server: in-cluster
+          name: in-cluster
       clusterResourceWhitelist:
         - group: '*'
           kind: '*'
