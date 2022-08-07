@@ -12,6 +12,8 @@ spec:
   destinations:
     - namespace: dns-manager
       name: backbone
+    - namespace: dns-manager
+      name: prod
   clusterResourceWhitelist:
     - group: '*'
       kind: '*'
