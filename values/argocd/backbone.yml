@@ -29,7 +29,7 @@ server:
       namespace: argocd
       destination:
         namespace: argocd
-        server: https://kubernetes.default.svc
+        name: in-cluster
       project: argocd
       source:
         path: argocd/backbone/apps
@@ -51,10 +51,32 @@ server:
       namespace: argocd
       destination:
         namespace: argocd
-        server: https://kubernetes.default.svc
+        name: in-cluster
       project: argocd
       source:
         path: argocd/backbone/appprojects
+        repoURL: https://github.com/isac322/homelab.git
+        targetRevision: HEAD
+        directory:
+          recurse: true
+      syncPolicy:
+        automated:
+          prune: true
+          selfHeal: true
+        retry:
+          backoff:
+            duration: 5s
+            factor: 2
+            maxDuration: 3m0s
+          limit: -1
+    - name: argocd-appsets
+      namespace: argocd
+      destination:
+        namespace: argocd
+        name: in-cluster
+      project: argocd
+      source:
+        path: argocd/backbone/appsets
         repoURL: https://github.com/isac322/homelab.git
         targetRevision: HEAD
         directory:
@@ -79,7 +101,7 @@ server:
         - https://argoproj.github.io/argo-helm
       destinations:
         - namespace: argocd
-          server: https://kubernetes.default.svc
+          server: in-cluster
       clusterResourceWhitelist:
         - group: '*'
           kind: '*'
