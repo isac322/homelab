@@ -26,7 +26,7 @@ external-dns:
   policy: sync
 
   registry: txt
-  txtOwnerId: k8s-backbone
+  txtOwnerId: k8s-oracle-cloud-bhyoo
 
   domainFilters:
     - bhyoo.com
@@ -35,6 +35,7 @@ external-dns:
 
   extraArgs:
     - --service-type-filter=LoadBalancer
+    - --cloudflare-proxied
 
 targetSecret:
   name: *secretName
