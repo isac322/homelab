@@ -17,6 +17,11 @@ spec:
       name: prod
     - namespace: cert-manager
       name: in-cluster
+    # some roles and role bindings require to access kube-system
+    - namespace: kube-system
+      name: prod
+    - namespace: kube-system
+      name: in-cluster
   clusterResourceWhitelist:
     - group: '*'
       kind: '*'
