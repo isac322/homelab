@@ -4,7 +4,7 @@ metadata:
   name: cf-origin-ca-issuer
 spec:
   destination:
-    server: https://kubernetes.default.svc
+    name: in-cluster
     namespace: cert-manager
   project: cert-manager
   source:

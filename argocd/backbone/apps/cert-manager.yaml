@@ -4,7 +4,7 @@ metadata:
   name: cert-manager
 spec:
   destination:
-    server: https://kubernetes.default.svc
+    name: in-cluster
     namespace: cert-manager
   project: cert-manager
   source:
@@ -34,7 +34,7 @@ metadata:
   name: cert-manager-cluster-issuer
 spec:
   destination:
-    server: https://kubernetes.default.svc
+    name: in-cluster
     namespace: cert-manager
   project: cert-manager
   source:
