@@ -4,7 +4,7 @@ metadata:
   name: argocd
 spec:
   destination:
-    server: https://kubernetes.default.svc
+    name: in-cluster
     namespace: argocd
   project: argocd
   source:
