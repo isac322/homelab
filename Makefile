@@ -60,23 +60,24 @@ bootstrap:  ## Bootstrap given cluster onto current kubectl context. (Possible C
 bootstrap-backbone: CLUSTER_NAME=backbone
 bootstrap-backbone: bootstrap  ## Bootstrap backbone cluster onto current kubectl context.
 
-cluster_secret_%: /tmp/cluster-secrets.yaml
-	@echo '$* Infrastructure secrets of $(CLUSTER_NAME) cluster to context: "$(CONTEXT)"'
+cluster_secret_% : /tmp/%-cluster-secrets.yaml
+	@echo 'Installing/Upgrading infrastructure secrets of $* cluster to context: "$(CONTEXT)"'
 	@while [ -z "$$CONTINUE" ]; do \
 		read -r -p "Type anything but Y or y to exit. [y/N]: " CONTINUE; \
 	done ; \
 	[ $$CONTINUE = "y" ] || [ $$CONTINUE = "Y" ] || (echo "Exiting."; exit 1;)
 
-	helm $* \
+	helm upgrade \
+		--install \
 		--namespace kube-system \
 		--create-namespace \
 		--wait --atomic \
 		cluster-secrets \
 		charts/cluster-secrets \
-		--values /tmp/cluster-secrets.yaml
-	rm -f /tmp/cluster-secrets.yaml
+		--values /tmp/$*-cluster-secrets.yaml
+	rm -f /tmp/$*-cluster-secrets.yaml
 
-/tmp/cluster-secrets.yaml:
-	@test -r 'terraform/$(CLUSTER_NAME)' || (echo 'Specify valid cluster name via CLUSTER_NAME'; exit 1)
-	make -C terraform/$(CLUSTER_NAME) cluster-secrets DEST=/tmp/cluster-secrets.yaml
+/tmp/%-cluster-secrets.yaml:
+	@test -r 'terraform/$*' || (echo 'Specify valid cluster name via CLUSTER_NAME'; exit 1)
+	make -C terraform/$* cluster-secrets DEST=$@
 
