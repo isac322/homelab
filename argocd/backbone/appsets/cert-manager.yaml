@@ -13,7 +13,7 @@ spec:
           - cluster: prod
   template:
     metadata:
-      name: cert-manager
+      name: '{{cluster}}-cert-manager'
     spec:
       destination:
         name: '{{cluster}}'
