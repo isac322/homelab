@@ -22,6 +22,7 @@ spec:
       source:
         chart: cert-manager
         helm:
+          releaseName: cert-manager
           valueFiles:
             - values.yaml
             - 'https://raw.githubusercontent.com/isac322/homelab/HEAD/values/cert-manager/{{cluster}}.yaml'
