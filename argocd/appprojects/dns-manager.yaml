@@ -8,7 +8,8 @@ metadata:
 spec:
   description: Managing external DNS
   sourceRepos:
-    - https://isac322.github.io/homelab
+    - https://github.com/isac322/homelab.git
+    - https://kubernetes-sigs.github.io/external-dns/
   destinations:
     - namespace: dns-manager
       name: backbone

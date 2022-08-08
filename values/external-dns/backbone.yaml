@@ -1,47 +1,36 @@
-external-dns:
-  env:
-    - name: CF_API_TOKEN
-      valueFrom:
-        secretKeyRef:
-          name: &secretName cloudflare-api-token
-          key: &secretKey cloudflare_api_token
+env:
+  - name: CF_API_TOKEN
+    valueFrom:
+      secretKeyRef:
+        name: cloudflare-api-token
+        key: cloudflare_api_token
 
-  resources:
-    requests:
-      cpu: 100m
-      memory: 32Mi
-    limits:
-      cpu: 500m
-      memory: 100Mi
+resources:
+  requests:
+    cpu: 100m
+    memory: 32Mi
+  limits:
+    cpu: 500m
+    memory: 100Mi
 
-  logLevel: info
-  logFormat: text
+logLevel: info
+logFormat: text
 
-  interval: 1m
+interval: 1m
 
-  sources:
-    - service
-    - ingress
+sources:
+  - service
+  - ingress
 
-  policy: sync
+policy: sync
 
-  registry: txt
-  txtOwnerId: k8s-backbone
+registry: txt
+txtOwnerId: k8s-backbone
 
-  domainFilters:
-    - bhyoo.com
+domainFilters:
+  - bhyoo.com
 
-  provider: cloudflare
+provider: cloudflare
 
-  extraArgs:
-    - --service-type-filter=LoadBalancer
-
-targetSecret:
-  name: *secretName
-  key: *secretKey
-
-externalSecrets:
-  remoteSecretName: k8s_external_dns_api_token
-  secretStore:
-    name: cluster-secrets
-    kind: ClusterSecretStore
+extraArgs:
+  - --service-type-filter=LoadBalancer
