@@ -1,17 +1,17 @@
 apiVersion: argoproj.io/v1alpha1
 kind: AppProject
 metadata:
-  name: jay-india
+  name: blackd
   # Finalizer that ensures that project is not deleted until it is not referenced by any application
   finalizers:
     - resources-finalizer.argocd.argoproj.io
 spec:
-  description: Jay's india static web page
+  description: Python code formatter
   sourceRepos:
     - https://isac322.github.io/homelab
     - https://github.com/isac322/homelab.git
   destinations:
-    - namespace: jay-india
+    - namespace: blackd
       name: prod
   clusterResourceWhitelist:
     - group: '*'
