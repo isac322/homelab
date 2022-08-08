@@ -1,0 +1,10 @@
+apiVersion: cert-manager.k8s.cloudflare.com/v1
+kind: OriginIssuer
+metadata:
+  name: cloudflare-origin-issuer
+spec:
+  requestType: OriginECC
+  auth:
+    serviceKeyRef:
+      name: cloudflare-ca-api-key
+      key: cloudflare_origin_ca_key

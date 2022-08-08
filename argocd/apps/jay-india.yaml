@@ -1,0 +1,56 @@
+# CRDs
+apiVersion: argoproj.io/v1alpha1
+kind: Application
+metadata:
+  name: jay-india
+spec:
+  destination:
+    name: prod
+    namespace: jay-india
+  project: jay-india
+  source:
+    chart: jay-india
+    helm:
+      valueFiles:
+        - values.yaml
+        - https://raw.githubusercontent.com/isac322/homelab/HEAD/values/jay-india/prod.yml
+    repoURL: https://isac322.github.io/homelab
+    targetRevision: 0.1.0
+  syncPolicy:
+    automated:
+      prune: true
+      selfHeal: true
+    retry:
+      backoff:
+        duration: 5s
+        factor: 2
+        maxDuration: 3m0s
+      limit: 100
+    syncOptions:
+      - CreateNamespace=true
+---
+apiVersion: argoproj.io/v1alpha1
+kind: Application
+metadata:
+  name: jay-india-origin-ca-issuer
+spec:
+  destination:
+    name: prod
+    namespace: jay-india
+  project: jay-india
+  source:
+    path: apps/objects/cloudflare-origin-ca-issuer
+    repoURL: https://github.com/isac322/homelab.git
+    targetRevision: HEAD
+  syncPolicy:
+    automated:
+      prune: true
+      selfHeal: true
+    retry:
+      backoff:
+        duration: 5s
+        factor: 2
+        maxDuration: 3m0s
+      limit: 100
+    syncOptions:
+      - CreateNamespace=true
