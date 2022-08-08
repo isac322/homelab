@@ -1,0 +1,35 @@
+apiVersion: argoproj.io/v1alpha1
+kind: ApplicationSet
+metadata:
+  name: k3s-upgrade
+  # Finalizer that ensures that project is not deleted until it is not referenced by any application
+  finalizers:
+    - resources-finalizer.argocd.argoproj.io
+spec:
+  generators:
+    - list:
+        elements:
+          - cluster: backbone
+          - cluster: prod
+  template:
+    metadata:
+      name: '{{cluster}}-k3s-upgrade'
+    spec:
+      destination:
+        name: '{{cluster}}'
+        namespace: system-upgrade
+      project: system-upgrade
+      source:
+        path: apps/objects/k3s-system-upgrade
+        targetRevision: HEAD
+        repoURL: https://github.com/isac322/homelab.git
+      syncPolicy:
+        automated:
+          prune: true
+          selfHeal: true
+        retry:
+          backoff:
+            duration: 5s
+            factor: 2
+            maxDuration: 3m0s
+          limit: -1
