@@ -22,7 +22,7 @@ help: ## Display this help.
 ##@ Boostrap
 
 bootstrap:  ## Bootstrap given cluster onto current kubectl context. (Possible CLUSTER_NAME: backbone, prod)
-	@test -r 'values/argocd/$(CLUSTER_NAME).yml' || (echo 'Specify valid cluster name via CLUSTER_NAME'; exit 1)
+	@test -r 'values/argocd/$(CLUSTER_NAME).yaml' || (echo 'Specify valid cluster name via CLUSTER_NAME'; exit 1)
 	@echo 'bootstrap $(CLUSTER_NAME) cluster for context: "$(CONTEXT)"'
 	@while [ -z "$$CONTINUE" ]; do \
 		read -r -p "Type anything but Y or y to exit. [y/N]: " CONTINUE; \
@@ -43,7 +43,7 @@ bootstrap:  ## Bootstrap given cluster onto current kubectl context. (Possible C
 		argocd \
 		argo/argo-cd \
 		--atomic --wait \
-		--values values/argocd/$(CLUSTER_NAME).yml
+		--values values/argocd/$(CLUSTER_NAME).yaml
 
 	# install CRDs of external-secrets
 	kubectl apply -f https://raw.githubusercontent.com/external-secrets/external-secrets/HEAD/deploy/crds/bundle.yaml

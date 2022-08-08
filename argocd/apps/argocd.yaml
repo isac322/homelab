@@ -12,7 +12,7 @@ spec:
     helm:
       valueFiles:
         - values.yaml
-        - https://raw.githubusercontent.com/isac322/homelab/HEAD/values/argocd/backbone.yml
+        - https://raw.githubusercontent.com/isac322/homelab/HEAD/values/argocd/backbone.yaml
     repoURL: https://argoproj.github.io/argo-helm
     targetRevision: 4.10.5
   syncPolicy:

@@ -25,7 +25,7 @@ spec:
           releaseName: traefik
           valueFiles:
             - values.yaml
-            - 'https://raw.githubusercontent.com/isac322/homelab/HEAD/values/traefik/{{cluster}}.yml'
+            - 'https://raw.githubusercontent.com/isac322/homelab/HEAD/values/traefik/{{cluster}}.yaml'
         repoURL: https://helm.traefik.io/traefik
         targetRevision: 10.24.0
       syncPolicy:
