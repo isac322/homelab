@@ -9,6 +9,7 @@ spec:
   description: Ad blocker
   sourceRepos:
     - https://k8s-at-home.com/charts/
+    - https://github.com/isac322/homelab.git
   destinations:
     - namespace: blocky
       name: prod
