@@ -1,8 +1,0 @@
-issuer:
-  email: ""
-  server: ""
-  domains: []
-  organizations: []
-
-sealedSecrets:
-  cloudflareAPIToken: ""
