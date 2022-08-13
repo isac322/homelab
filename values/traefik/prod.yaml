@@ -105,12 +105,12 @@ autoscaling:
   metrics:
     - type: Resource
       resource:
-        name: cpu
-        targetAverageUtilization: 30
-    - type: Resource
-      resource:
         name: memory
         targetAverageUtilization: 80
+    - type: Resource
+      resource:
+        name: cpu
+        targetAverageUtilization: 30
 
 priorityClassName: "system-cluster-critical"
 
