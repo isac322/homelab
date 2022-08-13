@@ -2,4 +2,6 @@ resources:
   limits:
     cpu: 1000m
     memory: 512Mi
-  requests: {}
+  requests:
+    cpu: 1m
+    memory: 128Mi
