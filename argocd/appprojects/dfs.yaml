@@ -11,7 +11,7 @@ spec:
     - https://charts.rook.io/release
     - https://github.com/isac322/homelab.git
   destinations:
-    - namespace: rook
+    - namespace: rook-ceph
       name: prod
   clusterResourceWhitelist:
     - group: '*'

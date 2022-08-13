@@ -6,7 +6,7 @@ metadata:
 spec:
   destination:
     name: prod
-    namespace: rook
+    namespace: rook-ceph
   project: dfs
   source:
     chart: rook-ceph
@@ -37,7 +37,7 @@ metadata:
 spec:
   destination:
     name: prod
-    namespace: rook
+    namespace: rook-ceph
   project: dfs
   source:
     path: apps/objects/cloudflare-origin-ca-issuer
