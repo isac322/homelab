@@ -66,6 +66,23 @@ cephClusterSpec:
     urlPrefix: ""
     ssl: false
 
+  resources:
+    mon:
+      limits:
+        cpu: "2000m"
+      requests:
+        cpu: "500m"
+    osd:
+      limits:
+        cpu: "2000m"
+      requests:
+        cpu: "500m"
+    prepareosd:
+      limits:
+        cpu: "500m"
+      requests:
+        cpu: "500m"
+
 ingress:
   dashboard:
     annotations:
