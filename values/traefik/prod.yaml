@@ -99,7 +99,7 @@ resources:
 ## Create HorizontalPodAutoscaler object.
 ## https://github.com/argoproj/argo-cd/issues/1079
 autoscaling:
-  enabled: true
+  enabled: false
   minReplicas: 1
   maxReplicas: 10
   metrics:
