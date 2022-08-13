@@ -39,7 +39,7 @@ spec:
     namespace: rook-ceph
   project: dfs
   source:
-    chart: rook-ceph
+    chart: rook-ceph-cluster
     helm:
       valueFiles:
         - values.yaml
