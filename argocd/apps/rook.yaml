@@ -1,0 +1,57 @@
+# CRDs
+apiVersion: argoproj.io/v1alpha1
+kind: Application
+metadata:
+  name: rook-ceph-operator
+spec:
+  destination:
+    name: prod
+    namespace: rook
+  project: dfs
+  source:
+    chart: rook-ceph
+    helm:
+      releaseName: rook-ceph
+      values: |-
+        resources.requests.cpu=1000m
+        resources.limits.cpu=1000m
+    repoURL: https://charts.rook.io/release
+    targetRevision: v1.9.8
+  syncPolicy:
+    automated:
+      prune: true
+      selfHeal: true
+    retry:
+      backoff:
+        duration: 5s
+        factor: 2
+        maxDuration: 3m0s
+      limit: 100
+    syncOptions:
+      - CreateNamespace=true
+---
+apiVersion: argoproj.io/v1alpha1
+kind: Application
+metadata:
+  name: rook-ceph-origin-ca-issuer
+spec:
+  destination:
+    name: prod
+    namespace: rook
+  project: dfs
+  source:
+    path: apps/objects/cloudflare-origin-ca-issuer
+    repoURL: https://github.com/isac322/homelab.git
+    targetRevision: HEAD
+  syncPolicy:
+    automated:
+      prune: true
+      selfHeal: true
+    retry:
+      backoff:
+        duration: 5s
+        factor: 2
+        maxDuration: 3m0s
+      limit: 100
+    syncOptions:
+      - CreateNamespace=true
