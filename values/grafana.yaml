@@ -48,9 +48,9 @@ resources:
 persistence:
   type: pvc
   enabled: true
-  storageClassName: ceph-filesystem
+  storageClassName: ceph-block
   accessModes:
-    - ReadWriteMany
+    - ReadWriteOnce
   size: 10Gi
   # annotations: {}
   finalizers:

@@ -84,6 +84,6 @@ affinity: {}
 
 persistence:
   enabled: false
-  accessMode: ReadWriteMany
+  accessMode: ReadWriteOnce
   size: 500Mi
   storageClass: ""

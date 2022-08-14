@@ -16,8 +16,8 @@ adminUser:
 
 persistence:
   enabled: true
-  storageClass: ceph-filesystem
-  accessMode: ReadWriteMany
+  storageClass: ceph-block
+  accessMode: ReadWriteOnce
   size: 50Gi
 
 ingress:

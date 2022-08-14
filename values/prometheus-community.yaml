@@ -66,7 +66,7 @@ alertmanager:
     ## Ref: http://kubernetes.io/docs/user-guide/persistent-volumes/
     ##
     accessModes:
-      - ReadWriteMany
+      - ReadWriteOnce
 
     ## alertmanager data Persistent Volume Claim annotations
     ##
@@ -92,7 +92,7 @@ alertmanager:
     ##   set, choosing the default provisioner.  (gp2 on AWS, standard on
     ##   GKE, AWS & OpenStack)
     ##
-    storageClass: "ceph-filesystem"
+    storageClass: "ceph-block"
 
     ## alertmanager data Persistent Volume Binding Mode
     ## If defined, volumeBindingMode: <volumeBindingMode>
@@ -229,7 +229,7 @@ server:
     ## Ref: http://kubernetes.io/docs/user-guide/persistent-volumes/
     ##
     accessModes:
-      - ReadWriteMany
+      - ReadWriteOnce
 
     ## Prometheus server data Persistent Volume existing claim name
     ## Requires server.persistentVolume.enabled: true
@@ -251,7 +251,7 @@ server:
     ##   set, choosing the default provisioner.  (gp2 on AWS, standard on
     ##   GKE, AWS & OpenStack)
     ##
-    storageClass: "ceph-filesystem"
+    storageClass: "ceph-block"
 
     ## Prometheus server data Persistent Volume Binding Mode
     ## If defined, volumeBindingMode: <volumeBindingMode>
