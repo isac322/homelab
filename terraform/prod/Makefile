@@ -42,3 +42,7 @@ output: .terraform  ## print outputs.
 cluster-secrets: DEST=/dev/stdout
 cluster-secrets: .terraform  ## Print values YAML of cluster-secrets charts
 	@terraform output -raw cluster_secrets_values > '$(DEST)'
+
+cluster-node-ips: DEST=/dev/stdout
+cluster-node-ips: .terraform  ## Print node ips
+	@terraform output -json cluster_node_ips > '$(DEST)'

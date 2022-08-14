@@ -20,3 +20,12 @@ output "cluster_secrets_values" {
   )
   sensitive = true
 }
+
+output "cluster_node_ips" {
+  value = [
+    module.oracle_instance_0.node_public_ip,
+    module.oracle_instance_1.node_public_ip,
+    module.oracle_instance_2.node_public_ip,
+  ]
+  sensitive = true
+}
