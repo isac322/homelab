@@ -13,7 +13,7 @@ resource oci_core_instance "k8s_node" {
   create_vnic_details {
     assign_public_ip       = "true"
     display_name           = "homelab"
-    hostname_label         = "k8s"
+    hostname_label         = var.instance_detail.host_name
     skip_source_dest_check = "true"
     subnet_id              = oci_core_subnet.homelab.id
   }

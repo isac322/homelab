@@ -21,11 +21,16 @@ output "cluster_secrets_values" {
   sensitive = true
 }
 
-output "cluster_node_ips" {
-  value = [
-    module.oracle_instance_0.node_public_ip,
-    module.oracle_instance_1.node_public_ip,
-    module.oracle_instance_2.node_public_ip,
-  ]
+output "cluster_nodes" {
+  value = yamlencode(
+    [
+    for m in [module.oracle_instance_0, module.oracle_instance_1, module.oracle_instance_2] :
+    {
+      hostname   = m.node_hostname,
+      public_ip  = m.node_public_ip,
+      private_ip = m.node_private_ip,
+    }
+    ]
+  )
   sensitive = true
 }

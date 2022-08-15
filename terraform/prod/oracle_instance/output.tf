@@ -13,6 +13,16 @@ output "node_public_ip" {
   sensitive = true
 }
 
+output "node_private_ip" {
+  value     = oci_core_private_ip.k8s_node.ip_address
+  sensitive = true
+}
+
+output "node_hostname" {
+  value     = var.instance_detail.host_name
+  sensitive = true
+}
+
 #output "secret_name_cf_ca_api_key" {
 #  value = oci_vault_secret.cloudflare_ca_api_key.secret_name
 #}
