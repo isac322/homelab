@@ -1,0 +1,13 @@
+---
+iptables_use_ftp: false
+iptables_use_mdns: false
+iptables_use_llmnr: false
+iptables_reset_all: false
+iptables_wireguard_port: 51820
+iptables_wireguard_interface: wg0
+iptables_use_k3s_server: false
+iptables_use_k3s_agent: false
+iptables_use_vxlan: false
+iptables_k3s_server_ha_embedded_etcd: false
+iptables_k3s_internal_cidr: ""
+iptables_k3s_kubelet_accessible_cidrs: []

@@ -1,0 +1,300 @@
+---
+- name: Install iptables-persistent
+  ansible.builtin.apt:
+    update_cache: yes
+    package:
+      - iptables-persistent
+    install_recommends: no
+
+- name: Enable iptables service
+  ansible.builtin.systemd:
+    enabled: yes
+    name: iptables
+    state: started
+
+- name: Reset iptables
+  block:
+    - name: ACCEPT INPUT chain
+      ansible.builtin.iptables:
+        chain_management: yes
+        chain: INPUT
+        policy: ACCEPT
+
+    - name: Flush rules
+      ansible.builtin.iptables:
+        flush: yes
+        table: "{{ item }}"
+      loop:
+        - filter
+        - nat
+        - mangle
+        - raw
+        - security
+
+    - name: Delete chains
+      ansible.builtin.command:
+        cmd: "iptables -t {{ item }} -X"
+      loop:
+        - filter
+        - nat
+        - mangle
+        - raw
+        - security
+
+    - name: Accept INPUT chain
+      ansible.builtin.iptables:
+        chain_management: yes
+        chain: INPUT
+        policy: ACCEPT
+
+    - name: Accept FORWARD chain
+      ansible.builtin.iptables:
+        chain_management: yes
+        chain: FORWARD
+        policy: ACCEPT
+
+    - name: Accept OUTPUT chain
+      ansible.builtin.iptables:
+        chain_management: yes
+        chain: OUTPUT
+        policy: ACCEPT
+  when: iptables_reset_all
+
+- name: Create TCP chain
+#  ansible.builtin.command:
+#    cmd: "iptables -N TCP"
+  ansible.builtin.iptables:
+    chain: TCP
+    chain_management: yes
+    state: present
+
+- name: Create UDP chain
+#  ansible.builtin.command:
+#    cmd: "iptables -N UDP"
+  ansible.builtin.iptables:
+    chain: UDP
+    chain_management: yes
+    state: present
+
+- name: Drop FORWARD chain
+  ansible.builtin.iptables:
+    chain_management: yes
+    chain: FORWARD
+    policy: DROP
+
+- name: Accept OUTPUT chain
+  ansible.builtin.iptables:
+    chain_management: yes
+    chain: OUTPUT
+    policy: ACCEPT
+
+- name: Allow established connections, or new valid traffic
+  ansible.builtin.iptables:
+    chain: INPUT
+    ctstate:
+      - RELATED
+      - ESTABLISHED
+    jump: ACCEPT
+
+- name: Allow all from loopback
+  ansible.builtin.iptables:
+    chain: INPUT
+    in_interface: lo
+    jump: ACCEPT
+
+- name: Drop all traffic with an "INVALID" state
+  ansible.builtin.iptables:
+    chain: INPUT
+    ctstate:
+      - INVALID
+    jump: DROP
+
+- name: Allow all new incoming ICMP echo requests
+  ansible.builtin.iptables:
+    chain: INPUT
+    protocol: icmp
+    icmp_type: 8
+    ctstate:
+      - NEW
+    jump: ACCEPT
+
+- name: Attach the UDP chain to the INPUT chain
+  ansible.builtin.iptables:
+    chain: INPUT
+    protocol: udp
+    ctstate:
+      - NEW
+    jump: UDP
+
+- name: Attach the TCP chain to the INPUT chain
+  ansible.builtin.iptables:
+    chain: INPUT
+    protocol: tcp
+    syn: match
+    ctstate:
+      - NEW
+    jump: TCP
+
+- name: Reject UDP streams with ICMP port unreachable messages
+  block:
+    - name: Remove existing rule if exists
+      ansible.builtin.command:
+        cmd: "iptables -D INPUT -p udp -m recent --set --rsource --name UDP-PORTSCAN -j REJECT --reject-with icmp-port-unreachable"
+      ignore_errors: yes
+    - name: Create rule
+      ansible.builtin.command:
+        cmd: "iptables -A INPUT -p udp -m recent --set --rsource --name UDP-PORTSCAN -j REJECT --reject-with icmp-port-unreachable"
+#  ansible.builtin.iptables:
+#    chain: INPUT
+#    protocol: udp
+#    reject_with: icmp-port-unreachable
+
+- name: Reject TCP connections with TCP RESET packets
+  block:
+    - name: Remove existing rule if exists
+      ansible.builtin.command:
+        cmd: "iptables -D INPUT -p tcp -m recent --set --rsource --name TCP-PORTSCAN -j REJECT --reject-with tcp-reset"
+      ignore_errors: yes
+    - name: Create rule
+      ansible.builtin.command:
+        cmd: "iptables -A INPUT -p tcp -m recent --set --rsource --name TCP-PORTSCAN -j REJECT --reject-with tcp-reset"
+#  ansible.builtin.iptables:
+#    chain: INPUT
+#    protocol: tcp
+#    reject_with: tcp-reset
+
+- name: Reject all remaining incoming traffic with icmp protocol unreachable messages
+  block:
+    - name: Remove existing rule if exists
+      ansible.builtin.iptables:
+        chain: INPUT
+        reject_with: icmp-proto-unreachable
+        state: absent
+    - name: Create rule
+      ansible.builtin.iptables:
+        chain: INPUT
+        reject_with: icmp-proto-unreachable
+
+# TCP
+
+- name: Tricking TCP port scanner
+  block:
+    - name: Remove existing rule if exists
+      ansible.builtin.command:
+        cmd: "iptables -D TCP -p tcp -m recent --update --rsource --seconds 60 --name TCP-PORTSCAN -j REJECT --reject-with tcp-reset"
+      ignore_errors: yes
+    - name: Create rule
+      ansible.builtin.command:
+        cmd: "iptables -I TCP 2 -p tcp -m recent --update --rsource --seconds 60 --name TCP-PORTSCAN -j REJECT --reject-with tcp-reset"
+
+- name: Allow SSH
+  ansible.builtin.iptables:
+    chain: TCP
+    protocol: tcp
+    destination_port: 22
+    jump: ACCEPT
+
+- name: Allow FTP
+  ansible.builtin.iptables:
+    chain: TCP
+    protocol: tcp
+    destination_port: 21
+    jump: ACCEPT
+  when: iptables_use_ftp
+
+- name: Allow FTP (Active mode)
+  ansible.builtin.iptables:
+    chain: TCP
+    protocol: tcp
+    destination_port: 20
+    jump: ACCEPT
+  when: iptables_use_ftp
+
+- name: Allow kubelet
+  ansible.builtin.iptables:
+    chain: TCP
+    protocol: tcp
+    destination_port: 6443
+    jump: ACCEPT
+    source: "{{ (iptables_k3s_kubelet_accessible_cidrs + [iptables_k3s_internal_cidr]) | join(',') }}"
+  when: iptables_use_k3s_server
+
+- name: Allow kubelet metrics
+  ansible.builtin.iptables:
+    chain: TCP
+    protocol: tcp
+    destination_port: 10250
+    jump: ACCEPT
+    source: "{{ (iptables_k3s_kubelet_accessible_cidrs + [iptables_k3s_internal_cidr]) | join(',') }}"
+  when: iptables_use_k3s_server or iptables_use_k3s_agent
+
+- name: Allow k3s embbeded etcd
+  ansible.builtin.iptables:
+    chain: TCP
+    protocol: tcp
+    destination_port: 2379:2380
+    jump: ACCEPT
+    in_interface: "{{ ansible_default_ipv4.interface }}"
+    source: "{{ iptables_k3s_internal_cidr }}"
+  when: iptables_use_k3s_server and iptables_k3s_server_ha_embedded_etcd
+
+# UDP
+
+- name: Tricking UDP port scanner
+  block:
+    - name: Remove existing rule if exists
+      ansible.builtin.command:
+        cmd: "iptables -D UDP -p udp -m recent --update --rsource --seconds 60 --name UDP-PORTSCAN -j REJECT --reject-with icmp-port-unreachable"
+      ignore_errors: yes
+    - name: Create rule
+      ansible.builtin.command:
+        cmd: "iptables -I UDP 2 -p udp -m recent --update --rsource --seconds 60 --name UDP-PORTSCAN -j REJECT --reject-with icmp-port-unreachable"
+
+- name: Allow Multicast DNS (mDNS)
+  ansible.builtin.iptables:
+    chain: UDP
+    protocol: udp
+    destination_port: 5353
+    jump: ACCEPT
+  when: iptables_use_mdns
+
+- name: Allow Link-Local Multicast Name Resolution (LLMNR)
+  ansible.builtin.iptables:
+    chain: UDP
+    protocol: udp
+    destination_port: 5355
+    jump: ACCEPT
+  when: iptables_use_llmnr
+
+- name: Allow Wireguard
+  ansible.builtin.iptables:
+    chain: UDP
+    protocol: udp
+    in_interface: "{{ iptables_wireguard_interface }}"
+    destination_port: "{{ iptables_wireguard_port }}"
+    jump: ACCEPT
+
+- name: Allow VXLAN
+  ansible.builtin.iptables:
+    chain: UDP
+    protocol: udp
+    destination_port: 8472
+    jump: ACCEPT
+    in_interface: "{{ ansible_default_ipv4.interface }}"
+    source: "{{ iptables_k3s_internal_cidr }}"
+  when: (iptables_use_k3s_server or iptables_use_k3s_agent) and iptables_use_vxlan
+
+# DROP other INPUT traffic
+
+- name: Drop INPUT chain
+  ansible.builtin.iptables:
+    chain_management: yes
+    chain: INPUT
+    policy: DROP
+
+
+# Save rules to filesystem
+
+- name: Save rules to filesystem
+  ansible.builtin.command:
+    cmd: "netfilter-persistent save"
