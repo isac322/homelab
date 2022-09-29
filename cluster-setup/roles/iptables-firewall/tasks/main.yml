@@ -76,6 +76,14 @@
     chain_management: yes
     state: present
 
+- name: Forwarding all wireguard traffic
+  ansible.builtin.iptables:
+    chain: FORWARD
+    in_interface: "{{ iptables_wireguard_interface }}"
+    out_interface: "{{ iptables_wireguard_interface }}"
+    jump: ACCEPT
+  when: iptables_wireguard_is_site
+
 - name: Drop FORWARD chain
   ansible.builtin.iptables:
     chain_management: yes
@@ -270,7 +278,7 @@
   ansible.builtin.iptables:
     chain: UDP
     protocol: udp
-    in_interface: "{{ iptables_wireguard_interface }}"
+    in_interface: "{{ ansible_default_ipv4.interface }}"
     destination_port: "{{ iptables_wireguard_port }}"
     jump: ACCEPT
 
