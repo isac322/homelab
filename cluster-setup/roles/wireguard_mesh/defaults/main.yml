@@ -1,0 +1,32 @@
+---
+
+
+#######################################
+# Settings only relevant for Ubuntu
+#######################################
+
+# Set to "false" if package cache should not be updated
+wireguard_ubuntu_update_cache: "true"
+
+# Set package cache valid time
+wireguard_ubuntu_cache_valid_time: "3600"
+
+wireguard_ip: ""
+# The default port WireGuard will listen if not specified otherwise.
+wireguard_port: "51820"
+
+# The default interface name that WireGuard should use if not specified otherwise.
+wireguard_interface: "wg0"
+
+
+wireguard_site_gateway: false
+wireguard_site_gateway_port: "{{ wireguard_port }}"
+wireguard_site_gateway_host: ""
+
+
+wireguard_cidr: "10.222.0.0/24"
+wireguard_admin_cidr: "10.222.0.128/26"
+wireguard_p2p_cidr: "10.222.0.64/26"
+wireguard_site_cidr: "10.222.0.0/26"
+
+wireguard_admin_clients: []

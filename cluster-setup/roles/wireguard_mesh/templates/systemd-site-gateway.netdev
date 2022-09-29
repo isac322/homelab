@@ -1,0 +1,37 @@
+[NetDev]
+Name={{ wireguard_interface }}
+Kind=wireguard
+Description=WireGuard tunnel {{ wireguard_interface }}
+
+[WireGuard]
+ListenPort={{ wireguard_port }}
+PrivateKeyFile=/etc/wireguard/privatekey
+
+{% for peer in wireguard__register_p2p_nodes if peer not in groups[wireguard_site_group_name] %}
+
+[WireGuardPeer]
+PublicKey={{ hostvars[peer].wireguard__register_public_key }}
+PresharedKeyFile=/etc/wireguard/psk-{{ peer }}
+AllowedIPs={{ hostvars[peer].wireguard_ip }}/32
+Endpoint={{ peer }}:{{ hostvars[peer].wireguard_port }}
+PersistentKeepalive=25
+{% endfor %}
+
+{% for peer in groups[wireguard_site_group_name] if peer != inventory_hostname %}
+
+[WireGuardPeer]
+PublicKey={{ hostvars[peer].wireguard__register_public_key }}
+PresharedKeyFile=/etc/wireguard/psk-{{ peer }}
+AllowedIPs={{ hostvars[peer].wireguard_ip }}/32
+Endpoint={{ peer }}:{{ hostvars[peer].wireguard_port }}
+PersistentKeepalive=25
+{% endfor %}
+
+
+{% for peer in wireguard_admin_clients|dict2items %}
+
+[WireGuardPeer]
+PublicKey={{ wireguard__register_admin_client_public_keys[peer.key] }}
+PresharedKeyFile=/etc/wireguard/psk-{{ peer.key }}
+AllowedIPs={{ peer.value.ip }}/32
+{% endfor %}

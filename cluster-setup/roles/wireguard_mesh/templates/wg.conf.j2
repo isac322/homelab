@@ -1,0 +1,23 @@
+[Interface]
+Address = {{ item.value.ip }}/24
+PrivateKey = {{ wireguard__register_admin_client_private_keys[item.key] }}
+
+{% for peer in wireguard__register_point_nodes %}
+
+[Peer]
+PublicKey = {{ hostvars[peer].wireguard__register_public_key }}
+PresharedKey = {{ hostvars[peer].wireguard__register_client_psk[item.key] }}
+AllowedIPs = {{ hostvars[peer].wireguard_ip }}/32
+Endpoint = {{ peer }}:{{ wireguard_port }}
+PersistentKeepalive = 25
+{% endfor %}
+
+{% for peer in wireguard__register_site_gateways %}
+
+[Peer]
+PublicKey = {{ hostvars[peer].wireguard__register_public_key }}
+PresharedKey = {{ hostvars[peer].wireguard__register_client_psk[item.key] }}
+AllowedIPs = {{ hostvars[peer].wireguard_site_cidr|default(wireguard_site_cidr) }}
+Endpoint = {{ hostvars[peer].wireguard_site_gateway_host|default(wireguard_site_gateway_host) }}:{{ hostvars[peer].wireguard_site_gateway_port|default(wireguard_site_gateway_port) }}
+PersistentKeepalive = 25
+{% endfor %}
