@@ -21,16 +21,15 @@ output "cluster_secrets_values" {
   sensitive = true
 }
 
-output "cluster_nodes" {
+locals {
+  node_modules = [module.oracle_instance_0, module.oracle_instance_1, module.oracle_instance_2]
+}
+
+output "public_ip_map" {
   value = yamlencode(
-    [
-    for m in [module.oracle_instance_0, module.oracle_instance_1, module.oracle_instance_2] :
     {
-      hostname   = m.node_hostname,
-      public_ip  = m.node_public_ip,
-      private_ip = m.node_private_ip,
+      for m in local.node_modules : join(".", [m.node_hostname, module.cloudflare.domain]) => m.node_public_ip
     }
-    ]
   )
   sensitive = true
 }
