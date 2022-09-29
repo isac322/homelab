@@ -1,0 +1,20 @@
+---
+- name: Edits the hosts file in /etc
+  ansible.builtin.template:
+    src: "etc/hosts.j2"
+    dest: /etc/hosts
+    backup: true
+    group: root
+    owner: root
+    mode: '0644'
+  vars:
+    hosts_exludes_interfaces:
+      - vet*
+      - flannel
+      - wg
+      - cni
+      - docker
+    hosts_ipv6: "{{ etc_hosts_ipv6 }}"
+    hosts_all_private: true
+    hosts_all_public: false
+    hosts_ipv4_address: "{{ hostvars[inventory_hostname]['ansible_default_ipv4']['address'] }}"
