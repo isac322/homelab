@@ -1,6 +1,5 @@
 ---
 - name: Remove netplan & NetworkManager & networkd-dispatcher & cron
-  become: yes
   ansible.builtin.apt:
     pkg:
     - netplan.io
@@ -23,7 +22,6 @@
     name: "{{ inventory_hostname }}"
 
 - name: Install systemd-resolved confg
-  become: yes
   ansible.builtin.copy:
     src: files/resolved.conf
     dest: /etc/systemd/resolved.conf
@@ -34,7 +32,6 @@
   - Restart systemd-resolved
 
 - name: Install monitoring tools
-  become: yes
   ansible.builtin.apt:
     pkg:
     - htop
@@ -45,7 +42,6 @@
   when: ansible_facts['os_family'] == "Debian"
 
 - name: Add admin user
-  become: yes
   ansible.builtin.user:
     name: "{{ admin_user }}"
     append: yes
@@ -57,7 +53,6 @@
     update_password: on_create
 
 - name: Update dependencies
-  become: yes
   ansible.builtin.apt:
     upgrade: full
     autoremove: yes
