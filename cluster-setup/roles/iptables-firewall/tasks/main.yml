@@ -143,7 +143,7 @@
       - NEW
     jump: TCP
 
-- name: Reject UDP streams with ICMP port unreachable messages
+- name: Reject UDP streams with ICMP port unreachable messages [UDP scans]
   block:
     - name: Remove existing rule if exists
       ansible.builtin.command:
@@ -152,12 +152,16 @@
     - name: Create rule
       ansible.builtin.command:
         cmd: "iptables -A INPUT -p udp -m recent --set --rsource --name UDP-PORTSCAN -j REJECT --reject-with icmp-port-unreachable"
-#  ansible.builtin.iptables:
-#    chain: INPUT
-#    protocol: udp
-#    reject_with: icmp-port-unreachable
+  when: iptables_tricking_port_scanners
 
-- name: Reject TCP connections with TCP RESET packets
+- name: Reject UDP streams with ICMP port unreachable messages
+  ansible.builtin.iptables:
+    chain: INPUT
+    protocol: udp
+    reject_with: icmp-port-unreachable
+  when: not iptables_tricking_port_scanners
+
+- name: Reject TCP connections with TCP RESET packets [SYN scans]
   block:
     - name: Remove existing rule if exists
       ansible.builtin.command:
@@ -166,10 +170,14 @@
     - name: Create rule
       ansible.builtin.command:
         cmd: "iptables -A INPUT -p tcp -m recent --set --rsource --name TCP-PORTSCAN -j REJECT --reject-with tcp-reset"
-#  ansible.builtin.iptables:
-#    chain: INPUT
-#    protocol: tcp
-#    reject_with: tcp-reset
+  when: iptables_tricking_port_scanners
+
+- name: Reject TCP Connection with TCP RESET packets
+  ansible.builtin.iptables:
+    chain: INPUT
+    protocol: tcp
+    reject_with: tcp-reset
+  when: not iptables_tricking_port_scanners
 
 - name: Reject all remaining incoming traffic with icmp protocol unreachable messages
   block:
@@ -194,6 +202,7 @@
     - name: Create rule
       ansible.builtin.command:
         cmd: "iptables -I TCP 2 -p tcp -m recent --update --rsource --seconds 60 --name TCP-PORTSCAN -j REJECT --reject-with tcp-reset"
+  when: iptables_tricking_port_scanners
 
 - name: Allow SSH
   ansible.builtin.iptables:
@@ -257,6 +266,7 @@
     - name: Create rule
       ansible.builtin.command:
         cmd: "iptables -I UDP 2 -p udp -m recent --update --rsource --seconds 60 --name UDP-PORTSCAN -j REJECT --reject-with icmp-port-unreachable"
+  when: iptables_tricking_port_scanners
 
 - name: Allow Multicast DNS (mDNS)
   ansible.builtin.iptables:

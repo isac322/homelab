@@ -3,6 +3,7 @@ iptables_use_ftp: false
 iptables_use_mdns: false
 iptables_use_llmnr: false
 iptables_reset_all: false
+iptables_tricking_port_scanners: false
 iptables_wireguard_port: 51820
 iptables_wireguard_interface: wg0
 iptables_wireguard_is_site: false
