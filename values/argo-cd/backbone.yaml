@@ -50,11 +50,11 @@ extraObjects:
 controller:
   resources:
     limits:
-      cpu: 1000m
+      cpu: 1500m
       memory: 512Mi
     requests:
       cpu: 250m
-      memory: 256Mi
+      memory: 512Mi
 
 #  metrics:
 #    enabled: true
@@ -87,10 +87,10 @@ redis:
 server:
   resources:
     limits:
-      cpu: 100m
-      memory: 128Mi
+      cpu: 1000m
+      memory: 512128Mi
     requests:
-      cpu: 50m
+      cpu: 100m
       memory: 64Mi
 
   ingress:
@@ -116,7 +116,7 @@ server:
 repoServer:
   resources:
     limits:
-      cpu: 500m
+      cpu: 1000m
       memory: 512Mi
     requests:
       cpu: 100m
