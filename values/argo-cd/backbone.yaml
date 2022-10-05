@@ -39,6 +39,7 @@ extraObjects:
     kind: Secret
     metadata:
       name: backbone-cluster
+      namespace: argocd
       labels:
         argocd.argoproj.io/secret-type: cluster
     type: Opaque
