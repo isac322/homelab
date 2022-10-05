@@ -1,86 +1,86 @@
-#apiVersion: argoproj.io/v1alpha1
-#kind: Application
-#metadata:
-#  name: rook-ceph-operator
-#spec:
-#  destination:
-#    name: prod
-#    namespace: rook-ceph
-#  project: dfs
-#  source:
-#    chart: rook-ceph
-#    helm:
-#      releaseName: rook-ceph
-#      valueFiles:
-#        - values.yaml
-#        - https://raw.githubusercontent.com/isac322/homelab/HEAD/values/rook/operator.prod.yaml
-#    repoURL: https://charts.rook.io/release
-#    targetRevision: v1.9.8
-#  syncPolicy:
-#    automated:
-#      prune: true
-#      selfHeal: true
-#    retry:
-#      backoff:
-#        duration: 5s
-#        factor: 2
-#        maxDuration: 3m0s
-#      limit: 100
-#    syncOptions:
-#      - CreateNamespace=true
-#---
-#apiVersion: argoproj.io/v1alpha1
-#kind: Application
-#metadata:
-#  name: rook-ceph-cluster
-#spec:
-#  destination:
-#    name: prod
-#    namespace: rook-ceph
-#  project: dfs
-#  source:
-#    chart: rook-ceph-cluster
-#    helm:
-#      valueFiles:
-#        - values.yaml
-#        - https://raw.githubusercontent.com/isac322/homelab/HEAD/values/rook/cluster.prod.yaml
-#    repoURL: https://charts.rook.io/release
-#    targetRevision: v1.9.8
-#  syncPolicy:
-#    automated:
-#      prune: true
-#      selfHeal: true
-#    retry:
-#      backoff:
-#        duration: 5s
-#        factor: 2
-#        maxDuration: 3m0s
-#      limit: 100
-#    syncOptions:
-#      - CreateNamespace=true
-#---
-#apiVersion: argoproj.io/v1alpha1
-#kind: Application
-#metadata:
-#  name: rook-ceph-origin-ca-issuer
-#spec:
-#  destination:
-#    name: prod
-#    namespace: rook-ceph
-#  project: dfs
-#  source:
-#    path: apps/objects/cloudflare-origin-ca-issuer
-#    repoURL: https://github.com/isac322/homelab.git
-#    targetRevision: HEAD
-#  syncPolicy:
-#    automated:
-#      prune: true
-#      selfHeal: true
-#    retry:
-#      backoff:
-#        duration: 5s
-#        factor: 2
-#        maxDuration: 3m0s
-#      limit: 100
-#    syncOptions:
-#      - CreateNamespace=true
+apiVersion: argoproj.io/v1alpha1
+kind: Application
+metadata:
+  name: rook-ceph-operator
+spec:
+  destination:
+    name: prod
+    namespace: rook-ceph
+  project: dfs
+  source:
+    chart: rook-ceph
+    helm:
+      releaseName: rook-ceph
+      valueFiles:
+        - values.yaml
+        - https://raw.githubusercontent.com/isac322/homelab/HEAD/values/rook/operator.prod.yaml
+    repoURL: https://charts.rook.io/release
+    targetRevision: v1.10.2
+  syncPolicy:
+    automated:
+      prune: true
+      selfHeal: true
+    retry:
+      backoff:
+        duration: 5s
+        factor: 2
+        maxDuration: 3m0s
+      limit: 100
+    syncOptions:
+      - CreateNamespace=true
+---
+apiVersion: argoproj.io/v1alpha1
+kind: Application
+metadata:
+  name: rook-ceph-cluster
+spec:
+  destination:
+    name: prod
+    namespace: rook-ceph
+  project: dfs
+  source:
+    chart: rook-ceph-cluster
+    helm:
+      valueFiles:
+        - values.yaml
+        - https://raw.githubusercontent.com/isac322/homelab/HEAD/values/rook/cluster.prod.yaml
+    repoURL: https://charts.rook.io/release
+    targetRevision: v1.10.2
+  syncPolicy:
+    automated:
+      prune: true
+      selfHeal: true
+    retry:
+      backoff:
+        duration: 5s
+        factor: 2
+        maxDuration: 3m0s
+      limit: 100
+    syncOptions:
+      - CreateNamespace=true
+---
+apiVersion: argoproj.io/v1alpha1
+kind: Application
+metadata:
+  name: rook-ceph-origin-ca-issuer
+spec:
+  destination:
+    name: prod
+    namespace: rook-ceph
+  project: dfs
+  source:
+    path: apps/objects/cloudflare-origin-ca-issuer
+    repoURL: https://github.com/isac322/homelab.git
+    targetRevision: HEAD
+  syncPolicy:
+    automated:
+      prune: true
+      selfHeal: true
+    retry:
+      backoff:
+        duration: 5s
+        factor: 2
+        maxDuration: 3m0s
+      limit: 100
+    syncOptions:
+      - CreateNamespace=true
