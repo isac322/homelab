@@ -1,0 +1,124 @@
+configs:
+  repositories:
+    homelab-git:
+      name: homelab-git
+      type: git
+      url: https://github.com/isac322/homelab.git
+    homelab-helm:
+      name: homelab-helm
+      type: helm
+      url: https://isac322.github.io/homelab
+    argocd-helm:
+      name: argocd-helm
+      type: helm
+      url: https://argoproj.github.io/argo-helm
+    traefik-helm:
+      name: traefik-helm
+      type: helm
+      url: https://helm.traefik.io/traefik
+    cert-manager-helm:
+      name: cert-manager-helm
+      type: helm
+      url: https://charts.jetstack.io
+    cloudflare-origin-ca-issuer-helm:
+      name: cloudflare-origin-ca-issuer-helm
+      type: helm
+      url: https://cloudflare.github.io/origin-ca-issuer/charts
+    cloudflare-origin-ca-issuer-git:
+      name: cloudflare-origin-ca-issuer-git
+      type: git
+      url: https://github.com/cloudflare/origin-ca-issuer.git
+
+  params:
+    server.insecure: true
+    server.enable.gzip: true
+
+extraObjects:
+  # https://argo-cd.readthedocs.io/en/stable/operator-manual/declarative-setup/#clusters
+  - apiVersion: v1
+    kind: Secret
+    metadata:
+      name: backbone-cluster
+      labels:
+        argocd.argoproj.io/secret-type: cluster
+    type: Opaque
+    stringData:
+      name: backbone
+      server: https://kubernetes.default.svc
+
+controller:
+  resources:
+    limits:
+      cpu: 500m
+      memory: 512Mi
+    requests:
+      cpu: 250m
+      memory: 256Mi
+
+#  metrics:
+#    enabled: true
+
+dex:
+  resources:
+    limits:
+      cpu: 50m
+      memory: 64Mi
+    requests:
+      cpu: 10m
+      memory: 32Mi
+
+#  metrics:
+#    enabled: true
+
+redis:
+  resources:
+    limits:
+      cpu: 200m
+      memory: 128Mi
+    requests:
+      cpu: 100m
+      memory: 64Mi
+
+#  metrics:
+#    enabled: true
+
+
+server:
+  resources:
+    limits:
+      cpu: 100m
+      memory: 128Mi
+    requests:
+      cpu: 50m
+      memory: 64Mi
+
+  ingress:
+    enabled: true
+    annotations:
+      cert-manager.io/cluster-issuer: cert-manager-cluster-issuer
+      cert-manager.io/private-key-algorithm: ECDSA
+      cert-manager.io/private-key-size: 384
+      traefik.ingress.kubernetes.io/router.entrypoints: websecure
+
+    ingressClassName: traefik
+
+    hosts:
+      - argocd.bhyoo.com
+
+    tls:
+      - hosts:
+          - argocd.bhyoo.com
+        secretName: argocd-server-cert
+
+    https: false
+
+repoServer:
+  resources:
+    limits:
+      cpu: 50m
+      memory: 128Mi
+    requests:
+      cpu: 10m
+      memory: 64Mi
+
+applicationSet:

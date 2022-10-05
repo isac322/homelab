@@ -1,0 +1,89 @@
+applications:
+  - name: argocd-apps
+    namespace: argocd
+    finalizers:
+      - resources-finalizer.argocd.argoproj.io
+    destination:
+      namespace: argocd
+      name: backbone
+    project: argocd
+    source:
+      path: argocd/apps
+      repoURL: https://github.com/isac322/homelab.git
+      targetRevision: HEAD
+      directory:
+        recurse: true
+    syncPolicy:
+      automated:
+        prune: true
+        selfHeal: true
+      retry:
+        backoff:
+          duration: 5s
+          factor: 2
+          maxDuration: 3m0s
+        limit: -1
+  - name: argocd-appprojects
+    namespace: argocd
+    finalizers:
+      - resources-finalizer.argocd.argoproj.io
+    destination:
+      namespace: argocd
+      name: backbone
+    project: argocd
+    source:
+      path: argocd/appprojects
+      repoURL: https://github.com/isac322/homelab.git
+      targetRevision: HEAD
+      directory:
+        recurse: true
+    syncPolicy:
+      automated:
+        prune: true
+        selfHeal: true
+      retry:
+        backoff:
+          duration: 5s
+          factor: 2
+          maxDuration: 3m0s
+        limit: -1
+  - name: argocd-appsets
+    namespace: argocd
+    finalizers:
+      - resources-finalizer.argocd.argoproj.io
+    destination:
+      namespace: argocd
+      name: backbone
+    project: argocd
+    source:
+      path: argocd/appsets
+      repoURL: https://github.com/isac322/homelab.git
+      targetRevision: HEAD
+      directory:
+        recurse: true
+    syncPolicy:
+      automated:
+        prune: true
+        selfHeal: true
+      retry:
+        backoff:
+          duration: 5s
+          factor: 2
+          maxDuration: 3m0s
+        limit: -1
+
+projects:
+  - name: argocd
+    namespace: argocd
+    finalizers:
+      - resources-finalizer.argocd.argoproj.io
+    description: Argocd Project
+    sourceRepos:
+      - https://github.com/isac322/homelab.git
+      - https://argoproj.github.io/argo-helm
+    destinations:
+      - namespace: argocd
+        name: backbone
+    clusterResourceWhitelist:
+      - group: '*'
+        kind: '*'
