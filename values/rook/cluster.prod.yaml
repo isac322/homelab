@@ -5,7 +5,7 @@
 
 
 toolbox:
-  enabled: true
+  enabled: false
 
 
 monitoring:
