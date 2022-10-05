@@ -35,14 +35,14 @@ spec:
 apiVersion: argoproj.io/v1alpha1
 kind: Application
 metadata:
-  name: argo/argocd-apps
+  name: argocd-apps
 spec:
   destination:
     name: backbone
     namespace: argocd
   project: argocd
   source:
-    chart: argo/argocd-apps
+    chart: argocd-apps
     helm:
       valueFiles:
         - values.yaml
