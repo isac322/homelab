@@ -1,0 +1,32 @@
+---
+- hosts: backbone
+  tasks:
+    - ansible.builtin.include_vars: "admin_user_info.yaml"
+
+- hosts: backbone
+  become: yes
+  gather_facts: yes
+  roles:
+    - role: robertdebock.locale
+
+- hosts: backbone
+  vars:
+    systemd_networkd_network:
+      "{{ default_iface }}":
+        - Match:
+            - Name: "{{ default_iface }}"
+        - Network:
+            - DHCP: "no"
+            - MulticastDNS: "yes"
+            - Address: "{{ desired_ip }}/24"
+        - Route:
+            - Destination: "0.0.0.0/0"
+            - Gateway: "{{ gateway_ip }}"
+            - GatewayOnlink: "true"
+  roles:
+    - role: stackhpc.systemd_networkd
+
+- hosts: backbone
+  become: yes
+  roles:
+    - role: init-os

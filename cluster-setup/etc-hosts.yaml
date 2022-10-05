@@ -1,0 +1,15 @@
+- hosts: prod
+  name: Edits the hosts file in /etc
+  become: yes
+  roles:
+    - role: etc_hosts
+      vars:
+        etc_hosts_ipv6: false
+
+- hosts: backbone
+  name: Edits the hosts file in /etc
+  become: yes
+  roles:
+    - role: etc_hosts
+      vars:
+        etc_hosts_ipv6: false

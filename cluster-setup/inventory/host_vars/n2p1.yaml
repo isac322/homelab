@@ -1,0 +1,18 @@
+ansible_host: 172.30.1.3
+ansible_user: root
+ansible_password: odroid
+desired_ip: 172.30.1.3
+gateway_ip: 172.30.1.254
+
+
+wireguard_ip: "10.222.0.1"
+wireguard_site_gateway: true
+wireguard_site_gateway_host: "backbone.bhyoo.com"
+
+
+allow_ssh_root_login: true
+
+
+iptables_use_ftp: true
+iptables_use_k3s_agent: true
+iptables_wireguard_is_site: true

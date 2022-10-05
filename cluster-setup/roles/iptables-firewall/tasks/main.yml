@@ -179,7 +179,7 @@
     reject_with: tcp-reset
   when: not iptables_tricking_port_scanners
 
-- name: Reject all remaining incoming traffic with icmp protocol unreachable messages
+- name: Reject all remaining incoming traffic with icmp protocol unreachable messages [port scan]
   block:
     - name: Remove existing rule if exists
       ansible.builtin.iptables:
@@ -190,6 +190,13 @@
       ansible.builtin.iptables:
         chain: INPUT
         reject_with: icmp-proto-unreachable
+  when: iptables_tricking_port_scanners
+
+- name: Reject all remaining incoming traffic with icmp protocol unreachable messages
+  ansible.builtin.iptables:
+    chain: INPUT
+    reject_with: icmp-proto-unreachable
+  when: not iptables_tricking_port_scanners
 
 # TCP
 
@@ -314,5 +321,7 @@
 # Save rules to filesystem
 
 - name: Save rules to filesystem
-  ansible.builtin.command:
-    cmd: "netfilter-persistent save"
+  community.general.iptables_state:
+    ip_version: ipv4
+    state: saved
+    path: /etc/iptables/rules.v4

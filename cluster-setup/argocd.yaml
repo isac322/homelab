@@ -1,0 +1,291 @@
+---
+- hosts: prod
+  roles:
+    - role: gantsign.helm
+      vars:
+        helm_architecture: 'arm64'
+
+- hosts: prod
+  name: Install cluster secrets on prod
+  tasks:
+    - name: Download CRDs of external-secrets
+      run_once: yes
+      ansible.builtin.get_url:
+        url: https://raw.githubusercontent.com/external-secrets/external-secrets/HEAD/deploy/crds/bundle.yaml
+        dest: /tmp/external-secrets-crds.yaml
+        mode: '0644'
+
+    - name: Apply CRDs of external-secrets
+      become: yes
+      run_once: yes
+      kubernetes.core.k8s:
+        state: present
+        wait: yes
+        wait_condition:
+          type: Established
+        kubeconfig: /etc/rancher/k3s/k3s.yaml
+        src: /tmp/external-secrets-crds.yaml
+
+    - name: Copy value file
+      run_once: yes
+      ansible.builtin.copy:
+        src: /tmp/prod-cluster-secrets.yaml
+        dest: /tmp/cluster-secrets.yaml
+
+    - name: Install cluster secrets
+      become: yes
+      run_once: yes
+      kubernetes.core.helm:
+        atomic: yes
+        chart_ref: cluster-secrets
+        chart_repo_url: https://isac322.github.io/homelab/
+        create_namespace: yes
+        kubeconfig: /etc/rancher/k3s/k3s.yaml
+        release_name: cluster-secrets
+        release_namespace: kube-system
+        values_files:
+          - /tmp/cluster-secrets.yaml
+        wait: yes
+
+- hosts: backbone
+  roles:
+    - role: gantsign.helm
+      vars:
+        helm_architecture: 'arm64'
+      when: k3s_control_node is defined and k3s_control_node
+
+- hosts: backbone
+  name: Install cluster secrets on backbone
+  tasks:
+    - name: Download CRDs of external-secrets
+      ansible.builtin.get_url:
+        url: https://raw.githubusercontent.com/external-secrets/external-secrets/HEAD/deploy/crds/bundle.yaml
+        dest: /tmp/external-secrets-crds.yaml
+        mode: '0644'
+      when: k3s_control_node is defined and k3s_control_node
+
+    - name: Apply CRDs of external-secrets
+      become: yes
+      kubernetes.core.k8s:
+        state: present
+        wait: yes
+        wait_condition:
+          type: Established
+        kubeconfig: /etc/rancher/k3s/k3s.yaml
+        src: /tmp/external-secrets-crds.yaml
+      when: k3s_control_node is defined and k3s_control_node
+
+    - name: Copy value file
+      ansible.builtin.copy:
+        src: /tmp/backbone-cluster-secrets.yaml
+        dest: /tmp/cluster-secrets.yaml
+      when: k3s_control_node is defined and k3s_control_node
+
+    - name: Install cluster secrets
+      become: yes
+      kubernetes.core.helm:
+        atomic: yes
+        chart_ref: cluster-secrets
+        chart_repo_url: https://isac322.github.io/homelab/
+        create_namespace: yes
+        kubeconfig: /etc/rancher/k3s/k3s.yaml
+        release_name: cluster-secrets
+        release_namespace: kube-system
+        values_files:
+          - /tmp/cluster-secrets.yaml
+        wait: yes
+      when: k3s_control_node is defined and k3s_control_node
+
+- hosts: prod
+  name: Create ServiceAccount for argocd in prod
+  run_once: yes
+  tasks:
+    - name: Create ServiceAccount for argocd
+      become: yes
+      kubernetes.core.k8s:
+        state: present
+        wait: yes
+        kubeconfig: /etc/rancher/k3s/k3s.yaml
+        definition:
+          apiVersion: v1
+          kind: ServiceAccount
+          metadata:
+            name: &saName argocd-manager
+            namespace: kube-system
+            annotations:
+              managed-by-ansible: 'true'
+
+    - name: Create token for argocd ServiceAccount
+      become: yes
+      kubernetes.core.k8s:
+        state: present
+        wait: yes
+        kubeconfig: /etc/rancher/k3s/k3s.yaml
+        definition:
+          apiVersion: v1
+          kind: Secret
+          metadata:
+            name: &tokenName argocd-manager-token
+            namespace: kube-system
+            annotations:
+              kubernetes.io/service-account.name: *saName
+              managed-by-ansible: 'true'
+          type: kubernetes.io/service-account-token
+
+    - name: Create ClusterRole for argocd
+      become: yes
+      kubernetes.core.k8s:
+        state: present
+        wait: yes
+        kubeconfig: /etc/rancher/k3s/k3s.yaml
+        definition:
+          apiVersion: rbac.authorization.k8s.io/v1
+          kind: ClusterRole
+          metadata:
+            name: &roleName argocd-manager-role
+            annotations:
+              managed-by-ansible: 'true'
+          rules:
+            - apiGroups:
+                - '*'
+              resources:
+                - '*'
+              verbs:
+                - '*'
+            - nonResourceURLs:
+                - '*'
+              verbs:
+                - '*'
+
+    - name: Bind ClusterRole to argocd ServiceAccount
+      become: yes
+      kubernetes.core.k8s:
+        state: present
+        wait: yes
+        kubeconfig: /etc/rancher/k3s/k3s.yaml
+        definition:
+          apiVersion: rbac.authorization.k8s.io/v1
+          kind: ClusterRoleBinding
+          metadata:
+            name: argocd-manager-role-binding
+            annotations:
+              managed-by-ansible: 'true'
+          roleRef:
+            apiGroup: rbac.authorization.k8s.io
+            kind: ClusterRole
+            name: *roleName
+          subjects:
+            - kind: ServiceAccount
+              name: *saName
+              namespace: kube-system
+
+    - name: Load Token
+      become: yes
+      kubernetes.core.k8s_info:
+        wait: yes
+        kubeconfig: /etc/rancher/k3s/k3s.yaml
+        api_version: v1
+        kind: Secret
+        name: *tokenName
+        namespace: kube-system
+      register: _register_argocd_sa_token
+
+    - name: Register secret body
+      ansible.builtin.set_fact:
+        _register_argocd_cluster_config: "{{
+          {
+            'tlsClientConfig': {
+              'caData': _register_argocd_sa_token.resources.0.data['ca.crt'],
+              'insecure': false
+            },
+            'bearerToken': _register_argocd_sa_token.resources.0.data.token | b64decode
+          }
+        }}"
+        _register_prod_cluster_url: "https://{{ wireguard_ip }}:6443"
+      delegate_to: "{{ item }}"
+      delegate_facts: yes
+      when:
+        - hostvars[item].k3s_control_node is defined
+        - hostvars[item].k3s_control_node
+      loop: "{{ groups.backbone }}"
+
+- hosts: backbone
+  name: Install argocd
+  tasks:
+    - name: Create argocd namespace on backbone cluster
+      become: yes
+      kubernetes.core.k8s:
+        state: present
+        wait: yes
+        kubeconfig: /etc/rancher/k3s/k3s.yaml
+        name: argocd
+        api_version: v1
+        kind: Namespace
+      when: k3s_control_node is defined and k3s_control_node
+
+    - name: Create Secret for prod cluster on backbone cluster
+      become: yes
+      kubernetes.core.k8s:
+        state: present
+        wait: yes
+        kubeconfig: /etc/rancher/k3s/k3s.yaml
+        definition:
+          apiVersion: v1
+          kind: Secret
+          type: Opaque
+          metadata:
+            name: cluster-prod
+            annotations:
+              managed-by-ansible: 'true'
+            labels:
+              argocd.argoproj.io/secret-type: cluster
+            namespace: argocd
+          stringData:
+            name: prod
+            server: "{{ _register_prod_cluster_url }}"
+            config: "{{ _register_argocd_cluster_config | to_json }}"
+      when: k3s_control_node is defined and k3s_control_node
+
+    - name: Copy value file
+      ansible.builtin.copy:
+        src: ../values/argo-cd/backbone.yaml
+        dest: /tmp/argo-cd-values.yaml
+      when: k3s_control_node is defined and k3s_control_node
+
+    - name: Install argocd
+      become: yes
+      kubernetes.core.helm:
+        atomic: yes
+        chart_ref: argo-cd
+        chart_repo_url: https://argoproj.github.io/argo-helm
+        chart_version: 5.5.8
+        create_namespace: yes
+        kubeconfig: /etc/rancher/k3s/k3s.yaml
+        release_name: argocd
+        release_namespace: argocd
+        values_files:
+          - /tmp/argo-cd-values.yaml
+        wait: yes
+      when: k3s_control_node is defined and k3s_control_node
+
+    - name: Copy value file
+      ansible.builtin.copy:
+        src: ../values/argocd-apps/backbone.yaml
+        dest: /tmp/argocd-apps-values.yaml
+      when: k3s_control_node is defined and k3s_control_node
+
+    - name: Install argocd-apps
+      become: yes
+      kubernetes.core.helm:
+        atomic: yes
+        chart_ref: argocd-apps
+        chart_repo_url: https://argoproj.github.io/argo-helm
+        chart_version: 0.0.1
+        create_namespace: yes
+        kubeconfig: /etc/rancher/k3s/k3s.yaml
+        release_name: argocd-apps
+        release_namespace: argocd
+        values_files:
+          - /tmp/argocd-apps-values.yaml
+        wait: yes
+      when: k3s_control_node is defined and k3s_control_node

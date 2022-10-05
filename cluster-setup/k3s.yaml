@@ -1,0 +1,312 @@
+- name: Load public ips
+  import_playbook: load-public-ips.yaml
+
+- hosts: prod
+  vars:
+    k3s_release_version: stable
+    k3s_become: yes
+    k3s_state: installed
+    k3s_server:
+      flannel-backend: 'vxlan'
+      disable:
+        - traefik
+        - local-storage
+        - metrics-server
+      node-ip: "{{ private_ip }}"
+      advertise-address: "{{ private_ip }}"
+      node-external-ip: "{{ public_ip }}"
+      kubelet-arg:
+        - "image-gc-high-threshold=85"
+        - "image-gc-low-threshold=80"
+      tls-san:
+        - "{{ inventory_hostname }}"
+  roles:
+    - role: xanmanning.k3s
+
+
+- hosts: backbone
+  vars:
+    k3s_release_version: stable
+    k3s_become: yes
+    k3s_state: installed
+    k3s_server:
+      flannel-backend: 'host-gw'  # This needs to be in quotes
+      disable:
+        - traefik
+      advertise-address: "{{ desired_ip }}"
+      node-external-ip: "{{ wireguard_ip }}"
+      kubelet-arg:
+        - "image-gc-high-threshold=85"
+        - "image-gc-low-threshold=80"
+    k3s_agent:
+      node-external-ip: "{{ wireguard_ip }}"
+      kubelet-arg:
+        - "image-gc-high-threshold=85"
+        - "image-gc-low-threshold=80"
+  roles:
+    - role: xanmanning.k3s
+
+- hosts: all
+  name: Create k8s Group for admin
+  tasks:
+    - name: Install python3-kubernetes
+      become: yes
+      ansible.builtin.apt:
+        pkg:
+          - python3-kubernetes
+        state: latest
+        install_recommends: no
+        update_cache: yes
+      when: k3s_control_node is defined and k3s_control_node
+
+    - name: Bind ClusterRole to homelab group
+      become: yes
+      kubernetes.core.k8s:
+        state: present
+        kubeconfig: /etc/rancher/k3s/k3s.yaml
+        definition:
+          apiVersion: rbac.authorization.k8s.io/v1
+          kind: ClusterRoleBinding
+          metadata:
+            name: homelab
+            annotations:
+              managed-by-ansible: 'true'
+          roleRef:
+            apiGroup: rbac.authorization.k8s.io
+            kind: ClusterRole
+            name: cluster-admin
+          subjects:
+            - apiGroup: rbac.authorization.k8s.io
+              kind: Group
+              name: homelab:masters
+      when: k3s_control_node is defined and k3s_control_node
+
+- hosts: localhost
+  name: Create private key and CSR of admin
+  tasks:
+    - name: Create private key
+      community.crypto.openssl_privatekey:
+        path: "{{ item }}.key"
+        type: Ed25519
+      register: _register_privkey
+      loop: "{{ wireguard_admin_clients.keys() }}"
+
+    - name: Generate an OpenSSL Certificate Signing Request
+      community.crypto.openssl_csr:
+        path: "{{ item }}.csr"
+        privatekey_path: "{{ item }}.key"
+        common_name: "bhyoo-{{ item }}"
+        organization_name: homelab:masters
+      loop: "{{ wireguard_admin_clients.keys() }}"
+
+- hosts: all
+  name: Register CSR and approve it
+  tasks:
+    - name: Read Certificate Signing Request
+      ansible.builtin.slurp:
+        path: "{{ item }}.csr"
+      register: _register_admin_csrs
+      delegate_to: localhost
+      loop: "{{ wireguard_admin_clients.keys() }}"
+      when: k3s_control_node is defined and k3s_control_node
+
+    - name: Submit Certificate Signing Request
+      become: yes
+      kubernetes.core.k8s:
+        state: present
+        wait: yes
+        kubeconfig: /etc/rancher/k3s/k3s.yaml
+        definition:
+          apiVersion: certificates.k8s.io/v1
+          kind: CertificateSigningRequest
+          metadata:
+            name: "homelab-{{ item.item }}"
+            annotations:
+              managed-by-ansible: 'true'
+          spec:
+            groups:
+              - system:authenticated
+            request: "{{ item.content }}"
+            signerName: kubernetes.io/kube-apiserver-client
+            usages:
+              - digital signature
+              - key encipherment
+              - client auth
+      no_log: '{{ ansible_verbosity < 3 }}'
+      loop: "{{ _register_admin_csrs.results }}"
+      when: k3s_control_node is defined and k3s_control_node
+
+    - name: Approve Certificate Signing Request
+      become: yes
+      ansible.builtin.command:
+        cmd: "kubectl certificate approve homelab-{{ item }}"
+      changed_when: false
+      loop: "{{ wireguard_admin_clients.keys() }}"
+      when: k3s_control_node is defined and k3s_control_node
+
+- hosts: prod
+  name: Create prod kubeconfig for localhost
+  run_once: yes
+  tasks:
+    - name: Load private key
+      ansible.builtin.slurp:
+        path: "{{ item }}.key"
+      register: _register_privkey
+      delegate_to: localhost
+      loop: "{{ wireguard_admin_clients.keys() }}"
+
+    - name: Massage privkey fact
+      ansible.builtin.set_fact:
+        _register_admin_privkey: "{{ _register_admin_privkey|default({})|combine({item.item: item.content}) }}"
+      changed_when: false
+      no_log: '{{ ansible_verbosity < 3 }}'
+      loop: "{{ _register_privkey.results }}"
+
+    - name: Load admin certificate
+      become: yes
+      kubernetes.core.k8s_info:
+        wait: yes
+        kubeconfig: /etc/rancher/k3s/k3s.yaml
+        api_version: certificates.k8s.io/v1
+        kind: CertificateSigningRequest
+        name: "homelab-{{ item }}"
+      register: _register_csr_info
+      loop: "{{ wireguard_admin_clients.keys() }}"
+
+    - name: Massage admin certificate
+      ansible.builtin.set_fact:
+        _register_admin_cert: "{{ _register_admin_cert|default({})|combine({item.item: item.resources.0.status.certificate}) }}"
+      changed_when: false
+      no_log: '{{ ansible_verbosity < 3 }}'
+      loop: "{{ _register_csr_info.results }}"
+
+    - name: Load k3s.yaml
+      become: yes
+      ansible.builtin.slurp:
+        path: /etc/rancher/k3s/k3s.yaml
+      register: k3s__register_config
+
+    - name: Convert config
+      ansible.builtin.set_fact:
+        k3s__register_config: "{{ k3s__register_config['content'] | b64decode | from_yaml }}"
+
+    - name: Modify server url
+      ansible.utils.update_fact:
+        updates:
+          - path: k3s__register_config.clusters.0.cluster.server
+            value: "https://{{ wireguard_ip }}:6443"
+          - path: k3s__register_config.clusters.0.name
+            value: homelab-prod
+          - path: k3s__register_config.users.0.name
+            value: "bhyoo-{{ item }}"
+          - path: k3s__register_config.users.0.user.client-certificate-data
+            value: "{{ _register_admin_cert[item] }}"
+          - path: k3s__register_config.users.0.user.client-key-data
+            value: "{{ _register_admin_privkey[item] }}"
+          - path: k3s__register_config.contexts.0.name
+            value: homelab-prod
+          - path: k3s__register_config.contexts.0.context.cluster
+            value: homelab-prod
+          - path: k3s__register_config.contexts.0.context.user
+            value: "bhyoo-{{ item }}"
+          - path: k3s__register_config.current-context
+            value: homelab-prod
+      changed_when: false
+      no_log: '{{ ansible_verbosity < 3 }}'
+      register: _register_updated
+      loop: "{{ wireguard_admin_clients.keys() }}"
+
+    - name: Save config to local
+      local_action:
+        module: copy
+        content: "{{ item.k3s__register_config | to_nice_yaml(indent=2) }}"
+        dest: "_kube_config_prod-{{ item.item }}.yaml"
+      no_log: '{{ ansible_verbosity < 3 }}'
+      loop: "{{ _register_updated.results }}"
+
+- hosts: backbone
+  name: Create backbone kubeconfig for localhost
+  tasks:
+    - name: Load private key
+      ansible.builtin.slurp:
+        path: "{{ item }}.key"
+      register: _register_privkey
+      delegate_to: localhost
+      loop: "{{ wireguard_admin_clients.keys() }}"
+      when: k3s_control_node is defined and k3s_control_node
+
+    - name: Massage privkey fact
+      ansible.builtin.set_fact:
+        _register_admin_privkey: "{{ _register_admin_privkey|default({})|combine({item.item: item.content}) }}"
+      changed_when: false
+      no_log: '{{ ansible_verbosity < 3 }}'
+      loop: "{{ _register_privkey.results }}"
+      when: k3s_control_node is defined and k3s_control_node
+
+    - name: Load admin certificate
+      become: yes
+      kubernetes.core.k8s_info:
+        wait: yes
+        kubeconfig: /etc/rancher/k3s/k3s.yaml
+        api_version: certificates.k8s.io/v1
+        kind: CertificateSigningRequest
+        name: "homelab-{{ item }}"
+      register: _register_csr_info
+      loop: "{{ wireguard_admin_clients.keys() }}"
+      when: k3s_control_node is defined and k3s_control_node
+
+    - name: Massage admin certificate
+      ansible.builtin.set_fact:
+        _register_admin_cert: "{{ _register_admin_cert|default({})|combine({item.item: item.resources.0.status.certificate}) }}"
+      changed_when: false
+      no_log: '{{ ansible_verbosity < 3 }}'
+      loop: "{{ _register_csr_info.results }}"
+      when: k3s_control_node is defined and k3s_control_node
+
+    - name: Load k3s.yaml
+      become: yes
+      ansible.builtin.slurp:
+        path: /etc/rancher/k3s/k3s.yaml
+      register: k3s__register_config
+      when: k3s_control_node is defined and k3s_control_node
+
+    - name: Convert config
+      ansible.builtin.set_fact:
+        k3s__register_config: "{{ k3s__register_config['content'] | b64decode | from_yaml }}"
+      when: k3s_control_node is defined and k3s_control_node
+
+    - name: Modify server url
+      ansible.utils.update_fact:
+        updates:
+          - path: k3s__register_config.clusters.0.cluster.server
+            value: "https://{{ wireguard_ip }}:6443"
+          - path: k3s__register_config.clusters.0.name
+            value: homelab-backbone
+          - path: k3s__register_config.users.0.name
+            value: "bhyoo-{{ item }}"
+          - path: k3s__register_config.users.0.user.client-certificate-data
+            value: "{{ _register_admin_cert[item] }}"
+          - path: k3s__register_config.users.0.user.client-key-data
+            value: "{{ _register_admin_privkey[item] }}"
+          - path: k3s__register_config.contexts.0.name
+            value: homelab-backbone
+          - path: k3s__register_config.contexts.0.context.cluster
+            value: homelab-backbone
+          - path: k3s__register_config.contexts.0.context.user
+            value: "bhyoo-{{ item }}"
+          - path: k3s__register_config.current-context
+            value: homelab-backbone
+      changed_when: false
+      no_log: '{{ ansible_verbosity < 3 }}'
+      register: _register_updated
+      loop: "{{ wireguard_admin_clients.keys() }}"
+      when: k3s_control_node is defined and k3s_control_node
+
+    - name: Save config to local
+      local_action:
+        module: copy
+        content: "{{ item.k3s__register_config | to_nice_yaml(indent=2) }}"
+        dest: "_kube_config_backbone-{{ item.item }}.yaml"
+      no_log: '{{ ansible_verbosity < 3 }}'
+      loop: "{{ _register_updated.results }}"
+      when: k3s_control_node is defined and k3s_control_node

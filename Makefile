@@ -1,6 +1,4 @@
-.PHONY: help bootstrap-backbone
-
-CONTEXT := $(shell kubectl config view -o jsonpath='{.current-context}')
+.PHONY: help bootstrap
 
 ##@ General
 
@@ -21,63 +19,14 @@ help: ## Display this help.
 
 ##@ Boostrap
 
-bootstrap:  ## Bootstrap given cluster onto current kubectl context. (Possible CLUSTER_NAME: backbone, prod)
-	@test -r 'values/argocd/$(CLUSTER_NAME).yaml' || (echo 'Specify valid cluster name via CLUSTER_NAME'; exit 1)
-	@echo 'bootstrap $(CLUSTER_NAME) cluster for context: "$(CONTEXT)"'
-	@while [ -z "$$CONTINUE" ]; do \
-		read -r -p "Type anything but Y or y to exit. [y/N]: " CONTINUE; \
-	done ; \
-	[ $$CONTINUE = "y" ] || [ $$CONTINUE = "Y" ] || (echo "Exiting."; exit 1;)
+bootstrap: /tmp/prod-cluster-secrets.yaml /tmp/backbone-cluster-secrets.yaml /tmp/public_ip_map.yaml ## Bootstrap given cluster onto current kubectl context. (Possible CLUSTER_NAME: backbone, prod)
+	make -C cluster-setup argocd
 
-	# provision via terraform and install the secrets to cluster
-	make -C terraform/$(CLUSTER_NAME) apply
-	make -C terraform/$(CLUSTER_NAME) cluster-secrets DEST=/tmp/cluster-secrets.yaml
-
-	helm repo add argo https://argoproj.github.io/argo-helm
-	helm repo update argo
-
-	# boostrap via ArgoCD
-	helm install \
-		--namespace argocd \
-		--create-namespace \
-		argocd \
-		argo/argo-cd \
-		--atomic --wait \
-		--values values/argocd/$(CLUSTER_NAME).yaml
-
-	# install CRDs of external-secrets
-	kubectl apply -f https://raw.githubusercontent.com/external-secrets/external-secrets/HEAD/deploy/crds/bundle.yaml
-	helm install \
-		--namespace kube-system \
-		--create-namespace \
-		--wait --atomic \
-		cluster-secrets \
-		charts/cluster-secrets \
-		--values /tmp/cluster-secrets.yaml
-	rm -f /tmp/cluster-secrets.yaml
-
-
-bootstrap-backbone: CLUSTER_NAME=backbone
-bootstrap-backbone: bootstrap  ## Bootstrap backbone cluster onto current kubectl context.
-
-cluster_secret_% : /tmp/%-cluster-secrets.yaml
-	@echo 'Installing/Upgrading infrastructure secrets of $* cluster to context: "$(CONTEXT)"'
-	@while [ -z "$$CONTINUE" ]; do \
-		read -r -p "Type anything but Y or y to exit. [y/N]: " CONTINUE; \
-	done ; \
-	[ $$CONTINUE = "y" ] || [ $$CONTINUE = "Y" ] || (echo "Exiting."; exit 1;)
-
-	helm upgrade \
-		--install \
-		--namespace kube-system \
-		--create-namespace \
-		--wait --atomic \
-		cluster-secrets \
-		charts/cluster-secrets \
-		--values /tmp/$*-cluster-secrets.yaml
-	rm -f /tmp/$*-cluster-secrets.yaml
 
 /tmp/%-cluster-secrets.yaml:
 	@test -r 'terraform/$*' || (echo 'Specify valid cluster name via CLUSTER_NAME'; exit 1)
 	make -C terraform/$* cluster-secrets DEST=$@
 
+
+/tmp/public_ip_map.yaml:
+	make -C terraform/prod public-ip-map DEST=$@

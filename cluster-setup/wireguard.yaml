@@ -1,0 +1,6 @@
+- hosts: all
+  name: Setup wireguard mesh
+  become: yes
+  roles:
+    - role: wireguard_mesh
+      wireguard_site_group_name: backbone

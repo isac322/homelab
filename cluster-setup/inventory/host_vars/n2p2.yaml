@@ -3,6 +3,13 @@ ansible_user: root
 ansible_password: odroid
 desired_ip: 172.30.1.4
 gateway_ip: 172.30.1.254
+
 k3s_control_node: true
 
-vpn_ip: "10.222.1.2"
+wireguard_ip: "10.222.0.2"
+
+
+allow_ssh_root_login: true
+
+
+iptables_use_k3s_server: true

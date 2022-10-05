@@ -1,0 +1,12 @@
+---
+- hosts: backbone
+  roles:
+    - role: robertdebock.sysctl
+      sysctl_items:
+        - name: net.ipv4.ip_forward
+          value: 1
+
+- hosts: all
+  become: yes
+  roles:
+    - role: iptables-firewall

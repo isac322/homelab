@@ -1,0 +1,9 @@
+default_iface: eth0
+locale_lang: ko_KR.UTF-8
+locale_timezone: Asia/Seoul
+
+iptables_use_mdns: true
+iptables_use_llmnr: true
+iptables_k3s_internal_cidr: "172.30.1.0/24"
+iptables_k3s_kubelet_accessible_cidrs:
+  - 10.222.0.0/24
