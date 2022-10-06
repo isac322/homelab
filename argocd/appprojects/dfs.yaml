@@ -7,9 +7,12 @@ spec:
   sourceRepos:
     - https://charts.rook.io/release
     - https://github.com/isac322/homelab.git
+    - https://openebs.github.io/zfs-localpv
   destinations:
     - namespace: rook-ceph
       name: prod
+    - namespace: openebs
+      name: backbone
   clusterResourceWhitelist:
     - group: '*'
       kind: '*'

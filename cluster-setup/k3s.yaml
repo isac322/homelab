@@ -43,6 +43,8 @@
       kubelet-arg:
         - "image-gc-high-threshold=85"
         - "image-gc-low-threshold=80"
+      node-label:
+        - "zfs={{ 'true' if inventory_hostname in groups.nas else 'false' }}"
   roles:
     - role: xanmanning.k3s
 
