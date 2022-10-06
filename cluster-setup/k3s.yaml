@@ -33,6 +33,7 @@
       flannel-backend: 'host-gw'  # This needs to be in quotes
       disable:
         - traefik
+        - local-storage
       advertise-address: "{{ desired_ip }}"
       node-external-ip: "{{ wireguard_ip }}"
       kubelet-arg:
