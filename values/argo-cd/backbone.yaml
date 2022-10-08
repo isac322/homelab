@@ -2,7 +2,7 @@ configs:
   clusterCredentials:
     - name: backbone
       server: https://kubernetes.default.svc
-      config: {}
+      config: { }
 
   repositories:
     homelab-git:
@@ -67,6 +67,13 @@ redis:
     image:
       repository: oliver006/redis_exporter
       tag: v1.32.0
+    resources:
+      limits:
+        cpu: 50m
+        memory: 64Mi
+      requests:
+        cpu: 10m
+        memory: 32Mi
 
 
 server:
