@@ -64,6 +64,8 @@ redis:
 
   metrics:
     enabled: true
+    image:
+      repository: oliver006/redis_exporter
 
 
 server:
