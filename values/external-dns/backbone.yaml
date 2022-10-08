@@ -7,10 +7,10 @@ env:
 
 resources:
   requests:
-    cpu: 100m
+    cpu: 10m
     memory: 32Mi
   limits:
-    cpu: 500m
+    cpu: 100m
     memory: 100Mi
 
 logLevel: info
