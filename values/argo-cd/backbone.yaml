@@ -66,6 +66,7 @@ redis:
     enabled: true
     image:
       repository: oliver006/redis_exporter
+      tag: v1.32.0
 
 
 server:
