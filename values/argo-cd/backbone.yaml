@@ -42,25 +42,16 @@ controller:
   resources:
     limits:
       cpu: 1500m
-      memory: 512Mi
+      memory: 768Mi
     requests:
       cpu: 250m
       memory: 512Mi
 
-#  metrics:
-#    enabled: true
+  metrics:
+    enabled: true
 
 dex:
-  resources:
-    limits:
-      cpu: 50m
-      memory: 64Mi
-    requests:
-      cpu: 10m
-      memory: 32Mi
-
-#  metrics:
-#    enabled: true
+  enabled: false
 
 redis:
   resources:
@@ -71,8 +62,8 @@ redis:
       cpu: 100m
       memory: 64Mi
 
-#  metrics:
-#    enabled: true
+  metrics:
+    enabled: true
 
 
 server:
@@ -104,6 +95,9 @@ server:
 
     https: false
 
+  metrics:
+    enabled: true
+
 repoServer:
   resources:
     limits:
@@ -111,4 +105,22 @@ repoServer:
       memory: 512Mi
     requests:
       cpu: 100m
+      memory: 128Mi
+
+  metrics:
+    enabled: true
+
+applicationSet:
+  resources:
+    limits:
+      cpu: 500m
+      memory: 128Mi
+    requests:
+      cpu: 100m
       memory: 64Mi
+
+  metrics:
+    enabled: true
+
+notifications:
+  enabled: false
