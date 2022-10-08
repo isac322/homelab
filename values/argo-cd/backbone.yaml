@@ -1,4 +1,9 @@
 configs:
+  clusterCredentials:
+    - name: backbone
+      server: https://kubernetes.default.svc
+      config: {}
+
   repositories:
     homelab-git:
       name: homelab-git
@@ -32,20 +37,6 @@ configs:
   params:
     server.insecure: true
     server.enable.gzip: true
-
-extraObjects:
-  # https://argo-cd.readthedocs.io/en/stable/operator-manual/declarative-setup/#clusters
-  - apiVersion: v1
-    kind: Secret
-    metadata:
-      name: backbone-cluster
-      namespace: argocd
-      labels:
-        argocd.argoproj.io/secret-type: cluster
-    type: Opaque
-    stringData:
-      name: backbone
-      server: https://kubernetes.default.svc
 
 controller:
   resources:
