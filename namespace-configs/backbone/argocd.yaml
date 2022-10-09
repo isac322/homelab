@@ -1,8 +1,0 @@
-apiVersion: v1
-kind: Namespace
-metadata:
-  labels:
-    homelab/cloudflare-ca-required: "true"
-    kubernetes.io/metadata.name: argocd
-    name: argocd
-  name: argocd
