@@ -27,35 +27,3 @@
 #      limit: 100
 #    syncOptions:
 #      - CreateNamespace=true
----
-apiVersion: argoproj.io/v1alpha1
-kind: Application
-metadata:
-  name: blocky-cert
-spec:
-  destination:
-    name: prod
-    namespace: blocky
-  project: ad-block
-  source:
-    path: apps/objects/blocky
-    repoURL: https://github.com/isac322/homelab.git
-    targetRevision: HEAD
-  syncPolicy:
-    automated:
-      prune: true
-      selfHeal: true
-    retry:
-      backoff:
-        duration: 5s
-        factor: 2
-        maxDuration: 3m0s
-      limit: 100
-    syncOptions:
-      - CreateNamespace=true
-  ignoreDifferences:
-    - kind: Certificate
-      group: cert-manager.io
-      jsonPointers:
-        - /spec/duration
-        - /spec/renewBefore
