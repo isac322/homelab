@@ -1,0 +1,10 @@
+{{- if .Values.persistence.enabled }}
+kind: PersistentVolumeClaim
+apiVersion: v1
+metadata:
+  name: {{ include "redis.fullname" . }}
+  labels:
+    {{- include "redis.labels" . | nindent 4 }}
+spec:
+  {{- .Values.persistence.volumeClaimTemplate | toYaml | nindent 2 }}
+{{- end }}

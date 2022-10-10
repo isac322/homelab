@@ -1,0 +1,23 @@
+apiVersion: v2
+name: redis
+description: Redis(R) is an open source, advanced key-value store. It is often referred to as a data structure server since keys can contain strings, hashes, lists, sets and sorted sets.
+
+keywords:
+  - redis
+  - keyvalue
+  - database
+
+home: https://github.com/isac322/homelab.git
+sources:
+  - https://isac322.github.io/homelab
+  - https://github.com/isac322/homelab.git
+
+maintainers:
+  - name: Byeonghoon Isac Yoo
+    email: bhyoo@bhyoo.com
+    url: https://github.com/isac322
+
+type: application
+
+version: 0.1.0
+appVersion: 7.0.5
