@@ -28,7 +28,7 @@ PersistentKeepalive=25
 {% endfor %}
 
 
-{% for peer in wireguard_admin_clients|dict2items %}
+{% for peer in wireguard_admin_clients|dict2items if peer.value.only_p2p is not defined or not peer.value.only_p2p %}
 
 [WireGuardPeer]
 PublicKey={{ wireguard__register_admin_client_public_keys[peer.key] }}

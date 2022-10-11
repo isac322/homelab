@@ -7,3 +7,6 @@ wireguard_admin_clients:
     ip: 10.222.0.129
   desktop:
     ip: 10.222.0.130
+  woo:
+    ip: 10.222.0.193
+    only_p2p: true
