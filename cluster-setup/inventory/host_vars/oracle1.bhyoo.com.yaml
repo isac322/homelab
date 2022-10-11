@@ -1,6 +1,6 @@
 ansible_user: "ubuntu"
 
-k3s_control_node: true
+is_k8s_master: true
 
 # wireguard
 wireguard_ip: "10.222.0.65"

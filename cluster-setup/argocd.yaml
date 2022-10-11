@@ -52,7 +52,7 @@
     - role: gantsign.helm
       vars:
         helm_architecture: 'arm64'
-      when: k3s_control_node is defined and k3s_control_node
+      when: is_k8s_master
 
 - hosts: backbone
   name: Install cluster secrets on backbone
@@ -62,7 +62,7 @@
         url: https://raw.githubusercontent.com/external-secrets/external-secrets/HEAD/deploy/crds/bundle.yaml
         dest: /tmp/external-secrets-crds.yaml
         mode: '0644'
-      when: k3s_control_node is defined and k3s_control_node
+      when: is_k8s_master
 
     - name: Apply CRDs of external-secrets
       become: yes
@@ -73,13 +73,13 @@
           type: Established
         kubeconfig: /etc/rancher/k3s/k3s.yaml
         src: /tmp/external-secrets-crds.yaml
-      when: k3s_control_node is defined and k3s_control_node
+      when: is_k8s_master
 
     - name: Copy value file
       ansible.builtin.copy:
         src: /tmp/backbone-cluster-secrets.yaml
         dest: /tmp/cluster-secrets.yaml
-      when: k3s_control_node is defined and k3s_control_node
+      when: is_k8s_master
 
     - name: Install cluster secrets
       become: yes
@@ -94,7 +94,7 @@
         values_files:
           - /tmp/cluster-secrets.yaml
         wait: yes
-      when: k3s_control_node is defined and k3s_control_node
+      when: is_k8s_master
 
 - hosts: prod
   name: Create ServiceAccount for argocd in prod
@@ -204,9 +204,7 @@
         _register_prod_cluster_url: "https://{{ wireguard_ip }}:6443"
       delegate_to: "{{ item }}"
       delegate_facts: yes
-      when:
-        - hostvars[item].k3s_control_node is defined
-        - hostvars[item].k3s_control_node
+      when: hostvars[item].is_k8s_master
       loop: "{{ groups.backbone }}"
 
 - hosts: backbone
@@ -221,7 +219,7 @@
         name: argocd
         api_version: v1
         kind: Namespace
-      when: k3s_control_node is defined and k3s_control_node
+      when: is_k8s_master
 
     - name: Create Secret for prod cluster on backbone cluster
       become: yes
@@ -244,13 +242,13 @@
             name: prod
             server: "{{ _register_prod_cluster_url }}"
             config: "{{ _register_argocd_cluster_config | to_json }}"
-      when: k3s_control_node is defined and k3s_control_node
+      when: is_k8s_master
 
     - name: Copy value file
       ansible.builtin.copy:
         src: ../values/argo-cd/backbone.yaml
         dest: /tmp/argo-cd-values.yaml
-      when: k3s_control_node is defined and k3s_control_node
+      when: is_k8s_master
 
     - name: Install argocd
       become: yes
@@ -266,13 +264,13 @@
         values_files:
           - /tmp/argo-cd-values.yaml
         wait: yes
-      when: k3s_control_node is defined and k3s_control_node
+      when: is_k8s_master
 
     - name: Copy value file
       ansible.builtin.copy:
         src: ../values/argocd-apps/backbone.yaml
         dest: /tmp/argocd-apps-values.yaml
-      when: k3s_control_node is defined and k3s_control_node
+      when: is_k8s_master
 
     - name: Install argocd-apps
       become: yes
@@ -288,4 +286,4 @@
         values_files:
           - /tmp/argocd-apps-values.yaml
         wait: yes
-      when: k3s_control_node is defined and k3s_control_node
+      when: is_k8s_master

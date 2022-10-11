@@ -4,7 +4,7 @@ ansible_password: odroid
 desired_ip: 172.30.1.4
 gateway_ip: 172.30.1.254
 
-k3s_control_node: true
+is_k8s_master: true
 
 wireguard_ip: "10.222.0.2"
 

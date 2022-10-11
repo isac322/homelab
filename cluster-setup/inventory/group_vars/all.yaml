@@ -1,6 +1,7 @@
 wireguard_port: "51902"
 iptables_wireguard_port: "{{ wireguard_port }}"
 
+is_k8s_master: false
 
 wireguard_admin_clients:
   phone:
