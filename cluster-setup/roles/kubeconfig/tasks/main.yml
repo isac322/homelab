@@ -1,0 +1,21 @@
+---
+# install requirements
+- name: Install python3-kubernetes
+  run_once: yes
+  ansible.builtin.apt:
+    pkg:
+      - python3-kubernetes
+    state: latest
+    install_recommends: no
+    update_cache: yes
+
+- run_once: yes
+  ansible.builtin.import_tasks: cluster-admin.yaml
+
+- run_once: yes
+  ansible.builtin.include_tasks:
+    file: namespaced-admin.yaml
+  when: (__kubeconfig_register_admin_config.value | length) > 0
+  loop: '{{ namespaced_admins | dict2items }}'
+  loop_control:
+    loop_var: __kubeconfig_register_admin_config

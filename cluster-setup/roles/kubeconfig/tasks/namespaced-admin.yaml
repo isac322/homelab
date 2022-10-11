@@ -1,0 +1,67 @@
+- name: Massage config
+  ansible.builtin.set_fact:
+    __kubeconfig_register_namespaced: true
+    __kubeconfig_register_namespace: '{{ __kubeconfig_register_admin_config.key }}'
+    __kubeconfig_register_group_name: '{{ namespaced_admin_group_name }}'
+    __kubeconfig_register_admins: '{{ __kubeconfig_register_admin_config.value }}'
+
+- ansible.builtin.import_tasks: create_kubeconfig.yaml
+
+- name: Create namespace if not exists
+  kubernetes.core.k8s:
+    state: present
+    wait: yes
+    kubeconfig: '{{ kubeconfig_path }}'
+    definition:
+      apiVersion: v1
+      kind: Namespace
+      metadata:
+        name: '{{ __kubeconfig_register_namespace }}'
+        annotations:
+          managed-by-ansible: 'true'
+      spec:
+        finalizers:
+          - kubernetes
+
+- name: Create role
+  kubernetes.core.k8s:
+    state: present
+    wait: yes
+    kubeconfig: '{{ kubeconfig_path }}'
+    definition:
+      apiVersion: rbac.authorization.k8s.io/v1
+      kind: Role
+      metadata:
+        name: admin
+        namespace: '{{ __kubeconfig_register_namespace }}'
+        annotations:
+          managed-by-ansible: 'true'
+      rules:
+        - apiGroups:
+            - '*'
+          resources:
+            - '*'
+          verbs:
+            - '*'
+
+- name: Create role binding
+  kubernetes.core.k8s:
+    state: present
+    wait: yes
+    kubeconfig: '{{ kubeconfig_path }}'
+    definition:
+      apiVersion: rbac.authorization.k8s.io/v1
+      kind: RoleBinding
+      metadata:
+        name: admin
+        namespace: '{{ __kubeconfig_register_namespace }}'
+        annotations:
+          managed-by-ansible: 'true'
+      roleRef:
+        apiGroup: rbac.authorization.k8s.io
+        kind: Role
+        name: admin
+      subjects:
+        - apiGroup: rbac.authorization.k8s.io
+          kind: Group
+          name: "{{ namespaced_admin_group_name }}"

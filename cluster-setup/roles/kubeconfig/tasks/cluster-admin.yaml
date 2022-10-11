@@ -1,0 +1,26 @@
+- name: Bind ClusterRole to admin group
+  kubernetes.core.k8s:
+    state: present
+    kubeconfig: "{{ kubeconfig_path }}"
+    definition:
+      apiVersion: rbac.authorization.k8s.io/v1
+      kind: ClusterRoleBinding
+      metadata:
+        name: "{{ cluster_admin_role_binding_name }}"
+        annotations:
+          managed-by-ansible: 'true'
+      roleRef:
+        apiGroup: rbac.authorization.k8s.io
+        kind: ClusterRole
+        name: cluster-admin
+      subjects:
+        - apiGroup: rbac.authorization.k8s.io
+          kind: Group
+          name: "{{ cluster_admin_group_name }}"
+
+- ansible.builtin.set_fact:
+    __kubeconfig_register_namespaced: false
+    __kubeconfig_register_group_name: '{{ cluster_admin_group_name }}'
+    __kubeconfig_register_admins: '{{ cluster_admins }}'
+
+- ansible.builtin.import_tasks: create_kubeconfig.yaml

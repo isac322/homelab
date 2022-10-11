@@ -1,0 +1,15 @@
+---
+kubeconfig_path: ~/.kube/config
+
+cluster_admin_group_name: "homelab:masters"
+cluster_admin_role_binding_name: "homelab"
+cluster_admins: []
+
+api_server_host: ""
+cluster_name: ""
+
+local_become: no
+local_kubeconfig_prefix: ""
+
+namespaced_admin_group_name: "homelab:namespace-masters"
+namespaced_admins: {}
