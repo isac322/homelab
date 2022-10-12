@@ -9,6 +9,7 @@ api_server_host: ""
 cluster_name: ""
 
 local_become: no
+local_directory: "."
 local_kubeconfig_prefix: ""
 
 namespaced_admin_group_name: "homelab:namespace-masters"

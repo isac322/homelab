@@ -227,8 +227,5 @@ Temporary Items
 
 ### homelab specific
 
-/cluster-setup/_kube_config_prod-*.yaml
-/cluster-setup/_kube_config_backbone-*.yaml
-/cluster-setup/*.csr
-/cluster-setup/*.key
+/cluster-setup/_kubeconfig
 /cluster-setup/*.conf

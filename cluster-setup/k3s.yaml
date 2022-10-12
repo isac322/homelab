@@ -33,7 +33,7 @@
             kubeconfig_path: /etc/rancher/k3s/k3s.yaml
             api_server_host: k8s.homelab.bhyoo.com:6443
             cluster_name: "homelab-prod"
-            local_kubeconfig_prefix: _kube_config_prod-
+            local_directory: _kubeconfig
             cluster_admins:
               - bhyoo-phone
               - bhyoo-desktop
@@ -83,7 +83,7 @@
             kubeconfig_path: /etc/rancher/k3s/k3s.yaml
             api_server_host: "{{ wireguard_ip }}:6443"
             cluster_name: "homelab-backbone"
-            local_kubeconfig_prefix: _kube_config_backbone-
+            local_directory: _kubeconfig
             cluster_admins:
               - bhyoo-phone
               - bhyoo-desktop
