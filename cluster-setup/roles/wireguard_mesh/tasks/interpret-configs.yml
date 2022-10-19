@@ -1,0 +1,226 @@
+---
+- name: Collect hosts for each group
+  run_once: yes
+  ansible.builtin.set_fact:
+    hosts_of_mesh_group: "{{
+      hosts_of_mesh_group|default({})
+      |combine({
+        item.key: (
+          (item.value.ansible_groups | default([]) | map('extract', groups) | flatten)
+          + (item.value.ansible_hosts | default([]))
+        ) | intersect(ansible_play_hosts_all) | unique
+      })
+    }}"
+  loop: "{{ mesh_group_config|dict2items }}"
+
+- name: Collect group of each node
+  run_once: yes
+  ansible.builtin.set_fact:
+    mesh_group_of_hosts: "{{
+      mesh_group_of_hosts|default({})
+      |combine({
+        item: (
+          hosts_of_mesh_group
+          |dict2items
+          |selectattr('value', 'contains', item)
+          |map(attribute='key')
+          |first
+          |default(None)
+        )
+      })
+    }}"
+  loop: "{{ ansible_play_hosts_all }}"
+
+
+- name: Collect global accessible nodes
+  run_once: yes
+  ansible.builtin.set_fact:
+    global_accessible_hosts: "{{
+      global_accessible_hosts | default([])
+      + (
+        hosts_of_mesh_group[item.key]
+        if item.value.gateway_host is not defined
+        else
+        [item.value.gateway_host]
+      )
+    }}"
+  loop: "{{ mesh_group_config|dict2items }}"
+
+- name: Collect edge map
+  run_once: yes
+  ansible.builtin.set_fact:
+    edges_of_group: "{{ edges_of_group|default({})|combine({item.1: [item.0.key]}, list_merge='append') }}"
+  loop: "{{
+    edges|dict2items
+    |subelements('value.allowed_groups')
+  }}"
+
+- name: Check if node has required variables
+  block:
+    - ansible.builtin.assert:
+        that:
+          - wireguard_ip_address != ''
+        fail_msg: '`wireguard_ip_address` is required for {{ inventory_hostname }}'
+
+    - ansible.builtin.assert:
+        that:
+          - wireguard_port is defined
+        fail_msg: '`wireguard_port` is required for {{ inventory_hostname }}'
+
+    - ansible.builtin.assert:
+        that:
+          - wireguard_internal_port is defined
+        fail_msg: '`wireguard_internal_port` is required for {{ inventory_hostname }}'
+
+    - ansible.builtin.assert:
+        that:
+          - wireguard_host is defined
+          - wireguard_host != ''
+        fail_msg: '`wireguard_host` is required for {{ inventory_hostname }}'
+
+    - ansible.builtin.assert:
+        that:
+          - wireguard_internal_host is defined
+          - wireguard_internal_host != ''
+        fail_msg: '`wireguard_internal_host` is required for {{ inventory_hostname }}'
+
+    - ansible.builtin.assert:
+        that:
+          - wireguard_interface is defined
+          - wireguard_interface != ''
+        fail_msg: '`wireguard_interface` is required for {{ inventory_hostname }}'
+  when: mesh_group_of_hosts[inventory_hostname] != None
+
+- name: Configure basic wireguard
+  block:
+    - ansible.builtin.set_fact:
+        wireguard_host: "{{ wireguard_host }}"
+        wireguard_internal_host: "{{ wireguard_internal_host }}"
+        wireguard_port: "{{ wireguard_port }}"
+        wireguard_internal_port: "{{ wireguard_internal_port }}"
+        wireguard_interface: "{{ wireguard_interface }}"
+        _wireguard:
+          enabled: true
+          mesh_group: "{{ mesh_group }}"
+          ip_address: "{{ wireguard_ip_address }}"
+          ip: "{{ (wireguard_ip_address + '/' + (cidr_block | ansible.utils.ipaddr('netmask'))) | ansible.utils.ipaddr('address/prefix') }}"
+          interface: "{{ wireguard_interface }}"
+          port: "{{ wireguard_internal_port }}"
+          is_site_gateway: "{{ mesh_group_config[mesh_group].gateway_host|default('') == inventory_hostname }}"
+          group_cidr: "{{ mesh_group_config[mesh_group].cidr }}"
+      vars:
+        mesh_group: "{{ mesh_group_of_hosts[inventory_hostname] }}"
+      when: mesh_group_of_hosts[inventory_hostname] != None
+
+    - ansible.builtin.set_fact:
+        _wireguard:
+          enabled: false
+      when: mesh_group_of_hosts[inventory_hostname] == None
+
+- name: Configure peers
+  block:
+    - name: Set peers for local accessible nodes
+      ansible.builtin.set_fact:
+        _wireguard: "{{
+          _wireguard|
+          combine(
+            {
+              'peers': [{
+                'hostname': peer_hostname,
+                'allowed_ips': (
+                  (
+                    mesh_group_config
+                    |dict2items
+                    |rejectattr('key', 'eq', _wireguard.mesh_group)
+                    |map(attribute='value.cidr')
+                    + [_peer_wg_cfg.ip_address | ansible.utils.ipsubnet]
+                    + _edge_cidr_blocks
+                  )
+                  if _peer_wg_cfg.is_site_gateway else
+                  [_peer_wg_cfg.ip_address | ansible.utils.ipsubnet]
+                ),
+                'endpoint': (
+                  [_peer_vars.wireguard_internal_host, _peer_vars.wireguard_internal_port] | join(':')
+                ),
+                'is_edge': false,
+              }],
+            },
+            list_merge='append',
+          )
+        }}"
+      when: inventory_hostname not in global_accessible_hosts
+      loop: "{{
+        hosts_of_mesh_group[_wireguard.mesh_group]
+        |difference([inventory_hostname])
+      }}"
+      loop_control:
+        loop_var: peer_hostname
+      vars:
+        _peer_vars: "{{ hostvars[peer_hostname] }}"
+        _peer_wg_cfg: "{{ hostvars[peer_hostname]._wireguard }}"
+        _edge_cidr_blocks: "{{
+          edges|dict2items
+          |selectattr('key', 'in', edges_of_group[_wireguard.mesh_group])
+          |map(attribute='value.ip_address')
+          |map('ansible.utils.ipsubnet')
+        }}"
+
+    - name: Set peers for global accessible nodes
+      ansible.builtin.set_fact:
+        _wireguard: "{{
+          _wireguard|
+          combine(
+            {
+              'peers': [{
+                'hostname': peer_hostname,
+                'allowed_ips': [
+                  _peer_wg_cfg.group_cidr
+                  if _is_different_group and _peer_wg_cfg.is_site_gateway
+                  else
+                  (_peer_wg_cfg.ip_address | ansible.utils.ipsubnet)
+                ],
+                'endpoint': (
+                  ([_peer_vars.wireguard_host, _peer_vars.wireguard_port] | join(':'))
+                  if _is_different_group else
+                  ([_peer_vars.wireguard_internal_host, _peer_vars.wireguard_internal_port] | join(':'))
+                ),
+                'is_edge': false,
+              }],
+            },
+            list_merge='append',
+          )
+        }}"
+      when: inventory_hostname in global_accessible_hosts
+      loop: "{{
+        (global_accessible_hosts + hosts_of_mesh_group[_wireguard.mesh_group])
+        |unique
+        |difference([inventory_hostname])
+      }}"
+      loop_control:
+        loop_var: peer_hostname
+      vars:
+        _is_different_group: "{{ mesh_group_of_hosts[peer_hostname] != _wireguard.mesh_group }}"
+        _peer_vars: "{{ hostvars[peer_hostname] }}"
+        _peer_wg_cfg: "{{ hostvars[peer_hostname]._wireguard }}"
+
+    - name: Append edges as peers
+      ansible.builtin.set_fact:
+        _wireguard: "{{
+          _wireguard|
+          combine(
+            {
+              'peers': [{
+                'hostname': edge_peer,
+                'allowed_ips': [(_peer_cfg.ip_address | ansible.utils.ipsubnet)],
+                'is_edge': true,
+              }],
+            },
+            list_merge='append',
+          )
+        }}"
+      when: inventory_hostname in global_accessible_hosts
+      loop: "{{ edges_of_group[_wireguard.mesh_group] }}"
+      loop_control:
+        loop_var: edge_peer
+      vars:
+        _peer_cfg: "{{ edges[edge_peer] }}"

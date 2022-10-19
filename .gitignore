@@ -228,4 +228,4 @@ Temporary Items
 ### homelab specific
 
 /cluster-setup/_kubeconfig
-/cluster-setup/*.conf
+/cluster-setup/_wireguard

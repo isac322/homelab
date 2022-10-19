@@ -1,5 +1,55 @@
 ---
 
+#######################################
+# Global Settings
+#######################################
+
+# Example
+# cidr_block: "10.0.0.0/16"
+cidr_block: ""
+
+# Example:
+#
+# mesh_group_config:
+#   group_a:
+#     ansible_groups: ['group_name1', 'group_name2']
+#     ansible_hosts: ['host_name1']
+#     cidr: "10.0.0.0/24"
+#
+#   group_b:
+#     ansible_groups: ['group_name3']
+#     gateway_host: 'host_name3'
+#     cidr: "10.0.1.0/24"
+mesh_group_config: {}
+
+# Example:
+#
+# edges:
+#   phone:
+#     ip_address: 10.0.2.1
+#     allowed_groups: ['group_b']
+edges: {}
+
+
+local_become: no
+local_directory: "."
+
+#######################################
+# Host specific settings
+#######################################
+
+wireguard_ip_address: ""
+
+# The default port WireGuard will listen if not specified otherwise.
+wireguard_port: '51820'
+wireguard_internal_port: '{{ wireguard_port }}'
+
+# The default interface name that WireGuard should use if not specified otherwise.
+wireguard_interface: "wg0"
+
+wireguard_host: ""
+wireguard_internal_host: '{{ wireguard_host }}'
+
 
 #######################################
 # Settings only relevant for Ubuntu
@@ -10,23 +60,3 @@ wireguard_ubuntu_update_cache: "true"
 
 # Set package cache valid time
 wireguard_ubuntu_cache_valid_time: "3600"
-
-wireguard_ip: ""
-# The default port WireGuard will listen if not specified otherwise.
-wireguard_port: "51820"
-
-# The default interface name that WireGuard should use if not specified otherwise.
-wireguard_interface: "wg0"
-
-
-wireguard_site_gateway: false
-wireguard_site_gateway_port: "{{ wireguard_port }}"
-wireguard_site_gateway_host: ""
-
-
-wireguard_cidr: "10.222.0.0/24"
-wireguard_admin_cidr: "10.222.0.128/26"
-wireguard_p2p_cidr: "10.222.0.64/26"
-wireguard_site_cidr: "10.222.0.0/26"
-
-wireguard_admin_clients: []

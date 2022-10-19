@@ -1,0 +1,17 @@
+- name: Setup wireguard device
+  ansible.builtin.template:
+    src: ./templates/systemd.netdev.j2
+    dest: /etc/systemd/network/99-{{ wireguard_interface }}.netdev
+    owner: root
+    group: systemd-network
+    mode: 0640
+  notify: systemd network restarted
+
+- name: Setup wireguard network
+  ansible.builtin.template:
+    src: ./templates/systemd.network.j2
+    dest: /etc/systemd/network/99-{{ wireguard_interface }}.network
+    owner: root
+    group: systemd-network
+    mode: 0640
+  notify: systemd network restarted

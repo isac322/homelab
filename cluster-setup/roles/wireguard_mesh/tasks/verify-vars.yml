@@ -1,0 +1,85 @@
+---
+- name: Check if cidr_block configured
+  run_once: yes
+  ansible.builtin.assert:
+    that:
+      - (mesh_group_config | length) == 0 or cidr_block | ansible.utils.ipaddr('net')
+    fail_msg: '`cidr_block` is required'
+
+- name: Check if global cidr contains all subnet
+  run_once: yes
+  ansible.builtin.assert:
+    that:
+      - item.cidr is defined
+      - cidr_block | ansible.utils.network_in_network(item.cidr)
+    fail_msg: 'invalid subnet'
+  loop: "{{ mesh_group_config.values() }}"
+
+- name: Check if each subnet not overlapped
+  run_once: yes
+  ansible.builtin.assert:
+    that:
+      - '{{
+          (
+            ansible_loop.allitems
+            |rejectattr("key", "eq", item.key)
+            |map(attribute="value.cidr")
+            |map("ansible.utils.network_in_network", item.value.cidr)
+            |unique
+            |difference([False])
+            |length
+          ) == 0
+        }}'
+    fail_msg: 'subnet overlapped'
+  loop: "{{ mesh_group_config|dict2items }}"
+  loop_control:
+    extended: yes
+
+- name: Check if edges does not overlap with any subnet
+  run_once: yes
+  ansible.builtin.assert:
+    that:
+      - '{{
+          (
+            mesh_group_config.values()
+            |map(attribute="cidr")
+            |map("ansible.utils.network_in_network", item.ip_address)
+            |unique
+            |difference([False])
+            |length
+          ) == 0
+        }}'
+    fail_msg: 'subnet overlapped'
+  loop: "{{ edges.values() }}"
+  loop_control:
+    extended: yes
+
+- name: Validate mesh group references of edges
+  run_once: yes
+  ansible.builtin.assert:
+    that:
+      - item.allowed_groups is defined
+      - (item.allowed_groups | difference(mesh_group_config.keys()) | length) == 0
+    fail_msg: 'reference to undefined mesh group'
+  loop: "{{ edges.values() }}"
+
+- name: Validate targeted hosts
+  run_once: yes
+  ansible.builtin.assert:
+    that:
+      - item.ansible_hosts is not defined or (item.ansible_hosts | difference(ansible_play_hosts_all) | length == 0)
+    fail_msg: 'reference to unknown hosts'
+  loop: "{{ mesh_group_config.values() }}"
+
+- name: Validate targeted groups
+  run_once: yes
+  block:
+    - ansible.builtin.set_fact:
+        play_groups_all: "{{
+          ansible_play_hosts_all | map('extract', hostvars) | map(attribute='group_names') | flatten | unique
+        }}"
+    - ansible.builtin.assert:
+        that:
+          - item.ansible_groups is not defined or (item.ansible_groups | difference(play_groups_all) | length == 0)
+        fail_msg: 'reference to unknown groups'
+      loop: "{{ mesh_group_config.values() }}"

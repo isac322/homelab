@@ -1,5 +1,0 @@
-[Match]
-Name={{ wireguard_interface }}
-
-[Network]
-Address={{ wireguard__register_address }}

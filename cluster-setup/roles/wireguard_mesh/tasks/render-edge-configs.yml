@@ -1,0 +1,13 @@
+- name: Save Wireguard conf of edges to local
+  run_once: yes
+  become: '{{ local_become }}'
+  local_action:
+    module: ansible.builtin.template
+    src: ./templates/wg.conf.j2
+    dest: "{{ local_directory }}/{{ item.key }}.conf"
+  loop: "{{ edges|dict2items }}"
+  vars:
+    _wireguard_ip: "{{
+      (item.value.ip_address + '/' + (cidr_block | ansible.utils.ipaddr('netmask')))
+      |ansible.utils.ipaddr('address/prefix')
+    }}"

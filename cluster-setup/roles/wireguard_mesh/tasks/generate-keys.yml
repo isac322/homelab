@@ -1,0 +1,276 @@
+---
+
+########################## Private key ##########################
+
+- name: Generate Wireguard private key
+  block:
+    - name: Get private key stat if exists
+      ansible.builtin.stat:
+        path: '/etc/wireguard/privatekey'
+      register: __register_private_key_stat
+      no_log: '{{ ansible_verbosity < 3 }}'
+      tags:
+        - wg-generate-keys
+
+    - name: Generate WireGuard private key
+      ansible.builtin.command:
+        cmd: "wg genkey"
+      register: __register_private_key
+      no_log: '{{ ansible_verbosity < 3 }}'
+      when: not __register_private_key_stat.stat.exists
+      tags:
+        - wg-generate-keys
+
+    - name: Write WireGuard private key
+      ansible.builtin.copy:
+        dest: "/etc/wireguard/privatekey"
+        mode: 0640
+        owner: root
+        group: systemd-network
+        content: '{{ __register_private_key.stdout }}'
+      no_log: '{{ ansible_verbosity < 3 }}'
+      when: not __register_private_key_stat.stat.exists
+      tags:
+        - wg-generate-keys
+
+- name: Generate Wireguard private key [edge]
+  run_once: yes
+  block:
+    - name: Create directory
+      become: "{{ local_become }}"
+      local_action:
+        module: file
+        path: "{{ local_directory }}"
+        state: directory
+
+    - name: Register if config/private key already exists on target host
+      become: "{{ local_become }}"
+      local_action:
+        module: ansible.builtin.stat
+        path: "{{ local_directory }}/{{ edge }}.conf"
+      register: __register_config_file_stat
+      loop: "{{ edges.keys() }}"
+      loop_control:
+        loop_var: edge
+      tags:
+        - wg-generate-keys
+        - wg-config
+
+    - name: Register config existence
+      ansible.builtin.set_fact:
+        __register_config_file_existence: "{{
+          __register_config_file_existence|default([])
+          + [{'client': item.edge, 'exists': item.stat.exists}]
+        }}"
+      loop: "{{ __register_config_file_stat.results }}"
+
+    - name: WireGuard private key handling for new keys
+      block:
+        - name: Generate WireGuard private key
+          ansible.builtin.command: "wg genkey"
+          register: __register_admin_client_private_key
+          changed_when: false
+          no_log: '{{ ansible_verbosity < 3 }}'
+          when: not item.exists
+          loop: "{{ __register_config_file_existence }}"
+          tags:
+            - wg-generate-keys
+
+        - name: Set private key fact
+          ansible.builtin.set_fact:
+            __register_edge_private_keys: "{{
+              __register_edge_private_keys|default({})
+              |combine({item.item.client: item.stdout})
+            }}"
+          no_log: '{{ ansible_verbosity < 3 }}'
+          when: not item.item.exists
+          loop: "{{ __register_admin_client_private_key.results }}"
+          tags:
+            - wg-generate-keys
+
+    - name: WireGuard private key handling for existing keys
+      block:
+        - name: Read WireGuard config file
+          become: "{{ local_become }}"
+          local_action:
+            module: ansible.builtin.slurp
+            src: "{{ local_directory }}/{{ item.client }}.conf"
+          register: __register_config_file
+          no_log: '{{ ansible_verbosity < 3 }}'
+          when: item.exists
+          loop: "{{ __register_config_file_existence }}"
+          tags:
+            - wg-config
+
+        - name: Set private key fact
+          ansible.builtin.set_fact:
+            __register_edge_private_keys: "{{
+              __register_edge_private_keys|default({})
+              |combine({item.item.client: item.content | b64decode | regex_findall('PrivateKey = (.*)') | first})
+            }}"
+          no_log: '{{ ansible_verbosity < 3 }}'
+          when: item.item.exists
+          with_items: "{{ __register_config_file.results }}"
+          tags:
+            - wg-config
+
+########################## Public key ##########################
+
+- name: Derive WireGuard public key
+  block:
+    - name: Get public key stat if exists
+      ansible.builtin.stat:
+        path: '/etc/wireguard/publickey'
+      register: __register_public_key_stat
+      no_log: '{{ ansible_verbosity < 3 }}'
+      tags:
+        - wg-generate-keys
+
+    - name: Derive WireGuard public key
+      ansible.builtin.shell:
+        cmd: "wg pubkey < /etc/wireguard/privatekey"
+      register: __register_public_key
+      no_log: '{{ ansible_verbosity < 3 }}'
+      when: not __register_public_key_stat.stat.exists
+      tags:
+        - wg-generate-keys
+
+    - name: Write WireGuard public key
+      ansible.builtin.copy:
+        dest: "/etc/wireguard/publickey"
+        mode: 0640
+        owner: root
+        group: systemd-network
+        content: "{{ __register_public_key.stdout }}"
+      no_log: '{{ ansible_verbosity < 3 }}'
+      when: not __register_public_key_stat.stat.exists
+      tags:
+        - wg-generate-keys
+
+    - name: Read WireGuard public key
+      ansible.builtin.command:
+        cmd: "cat /etc/wireguard/publickey"
+      register: __register_public_key
+      no_log: '{{ ansible_verbosity < 3 }}'
+      changed_when: false
+      tags:
+        - wg-generate-keys
+
+    - name: Set WireGuard public key fact
+      ansible.builtin.set_fact:
+        _wireguard: "{{ _wireguard|combine({'public_key': __register_public_key.stdout}) }}"
+      no_log: '{{ ansible_verbosity < 3 }}'
+      tags:
+        - wg-generate-keys
+
+- name: Generate Wireguard public key for admin clients
+  run_once: yes
+  block:
+    - name: Derive WireGuard public key
+      ansible.builtin.command:
+        cmd: "wg pubkey"
+        stdin: "{{ __register_edge_private_keys[edge] }}"
+      register: __register_edge_public_key
+      changed_when: false
+      no_log: '{{ ansible_verbosity < 3 }}'
+      loop: "{{ edges.keys() }}"
+      loop_control:
+        loop_var: edge
+
+    - name: Register public key fact
+      ansible.builtin.set_fact:
+        __register_edge_public_keys: "{{
+          __register_edge_public_keys|default({})
+          |combine({item.edge: item.stdout})
+        }}"
+      no_log: '{{ ansible_verbosity < 3 }}'
+      loop: "{{ __register_edge_public_key.results }}"
+
+
+########################## Preshared key ##########################
+
+- name: Generate preshared key
+  block:
+    - name: Collect all peer nodes
+      ansible.builtin.set_fact:
+        _peers: "{{ (_peers|default([])) + [peer] }}"
+      when: peer in edges_of_group[_wireguard.mesh_group] or peer < inventory_hostname
+      loop: "{{ _wireguard.peers | map(attribute='hostname') }}"
+      loop_control:
+        loop_var: peer
+
+    - name: Get preshared key if exists
+      ansible.builtin.stat:
+        path: '/etc/wireguard/psk-{{ peer }}'
+      register: __register_psk_stat
+      no_log: '{{ ansible_verbosity < 3 }}'
+      loop: "{{ _peers|default([]) }}"
+      loop_control:
+        loop_var: peer
+      tags:
+        - wg-generate-keys
+
+    - name: Generate preshared key
+      ansible.builtin.command:
+        cmd: "wg genpsk"
+      register: __register_psk
+      no_log: '{{ ansible_verbosity < 3 }}'
+      when: item.skipped is not defined and not item.stat.exists
+      loop: "{{ __register_psk_stat.results }}"
+      tags:
+        - wg-generate-keys
+
+    - name: Write preshared key
+      ansible.builtin.copy:
+        dest: '/etc/wireguard/psk-{{ item.item.peer }}'
+        mode: 0640
+        owner: root
+        group: systemd-network
+        content: '{{ item.stdout }}'
+      no_log: '{{ ansible_verbosity < 3 }}'
+      when: item.skipped is not defined
+      loop: "{{ __register_psk.results }}"
+      tags:
+        - wg-generate-keys
+
+    - name: Read preshared keypair
+      ansible.builtin.slurp:
+        src: "/etc/wireguard/psk-{{ peer }}"
+      register: __register_psk
+      changed_when: false
+      no_log: '{{ ansible_verbosity < 3 }}'
+      when: peer in edges_of_group[_wireguard.mesh_group] or peer < inventory_hostname
+      loop: "{{ _wireguard.peers | map(attribute='hostname') }}"
+      loop_control:
+        loop_var: peer
+      tags:
+        - wg-generate-keys
+
+    - name: Massage preshared keys
+      ansible.builtin.set_fact:
+        __register_preshared_keys: "{{
+          __register_preshared_keys|default({})
+          |combine({item.peer: item.content | b64decode})
+        }}"
+      changed_when: false
+      no_log: '{{ ansible_verbosity < 3 }}'
+      when: item.skipped is not defined
+      loop: "{{ __register_psk.results }}"
+      tags:
+        - wg-generate-keys
+
+    - name: Propagate preshared keys
+      ansible.builtin.copy:
+        dest: "/etc/wireguard/psk-{{ peer }}"
+        mode: 0640
+        owner: root
+        group: systemd-network
+        content: "{{ hostvars[peer].__register_preshared_keys[inventory_hostname] }}"
+      when:
+        - peer not in edges_of_group[_wireguard.mesh_group]
+        - peer > inventory_hostname
+      loop: "{{ _wireguard.peers | map(attribute='hostname') }}"
+      loop_control:
+        loop_var: peer
+      tags:
+        - wg-generate-keys
