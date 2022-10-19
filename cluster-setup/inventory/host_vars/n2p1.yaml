@@ -6,8 +6,6 @@ gateway_ip: 172.30.1.254
 
 
 wireguard_ip: "10.222.0.1"
-wireguard_site_gateway: true
-wireguard_site_gateway_host: "backbone.bhyoo.com"
 external_host: "backbone.bhyoo.com"
 
 allow_ssh_root_login: true

@@ -2,12 +2,3 @@ wireguard_port: "51902"
 iptables_wireguard_port: "{{ wireguard_port }}"
 
 is_k8s_master: false
-
-wireguard_admin_clients:
-  phone:
-    ip: 10.222.0.129
-  desktop:
-    ip: 10.222.0.130
-  woo:
-    ip: 10.222.0.193
-    only_p2p: true
