@@ -85,8 +85,8 @@ cephClusterSpec:
 
 ingress:
   dashboard:
+    ingressClassName: traefik
     annotations:
-      kubernetes.io/ingress.class: traefik
       traefik.ingress.kubernetes.io/router.entrypoints: websecure
       cert-manager.io/issuer: cloudflare-origin-issuer
       cert-manager.io/issuer-kind: OriginIssuer
