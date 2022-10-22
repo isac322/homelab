@@ -1,3 +1,7 @@
+deployment:
+  # Can be either Deployment or DaemonSet
+  kind: DaemonSet
+
 # Pod disruption budget
 podDisruptionBudget:
   enabled: true
@@ -7,7 +11,7 @@ podDisruptionBudget:
 ingressClass:
   # true is not unit-testable yet, pending https://github.com/rancher/helm-unittest/pull/12
   enabled: true
-
+  isDefaultClass: true
 
 # Create an IngressRoute for the dashboard
 ingressRoute:
@@ -44,6 +48,8 @@ logs:
 metrics:
   prometheus:
     entryPoint: metrics
+
+globalArguments: []
 
 #
 # Configure Traefik static configuration
@@ -92,7 +98,7 @@ resources:
     cpu: "500m"
     memory: "50Mi"
   limits:
-    cpu: "2000m"
+    cpu: "500m"
     memory: "512Mi"
 
 
