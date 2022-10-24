@@ -89,6 +89,8 @@ rollingUpdate:
   maxSurge: 1
 
 service:
+  annotations:
+    metallb.universe.tf/allow-shared-ip: "prod"
   spec:
     externalTrafficPolicy: Local
 
