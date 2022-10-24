@@ -97,7 +97,7 @@ service:
 
 resources:
   requests:
-    cpu: "500m"
+    cpu: "100m"
     memory: "50Mi"
   limits:
     cpu: "500m"
