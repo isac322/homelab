@@ -1,3 +1,4 @@
 wireguard_port: "51902"
 
 is_k8s_master: false
+k8s_node_labels: []

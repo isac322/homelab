@@ -5,6 +5,8 @@ desired_ip: 172.30.1.4
 gateway_ip: 172.30.1.254
 
 is_k8s_master: true
+k8s_node_labels:
+  - "homelab.bhyoo.com/zfs-node=true"
 
 wireguard_ip: "10.222.0.2"
 
