@@ -8,7 +8,7 @@ parameters:
   compression: "off"
   dedup: "off"
   fstype: "zfs"
-  poolname: "nas/k8s/pvc"
+  poolname: "openebs/pvc"
 provisioner: zfs.csi.openebs.io
 ---
 apiVersion: storage.k8s.io/v1
@@ -17,5 +17,5 @@ metadata:
   name: zfs-block
 allowVolumeExpansion: true
 parameters:
-  poolname: "nas/k8s/block"
+  poolname: "openebs/block"
 provisioner: zfs.csi.openebs.io
