@@ -37,47 +37,47 @@
   collections:
     - devsec.hardening
   roles:
-    - ssh_hardening
-  vars:
-    ssh_print_last_log: true
-    ssh_print_debian_banner: true
-    ssh_permit_root_login: "{{ 'without-password' if allow_ssh_root_login|default(false) else 'no' }}"
-#    ssh_print_motd: true
-#    ssh_print_pam_motd: true
-#    ssh_banner: true
-#    ssh_banner_path: /etc/issue.net
-    ssh_host_key_files:
-      - /etc/ssh/ssh_host_rsa_key
-      - /etc/ssh/ssh_host_ed25519_key
-    ssh_host_rsa_key_size: 4096
-    sshd_moduli_minimum: 3071
-    ssh_kex:
-      - curve25519-sha256
-      - curve25519-sha256@libssh.org
-      - gss-curve25519-sha256-
-      - diffie-hellman-group14-sha256
-      - diffie-hellman-group16-sha512
-      - gss-group16-sha512-
-      - diffie-hellman-group18-sha512
-      - diffie-hellman-group-exchange-sha256
-    ssh_ciphers:
-      - chacha20-poly1305@openssh.com
-      - aes256-gcm@openssh.com
-      - aes128-gcm@openssh.com
-      - aes256-ctr
-      - aes192-ctr
-      - aes128-ctr
-    ssh_macs:
-      - hmac-sha2-256-etm@openssh.com
-      - hmac-sha2-512-etm@openssh.com
-      - umac-128-etm@openssh.com
-    ssh_host_key_algorithms:
-      - ssh-ed25519
-      - ssh-ed25519-cert-v01@openssh.com
-      - sk-ssh-ed25519@openssh.com
-      - sk-ssh-ed25519-cert-v01@openssh.com
-      - rsa-sha2-512
-      - rsa-sha2-512-cert-v01@openssh.com
-      - rsa-sha2-256
-      - rsa-sha2-256-cert-v01@openssh.com
-    sshd_log_level: INFO
+    - role: ssh_hardening
+      vars:
+        ssh_print_last_log: true
+        ssh_print_debian_banner: true
+        ssh_permit_root_login: "{{ 'without-password' if allow_ssh_root_login|default(false) else 'no' }}"
+#        ssh_print_motd: true
+#        ssh_print_pam_motd: true
+#        ssh_banner: true
+#        ssh_banner_path: /etc/issue.net
+        ssh_host_key_files:
+          - /etc/ssh/ssh_host_rsa_key
+          - /etc/ssh/ssh_host_ed25519_key
+        ssh_host_rsa_key_size: 4096
+        sshd_moduli_minimum: 3071
+        ssh_kex:
+          - curve25519-sha256
+          - curve25519-sha256@libssh.org
+          - gss-curve25519-sha256-
+          - diffie-hellman-group14-sha256
+          - diffie-hellman-group16-sha512
+          - gss-group16-sha512-
+          - diffie-hellman-group18-sha512
+          - diffie-hellman-group-exchange-sha256
+        ssh_ciphers:
+          - chacha20-poly1305@openssh.com
+          - aes256-gcm@openssh.com
+          - aes128-gcm@openssh.com
+          - aes256-ctr
+          - aes192-ctr
+          - aes128-ctr
+        ssh_macs:
+          - hmac-sha2-256-etm@openssh.com
+          - hmac-sha2-512-etm@openssh.com
+          - umac-128-etm@openssh.com
+        ssh_host_key_algorithms:
+          - ssh-ed25519
+          - ssh-ed25519-cert-v01@openssh.com
+          - sk-ssh-ed25519@openssh.com
+          - sk-ssh-ed25519-cert-v01@openssh.com
+          - rsa-sha2-512
+          - rsa-sha2-512-cert-v01@openssh.com
+          - rsa-sha2-256
+          - rsa-sha2-256-cert-v01@openssh.com
+        sshd_log_level: INFO
