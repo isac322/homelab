@@ -12,3 +12,4 @@
     - role: iptables-firewall
       vars:
         iptables_use_k3s_server: "{{ is_k8s_master }}"
+        iptables_wireguard_port: "{{ wireguard_port }}"
