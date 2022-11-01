@@ -15,7 +15,7 @@ zfsNode:
       memory: 32Mi
   ## Labels to be added to openebs-zfs node pods
   nodeSelector:
-    zfs: 'true'
+    homelab.bhyoo.com/zfs-node: 'true'
 
 # zfsController contains the configurables for
 # the zfs controller statefulset
@@ -34,7 +34,7 @@ zfsController:
   podLabels:
     name: openebs-zfs-controller
   nodeSelector:
-    zfs: 'true'
+    homelab.bhyoo.com/zfs-node: 'true'
 
 
 # zfsPlugin is the common csi container used by the
