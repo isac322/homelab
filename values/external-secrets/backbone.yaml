@@ -1,7 +1,7 @@
 resources:
   requests:
     cpu: 10m
-    memory: 32Mi
+    memory: 48Mi
   limits:
     cpu: 100m
     memory: 64Mi
@@ -10,33 +10,29 @@ serviceMonitor:
   enabled: true
 
 webhook:
-  # -- Specifies whether a webhook deployment be created.
   create: true
-  # -- specifies whether validating webhooks should be created with failurePolicy: Fail or Ignore
-  failurePolicy: Fail
 
   serviceMonitor:
     enabled: true
 
-  resources: {}
-      # requests:
-      #   cpu: 10m
-      #   memory: 32Mi
+  resources:
+    requests:
+      cpu: 1m
+      memory: 32Mi
+    limits:
+      cpu: 50m
+      memory: 64Mi
 
 certController:
-  # -- Specifies whether a certificate controller deployment be created.
   create: true
-  requeueInterval: "5m"
-  replicaCount: 1
 
   serviceMonitor:
     enabled: true
 
-  resources: {}
-      # requests:
-      #   cpu: 10m
-      #   memory: 32Mi
-
-# -- Specifies `dnsOptions` to deployment
-dnsConfig: {}
-
+  resources:
+    requests:
+      cpu: 1m
+      memory: 64Mi
+    limits:
+      cpu: 50m
+      memory: 96Mi

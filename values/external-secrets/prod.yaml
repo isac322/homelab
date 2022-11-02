@@ -1,7 +1,7 @@
 resources:
   requests:
     cpu: 10m
-    memory: 32Mi
+    memory: 48Mi
   limits:
     cpu: 100m
     memory: 64Mi
@@ -10,8 +10,29 @@ serviceMonitor:
   enabled: true
 
 webhook:
-  create: false
+  create: true
+
+  serviceMonitor:
+    enabled: true
+
+  resources:
+    requests:
+      cpu: 1m
+      memory: 32Mi
+    limits:
+      cpu: 50m
+      memory: 64Mi
 
 certController:
-  create: false
+  create: true
 
+  serviceMonitor:
+    enabled: true
+
+  resources:
+    requests:
+      cpu: 1m
+      memory: 64Mi
+    limits:
+      cpu: 50m
+      memory: 96Mi
