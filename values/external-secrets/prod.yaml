@@ -10,7 +10,7 @@ serviceMonitor:
   enabled: true
 
 webhook:
-  create: true
+  create: false
 
 certController:
   create: false
