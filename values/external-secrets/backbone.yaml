@@ -10,8 +10,33 @@ serviceMonitor:
   enabled: true
 
 webhook:
+  # -- Specifies whether a webhook deployment be created.
   create: true
+  # -- specifies whether validating webhooks should be created with failurePolicy: Fail or Ignore
+  failurePolicy: Fail
+
+  serviceMonitor:
+    enabled: true
+
+  resources: {}
+      # requests:
+      #   cpu: 10m
+      #   memory: 32Mi
 
 certController:
-  create: false
+  # -- Specifies whether a certificate controller deployment be created.
+  create: true
+  requeueInterval: "5m"
+  replicaCount: 1
+
+  serviceMonitor:
+    enabled: true
+
+  resources: {}
+      # requests:
+      #   cpu: 10m
+      #   memory: 32Mi
+
+# -- Specifies `dnsOptions` to deployment
+dnsConfig: {}
 
