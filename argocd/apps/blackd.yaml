@@ -15,7 +15,7 @@ spec:
         - values.yaml
         - https://raw.githubusercontent.com/isac322/homelab/HEAD/values/blackd/prod.yaml
     repoURL: https://isac322.github.io/homelab
-    targetRevision: 1.0.1
+    targetRevision: 1.1.0
   syncPolicy:
     automated:
       prune: true
