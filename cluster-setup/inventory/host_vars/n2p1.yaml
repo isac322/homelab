@@ -5,6 +5,12 @@ desired_ip: 172.30.1.3
 gateway_ip: 172.30.1.254
 
 
+k8s_node_labels:
+  - "homelab.bhyoo.com/zfs-node=true"
+  - "homelab.bhyoo.com/zfs-pool-nas=true"
+  - "homelab.bhyoo.com/zfs-pool-temporal=true"
+
+
 wireguard_ip: "10.222.0.1"
 external_host: "backbone.bhyoo.com"
 
