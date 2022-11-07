@@ -1,21 +1,51 @@
-#apiVersion: storage.k8s.io/v1
-#kind: StorageClass
-#metadata:
-#  name: zfs-fs
-#allowVolumeExpansion: true
-#parameters:
-#  recordsize: "4k"
-#  compression: "off"
-#  dedup: "off"
-#  fstype: "zfs"
-#  poolname: "openebs/pvc"
-#provisioner: zfs.csi.openebs.io
-#---
-#apiVersion: storage.k8s.io/v1
-#kind: StorageClass
-#metadata:
-#  name: zfs-block
-#allowVolumeExpansion: true
-#parameters:
-#  poolname: "openebs/block"
-#provisioner: zfs.csi.openebs.io
+apiVersion: storage.k8s.io/v1
+kind: StorageClass
+metadata:
+  name: zfs-prometheus
+allowVolumeExpansion: true
+parameters:
+  recordsize: "128k"
+  compression: "off"
+  dedup: "off"
+  fstype: "zfs"
+  acltype: posix
+  poolname: "slow-hot-storage/prometheus/pvc"
+provisioner: zfs.csi.openebs.io
+allowedTopologies:
+  - matchLabelExpressions:
+      - key: "homelab.bhyoo.com/zfs-pool-slow-hot-storage"
+        values:
+          - "true"
+---
+apiVersion: storage.k8s.io/v1
+kind: StorageClass
+metadata:
+  name: zfs-block-storage
+allowVolumeExpansion: true
+parameters:
+  poolname: "slow-hot-storage/block"
+provisioner: zfs.csi.openebs.io
+allowedTopologies:
+  - matchLabelExpressions:
+      - key: "homelab.bhyoo.com/zfs-pool-slow-hot-storage"
+        values:
+          - "true"
+---
+apiVersion: storage.k8s.io/v1
+kind: StorageClass
+metadata:
+  name: zfs-temporal
+allowVolumeExpansion: true
+parameters:
+  recordsize: "16k"
+  compression: "off"
+  dedup: "off"
+  fstype: "zfs"
+  acltype: posix
+  poolname: "temporal/pvc"
+provisioner: zfs.csi.openebs.io
+allowedTopologies:
+  - matchLabelExpressions:
+      - key: "homelab.bhyoo.com/zfs-pool-temporal"
+        values:
+          - "true"
