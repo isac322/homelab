@@ -1,21 +1,21 @@
-apiVersion: storage.k8s.io/v1
-kind: StorageClass
-metadata:
-  name: zfs-fs
-allowVolumeExpansion: true
-parameters:
-  recordsize: "4k"
-  compression: "off"
-  dedup: "off"
-  fstype: "zfs"
-  poolname: "openebs/pvc"
-provisioner: zfs.csi.openebs.io
----
-apiVersion: storage.k8s.io/v1
-kind: StorageClass
-metadata:
-  name: zfs-block
-allowVolumeExpansion: true
-parameters:
-  poolname: "openebs/block"
-provisioner: zfs.csi.openebs.io
+#apiVersion: storage.k8s.io/v1
+#kind: StorageClass
+#metadata:
+#  name: zfs-fs
+#allowVolumeExpansion: true
+#parameters:
+#  recordsize: "4k"
+#  compression: "off"
+#  dedup: "off"
+#  fstype: "zfs"
+#  poolname: "openebs/pvc"
+#provisioner: zfs.csi.openebs.io
+#---
+#apiVersion: storage.k8s.io/v1
+#kind: StorageClass
+#metadata:
+#  name: zfs-block
+#allowVolumeExpansion: true
+#parameters:
+#  poolname: "openebs/block"
+#provisioner: zfs.csi.openebs.io
