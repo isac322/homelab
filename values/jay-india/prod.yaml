@@ -1,6 +1,3 @@
-imagePullSecrets:
-  - name: bhyoo-registry-key
-
 ingress:
   enabled: true
   className: traefik
