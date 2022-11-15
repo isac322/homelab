@@ -1,8 +1,8 @@
 ---
 - name: Collect private IPs
-  run_once: yes
   block:
-    - ansible.builtin.set_fact:
+    - run_once: yes
+      ansible.builtin.set_fact:
         private_ips: "{{
           private_ips|default([])
           + [
@@ -16,9 +16,6 @@
           |difference(ansible_default_ipv4.address | ansible.utils.ipaddr('private'))
           |join(',')
         }}"
-
-- debug:
-    msg: "{{ hostvars[inventory_hostname]['ansible_' + iptables_wireguard_interface].ipv4.address | ansible.utils.ipsubnet }}"
 
 - name: Install iptables-persistent
   ansible.builtin.apt:
