@@ -1,4 +1,25 @@
 ---
+- name: Collect private IPs
+  run_once: yes
+  block:
+    - ansible.builtin.set_fact:
+        private_ips: "{{
+          private_ips|default([])
+          + [
+            hostvars[item].ansible_default_ipv4.address | ansible.utils.ipaddr('private')
+          ]
+        }}"
+      loop: "{{ ansible_play_hosts_all }}"
+    - ansible.builtin.set_fact:
+        neighbor_ips: "{{
+          private_ips
+          |difference(ansible_default_ipv4.address | ansible.utils.ipaddr('private'))
+          |join(',')
+        }}"
+
+- debug:
+    msg: "{{ hostvars[inventory_hostname]['ansible_' + iptables_wireguard_interface].ipv4.address | ansible.utils.ipsubnet }}"
+
 - name: Install iptables-persistent
   ansible.builtin.apt:
     update_cache: yes
@@ -224,6 +245,7 @@
     protocol: tcp
     destination_port: 21
     jump: ACCEPT
+    comment: FTP
   when: iptables_use_ftp
 
 - name: Allow FTP (Active mode)
@@ -232,16 +254,32 @@
     protocol: tcp
     destination_port: 20
     jump: ACCEPT
+    comment: FTP (Active mode)
   when: iptables_use_ftp
 
 - name: Allow kubelet
-  ansible.builtin.iptables:
-    chain: TCP
-    protocol: tcp
-    destination_port: 6443
-    jump: ACCEPT
-    source: "{{ (iptables_k3s_kubelet_accessible_cidrs + [iptables_k3s_internal_cidr]) | join(',') }}"
-  when: iptables_use_k3s_server
+  block:
+    - ansible.builtin.iptables:
+        chain: TCP
+        protocol: tcp
+        destination_port: 6443
+        jump: ACCEPT
+        in_interface: "{{ ansible_default_ipv4.interface }}"
+        source: "{{ neighbor_ips }}"
+        comment: kubelet
+      when: iptables_use_k3s_server
+
+    - ansible.builtin.iptables:
+        chain: TCP
+        protocol: tcp
+        destination_port: 6443
+        jump: ACCEPT
+        in_interface: "{{ iptables_wireguard_interface }}"
+        source: "{{ ipv4.network }}/{{ ipv4.prefix }}"
+        comment: kubelet
+      when: iptables_use_k3s_server
+      vars:
+        ipv4: "{{ hostvars[inventory_hostname]['ansible_' + iptables_wireguard_interface].ipv4 }}"
 
 - name: Allow kubelet metrics
   ansible.builtin.iptables:
@@ -249,7 +287,9 @@
     protocol: tcp
     destination_port: 10250
     jump: ACCEPT
-    source: "{{ (iptables_k3s_kubelet_accessible_cidrs + [iptables_k3s_internal_cidr]) | join(',') }}"
+    in_interface: "{{ ansible_default_ipv4.interface }}"
+    source: "{{ neighbor_ips }}"
+    comment: kubelet metrics
   when: iptables_use_k3s_server or iptables_use_k3s_agent
 
 - name: Allow k3s embbeded etcd
@@ -259,8 +299,41 @@
     destination_port: 2379:2380
     jump: ACCEPT
     in_interface: "{{ ansible_default_ipv4.interface }}"
-    source: "{{ iptables_k3s_internal_cidr }}"
+    source: "{{ neighbor_ips }}"
   when: iptables_use_k3s_server and iptables_k3s_server_ha_embedded_etcd
+
+- name: Allow k8s cilium health check
+  ansible.builtin.iptables:
+    chain: TCP
+    protocol: tcp
+    destination_port: 4240
+    jump: ACCEPT
+    in_interface: "{{ ansible_default_ipv4.interface }}"
+    source: "{{ neighbor_ips }}"
+    comment: cilium health check
+  when: iptables_k8s_cilium
+
+- name: Allow k8s cilium hubble
+  ansible.builtin.iptables:
+    chain: TCP
+    protocol: tcp
+    destination_port: 4244:4245
+    jump: ACCEPT
+    in_interface: "{{ ansible_default_ipv4.interface }}"
+    source: "{{ neighbor_ips }}"
+    comment: cilium hubble
+  when: iptables_k8s_cilium_hubble
+
+- name: Allow k8s metallb L2 LB
+  ansible.builtin.iptables:
+    chain: TCP
+    protocol: tcp
+    destination_port: 7946
+    jump: ACCEPT
+    in_interface: "{{ ansible_default_ipv4.interface }}"
+    source: "{{ neighbor_ips }}"
+    comment: metallb L2 LB
+  when: iptables_k8s_metallb
 
 # UDP
 
@@ -281,6 +354,7 @@
     protocol: udp
     destination_port: 5353
     jump: ACCEPT
+    comment: Multicast DNS (mDNS)
   when: iptables_use_mdns
 
 - name: Allow Link-Local Multicast Name Resolution (LLMNR)
@@ -289,6 +363,7 @@
     protocol: udp
     destination_port: 5355
     jump: ACCEPT
+    comment: Link-Local Multicast Name Resolution (LLMNR)
   when: iptables_use_llmnr
 
 - name: Allow Wireguard
@@ -298,6 +373,7 @@
     in_interface: "{{ ansible_default_ipv4.interface }}"
     destination_port: "{{ iptables_wireguard_port }}"
     jump: ACCEPT
+    comment: Wireguard
 
 - name: Allow VXLAN
   ansible.builtin.iptables:
@@ -306,8 +382,20 @@
     destination_port: 8472
     jump: ACCEPT
     in_interface: "{{ ansible_default_ipv4.interface }}"
-    source: "{{ iptables_k3s_internal_cidr }}"
+    source: "{{ neighbor_ips }}"
+    comment: VXLAN
   when: (iptables_use_k3s_server or iptables_use_k3s_agent) and iptables_use_vxlan
+
+- name: Allow k8s metallb L2 LB
+  ansible.builtin.iptables:
+    chain: UDP
+    protocol: udp
+    destination_port: 7946
+    jump: ACCEPT
+    in_interface: "{{ ansible_default_ipv4.interface }}"
+    source: "{{ neighbor_ips }}"
+    comment: metallb L2 LB
+  when: iptables_k8s_metallb
 
 # DROP other INPUT traffic
 

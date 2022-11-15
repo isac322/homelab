@@ -13,3 +13,6 @@ iptables_use_vxlan: false
 iptables_k3s_server_ha_embedded_etcd: false
 iptables_k3s_internal_cidr: ""
 iptables_k3s_kubelet_accessible_cidrs: []
+iptables_k8s_cilium: false
+iptables_k8s_cilium_hubble: false
+iptables_k8s_metallb: false

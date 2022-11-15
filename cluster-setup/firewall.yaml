@@ -1,15 +1,25 @@
 ---
 - hosts: backbone
+  become: yes
   roles:
     - role: robertdebock.sysctl
       sysctl_items:
         - name: net.ipv4.ip_forward
           value: 1
+    - role: iptables-firewall
+      vars:
+        iptables_use_k3s_server: "{{ is_k8s_master }}"
+        iptables_wireguard_port: "{{ wireguard_port }}"
+        iptables_reset_all: false
 
-- hosts: all
+- hosts: prod
   become: yes
   roles:
     - role: iptables-firewall
       vars:
         iptables_use_k3s_server: "{{ is_k8s_master }}"
         iptables_wireguard_port: "{{ wireguard_port }}"
+        iptables_k8s_cilium: "{{ is_k8s_master }}"
+        iptables_k8s_cilium_hubble: "{{ is_k8s_master }}"
+        iptables_k8s_metallb: "{{ is_k8s_master }}"
+        iptables_reset_all: false
