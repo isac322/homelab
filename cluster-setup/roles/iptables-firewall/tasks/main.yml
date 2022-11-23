@@ -1,21 +1,17 @@
 ---
-- name: Collect private IPs
-  block:
-    - run_once: yes
-      ansible.builtin.set_fact:
-        private_ips: "{{
-          private_ips|default([])
-          + [
-            hostvars[item].ansible_default_ipv4.address | ansible.utils.ipaddr('private')
-          ]
-        }}"
-      loop: "{{ ansible_play_hosts_all }}"
-    - ansible.builtin.set_fact:
-        neighbor_ips: "{{
-          private_ips
-          |difference(ansible_default_ipv4.address | ansible.utils.ipaddr('private'))
-          |join(',')
-        }}"
+- name: Validate k8s_cluster_cidr
+  ansible.builtin.assert:
+    that: k8s_cluster_cidr | ansible.utils.ipaddr('net')
+    msg: invalid `k8s_cluster_cidr`. (e.g. 10.0.0.0/8)
+  when: k8s_role != "" and k8s_cluster_cidr != ""
+
+- name: Define k8s_cluster_cidr
+  ansible.builtin.set_fact:
+    __register_k8s_cluster_cidr: "{{
+        k8s_cluster_cidr
+        |default('%s/%s' | format(ansible_default_ipv4.network, ansible_default_ipv4.prefix), true)
+      }}"
+  when: k8s_role != ""
 
 - name: Install iptables-persistent
   ansible.builtin.apt:
@@ -97,10 +93,10 @@
 - name: Forwarding all wireguard traffic
   ansible.builtin.iptables:
     chain: FORWARD
-    in_interface: "{{ iptables_wireguard_interface }}"
-    out_interface: "{{ iptables_wireguard_interface }}"
+    in_interface: "{{ wireguard_interface }}"
+    out_interface: "{{ wireguard_interface }}"
     jump: ACCEPT
-  when: iptables_wireguard_is_site
+  when: is_wireguard_gateway
 
 - name: Drop FORWARD chain
   ansible.builtin.iptables:
@@ -261,22 +257,21 @@
         protocol: tcp
         destination_port: 6443
         jump: ACCEPT
-        in_interface: "{{ ansible_default_ipv4.interface }}"
-        source: "{{ neighbor_ips }}"
+        source: "{{ __register_k8s_cluster_cidr }}"
         comment: kubelet
-      when: iptables_use_k3s_server
+      when: k8s_role == "master"
 
     - ansible.builtin.iptables:
         chain: TCP
         protocol: tcp
         destination_port: 6443
         jump: ACCEPT
-        in_interface: "{{ iptables_wireguard_interface }}"
+        in_interface: "{{ wireguard_interface }}"
         source: "{{ ipv4.network }}/{{ ipv4.prefix }}"
         comment: kubelet
-      when: iptables_use_k3s_server
+      when: k8s_role == "master"
       vars:
-        ipv4: "{{ hostvars[inventory_hostname]['ansible_' + iptables_wireguard_interface].ipv4 }}"
+        ipv4: "{{ hostvars[inventory_hostname]['ansible_' + wireguard_interface].ipv4 }}"
 
 - name: Allow kubelet metrics
   ansible.builtin.iptables:
@@ -284,10 +279,9 @@
     protocol: tcp
     destination_port: 10250
     jump: ACCEPT
-    in_interface: "{{ ansible_default_ipv4.interface }}"
-    source: "{{ neighbor_ips }}"
+    source: "{{ __register_k8s_cluster_cidr }}"
     comment: kubelet metrics
-  when: iptables_use_k3s_server or iptables_use_k3s_agent
+  when: k8s_role != ""
 
 - name: Allow k3s embbeded etcd
   ansible.builtin.iptables:
@@ -295,9 +289,9 @@
     protocol: tcp
     destination_port: 2379:2380
     jump: ACCEPT
-    in_interface: "{{ ansible_default_ipv4.interface }}"
-    source: "{{ neighbor_ips }}"
-  when: iptables_use_k3s_server and iptables_k3s_server_ha_embedded_etcd
+    source: "{{ __register_k8s_cluster_cidr }}"
+    comment: k3s etcd
+  when: k8s_role == "master" and use_k3s_ha_embedded_etcd
 
 - name: Allow k8s cilium health check
   ansible.builtin.iptables:
@@ -305,10 +299,9 @@
     protocol: tcp
     destination_port: 4240
     jump: ACCEPT
-    in_interface: "{{ ansible_default_ipv4.interface }}"
-    source: "{{ neighbor_ips }}"
+    source: "{{ __register_k8s_cluster_cidr }}"
     comment: cilium health check
-  when: iptables_k8s_cilium
+  when: k8s_role != "" and use_k8s_cilium
 
 - name: Allow k8s cilium hubble
   ansible.builtin.iptables:
@@ -316,10 +309,9 @@
     protocol: tcp
     destination_port: 4244:4245
     jump: ACCEPT
-    in_interface: "{{ ansible_default_ipv4.interface }}"
-    source: "{{ neighbor_ips }}"
+    source: "{{ __register_k8s_cluster_cidr }}"
     comment: cilium hubble
-  when: iptables_k8s_cilium_hubble
+  when: k8s_role != "" and use_k8s_cilium_hubble
 
 - name: Allow k8s metallb L2 LB
   ansible.builtin.iptables:
@@ -327,10 +319,9 @@
     protocol: tcp
     destination_port: 7946
     jump: ACCEPT
-    in_interface: "{{ ansible_default_ipv4.interface }}"
-    source: "{{ neighbor_ips }}"
+    source: "{{ __register_k8s_cluster_cidr }}"
     comment: metallb L2 LB
-  when: iptables_k8s_metallb
+  when: k8s_role != "" and use_k8s_metallb
 
 # UDP
 
@@ -368,7 +359,7 @@
     chain: UDP
     protocol: udp
     in_interface: "{{ ansible_default_ipv4.interface }}"
-    destination_port: "{{ iptables_wireguard_port }}"
+    destination_port: "{{ wireguard_port }}"
     jump: ACCEPT
     comment: Wireguard
 
@@ -378,10 +369,9 @@
     protocol: udp
     destination_port: 8472
     jump: ACCEPT
-    in_interface: "{{ ansible_default_ipv4.interface }}"
-    source: "{{ neighbor_ips }}"
+    source: "{{ __register_k8s_cluster_cidr }}"
     comment: VXLAN
-  when: (iptables_use_k3s_server or iptables_use_k3s_agent) and iptables_use_vxlan
+  when: k8s_role != "" and use_k3s_vxlan
 
 - name: Allow k8s metallb L2 LB
   ansible.builtin.iptables:
@@ -389,10 +379,9 @@
     protocol: udp
     destination_port: 7946
     jump: ACCEPT
-    in_interface: "{{ ansible_default_ipv4.interface }}"
-    source: "{{ neighbor_ips }}"
+    source: "{{ __register_k8s_cluster_cidr }}"
     comment: metallb L2 LB
-  when: iptables_k8s_metallb
+  when: k8s_role != "" and use_k8s_metallb
 
 # DROP other INPUT traffic
 

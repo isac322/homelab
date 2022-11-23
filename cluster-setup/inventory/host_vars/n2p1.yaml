@@ -18,5 +18,4 @@ allow_ssh_root_login: true
 
 
 iptables_use_ftp: true
-iptables_use_k3s_agent: true
-iptables_wireguard_is_site: true
+is_wireguard_gateway: true

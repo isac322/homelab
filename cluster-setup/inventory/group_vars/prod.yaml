@@ -1,7 +1,2 @@
 k3s_etcd_datastore: true
 private_ip: "{{ ansible_default_ipv4.address }}"
-
-
-iptables_use_vxlan: true
-iptables_k3s_server_ha_embedded_etcd: true
-iptables_k3s_internal_cidr: "10.0.0.0/8"

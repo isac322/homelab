@@ -8,8 +8,7 @@
           value: 1
     - role: iptables-firewall
       vars:
-        iptables_use_k3s_server: "{{ is_k8s_master }}"
-        iptables_wireguard_port: "{{ wireguard_port }}"
+        k8s_role: "{{ 'master' if is_k8s_master else 'worker' }}"
         iptables_reset_all: false
 
 - hosts: prod
@@ -17,9 +16,11 @@
   roles:
     - role: iptables-firewall
       vars:
-        iptables_use_k3s_server: "{{ is_k8s_master }}"
-        iptables_wireguard_port: "{{ wireguard_port }}"
-        iptables_k8s_cilium: "{{ is_k8s_master }}"
-        iptables_k8s_cilium_hubble: "{{ is_k8s_master }}"
-        iptables_k8s_metallb: "{{ is_k8s_master }}"
+        k8s_role: "{{ 'master' if is_k8s_master else 'worker' }}"
+        k8s_cluster_cidr: 10.0.0.0/14
+        use_k3s_ha_embedded_etcd: true
+        use_k8s_cilium: "{{ is_k8s_master }}"
+        use_k8s_cilium_hubble: "{{ is_k8s_master }}"
+        use_k8s_metallb: "{{ is_k8s_master }}"
+
         iptables_reset_all: false
