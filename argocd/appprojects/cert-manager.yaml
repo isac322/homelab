@@ -6,7 +6,7 @@ spec:
   description: Certificate manager
   sourceRepos:
     - https://charts.jetstack.io
-    - https://isac322.github.io/homelab
+    - https://charts.bhyoo.com
     - https://cloudflare.github.io/origin-ca-issuer/charts
     - https://github.com/cloudflare/origin-ca-issuer.git
   destinations:

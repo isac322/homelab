@@ -12,7 +12,7 @@ configs:
     homelab-helm:
       name: homelab-helm
       type: helm
-      url: https://isac322.github.io/homelab
+      url: https://charts.bhyoo.com
     argocd-helm:
       name: argocd-helm
       type: helm

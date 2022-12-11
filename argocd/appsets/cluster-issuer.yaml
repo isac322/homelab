@@ -23,7 +23,7 @@ spec:
           valueFiles:
             - values.yaml
             - 'https://raw.githubusercontent.com/isac322/homelab/HEAD/values/cluster-issuer/{{cluster}}.yaml'
-        repoURL: https://isac322.github.io/homelab
+        repoURL: https://charts.bhyoo.com
         targetRevision: 0.1.0
       syncPolicy:
         automated:

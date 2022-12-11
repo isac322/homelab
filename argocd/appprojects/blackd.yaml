@@ -5,7 +5,7 @@ metadata:
 spec:
   description: Python code formatter
   sourceRepos:
-    - https://isac322.github.io/homelab
+    - https://charts.bhyoo.com
     - https://github.com/isac322/homelab.git
   destinations:
     - namespace: blackd

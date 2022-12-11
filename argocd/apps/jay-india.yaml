@@ -14,7 +14,7 @@ spec:
       valueFiles:
         - values.yaml
         - https://raw.githubusercontent.com/isac322/homelab/HEAD/values/jay-india/prod.yaml
-    repoURL: https://isac322.github.io/homelab
+    repoURL: https://charts.bhyoo.com
     targetRevision: 0.2.1
   syncPolicy:
     automated:
