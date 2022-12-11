@@ -1,0 +1,36 @@
+apiVersion: argoproj.io/v1alpha1
+kind: ApplicationSet
+metadata:
+  name: static-lb
+spec:
+  generators:
+    - list:
+        elements:
+          - cluster: backbone
+  template:
+    metadata:
+      name: '{{cluster}}-static-lb'
+    spec:
+      destination:
+        name: '{{cluster}}'
+        namespace: loadbalancer
+      project: loadbalancer
+      source:
+        chart: static-lb
+        helm:
+          releaseName: static-lb
+          valueFiles:
+            - values.yaml
+            - 'https://raw.githubusercontent.com/isac322/homelab/HEAD/values/static-lb/{{cluster}}.yaml'
+        repoURL: https://charts.bhyoo.com
+        targetRevision: 0.1.0
+      syncPolicy:
+        automated:
+          prune: true
+          selfHeal: true
+        retry:
+          backoff:
+            duration: 5s
+            factor: 2
+            maxDuration: 3m0s
+          limit: -1
