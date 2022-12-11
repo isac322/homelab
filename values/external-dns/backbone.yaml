@@ -20,7 +20,6 @@ interval: 1m
 
 sources:
   - service
-  - ingress
 
 policy: sync
 
