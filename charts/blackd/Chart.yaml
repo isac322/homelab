@@ -23,9 +23,9 @@ version: 1.1.0
 # It is recommended to use it with quotes.
 appVersion: "22.6.0"
 
-home: https://github.com/isac322/helm-charts
+home: https://github.com/isac322/homelab
 sources:
-  - https://github.com/isac322/helm-charts
+  - https://github.com/psf/black
 
 maintainers:
   - name: Byeonghoon Isac Yoo

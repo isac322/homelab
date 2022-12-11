@@ -22,3 +22,12 @@ version: 0.2.1
 # follow Semantic Versioning. They should reflect the version the application is using.
 # It is recommended to use it with quotes.
 appVersion: "0.2.0"
+
+home: https://github.com/isac322/homelab
+sources:
+  - https://github.com/jayjeong8/IndiaPhotos_inspiredByCodegrid
+
+maintainers:
+  - name: Byeonghoon Isac Yoo
+    email: bh322yoo@gmail.com
+    url: https://github.com/isac322

@@ -6,8 +6,8 @@ appVersion: 2.7.1
 home: https://hub.docker.com/_/registry/
 icon: https://hub.docker.com/public/images/logos/mini-logo.svg
 maintainers:
-- email: bh322yoo@gmail.com
-  name: Isac Yoo
-  url: "" # TODO https://canterberry.cc/
+  - name: Byeonghoon Isac Yoo
+    email: bh322yoo@gmail.com
+    url: https://github.com/isac322
 sources:
 - https://github.com/docker/distribution-library-image

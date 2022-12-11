@@ -9,8 +9,7 @@ keywords:
 
 home: https://github.com/isac322/homelab.git
 sources:
-  - https://charts.bhyoo.com
-  - https://github.com/isac322/homelab.git
+  - https://github.com/redis/redis
 
 maintainers:
   - name: Byeonghoon Isac Yoo

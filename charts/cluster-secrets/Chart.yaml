@@ -5,3 +5,12 @@ description: Create ClusterSecretStore
 type: application
 
 version: 0.1.1
+
+home: https://github.com/isac322/homelab
+sources:
+  - https://github.com/isac322/homelab
+
+maintainers:
+  - name: Byeonghoon Isac Yoo
+    email: bh322yoo@gmail.com
+    url: https://github.com/isac322
