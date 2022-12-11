@@ -19,7 +19,9 @@ logFormat: text
 interval: 1m
 
 sources:
+  - node
   - service
+  - ingress
 
 policy: sync
 
