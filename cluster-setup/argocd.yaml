@@ -38,7 +38,7 @@
       kubernetes.core.helm:
         atomic: yes
         chart_ref: cluster-secrets
-        chart_repo_url: https://isac322.github.io/homelab/
+        chart_repo_url: https://charts.bhyoo.com
         create_namespace: yes
         kubeconfig: /etc/rancher/k3s/k3s.yaml
         release_name: cluster-secrets
@@ -86,7 +86,7 @@
       kubernetes.core.helm:
         atomic: yes
         chart_ref: cluster-secrets
-        chart_repo_url: https://isac322.github.io/homelab/
+        chart_repo_url: https://charts.bhyoo.com
         create_namespace: yes
         kubeconfig: /etc/rancher/k3s/k3s.yaml
         release_name: cluster-secrets
