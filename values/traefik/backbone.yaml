@@ -81,8 +81,6 @@ ports:
 
 
 service:
-  annotations:
-    metallb.universe.tf/allow-shared-ip: default
   spec:
     externalTrafficPolicy: Local
 
