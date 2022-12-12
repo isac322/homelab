@@ -7,8 +7,7 @@ resources:
     memory: 32Mi
 
 # where to assign node's internal ips (enum: ingress, external)
-internalIPMappings:
-  - ingress
+internalIPMappings: []
 
 # where to assign node's internal ips (enum: ingress, external)
 externalIPMappings:
