@@ -5,7 +5,7 @@ metadata:
 spec:
   description: Jay's india static web page
   sourceRepos:
-    - https://isac322.github.io/homelab
+    - https://charts.bhyoo.com
     - https://github.com/isac322/homelab.git
   destinations:
     - namespace: jay-india
