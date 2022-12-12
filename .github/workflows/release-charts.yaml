@@ -12,6 +12,8 @@ on:
 
 jobs:
   release:
+    permissions:
+      contents: write
     env:
       CHART_DIR: charts
       CHART_REPO: isac322/helm-charts
