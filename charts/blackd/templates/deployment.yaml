@@ -60,6 +60,9 @@ spec:
                   echo -e 'POST / HTTP/1.1\nConnection: close\n\n' | nc -v 127.0.0.1 8080
           resources:
             {{- toYaml .Values.resources | nindent 12 }}
+          volumeMounts:
+            - mountPath: /tmp
+              name: temp
       {{- with .Values.nodeSelector }}
       nodeSelector:
         {{- toYaml . | nindent 8 }}
@@ -72,3 +75,6 @@ spec:
       tolerations:
         {{- toYaml . | nindent 8 }}
       {{- end }}
+      volumes:
+        - name: temp
+          emptyDir: {}
