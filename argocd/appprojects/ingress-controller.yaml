@@ -7,9 +7,9 @@ spec:
   sourceRepos:
     - https://helm.traefik.io/traefik
   destinations:
-    - namespace: kube-system
+    - namespace: ingress-ctrl
       name: backbone
-    - namespace: kube-system
+    - namespace: ingress-ctrl
       name: prod
   clusterResourceWhitelist:
     - group: '*'

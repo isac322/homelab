@@ -14,7 +14,7 @@ spec:
     spec:
       destination:
         name: '{{cluster}}'
-        namespace: kube-system
+        namespace: ingress-ctrl
       project: ingress-controller
       source:
         chart: traefik
