@@ -16,56 +16,56 @@ csi:
     - name : csi-provisioner
       resource:
         requests:
-          memory: 128Mi
-          cpu: 100m
+          memory: 16Mi
+          cpu: 10m
         limits:
           memory: 256Mi
           cpu: 200m
     - name : csi-resizer
       resource:
         requests:
-          memory: 128Mi
-          cpu: 100m
+          memory: 16Mi
+          cpu: 10m
         limits:
           memory: 256Mi
           cpu: 200m
     - name : csi-attacher
       resource:
         requests:
-          memory: 128Mi
-          cpu: 100m
+          memory: 16Mi
+          cpu: 10m
         limits:
           memory: 256Mi
           cpu: 200m
     - name : csi-snapshotter
       resource:
         requests:
-          memory: 128Mi
-          cpu: 100m
+          memory: 16Mi
+          cpu: 10m
         limits:
           memory: 256Mi
           cpu: 200m
     - name : csi-rbdplugin
       resource:
         requests:
-          memory: 512Mi
-          cpu: 250m
+          memory: 16Mi
+          cpu: 10m
         limits:
           memory: 1Gi
           cpu: 500m
     - name : csi-omap-generator
       resource:
         requests:
-          memory: 512Mi
-          cpu: 250m
+          memory: 16Mi
+          cpu: 10m
         limits:
           memory: 1Gi
           cpu: 500m
     - name : liveness-prometheus
       resource:
         requests:
-          memory: 128Mi
-          cpu: 50m
+          memory: 16Mi
+          cpu: 10m
         limits:
           memory: 256Mi
           cpu: 100m
@@ -75,24 +75,24 @@ csi:
     - name : driver-registrar
       resource:
         requests:
-          memory: 128Mi
-          cpu: 50m
+          memory: 16Mi
+          cpu: 10m
         limits:
           memory: 256Mi
           cpu: 100m
     - name : csi-rbdplugin
       resource:
         requests:
-          memory: 512Mi
-          cpu: 250m
+          memory: 16Mi
+          cpu: 10m
         limits:
           memory: 1Gi
           cpu: 500m
     - name : liveness-prometheus
       resource:
         requests:
-          memory: 128Mi
-          cpu: 50m
+          memory: 16Mi
+          cpu: 10m
         limits:
           memory: 256Mi
           cpu: 100m
@@ -102,48 +102,48 @@ csi:
     - name : csi-provisioner
       resource:
         requests:
-          memory: 128Mi
-          cpu: 100m
+          memory: 16Mi
+          cpu: 10m
         limits:
           memory: 256Mi
           cpu: 200m
     - name : csi-resizer
       resource:
         requests:
-          memory: 128Mi
-          cpu: 100m
+          memory: 16Mi
+          cpu: 10m
         limits:
           memory: 256Mi
           cpu: 200m
     - name : csi-attacher
       resource:
         requests:
-          memory: 128Mi
-          cpu: 100m
+          memory: 16Mi
+          cpu: 10m
         limits:
           memory: 256Mi
           cpu: 200m
     - name : csi-snapshotter
       resource:
         requests:
-          memory: 128Mi
-          cpu: 100m
+          memory: 16Mi
+          cpu: 10m
         limits:
           memory: 256Mi
           cpu: 200m
     - name : csi-cephfsplugin
       resource:
         requests:
-          memory: 512Mi
-          cpu: 250m
+          memory: 16Mi
+          cpu: 10m
         limits:
           memory: 1Gi
           cpu: 500m
     - name : liveness-prometheus
       resource:
         requests:
-          memory: 128Mi
-          cpu: 50m
+          memory: 16Mi
+          cpu: 10m
         limits:
           memory: 256Mi
           cpu: 100m
@@ -153,24 +153,24 @@ csi:
     - name : driver-registrar
       resource:
         requests:
-          memory: 128Mi
-          cpu: 50m
+          memory: 32Mi
+          cpu: 10m
         limits:
           memory: 256Mi
           cpu: 100m
     - name : csi-cephfsplugin
       resource:
         requests:
-          memory: 512Mi
-          cpu: 250m
+          memory: 32Mi
+          cpu: 10m
         limits:
           memory: 1Gi
           cpu: 500m
     - name : liveness-prometheus
       resource:
         requests:
-          memory: 128Mi
-          cpu: 50m
+          memory: 32Mi
+          cpu: 10m
         limits:
           memory: 256Mi
           cpu: 100m
