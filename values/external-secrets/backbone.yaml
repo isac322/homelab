@@ -17,7 +17,7 @@ webhook:
 
   resources:
     requests:
-      cpu: 1m
+      cpu: 5m
       memory: 32Mi
     limits:
       cpu: 50m
@@ -31,7 +31,7 @@ certController:
 
   resources:
     requests:
-      cpu: 1m
+      cpu: 5m
       memory: 64Mi
     limits:
       cpu: 50m
