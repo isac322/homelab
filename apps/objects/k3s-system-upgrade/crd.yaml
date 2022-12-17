@@ -5,6 +5,8 @@ metadata:
 spec:
   group: upgrade.cattle.io
   names:
+    categories:
+    - upgrade
     kind: Plan
     plural: plans
     singular: plan
@@ -196,6 +198,21 @@ spec:
                   image:
                     nullable: true
                     type: string
+                  volumes:
+                    items:
+                      properties:
+                        destination:
+                          nullable: true
+                          type: string
+                        name:
+                          nullable: true
+                          type: string
+                        source:
+                          nullable: true
+                          type: string
+                      type: object
+                    nullable: true
+                    type: array
                 type: object
               secrets:
                 items:
@@ -345,6 +362,21 @@ spec:
                   image:
                     nullable: true
                     type: string
+                  volumes:
+                    items:
+                      properties:
+                        destination:
+                          nullable: true
+                          type: string
+                        name:
+                          nullable: true
+                          type: string
+                        source:
+                          nullable: true
+                          type: string
+                      type: object
+                    nullable: true
+                    type: array
                 type: object
               version:
                 nullable: true
@@ -394,3 +426,5 @@ spec:
         type: object
     served: true
     storage: true
+    subresources:
+      status: {}
