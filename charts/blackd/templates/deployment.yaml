@@ -44,20 +44,12 @@ spec:
               protocol: TCP
           livenessProbe:
             initialDelaySeconds: 2
-            exec:
-              command:
-                - sh
-                - -c
-                - >-
-                  echo -e 'POST / HTTP/1.1\nConnection: close\n\n' | nc -v 127.0.0.1 8080
+            tcpSocket:
+              port: 8080
           readinessProbe:
             initialDelaySeconds: 2
-            exec:
-              command:
-                - sh
-                - -c
-                - >-
-                  echo -e 'POST / HTTP/1.1\nConnection: close\n\n' | nc -v 127.0.0.1 8080
+            tcpSocket:
+              port: 8080
           resources:
             {{- toYaml .Values.resources | nindent 12 }}
           volumeMounts:

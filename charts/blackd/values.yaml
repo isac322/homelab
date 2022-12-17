@@ -34,11 +34,12 @@ podSecurityContext:
 
 securityContext:
   capabilities:
-    add:
-      - SYS_TIME
+    drop:
+      - ALL
   readOnlyRootFilesystem: true
   runAsNonRoot: true
-  runAsUser: 65534
+  runAsUser: 65532
+  runAsGroup: 65532
 
 service:
   type: ClusterIP
