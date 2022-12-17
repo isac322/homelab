@@ -45,7 +45,7 @@ spec:
         - values.yaml
         - https://raw.githubusercontent.com/isac322/homelab/HEAD/values/rook/cluster.prod.yaml
     repoURL: https://charts.rook.io/release
-    targetRevision: v1.10.2
+    targetRevision: v1.10.7
   syncPolicy:
     automated:
       prune: true
