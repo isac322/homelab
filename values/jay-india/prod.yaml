@@ -18,6 +18,14 @@ ingress:
         - jay.bhyoo.com
       secretName: india-jay-com
 
+resources:
+  limits:
+    cpu: 100m
+    memory: 32Mi
+  requests:
+    cpu: 10m
+    memory: 16Mi
+
 autoscaling:
   enabled: true
   minReplicas: 1
