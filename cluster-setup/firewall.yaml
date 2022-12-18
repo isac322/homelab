@@ -21,6 +21,5 @@
         use_k3s_ha_embedded_etcd: true
         use_k8s_cilium: "{{ is_k8s_master }}"
         use_k8s_cilium_hubble: "{{ is_k8s_master }}"
-        use_k8s_metallb: "{{ is_k8s_master }}"
 
         iptables_reset_all: false

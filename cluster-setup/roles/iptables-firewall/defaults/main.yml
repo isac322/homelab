@@ -11,9 +11,11 @@ is_wireguard_gateway: false
 
 # "" or "master" or "worker"
 k8s_role: ""
+# FIXME: cluster_cidr 라는 말 대신 node ip라는 이름으로 바꾸기
 k8s_cluster_cidr: ""
+k8s_pod_cidr: "10.42.0.0/16"
 use_k3s_ha_embedded_etcd: false
 use_k8s_cilium: false
 use_k8s_cilium_hubble: false
 use_k8s_metallb: false
-use_k3s_vxlan: false
+use_k8s_vxlan: false
