@@ -15,5 +15,5 @@ externalIPMappings:
   - ingress
 
 # IP networks that filters Ingress IP candidates out before assign. (e.g. 10.0.0.0/8 or 2603:c022:8005:302::/64)
-excludeExternalIPNets:
+excludeIngressIPNets:
   - 10.222.0.0/16
