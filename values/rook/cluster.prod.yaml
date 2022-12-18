@@ -73,14 +73,14 @@ cephClusterSpec:
         memory: "1Gi"
       requests:
         cpu: "100m"
-        memory: "512Mi"
+        memory: "768Mi"
     mon:
       limits:
         cpu: "2000m"
         memory: "2Gi"
       requests:
         cpu: "100m"
-        memory: "1Gi"
+        memory: "512Mi"
     osd:
       limits:
         cpu: "2000m"
