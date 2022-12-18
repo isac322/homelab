@@ -1,9 +1,9 @@
 ---
-- name: Validate k8s_cluster_cidr
+- name: Validate k8s_internal_node_ip_cidr
   ansible.builtin.assert:
-    that: k8s_cluster_cidr | ansible.utils.ipaddr('net')
-    msg: invalid `k8s_cluster_cidr`. (e.g. 10.0.0.0/8)
-  when: k8s_role != "" and k8s_cluster_cidr != ""
+    that: k8s_internal_node_ip_cidr | ansible.utils.ipaddr('net')
+    msg: invalid `k8s_internal_node_ip_cidr`. (e.g. 10.0.0.0/8)
+  when: k8s_role != "" and k8s_internal_node_ip_cidr != ""
 
 - name: Validate k8s_pod_cidr
   ansible.builtin.assert:
@@ -11,10 +11,10 @@
     msg: invalid `k8s_pod_cidr`. (e.g. 10.0.0.0/8)
   when: k8s_role != ""
 
-- name: Define k8s_cluster_cidr
+- name: Define k8s_internal_node_ip_cidr
   ansible.builtin.set_fact:
-    __register_k8s_cluster_cidr: "{{
-        k8s_cluster_cidr
+    __register_k8s_internal_node_ip_cidr: "{{
+        k8s_internal_node_ip_cidr
         |default('%s/%s' | format(ansible_default_ipv4.network, ansible_default_ipv4.prefix), true)
       }}"
   when: k8s_role != ""
@@ -263,7 +263,7 @@
         protocol: tcp
         destination_port: 6443
         jump: ACCEPT
-        source: "{{ __register_k8s_cluster_cidr }}"
+        source: "{{ __register_k8s_internal_node_ip_cidr }}"
         comment: kubelet
       when: k8s_role == "master"
 
@@ -286,7 +286,7 @@
         protocol: tcp
         destination_port: 10250
         jump: ACCEPT
-        source: "{{ __register_k8s_cluster_cidr }}"
+        source: "{{ __register_k8s_internal_node_ip_cidr }}"
         comment: kubelet metrics
       when: k8s_role != ""
     - ansible.builtin.iptables:
@@ -304,7 +304,7 @@
     protocol: tcp
     destination_port: 2379:2380
     jump: ACCEPT
-    source: "{{ __register_k8s_cluster_cidr }}"
+    source: "{{ __register_k8s_internal_node_ip_cidr }}"
     comment: k3s etcd
   when: k8s_role == "master" and use_k3s_ha_embedded_etcd
 
@@ -314,7 +314,7 @@
     protocol: tcp
     destination_port: 4240
     jump: ACCEPT
-    source: "{{ __register_k8s_cluster_cidr }}"
+    source: "{{ __register_k8s_internal_node_ip_cidr }}"
     comment: cilium health check
   when: k8s_role != "" and use_k8s_cilium
 
@@ -324,7 +324,7 @@
     protocol: tcp
     destination_port: 4244:4245
     jump: ACCEPT
-    source: "{{ __register_k8s_cluster_cidr }}"
+    source: "{{ __register_k8s_internal_node_ip_cidr }}"
     comment: cilium hubble
   when: k8s_role != "" and use_k8s_cilium_hubble
 
@@ -334,7 +334,7 @@
     protocol: tcp
     destination_port: 7946
     jump: ACCEPT
-    source: "{{ __register_k8s_cluster_cidr }}"
+    source: "{{ __register_k8s_internal_node_ip_cidr }}"
     comment: metallb L2 LB
   when: k8s_role != "" and use_k8s_metallb
 
@@ -384,7 +384,7 @@
     protocol: udp
     destination_port: 8472
     jump: ACCEPT
-    source: "{{ __register_k8s_cluster_cidr }}"
+    source: "{{ __register_k8s_internal_node_ip_cidr }}"
     comment: VXLAN
   when: k8s_role != "" and use_k8s_vxlan
 
@@ -394,7 +394,7 @@
     protocol: udp
     destination_port: 7946
     jump: ACCEPT
-    source: "{{ __register_k8s_cluster_cidr }}"
+    source: "{{ __register_k8s_internal_node_ip_cidr }}"
     comment: metallb L2 LB
   when: k8s_role != "" and use_k8s_metallb
 

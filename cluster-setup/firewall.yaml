@@ -17,7 +17,7 @@
     - role: iptables-firewall
       vars:
         k8s_role: "{{ 'master' if is_k8s_master else 'worker' }}"
-        k8s_cluster_cidr: 10.0.0.0/14
+        k8s_internal_node_ip_cidr: 10.0.0.0/14
         use_k3s_ha_embedded_etcd: true
         use_k8s_cilium: "{{ is_k8s_master }}"
         use_k8s_cilium_hubble: "{{ is_k8s_master }}"
