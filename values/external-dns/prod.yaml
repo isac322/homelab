@@ -13,7 +13,7 @@ resources:
     cpu: 100m
     memory: 100Mi
 
-logLevel: info
+logLevel: debug
 logFormat: text
 
 interval: 1m
