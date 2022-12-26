@@ -34,7 +34,15 @@
             allowed_groups:
               - prod
               - backbone
-          woo:
+          woo: # daily-receipt
             ip_address: 10.222.0.193
+            allowed_groups:
+              - prod
+          kjh: # zello-draw
+            ip_address: 10.222.0.194
+            allowed_groups:
+              - prod
+          ldj: # zello-draw
+            ip_address: 10.222.0.195
             allowed_groups:
               - prod

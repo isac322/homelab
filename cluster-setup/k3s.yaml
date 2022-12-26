@@ -142,6 +142,9 @@
             namespaced_admins:
               daily-receipt:
                 - woo
+              zello-draw:
+                - kjh
+                - ldj
           when: is_k8s_master
 
         - ansible.builtin.include_role:
