@@ -4,13 +4,7 @@ on:
   push:
     branches:
       - master
-    paths:
-      - terraform/**
-      - .github/workflows/terraform.yaml
   pull_request:
-    paths:
-      - terraform/**
-      - .github/workflows/terraform.yaml
 
   workflow_dispatch:
 
