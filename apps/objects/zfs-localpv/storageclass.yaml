@@ -1,7 +1,7 @@
 apiVersion: storage.k8s.io/v1
 kind: StorageClass
 metadata:
-  name: zfs-prometheus
+  name: zfs-filesystem
 allowVolumeExpansion: true
 parameters:
   recordsize: "128k"
@@ -9,7 +9,7 @@ parameters:
   dedup: "off"
   fstype: "zfs"
   acltype: posix
-  poolname: "slow-hot-storage/prometheus/pvc"
+  poolname: "slow-hot-storage/k8s/filesystem"
 provisioner: zfs.csi.openebs.io
 allowedTopologies:
   - matchLabelExpressions:
@@ -20,10 +20,10 @@ allowedTopologies:
 apiVersion: storage.k8s.io/v1
 kind: StorageClass
 metadata:
-  name: zfs-block-storage
+  name: zfs-block
 allowVolumeExpansion: true
 parameters:
-  poolname: "slow-hot-storage/block"
+  poolname: "slow-hot-storage/k8s/block"
 provisioner: zfs.csi.openebs.io
 allowedTopologies:
   - matchLabelExpressions:
