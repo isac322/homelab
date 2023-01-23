@@ -1,0 +1,11 @@
+ansible_host: 172.30.1.5
+ansible_user: root
+ansible_password: raspberry
+desired_ip: 172.30.1.5
+gateway_ip: 172.30.1.254
+
+
+wireguard_ip: "10.222.0.3"
+
+
+allow_ssh_root_login: true

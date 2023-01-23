@@ -1,5 +1,6 @@
 n2p1
 n2p2
+rpi4
 oracle[1:3].bhyoo.com
 
 [nas]
@@ -8,6 +9,7 @@ n2p1
 [backbone]
 n2p1
 n2p2
+rpi4
 
 [prod]
 oracle[1:3].bhyoo.com
