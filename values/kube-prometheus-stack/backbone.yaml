@@ -164,7 +164,7 @@ grafana:
 
       ## URL of prometheus datasource
       ##
-      url: http://mimir-nginx.mimir.svc/prometheus
+      url: http://mimir-gateway.mimir.svc/prometheus
 
       # If not defined, will use prometheus.prometheusSpec.scrapeInterval or its default
       # defaultDatasourceScrapeInterval: 15s
@@ -2186,7 +2186,7 @@ prometheus:
     ## The remote_write spec configuration for Prometheus.
     ## ref: https://github.com/prometheus-operator/prometheus-operator/blob/main/Documentation/api.md#remotewritespec
     remoteWrite:
-      - url: http://mimir-nginx.mimir.svc/api/v1/push
+      - url: http://mimir-gateway.mimir.svc/api/v1/push
         name: mimir
 
     # - url: http://remote1/push
