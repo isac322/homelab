@@ -187,7 +187,6 @@ additionalArguments:
 
 # Configure ports
 ports:
-  traefik: null
   # The name of this one can't be changed as it is used for the readiness and
   # liveness probes, but you can adjust its config to your liking
   web:
