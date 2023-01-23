@@ -298,7 +298,17 @@
         comment: kubelet metrics
       when: k8s_role != ""
 
-- name: Allow k3s embbeded etcd
+- name: Allow node exporter
+  ansible.builtin.iptables:
+    chain: TCP
+    protocol: tcp
+    destination_port: 9100
+    jump: ACCEPT
+    source: "{{ __register_k8s_internal_node_ip_cidr }}"
+    comment: node exporter
+  when: k8s_role != ""
+
+- name: Allow k3s embedded etcd
   ansible.builtin.iptables:
     chain: TCP
     protocol: tcp
