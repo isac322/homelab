@@ -24,39 +24,40 @@ ff02::3 ip6-allhosts
 
 # The following lines are generated from the ansible inventory
 {% for host in ansible_play_batch %}
-{% if hostvars[host]['ansible_interfaces'] is defined %}
-{% for interface in hostvars[host]['ansible_interfaces'] %}
-{% if interface | regex_search('^((?!' +  hosts_exludes_interfaces | join('|') + '*).)*$')  %}
-{% if hostvars[host]['ansible_' + interface]['ipv4']['address'] | ansible.utils.ipaddr('private') and hosts_all_private %}
-{{ hostvars[host]['ansible_' + interface]['ipv4']['address'] }} {{ hostvars[host]['ansible_hostname'] }} {{ host }}{{ " " if hostvars[host]['hosts_aliases'] is defined }}{% if hostvars[host]['hosts_aliases'] is defined %}{% for alias in hostvars[host]['hosts_aliases'] %}{{ alias }}{{ " " if not loop.last }}{% endfor %}{% endif %}{{ '\n' -}}
-{% elif hostvars[host]['ansible_' + interface]['ipv4']['address'] | ansible.utils.ipaddr('public') and hosts_all_public %}
-{{ hostvars[host]['ansible_' + interface]['ipv4']['address'] }} {{ hostvars[host]['ansible_hostname'] }} {{ host }}{{ " " if hostvars[host]['hosts_aliases'] is defined }}{% if hostvars[host]['hosts_aliases'] is defined %}{% for alias in hostvars[host]['hosts_aliases'] %}{{ alias }}{{ " " if not loop.last }}{% endfor %}{% endif %}{{ '\n' -}}
-{% elif not hosts_all_private and not hosts_all_public %}
-{{ hostvars[host]['ansible_default_ipv4']['address'] }} {{ hostvars[host]['ansible_hostname'] }} {{ host }}{{ " " if hostvars[host]['hosts_aliases'] is defined }}{% if hostvars[host]['hosts_aliases'] is defined %}{% for alias in hostvars[host]['hosts_aliases'] %}{{ alias }}{{ " " if not loop.last }}{% endfor %}{% endif %}{{ '\n' -}}
-{% endif %}
-{% endif %}
-{% endfor %}
-{% endif %}
+    {%- if hostvars[host]['ansible_interfaces'] is defined %}
+        {%- for interface in hostvars[host]['ansible_interfaces'] %}
+            {%- set curr_interface = hostvars[host]['ansible_' + interface] %}
+            {%- if interface | regex_search('^((?!' +  hosts_excludes_interfaces | join('|') + '*).)*$') %}
+                {%- if 'ipv4' in curr_interface and curr_interface.ipv4.address | ansible.utils.ipaddr('private') and hosts_all_private %}
+                    {{- curr_interface['ipv4']['address'] }} {{ hostvars[host]['ansible_hostname'] }} {{ host }}{{ " " if hostvars[host]['hosts_aliases'] is defined }}{% if hostvars[host]['hosts_aliases'] is defined %}{% for alias in hostvars[host]['hosts_aliases'] %}{{ alias }}{{ " " if not loop.last }}{% endfor %}{% endif %}{{ '\n' -}}
+                {%- elif 'ipv4' in curr_interface and curr_interface.ipv4.address | ansible.utils.ipaddr('public') and hosts_all_public %}
+                    {{- curr_interface['ipv4']['address'] }} {{ hostvars[host]['ansible_hostname'] }} {{ host }}{{ " " if hostvars[host]['hosts_aliases'] is defined }}{% if hostvars[host]['hosts_aliases'] is defined %}{% for alias in hostvars[host]['hosts_aliases'] %}{{ alias }}{{ " " if not loop.last }}{% endfor %}{% endif %}{{ '\n' -}}
+                {%- elif not hosts_all_private and not hosts_all_public %}
+                    {{- hostvars[host]['ansible_default_ipv4']['address'] }} {{ hostvars[host]['ansible_hostname'] }} {{ host }}{{ " " if hostvars[host]['hosts_aliases'] is defined }}{% if hostvars[host]['hosts_aliases'] is defined %}{% for alias in hostvars[host]['hosts_aliases'] %}{{ alias }}{{ " " if not loop.last }}{% endfor %}{% endif %}{{ '\n' -}}
+                {%- endif %}
+            {%- endif %}
+        {%- endfor %}
+    {%- endif %}
 {% endfor %}
 
 {% if hosts_ipv6 %}
-{% for host in ansible_play_batch %}
-{% if hostvars[host]['ansible_interfaces'] is defined %}
-{% for interface in hostvars[host]['ansible_interfaces'] %}
-{% if interface | regex_search('^((?!' +  hosts_exludes_interfaces | join('|') + '*).)*$')  %}
-{% for ipv6 in hostvars[host]['ansible_' + interface]['ipv6'] %}
-{% if ipv6['address'] | ansible.utils.ipaddr('private') and hosts_all_private %}
-{{ ipv6['address'] }} {{ hostvars[host]['ansible_hostname'] }} {{ host }} {% set aliases=[] %}{% if hostvars[host]['hosts_aliases'] is defined %}{% for alias in hostvars[host]['hosts_aliases'] %}{% if alias != hostvars[host]['internel_ansible_host'] %}{{ aliases.append(alias) }}{% endif %}{% endfor %}{% endif %}{{ '\n' -}}
-{% elif ipv6['address'] | ansible.utils.ipaddr('public') and hosts_all_public %}
-{{ ipv6['address'] }} {{ hostvars[host]['ansible_hostname'] }} {{ host }} {% set aliases=[] %}{% if hostvars[host]['hosts_aliases'] is defined %}{% for alias in hostvars[host]['hosts_aliases'] %}{% if alias != hostvars[host]['internel_ansible_host'] %}{{ aliases.append(alias) }}{% endif %}{% endfor %}{% endif %}{{ '\n' -}}
-{% elif not hosts_all_private and not hosts_all_public %}
-{{ hostvars[host]['ansible_default_ipv6']['address'] }} {{ hostvars[host]['ansible_hostname'] }} {{ host }} {% set aliases=[] %}{% if hostvars[host]['hosts_aliases'] is defined %}{% for alias in hostvars[host]['hosts_aliases'] %}{% if alias != hostvars[host]['internel_ansible_host'] %}{{ aliases.append(alias) }}{% endif %}{% endfor %}{% endif %}{{ '\n' -}}
-{% endif %}
-{% endfor %}
-{% endif %}
-{% endfor %}
-{% endif %}
-{% endfor %}
+    {%- for host in ansible_play_batch %}
+        {%- if hostvars[host]['ansible_interfaces'] is defined %}
+            {%- for interface in hostvars[host]['ansible_interfaces'] %}
+                {%- if interface | regex_search('^((?!' +  hosts_excludes_interfaces | join('|') + '*).)*$')  %}
+                    {%- for ipv6 in hostvars[host]['ansible_' + interface]['ipv6'] %}
+                        {%- if ipv6['address'] | ansible.utils.ipaddr('private') and hosts_all_private %}
+                            {{- ipv6['address'] }} {{ hostvars[host]['ansible_hostname'] }} {{ host }} {% set aliases=[] %}{% if hostvars[host]['hosts_aliases'] is defined %}{% for alias in hostvars[host]['hosts_aliases'] %}{% if alias != hostvars[host]['internel_ansible_host'] %}{{ aliases.append(alias) }}{% endif %}{% endfor %}{% endif %}{{ '\n' -}}
+                        {%- elif ipv6['address'] | ansible.utils.ipaddr('public') and hosts_all_public %}
+                            {{- ipv6['address'] }} {{ hostvars[host]['ansible_hostname'] }} {{ host }} {% set aliases=[] %}{% if hostvars[host]['hosts_aliases'] is defined %}{% for alias in hostvars[host]['hosts_aliases'] %}{% if alias != hostvars[host]['internel_ansible_host'] %}{{ aliases.append(alias) }}{% endif %}{% endfor %}{% endif %}{{ '\n' -}}
+                        {%- elif not hosts_all_private and not hosts_all_public %}
+                            {{- hostvars[host]['ansible_default_ipv6']['address'] }} {{ hostvars[host]['ansible_hostname'] }} {{ host }} {% set aliases=[] %}{% if hostvars[host]['hosts_aliases'] is defined %}{% for alias in hostvars[host]['hosts_aliases'] %}{% if alias != hostvars[host]['internel_ansible_host'] %}{{ aliases.append(alias) }}{% endif %}{% endfor %}{% endif %}{{ '\n' -}}
+                        {%- endif %}
+                    {%- endfor %}
+                {%- endif %}
+            {%- endfor %}
+        {%- endif %}
+    {%- endfor %}
 {% endif %}
 
 {% if hosts_dns_hostname is defined %}

@@ -8,13 +8,15 @@
     owner: root
     mode: '0644'
   vars:
-    hosts_exludes_interfaces:
-      - vet*
+    hosts_excludes_interfaces:
+      - vet
       - flannel
       - wg
       - cni
       - docker
+      - cilium
+      - lxc
     hosts_ipv6: "{{ etc_hosts_ipv6 }}"
     hosts_all_private: true
     hosts_all_public: false
-    hosts_ipv4_address: "{{ hostvars[inventory_hostname]['ansible_default_ipv4']['address'] }}"
+    hosts_ipv4_address: "{{ ansible_default_ipv4.address }}"
