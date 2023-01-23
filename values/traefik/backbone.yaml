@@ -306,7 +306,8 @@ affinity: {}
 #            app.kubernetes.io/instance: '{{ .Release.Name }}-{{ .Release.Namespace }}'
 #        topologyKey: kubernetes.io/hostname
 
-nodeSelector: {}
+nodeSelector:
+  kubernetes.io/hostname: n2p2
 tolerations: []
 topologySpreadConstraints: []
 # # This example topologySpreadConstraints forces the scheduler to put traefik pods
