@@ -376,7 +376,7 @@ ports:
 service:
   ## Single service is using `MixedProtocolLBService` feature gate.
   ## When set to false, it will create two Service, one for TCP and one for UDP.
-  single: false
+  single: true
   spec:
     externalTrafficPolicy: Local
 
