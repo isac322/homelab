@@ -82,41 +82,7 @@ experimental:
 # Create an IngressRoute for the dashboard
 ingressRoute:
   dashboard:
-    enabled: true
-    # Additional ingressRoute annotations (e.g. for kubernetes.io/ingress.class)
-    annotations: {}
-    # Additional ingressRoute labels (e.g. for filtering IngressRoute by custom labels)
-    labels: {}
-    # The router match rule used for the dashboard ingressRoute
-    matchRule: PathPrefix(`/dashboard`) || PathPrefix(`/api`)
-    # Specify the allowed entrypoints to use for the dashboard ingress route, (e.g. traefik, web, websecure).
-    # By default, it's using traefik entrypoint, which is not exposed.
-    # /!\ Do not expose your dashboard without any protection over the internet /!\
-    entryPoints: ["traefik"]
-    # Additional ingressRoute middlewares (e.g. for authentication)
-    middlewares: []
-
-# Customize updateStrategy of traefik pods
-updateStrategy:
-  type: RollingUpdate
-  rollingUpdate:
-    maxUnavailable: 0
-    maxSurge: 1
-
-# Customize liveness and readiness probe values.
-readinessProbe:
-  failureThreshold: 1
-  initialDelaySeconds: 2
-  periodSeconds: 10
-  successThreshold: 1
-  timeoutSeconds: 2
-
-livenessProbe:
-  failureThreshold: 3
-  initialDelaySeconds: 2
-  periodSeconds: 10
-  successThreshold: 1
-  timeoutSeconds: 2
+    enabled: false
 
 #
 # Configure providers
@@ -215,66 +181,14 @@ globalArguments: []
 # Additional arguments to be passed at Traefik's binary
 # All available options available on https://docs.traefik.io/reference/static-configuration/cli/
 ## Use curly braces to pass values: `helm install --set="additionalArguments={--providers.kubernetesingress.ingressclass=traefik-internal,--log.level=DEBUG}"`
-additionalArguments: []
-#  - "--providers.kubernetesingress.ingressclass=traefik-internal"
-#  - "--log.level=DEBUG"
+additionalArguments:
+  - --api.dashboard=false
 
-# Environment variables to be passed to Traefik's binary
-env: []
-# - name: SOME_VAR
-#   value: some-var-value
-# - name: SOME_VAR_FROM_CONFIG_MAP
-#   valueFrom:
-#     configMapRef:
-#       name: configmap-name
-#       key: config-key
-# - name: SOME_SECRET
-#   valueFrom:
-#     secretKeyRef:
-#       name: secret-name
-#       key: secret-key
-
-envFrom: []
-# - configMapRef:
-#     name: config-map-name
-# - secretRef:
-#     name: secret-name
 
 # Configure ports
 ports:
   # The name of this one can't be changed as it is used for the readiness and
   # liveness probes, but you can adjust its config to your liking
-  traefik:
-    port: 9000
-    # Use hostPort if set.
-    # hostPort: 9000
-    #
-    # Use hostIP if set. If not set, Kubernetes will default to 0.0.0.0, which
-    # means it's listening on all your interfaces and all your IPs. You may want
-    # to set this value if you need traefik to listen on specific interface
-    # only.
-    # hostIP: 192.168.100.10
-
-    # Override the liveness/readiness port. This is useful to integrate traefik
-    # with an external Load Balancer that performs healthchecks.
-    # Default: ports.traefik.port
-    # healthchecksPort: 9000
-
-    # Override the liveness/readiness scheme. Useful for getting ping to
-    # respond on websecure entryPoint.
-    # healthchecksScheme: HTTPS
-
-    # Defines whether the port is exposed if service.type is LoadBalancer or
-    # NodePort.
-    #
-    # You SHOULD NOT expose the traefik port on production deployments.
-    # If you want to access it from outside of your cluster,
-    # use `kubectl port-forward` or create a secure ingress
-    expose: false
-    # The exposed port for this service
-    exposedPort: 9000
-    # The port protocol (TCP/UDP)
-    protocol: TCP
   web:
     ## Enable this entrypoint as a default entrypoint. When a service doesn't explicity set an entrypoint it will only use this entrypoint.
     # asDefault: true
@@ -293,9 +207,8 @@ ports:
     # redirectTo: websecure
     #
     # Trust forwarded  headers information (X-Forwarded-*).
-    # forwardedHeaders:
-    #   trustedIPs: []
-    #   insecure: false
+    forwardedHeaders:
+      insecure: true
     #
     # Enable the Proxy Protocol header parsing for the entry point
     # proxyProtocol:
@@ -304,13 +217,6 @@ ports:
   websecure:
     ## Enable this entrypoint as a default entrypoint. When a service doesn't explicity set an entrypoint it will only use this entrypoint.
     # asDefault: true
-    port: 8443
-    # hostPort: 8443
-    expose: true
-    exposedPort: 443
-    # The port protocol (TCP/UDP)
-    protocol: TCP
-    # nodePort: 32443
     #
     ## Enable HTTP/3 on the entrypoint
     ## Enabling it will also enable http3 experimental feature
@@ -335,9 +241,8 @@ ports:
       #     - bar.example.com
     #
     # Trust forwarded  headers information (X-Forwarded-*).
-    # forwardedHeaders:
-    #   trustedIPs: []
-    #   insecure: false
+    forwardedHeaders:
+      insecure: true
     #
     # Enable the Proxy Protocol header parsing for the entry point
     # proxyProtocol:
