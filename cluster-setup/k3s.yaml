@@ -169,16 +169,12 @@
                 - traefik
                 - servicelb
               advertise-address: "{{ desired_ip }}"
-              node-external-ip: "{{ wireguard_ip }}"
-              kubelet-arg:
-                - "image-gc-high-threshold=60"
-                - "image-gc-low-threshold=40"
-              node-label: "{{ k8s_node_labels }}"
             k3s_agent:
               node-external-ip: "{{ wireguard_ip }}"
               kubelet-arg:
                 - "image-gc-high-threshold=60"
                 - "image-gc-low-threshold=40"
+                - "{{ is_k8s_master | ternary('kube-reserved=cpu=500m,memory=1200Mi', 'kube-reserved=cpu=100m,memory=256Mi') }}"
               node-label: "{{ k8s_node_labels }}"
         - ansible.builtin.import_role:
             name: xanmanning.k3s
