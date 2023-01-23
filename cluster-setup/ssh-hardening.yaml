@@ -41,11 +41,11 @@
       vars:
         ssh_print_last_log: true
         ssh_print_debian_banner: true
-        ssh_permit_root_login: "{{ 'without-password' if allow_ssh_root_login|default(false) else 'no' }}"
-#        ssh_print_motd: true
-#        ssh_print_pam_motd: true
-#        ssh_banner: true
-#        ssh_banner_path: /etc/issue.net
+        ssh_permit_root_login: "{{ 'prohibit-password' if allow_ssh_root_login|default(false) else 'no' }}"
+        ssh_print_motd: true
+        ssh_print_pam_motd: false
+        ssh_banner: true
+        ssh_banner_path: /etc/issue.net
         ssh_host_key_files:
           - /etc/ssh/ssh_host_rsa_key
           - /etc/ssh/ssh_host_ed25519_key
