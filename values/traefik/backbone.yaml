@@ -123,31 +123,7 @@ additionalArguments:
 ports:
   # The name of this one can't be changed as it is used for the readiness and
   # liveness probes, but you can adjust its config to your liking
-  web:
-    ## Enable this entrypoint as a default entrypoint. When a service doesn't explicity set an entrypoint it will only use this entrypoint.
-    # asDefault: true
-    port: 8000
-    # hostPort: 8000
-    expose: true
-    exposedPort: 80
-    # The port protocol (TCP/UDP)
-    protocol: TCP
-    # Use nodeport if set. This is useful if you have configured Traefik in a
-    # LoadBalancer.
-    # nodePort: 32080
-    # Port Redirections
-    # Added in 2.2, you can make permanent redirects via entrypoints.
-    # https://docs.traefik.io/routing/entrypoints/#redirection
-    # redirectTo: websecure
-    #
-    # Trust forwarded  headers information (X-Forwarded-*).
-    forwardedHeaders:
-      insecure: true
-    #
-    # Enable the Proxy Protocol header parsing for the entry point
-    # proxyProtocol:
-    #   trustedIPs: []
-    #   insecure: false
+  web: null
   websecure:
     ## Enable this entrypoint as a default entrypoint. When a service doesn't explicity set an entrypoint it will only use this entrypoint.
     # asDefault: true
