@@ -167,7 +167,6 @@
               disable-helm-controller: true
               disable:
                 - traefik
-                - local-storage
                 - servicelb
               advertise-address: "{{ desired_ip }}"
               node-external-ip: "{{ wireguard_ip }}"
