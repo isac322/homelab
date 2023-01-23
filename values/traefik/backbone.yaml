@@ -303,7 +303,7 @@ ports:
     #   insecure: false
   websecure:
     ## Enable this entrypoint as a default entrypoint. When a service doesn't explicity set an entrypoint it will only use this entrypoint.
-    asDefault: true
+    # asDefault: true
     port: 8443
     # hostPort: 8443
     expose: true
