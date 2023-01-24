@@ -20,11 +20,46 @@ allowedTopologies:
 apiVersion: storage.k8s.io/v1
 kind: StorageClass
 metadata:
+  name: zfs-filesystem-retain
+allowVolumeExpansion: true
+parameters:
+  recordsize: "128k"
+  compression: "off"
+  dedup: "off"
+  fstype: "zfs"
+  acltype: posix
+  poolname: "slow-hot-storage/k8s/filesystem"
+provisioner: zfs.csi.openebs.io
+reclaimPolicy: Retain
+allowedTopologies:
+  - matchLabelExpressions:
+      - key: "homelab.bhyoo.com/zfs-pool-slow-hot-storage"
+        values:
+          - "true"
+---
+apiVersion: storage.k8s.io/v1
+kind: StorageClass
+metadata:
   name: zfs-block
 allowVolumeExpansion: true
 parameters:
   poolname: "slow-hot-storage/k8s/block"
 provisioner: zfs.csi.openebs.io
+allowedTopologies:
+  - matchLabelExpressions:
+      - key: "homelab.bhyoo.com/zfs-pool-slow-hot-storage"
+        values:
+          - "true"
+---
+apiVersion: storage.k8s.io/v1
+kind: StorageClass
+metadata:
+  name: zfs-block-retain
+allowVolumeExpansion: true
+parameters:
+  poolname: "slow-hot-storage/k8s/block"
+provisioner: zfs.csi.openebs.io
+reclaimPolicy: Retain
 allowedTopologies:
   - matchLabelExpressions:
       - key: "homelab.bhyoo.com/zfs-pool-slow-hot-storage"
