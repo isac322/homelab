@@ -1,0 +1,30 @@
+apiVersion: argoproj.io/v1alpha1
+kind: Application
+metadata:
+  name: traefik-internal
+spec:
+  destination:
+    name: prod
+    namespace: ingress-ctrl
+  project: ingress-controller
+  source:
+    chart: traefik
+    helm:
+      releaseName: internal
+      valueFiles:
+        - values.yaml
+        - https://raw.githubusercontent.com/isac322/homelab/HEAD/values/traefik/prod-internal.yaml
+    repoURL: https://helm.traefik.io/traefik
+    targetRevision: 20.8.0
+  syncPolicy:
+    automated:
+      prune: true
+      selfHeal: true
+    retry:
+      backoff:
+        duration: 5s
+        factor: 2
+        maxDuration: 3m0s
+      limit: 100
+    syncOptions:
+      - CreateNamespace=true
