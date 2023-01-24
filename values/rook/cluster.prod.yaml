@@ -146,7 +146,7 @@ cephClusterSpec:
 ingress:
   # -- Enable an ingress for the ceph-dashboard
   dashboard:
-    ingressClassName: traefik
+    ingressClassName: internal-traefik
     annotations:
       traefik.ingress.kubernetes.io/router.entrypoints: websecure
       cert-manager.io/issuer: cloudflare-origin-issuer
