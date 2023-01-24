@@ -152,7 +152,7 @@ ingress:
       traefik.ingress.kubernetes.io/router.entrypoints: websecure
       cert-manager.io/cluster-issuer: cert-manager-cluster-issuer
       cert-manager.io/private-key-algorithm: ECDSA
-      cert-manager.io/private-key-size: 384
+      cert-manager.io/private-key-size: "384"
     host:
       name: ceph.bhyoo.com
       path: /
