@@ -6,12 +6,12 @@ resources:
     cpu: 100m
     memory: 128Mi
 
-## Settings for whether to disable the drivers or other daemons if they are not
-## needed
+# Settings for whether to disable the drivers or other daemons if they are not
+# needed
 csi:
-  # CEPH CSI RBD provisioner resource requirement list, Put here list of resource
-  # requests and limits you want to apply for provisioner pod
-  # csi-omap-generator resources will be applied only if enableOMAPGenerator is set to true
+  # -- CEPH CSI RBD provisioner resource requirement list
+  # csi-omap-generator resources will be applied only if `enableOMAPGenerator` is set to `true`
+  # @default -- see values.yaml
   csiRBDProvisionerResource: |
     - name : csi-provisioner
       resource:
@@ -69,8 +69,9 @@ csi:
         limits:
           memory: 256Mi
           cpu: 100m
-  # CEPH CSI RBD plugin resource requirement list, Put here list of resource
-  # requests and limits you want to apply for plugin pod
+
+  # -- CEPH CSI RBD plugin resource requirement list
+  # @default -- see values.yaml
   csiRBDPluginResource: |
     - name : driver-registrar
       resource:
@@ -96,8 +97,9 @@ csi:
         limits:
           memory: 256Mi
           cpu: 100m
-  # CEPH CSI CephFS provisioner resource requirement list, Put here list of resource
-  # requests and limits you want to apply for provisioner pod
+
+  # -- CEPH CSI CephFS provisioner resource requirement list
+  # @default -- see values.yaml
   csiCephFSProvisionerResource: |
     - name : csi-provisioner
       resource:
@@ -147,8 +149,9 @@ csi:
         limits:
           memory: 256Mi
           cpu: 100m
-  # CEPH CSI CephFS plugin resource requirement list, Put here list of resource
-  # requests and limits you want to apply for plugin pod
+
+  # -- CEPH CSI CephFS plugin resource requirement list
+  # @default -- see values.yaml
   csiCephFSPluginResource: |
     - name : driver-registrar
       resource:
@@ -174,8 +177,9 @@ csi:
         limits:
           memory: 256Mi
           cpu: 100m
-  # CEPH CSI NFS provisioner resource requirement list, Put here list of resource
-  # requests and limits you want to apply for provisioner pod
+
+  # -- CEPH CSI NFS provisioner resource requirement list
+  # @default -- see values.yaml
   csiNFSProvisionerResource: |
     - name : csi-provisioner
       resource:
@@ -193,8 +197,9 @@ csi:
         limits:
           memory: 1Gi
           cpu: 500m
-  # CEPH CSI NFS plugin resource requirement list, Put here list of resource
-  # requests and limits you want to apply for plugin pod
+
+  # -- CEPH CSI NFS plugin resource requirement list
+  # @default -- see values.yaml
   csiNFSPluginResource: |
     - name : driver-registrar
       resource:
@@ -212,3 +217,8 @@ csi:
         limits:
           memory: 1Gi
           cpu: 500m
+
+monitoring:
+  # -- Enable monitoring. Requires Prometheus to be pre-installed.
+  # Enabling will also create RBAC rules to allow Operator to create ServiceMonitors
+  enabled: true
