@@ -42,9 +42,9 @@ controller:
   resources:
     limits:
       cpu: 1500m
-      memory: 768Mi
+      memory: 1024Mi
     requests:
-      cpu: 250m
+      cpu: 500m
       memory: 512Mi
 
   metrics:
