@@ -96,6 +96,7 @@ service:
     type: LoadBalancer
     annotations:
       static-lb.bhyoo.com/include-ingress-ip-nets: 10.222.0.0/16
+      static-lb.bhyoo.com/exclude-ingress-ip-nets: ""
     spec:
       externalTrafficPolicy: Local
 
