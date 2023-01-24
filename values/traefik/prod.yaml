@@ -20,6 +20,7 @@ ingressRoute:
 # https://github.com/argoproj/argo-cd/issues/1704
 providers:
   kubernetesIngress:
+    ingressClass: traefik
     publishedService:
       enabled: true
 
