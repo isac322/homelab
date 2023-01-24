@@ -1,3 +1,7 @@
+deployment:
+  # Can be either Deployment or DaemonSet
+  kind: DaemonSet
+
 # Pod disruption budget
 podDisruptionBudget:
   enabled: true
