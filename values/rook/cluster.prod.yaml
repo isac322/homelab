@@ -146,25 +146,22 @@ cephClusterSpec:
 ingress:
   # -- Enable an ingress for the ceph-dashboard
   dashboard:
-    {}
-    # annotations:
-    #   external-dns.alpha.kubernetes.io/hostname: dashboard.example.com
-    #   nginx.ingress.kubernetes.io/rewrite-target: /ceph-dashboard/$2
-    #   kubernetes.io/ingress.class: nginx
-    # If the dashboard has ssl: true the following will make sure the NGINX Ingress controller can expose the dashboard correctly
-    #   nginx.ingress.kubernetes.io/backend-protocol: "HTTPS"
-    #   nginx.ingress.kubernetes.io/server-snippet: |
-    #     proxy_ssl_verify off;
-    # host:
-    #   name: dashboard.example.com
-    #   path: "/ceph-dashboard(/|$)(.*)"
-    # tls:
-    # - hosts:
-    #     - dashboard.example.com
-    #   secretName: testsecret-tls
-    ## Note: Only one of ingress class annotation or the `ingressClassName:` can be used at a time
-    ## to set the ingress class
-    # ingressClassName: nginx
+    ingressClassName: traefik
+    annotations:
+      traefik.ingress.kubernetes.io/router.entrypoints: websecure
+      cert-manager.io/issuer: cloudflare-origin-issuer
+      cert-manager.io/issuer-kind: OriginIssuer
+      cert-manager.io/issuer-group: cert-manager.k8s.cloudflare.com
+      cert-manager.io/duration: 168h
+      cert-manager.io/renew-before: 24h
+    host:
+      name: ceph.bhyoo.com
+      path: /
+      pathType: Prefix
+    tls:
+      - hosts:
+          - ceph.bhyoo.com
+        secretName: ceph-com
 
 # -- A list of CephBlockPool configurations to deploy
 # @default -- See [below](#ceph-block-pools)
