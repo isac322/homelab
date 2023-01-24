@@ -58,29 +58,3 @@ spec:
       limit: 100
     syncOptions:
       - CreateNamespace=true
----
-apiVersion: argoproj.io/v1alpha1
-kind: Application
-metadata:
-  name: rook-ceph-origin-ca-issuer
-spec:
-  destination:
-    name: prod
-    namespace: rook-ceph
-  project: dfs
-  source:
-    path: apps/objects/cloudflare-origin-ca-issuer
-    repoURL: https://github.com/isac322/homelab.git
-    targetRevision: HEAD
-  syncPolicy:
-    automated:
-      prune: true
-      selfHeal: true
-    retry:
-      backoff:
-        duration: 5s
-        factor: 2
-        maxDuration: 3m0s
-      limit: 100
-    syncOptions:
-      - CreateNamespace=true
