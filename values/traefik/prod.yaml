@@ -90,6 +90,14 @@ rollingUpdate:
 service:
   spec:
     externalTrafficPolicy: Local
+  ## An additionnal and optional internal Service.
+  ## Same parameters as external Service
+  internal:
+    type: LoadBalancer
+    annotations:
+      static-lb.bhyoo.com/include-ingress-ip-nets: 10.222.0.0/16
+    spec:
+      externalTrafficPolicy: Local
 
 
 resources:
