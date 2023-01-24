@@ -148,6 +148,7 @@ ingress:
   dashboard:
     ingressClassName: internal-traefik
     annotations:
+      external-dns.alpha.kubernetes.io/cloudflare-proxied: "false"
       traefik.ingress.kubernetes.io/router.entrypoints: websecure
       cert-manager.io/issuer: cloudflare-origin-issuer
       cert-manager.io/issuer-kind: OriginIssuer
