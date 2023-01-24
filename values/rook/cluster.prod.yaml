@@ -145,23 +145,23 @@ cephClusterSpec:
 
 ingress:
   # -- Enable an ingress for the ceph-dashboard
-  dashboard:
-    ingressClassName: internal-traefik
-    annotations:
-      traefik.ingress.kubernetes.io/router.entrypoints: websecure
-      cert-manager.io/issuer: cloudflare-origin-issuer
-      cert-manager.io/issuer-kind: OriginIssuer
-      cert-manager.io/issuer-group: cert-manager.k8s.cloudflare.com
-      cert-manager.io/duration: 168h
-      cert-manager.io/renew-before: 24h
-    host:
-      name: ceph.bhyoo.com
-      path: /
-      pathType: Prefix
-    tls:
-      - hosts:
-          - ceph.bhyoo.com
-        secretName: ceph-com
+  dashboard: {}
+#    ingressClassName: internal-traefik
+#    annotations:
+#      traefik.ingress.kubernetes.io/router.entrypoints: websecure
+#      cert-manager.io/issuer: cloudflare-origin-issuer
+#      cert-manager.io/issuer-kind: OriginIssuer
+#      cert-manager.io/issuer-group: cert-manager.k8s.cloudflare.com
+#      cert-manager.io/duration: 168h
+#      cert-manager.io/renew-before: 24h
+#    host:
+#      name: ceph.bhyoo.com
+#      path: /
+#      pathType: Prefix
+#    tls:
+#      - hosts:
+#          - ceph.bhyoo.com
+#        secretName: ceph-com
 
 # -- A list of CephBlockPool configurations to deploy
 # @default -- See [below](#ceph-block-pools)
@@ -297,42 +297,42 @@ cephFileSystems: []
 
 # -- A list of CephObjectStore configurations to deploy
 # @default -- See [below](#ceph-object-stores)
-cephObjectStores: []
-#  - name: ceph-objectstore
-#    # see https://github.com/rook/rook/blob/master/Documentation/CRDs/Object-Storage/ceph-object-store-crd.md#object-store-settings for available configuration
-#    spec:
-#      metadataPool:
-#        failureDomain: host
-#        replicated:
-#          size: 3
-#      dataPool:
-#        failureDomain: host
-#        erasureCoded:
-#          dataChunks: 2
-#          codingChunks: 1
-#      preservePoolsOnDelete: true
-#      gateway:
-#        port: 80
-#        resources:
-#          limits:
-#            cpu: "2000m"
-#            memory: "2Gi"
-#          requests:
-#            cpu: "1000m"
-#            memory: "1Gi"
-#        # securePort: 443
-#        # sslCertificateRef:
-#        instances: 1
-#        priorityClassName: system-cluster-critical
-#      healthCheck:
-#        bucket:
-#          interval: 60s
-#    storageClass:
-#      enabled: true
-#      name: ceph-bucket
-#      reclaimPolicy: Delete
-#      # see https://github.com/rook/rook/blob/master/Documentation/ceph-object-bucket-claim.md#storageclass for available configuration
-#      parameters:
-#        # note: objectStoreNamespace and objectStoreName are configured by the chart
-#        region: us-east-1
+cephObjectStores:
+  - name: ceph-objectstore
+    # see https://github.com/rook/rook/blob/master/Documentation/CRDs/Object-Storage/ceph-object-store-crd.md#object-store-settings for available configuration
+    spec:
+      metadataPool:
+        failureDomain: host
+        replicated:
+          size: 3
+      dataPool:
+        failureDomain: host
+        erasureCoded:
+          dataChunks: 2
+          codingChunks: 1
+      preservePoolsOnDelete: true
+      gateway:
+        port: 80
+        resources:
+          limits:
+            cpu: "2000m"
+            memory: "2Gi"
+          requests:
+            cpu: "1000m"
+            memory: "1Gi"
+        # securePort: 443
+        # sslCertificateRef:
+        instances: 1
+        priorityClassName: system-cluster-critical
+      healthCheck:
+        bucket:
+          interval: 60s
+    storageClass:
+      enabled: true
+      name: ceph-bucket
+      reclaimPolicy: Delete
+      # see https://github.com/rook /rook/blob/master/Documentation/ceph-object-bucket-claim.md#storageclass for available configuration
+      parameters:
+        # note: objectStoreNamespace and objectStoreName are configured by the chart
+        region: us-east-1
 
