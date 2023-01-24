@@ -198,11 +198,11 @@ service:
 
 resources:
   requests:
-    cpu: 10m
-    memory: 64Mi
+    cpu: 100m
+    memory: 128Mi
   limits:
     cpu: 300m
-    memory: 128Mi
+    memory: 256Mi
 
 nodeSelector:
   homelab.bhyoo.com/vpn-gateway: 'true'
