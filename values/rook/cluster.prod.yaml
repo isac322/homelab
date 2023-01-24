@@ -145,23 +145,23 @@ cephClusterSpec:
 
 ingress:
   # -- Enable an ingress for the ceph-dashboard
-  dashboard: {}
-#    ingressClassName: internal-traefik
-#    annotations:
-#      traefik.ingress.kubernetes.io/router.entrypoints: websecure
-#      cert-manager.io/issuer: cloudflare-origin-issuer
-#      cert-manager.io/issuer-kind: OriginIssuer
-#      cert-manager.io/issuer-group: cert-manager.k8s.cloudflare.com
-#      cert-manager.io/duration: 168h
-#      cert-manager.io/renew-before: 24h
-#    host:
-#      name: ceph.bhyoo.com
-#      path: /
-#      pathType: Prefix
-#    tls:
-#      - hosts:
-#          - ceph.bhyoo.com
-#        secretName: ceph-com
+  dashboard:
+    ingressClassName: internal-traefik
+    annotations:
+      traefik.ingress.kubernetes.io/router.entrypoints: websecure
+      cert-manager.io/issuer: cloudflare-origin-issuer
+      cert-manager.io/issuer-kind: OriginIssuer
+      cert-manager.io/issuer-group: cert-manager.k8s.cloudflare.com
+      cert-manager.io/duration: 168h
+      cert-manager.io/renew-before: 24h
+    host:
+      name: ceph.bhyoo.com
+      path: /
+      pathType: Prefix
+    tls:
+      - hosts:
+          - ceph.bhyoo.com
+        secretName: ceph-com
 
 # -- A list of CephBlockPool configurations to deploy
 # @default -- See [below](#ceph-block-pools)
