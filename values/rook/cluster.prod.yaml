@@ -317,8 +317,8 @@ cephObjectStores:
             cpu: "2000m"
             memory: "2Gi"
           requests:
-            cpu: "1000m"
-            memory: "1Gi"
+            cpu: "100m"
+            memory: "256Mi"
         # securePort: 443
         # sslCertificateRef:
         instances: 1
@@ -333,5 +333,4 @@ cephObjectStores:
       # see https://github.com/rook /rook/blob/master/Documentation/ceph-object-bucket-claim.md#storageclass for available configuration
       parameters:
         # note: objectStoreNamespace and objectStoreName are configured by the chart
-        region: us-east-1
-
+        region: ap-northeast-2
