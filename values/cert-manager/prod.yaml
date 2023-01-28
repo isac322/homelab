@@ -1,4 +1,4 @@
-installCRDs: true
+installCRDs: false
 
 strategy:
   type: RollingUpdate
@@ -9,7 +9,7 @@ strategy:
 resources:
   requests:
     cpu: 10m
-    memory: 64Mi
+    memory: 32Mi
   limits:
     cpu: 500m
     memory: 128Mi
@@ -17,8 +17,7 @@ resources:
 prometheus:
   enabled: true
   servicemonitor:
-    enabled: false
-
+    enabled: true
 
 webhook:
   strategy:
@@ -48,5 +47,4 @@ cainjector:
       memory: 64Mi
     limits:
       cpu: 100m
-      memory: 128Mi
-
+      memory: 512Mi
