@@ -1,0 +1,16 @@
+# Value specific to the origin-ca-issuer controller
+controller:
+  # Optional deployment rollout strategy.
+  # ref: https://kubernetes.io/docs/concepts/workloads/controllers/deployment/#strategy
+  strategy:
+    rollingUpdate:
+      maxSurge: 0
+      maxUnavailable: 1
+
+  resources:
+    limits:
+      cpu: 500m
+      memory: 256Mi
+    requests:
+      cpu: 10m
+      memory: 50Mi
