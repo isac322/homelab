@@ -272,6 +272,15 @@
         protocol: tcp
         destination_port: 6443
         jump: ACCEPT
+        source: "{{ k8s_pod_cidr }}"
+        comment: kubelet
+      when: k8s_role == "master"
+
+    - ansible.builtin.iptables:
+        chain: TCP
+        protocol: tcp
+        destination_port: 6443
+        jump: ACCEPT
         in_interface: "{{ wireguard_interface }}"
         source: "{{ ipv4.network }}/{{ ipv4.prefix }}"
         comment: kubelet
@@ -299,14 +308,23 @@
       when: k8s_role != ""
 
 - name: Allow node exporter
-  ansible.builtin.iptables:
-    chain: TCP
-    protocol: tcp
-    destination_port: 9100
-    jump: ACCEPT
-    source: "{{ __register_k8s_internal_node_ip_cidr }}"
-    comment: node exporter
-  when: k8s_role != ""
+  block:
+    - ansible.builtin.iptables:
+        chain: TCP
+        protocol: tcp
+        destination_port: 9100
+        jump: ACCEPT
+        source: "{{ __register_k8s_internal_node_ip_cidr }}"
+        comment: node exporter
+      when: k8s_role != ""
+    - ansible.builtin.iptables:
+        chain: TCP
+        protocol: tcp
+        destination_port: 9100
+        jump: ACCEPT
+        source: "{{ k8s_pod_cidr }}"
+        comment: node exporter
+      when: k8s_role != ""
 
 - name: Allow k3s embedded etcd
   ansible.builtin.iptables:
@@ -329,14 +347,23 @@
   when: k8s_role != "" and use_k8s_cilium
 
 - name: Allow k8s cilium hubble
-  ansible.builtin.iptables:
-    chain: TCP
-    protocol: tcp
-    destination_port: 4244:4245
-    jump: ACCEPT
-    source: "{{ __register_k8s_internal_node_ip_cidr }}"
-    comment: cilium hubble
-  when: k8s_role != "" and use_k8s_cilium_hubble
+  block:
+    - ansible.builtin.iptables:
+        chain: TCP
+        protocol: tcp
+        destination_port: 4244:4245
+        jump: ACCEPT
+        source: "{{ __register_k8s_internal_node_ip_cidr }}"
+        comment: cilium hubble
+      when: k8s_role != "" and use_k8s_cilium_hubble
+    - ansible.builtin.iptables:
+        chain: TCP
+        protocol: tcp
+        destination_port: 4244:4245
+        jump: ACCEPT
+        source: "{{ k8s_pod_cidr }}"
+        comment: cilium hubble
+      when: k8s_role != "" and use_k8s_cilium_hubble
 
 - name: Allow k8s metallb L2 LB
   ansible.builtin.iptables:
