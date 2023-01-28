@@ -32,7 +32,7 @@ certController:
   resources:
     requests:
       cpu: 5m
-      memory: 64Mi
+      memory: 96Mi
     limits:
       cpu: 50m
-      memory: 96Mi
+      memory: 256Mi
