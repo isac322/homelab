@@ -34,6 +34,13 @@
         - ansible.builtin.import_role:
             name: xanmanning.k3s
 
+    - name: Install Helm diff plugin
+      become: yes
+      run_once: yes
+      kubernetes.core.helm_plugin:
+        plugin_path: https://github.com/databus23/helm-diff
+        state: present
+
     - name: Install cilium
       become: yes
       run_once: yes
