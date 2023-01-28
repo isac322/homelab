@@ -8,7 +8,7 @@ spec:
     namespace: mimir
   project: monitoring
   source:
-    chart: grafana/mimir-distributed
+    chart: mimir-distributed
     helm:
       releaseName: mimir
       valueFiles:
