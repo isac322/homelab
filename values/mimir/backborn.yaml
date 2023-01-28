@@ -29,7 +29,7 @@ alertmanager:
     #
     size: 1Gi
 
-    storageClass: local-path
+    #storageClass: local-path
 
 
 distributor:
@@ -41,22 +41,22 @@ distributor:
       memory: 128Mi
     limits:
       cpu: 2000m
-      memory: 512Mi
+      memory: 1536Mi
 
 ingester:
   # -- Total number of replicas for the ingester accross all availability zones
   # If ingester.zoneAwareReplication.enabled=false, this number is taken as is.
   # Otherwise each zone starts `ceil(replicas / number_of_zones)` number of pods.
   #   E.g. if 'replicas' is set to 4 and there are 3 zones, then 4/3=1.33 and after rounding up it means 2 pods per zone are started.
-  replicas: 2
+  replicas: 3
 
   resources:
     requests:
       cpu: 200m
-      memory: 1Gi
+      memory: 1536Mi
     limits:
       cpu: 1000m
-      memory: 1536Mi
+      memory: 2048Mi
 
   persistentVolume:
     # If true and ingester.statefulSet.enabled is true,
@@ -75,7 +75,7 @@ ingester:
     #   set, choosing the default provisioner.  (gp2 on AWS, standard on
     #   GKE, AWS & OpenStack)
     #
-    storageClass: local-path
+    #storageClass: local-path
 
   zoneAwareReplication:
     # -- Enable zone-aware replication for ingester
@@ -172,7 +172,7 @@ store_gateway:
     #   set, choosing the default provisioner.  (gp2 on AWS, standard on
     #   GKE, AWS & OpenStack)
     #
-    storageClass: local-path
+    #storageClass: local-path
 
 
   # -- Options to configure zone-aware replication for store-gateway
@@ -226,7 +226,7 @@ compactor:
     #   set, choosing the default provisioner.  (gp2 on AWS, standard on
     #   GKE, AWS & OpenStack)
     #
-    storageClass: local-path
+    #storageClass: local-path
 
 # -- Setting for the Grafana Rollout Operator https://github.com/grafana/helm-charts/tree/main/charts/rollout-operator
 rollout_operator:
@@ -239,11 +239,11 @@ minio:
   mode: standalone
   persistence:
     size: 50Gi
-    storageClass: zfs-block
+    storageClass: zfs-block-retain
   resources:
     requests:
       cpu: 100m
-      memory: 256Mi
+      memory: 512Mi
     limits:
       cpu: 1000m
       memory: 1Gi
