@@ -48,7 +48,7 @@ csi:
     - name : csi-rbdplugin
       resource:
         requests:
-          memory: 16Mi
+          memory: 32Mi
           cpu: 10m
         limits:
           memory: 1Gi
@@ -76,16 +76,16 @@ csi:
     - name : driver-registrar
       resource:
         requests:
-          memory: 16Mi
-          cpu: 10m
+          memory: 8Mi
+          cpu: 5m
         limits:
           memory: 256Mi
           cpu: 100m
     - name : csi-rbdplugin
       resource:
         requests:
-          memory: 16Mi
-          cpu: 10m
+          memory: 32Mi
+          cpu: 30m
         limits:
           memory: 1Gi
           cpu: 500m
@@ -136,7 +136,7 @@ csi:
     - name : csi-cephfsplugin
       resource:
         requests:
-          memory: 16Mi
+          memory: 32Mi
           cpu: 10m
         limits:
           memory: 1Gi
@@ -156,8 +156,8 @@ csi:
     - name : driver-registrar
       resource:
         requests:
-          memory: 32Mi
-          cpu: 10m
+          memory: 8Mi
+          cpu: 1m
         limits:
           memory: 256Mi
           cpu: 100m
@@ -167,7 +167,7 @@ csi:
           memory: 32Mi
           cpu: 10m
         limits:
-          memory: 1Gi
+          memory: 512Mi
           cpu: 500m
     - name : liveness-prometheus
       resource:
