@@ -85,7 +85,7 @@
                   memory: 64Mi
                 requests:
                   cpu: 5m
-                  memory: 16Mi
+                  memory: 32Mi
             ui:
               enabled: true
               rollOutPods: true
@@ -93,10 +93,10 @@
                 resources:
                   limits:
                     cpu: 100m
-                    memory: 64Mi
+                    memory: 128Mi
                   requests:
                     cpu: 5m
-                    memory: 16Mi
+                    memory: 64Mi
               frontend:
                 resources:
                   limits:
