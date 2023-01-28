@@ -143,10 +143,10 @@
             resources:
               requests:
                 cpu: 5m
-                memory: 1Mi
+                memory: 4Mi
               limits:
                 cpu: 100m
-                memory: 16Mi
+                memory: 32Mi
         wait: yes
 
     - name: Create and download kubeconfig
