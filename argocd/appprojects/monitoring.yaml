@@ -1,0 +1,20 @@
+apiVersion: argoproj.io/v1alpha1
+kind: AppProject
+metadata:
+  name: monitoring
+spec:
+  description: Monitoring cluster
+  sourceRepos:
+    - https://github.com/isac322/homelab.git
+    - https://grafana.github.io/helm-charts
+    - https://prometheus-community.github.io/helm-charts
+  destinations:
+    - namespace: prometheus
+      name: prod
+    - namespace: mimir
+      name: prod
+    - namespace: prometheus
+      name: backbone
+  clusterResourceWhitelist:
+    - group: '*'
+      kind: '*'
