@@ -1,0 +1,578 @@
+# Grafana Enterprise Metrics specific values and features are found after the `enterprise:` key
+#
+# The default values specified in this file are enough to deploy all of the
+# Grafana Mimir or Grafana Enterprise Metrics microservices but are not suitable for
+# production load.
+# To configure the resources for production load, refer to the the small.yaml or
+# large.yaml values files.
+
+global:
+  # -- Common environment variables to add to all pods directly managed by this chart.
+  # scope: admin-api, alertmanager, compactor, distributor, gateway, ingester, memcached, nginx, overrides-exporter, querier, query-frontend, query-scheduler, ruler, store-gateway, smoke-test, tokengen
+  extraEnv:
+    - name: BLOCK_STORAGE_HOST
+      valueFrom:
+        configMapKeyRef:
+          key: BUCKET_HOST
+          name: mimir-tsdb
+    - name: BLOCK_STORAGE_PORT
+      valueFrom:
+        configMapKeyRef:
+          key: BUCKET_PORT
+          name: mimir-tsdb
+    - name: BLOCK_STORAGE_BUCKET_NAME
+      valueFrom:
+        configMapKeyRef:
+          key: BUCKET_NAME
+          name: mimir-tsdb
+    - name: BLOCK_STORAGE_ACCESS_KEY
+      valueFrom:
+        secretKeyRef:
+          key: AWS_ACCESS_KEY_ID
+          name: mimir-tsdb
+    - name: BLOCK_STORAGE_SECRET_KEY
+      valueFrom:
+        secretKeyRef:
+          key: AWS_SECRET_ACCESS_KEY
+          name: mimir-tsdb
+
+    - name: RULER_HOST
+      valueFrom:
+        configMapKeyRef:
+          key: BUCKET_HOST
+          name: mimir-ruler
+    - name: RULER_PORT
+      valueFrom:
+        configMapKeyRef:
+          key: BUCKET_PORT
+          name: mimir-ruler
+    - name: RULER_BUCKET_NAME
+      valueFrom:
+        configMapKeyRef:
+          key: BUCKET_NAME
+          name: mimir-ruler
+    - name: RULER_ACCESS_KEY
+      valueFrom:
+        secretKeyRef:
+          key: AWS_ACCESS_KEY_ID
+          name: mimir-ruler
+    - name: RULER_SECRET_KEY
+      valueFrom:
+        secretKeyRef:
+          key: AWS_SECRET_ACCESS_KEY
+          name: mimir-ruler
+
+
+mimir:
+  structuredConfig:
+    limits:
+      max_global_series_per_user: 1000000
+      # Enable TSDB block upload
+      compactor_block_upload_enabled: true
+
+    common:
+      storage:
+        backend: s3
+        s3:
+          region: ap-northeast-2
+          insecure: true
+
+    alertmanager_storage:
+      s3: &ruler_s3
+        endpoint: ${RULER_HOST}:${RULER_PORT}
+        access_key_id: ${RULER_ACCESS_KEY}
+        bucket_name: ${RULER_BUCKET_NAME}
+        secret_access_key: ${RULER_SECRET_KEY}
+
+    # This configures how the store-gateway synchronizes blocks stored in the bucket. It uses Minio by default for getting started (configured via flags) but this should be changed for production deployments.
+    blocks_storage:
+      s3:
+        endpoint: ${BLOCK_STORAGE_HOST}:${BLOCK_STORAGE_PORT}
+        access_key_id: ${BLOCK_STORAGE_ACCESS_KEY}
+        bucket_name: ${BLOCK_STORAGE_BUCKET_NAME}
+        secret_access_key: ${BLOCK_STORAGE_SECRET_KEY}
+
+    ruler_storage:
+      s3:
+        <<: *ruler_s3
+
+alertmanager:
+  enabled: true
+  # -- Total number of replicas for the alertmanager accross all availability zones
+  # If alertmanager.zoneAwareReplication.enabled=false, this number is taken as is.
+  # Otherwise each zone starts `ceil(replicas / number_of_zones)` number of pods.
+  #   E.g. if 'replicas' is set to 4 and there are 3 zones, then 4/3=1.33 and after rounding up it means 2 pods per zone are started.
+  replicas: 1
+
+  resources:
+    requests:
+      cpu: 10m
+      memory: 32Mi
+    limits:
+      cpu: 100m
+      memory: 256Mi
+
+  persistentVolume:
+    # Alertmanager data Persistent Volume size
+    #
+    size: 1Gi
+
+    #storageClass: local-path
+
+
+distributor:
+  replicas: 1
+
+  resources:
+    requests:
+      cpu: 300m
+      memory: 64Mi
+    limits:
+      cpu: 2000m
+      memory: 1536Mi
+
+ingester:
+  # -- Total number of replicas for the ingester accross all availability zones
+  # If ingester.zoneAwareReplication.enabled=false, this number is taken as is.
+  # Otherwise each zone starts `ceil(replicas / number_of_zones)` number of pods.
+  #   E.g. if 'replicas' is set to 4 and there are 3 zones, then 4/3=1.33 and after rounding up it means 2 pods per zone are started.
+  replicas: 3
+
+  resources:
+    requests:
+      cpu: 200m
+      memory: 1536Mi
+    limits:
+      cpu: 1000m
+      memory: 4096Mi
+
+  persistentVolume:
+    # If true and ingester.statefulSet.enabled is true,
+    # Ingester will create/use a Persistent Volume Claim
+    # If false, use emptyDir
+    #
+    enabled: true
+
+    # Ingester data Persistent Volume size
+    size: 20Gi
+
+    # Ingester data Persistent Volume Storage Class
+    # If defined, storageClassName: <storageClass>
+    # If set to "-", storageClassName: "", which disables dynamic provisioning
+    # If undefined (the default) or set to null, no storageClassName spec is
+    #   set, choosing the default provisioner.  (gp2 on AWS, standard on
+    #   GKE, AWS & OpenStack)
+    #
+    #storageClass: local-path
+
+  zoneAwareReplication:
+    # -- Enable zone-aware replication for ingester
+    enabled: false
+
+overrides_exporter:
+  enabled: true
+  replicas: 1
+
+  resources:
+    requests:
+      cpu: 10m
+      memory: 32Mi
+    limits:
+      cpu: 100m
+      memory: 128Mi
+
+ruler:
+  enabled: true
+  replicas: 1
+
+  resources:
+    requests:
+      cpu: 10m
+      memory: 32Mi
+    limits:
+      cpu: 100m
+      memory: 128Mi
+
+querier:
+  replicas: 2
+
+  resources:
+    requests:
+      cpu: 100m
+      memory: 128Mi
+    limits:
+      cpu: 4
+      memory: 1Gi
+
+query_frontend:
+  replicas: 1
+
+  resources:
+    requests:
+      cpu: 100m
+      memory: 64Mi
+    limits:
+      cpu: 500m
+      memory: 128Mi
+
+query_scheduler:
+  enabled: true
+  replicas: 1
+
+  resources:
+    requests:
+      cpu: 10m
+      memory: 32Mi
+    limits:
+      cpu: 500m
+      memory: 128Mi
+
+store_gateway:
+  # -- Total number of replicas for the store-gateway accross all availability zones
+  # If store_gateway.zoneAwareReplication.enabled=false, this number is taken as is.
+  # Otherwise each zone starts `ceil(replicas / number_of_zones)` number of pods.
+  #   E.g. if 'replicas' is set to 4 and there are 3 zones, then 4/3=1.33 and after rounding up it means 2 pods per zone are started.
+  replicas: 1
+
+  resources:
+    requests:
+      cpu: 30m
+      memory: 64Mi
+    limits:
+      cpu: 500m
+      memory: 512Mi
+
+
+  persistentVolume:
+    # If true Store-gateway will create/use a Persistent Volume Claim
+    # If false, use emptyDir
+    #
+    enabled: true
+
+    # Store-gateway data Persistent Volume size
+    #
+    size: 2Gi
+
+    # Store-gateway data Persistent Volume Storage Class
+    # If defined, storageClassName: <storageClass>
+    # If set to "-", storageClassName: "", which disables dynamic provisioning
+    # If undefined (the default) or set to null, no storageClassName spec is
+    #   set, choosing the default provisioner.  (gp2 on AWS, standard on
+    #   GKE, AWS & OpenStack)
+    #
+    #storageClass: local-path
+
+
+  # -- Options to configure zone-aware replication for store-gateway
+  # Example configuration with full geographical redundancy:
+  # rollout_operator:
+  #   enabled: true
+  # store_gateway:
+  #   zoneAwareReplication:
+  #     enabled: true
+  #     topologyKey: 'kubernetes.io/hostname'  # This generates default anti-affinity rules
+  #     zones:  # Zone list has to be fully redefined for modification. Update with you actual zones or skip to use logical zones only.
+  #     - name: zone-a
+  #       nodeSelector:
+  #         topology.kubernetes.io/zone: us-central1-a
+  #     - name: zone-a
+  #       nodeSelector:
+  #         topology.kubernetes.io/zone: us-central1-b
+  #     - name: zone-c
+  #       nodeSelector:
+  #         topology.kubernetes.io/zone: us-central1-c
+  #
+  zoneAwareReplication:
+    # -- Enable zone-aware replication for store-gateway
+    enabled: false
+
+compactor:
+  replicas: 1
+
+  resources:
+    requests:
+      cpu: 10m
+      memory: 64Mi
+    limits:
+      cpu: 1000m
+      memory: 1Gi
+
+  persistentVolume:
+    # If true compactor will create/use a Persistent Volume Claim
+    # If false, use emptyDir
+    #
+    enabled: true
+
+    # compactor data Persistent Volume size
+    #
+    size: 2Gi
+
+    # compactor data Persistent Volume Storage Class
+    # If defined, storageClassName: <storageClass>
+    # If set to "-", storageClassName: "", which disables dynamic provisioning
+    # If undefined (the default) or set to null, no storageClassName spec is
+    #   set, choosing the default provisioner.  (gp2 on AWS, standard on
+    #   GKE, AWS & OpenStack)
+    #
+    #storageClass: local-path
+
+# -- Setting for the Grafana Rollout Operator https://github.com/grafana/helm-charts/tree/main/charts/rollout-operator
+rollout_operator:
+  enabled: true
+  image:
+    repository: isac322/grafana-rollout-operator
+
+minio:
+  enabled: false
+
+nginx:
+  enabled: false
+
+# -- A reverse proxy deployment that is meant to receive traffic for Mimir or GEM.
+# When enterprise.enabled is true the GEM gateway is deployed. Otherwise, it is an nginx.
+# Options except those under gateway.nginx apply to both versions - nginx and GEM gateway.
+gateway:
+  # -- The gateway is deployed by default for enterprise installations (enterprise.enabled=true).
+  # Toggle this to have it deployed for non-enterprise installations too.
+  enabledNonEnterprise: true
+
+  # -- Number of replicas for the Deployment
+  replicas: 1
+
+  # -- Resource requests and limits for the container
+  resources:
+    requests:
+      cpu: 10m
+      memory: 32Mi
+    limits:
+      cpu: 500m
+      memory: 128Mi
+
+  ingress:
+    enabled: true
+    # -- Ingress Class Name. MAY be required for Kubernetes versions >= 1.18
+    ingressClassName: internal-traefik
+    # -- Annotations for the Ingress
+    annotations:
+      external-dns.alpha.kubernetes.io/cloudflare-proxied: "false"
+      cert-manager.io/cluster-issuer: cert-manager-cluster-issuer
+      cert-manager.io/private-key-algorithm: ECDSA
+      cert-manager.io/private-key-size: '384'
+      traefik.ingress.kubernetes.io/router.entrypoints: websecure
+
+    # -- Hosts configuration for the Ingress
+    hosts:
+      - host: mimir.bhyoo.com
+        paths:
+          - path: /
+            # -- pathType (e.g. ImplementationSpecific, Prefix, .. etc.) might also be required by some Ingress Controllers
+            pathType: Prefix
+    # -- TLS configuration for the nginx ingress
+    tls:
+      - secretName: mimir-tls
+        hosts:
+          - mimir.bhyoo.com
+
+  nginx:
+    # -- Enable logging of 2xx and 3xx HTTP requests
+    verboseLogging: true
+
+    # -- Basic auth configuration
+    basicAuth:
+      # -- Enables basic authentication for nginx
+      enabled: false
+      # -- The basic auth username for nginx
+      username: null
+      # -- The basic auth password for nginx
+      password: null
+      # -- Uses the specified username and password to compute a htpasswd using Sprig's `htpasswd` function.
+      # The value is templated using `tpl`. Override this to use a custom htpasswd, e.g. in case the default causes
+      # high CPU load.
+      htpasswd: >-
+        {{ htpasswd (required "'gateway.nginx.basicAuth.username' is required" .Values.gateway.nginx.basicAuth.username) (required "'gateway.nginx.basicAuth.password' is required" .Values.gateway.nginx.basicAuth.password) }}
+      # -- Name of an existing basic auth secret to use instead of gateway.nginx.basicAuth.htpasswd. Must contain '.htpasswd' key
+      existingSecret: null
+
+
+metaMonitoring:
+  # ServiceMonitor configuration for monitoring Kubernetes Services with Prometheus Operator and/or Grafana Agent
+  serviceMonitor:
+    # -- If enabled, ServiceMonitor resources for Prometheus Operator are created
+    enabled: false
+    # -- To disable setting a 'cluster' label in metrics, set to 'null'.
+    # To overwrite the 'cluster' label with your own value, set to a non-empty string.
+    # Keep empty string "" to have the default value in the 'cluster' label, which is the helm release name for Mimir and the actual cluster name for Enterprise Metrics.
+    clusterLabel: ""
+    # -- Alternative namespace for ServiceMonitor resources
+    # If left unset, the default is to install the ServiceMonitor resources in the namespace where the chart is installed, i.e. the namespace specified for the helm command.
+    namespace: null
+    # -- Namespace selector for ServiceMonitor resources
+    # If left unset, the default is to select the namespace where the chart is installed, i.e. the namespace specified for the helm command.
+    namespaceSelector: null
+    # -- ServiceMonitor annotations
+    annotations: {}
+    # -- Additional ServiceMonitor labels
+    labels: {}
+    # -- ServiceMonitor scrape interval
+    interval: null
+    # -- ServiceMonitor scrape timeout in Go duration format (e.g. 15s)
+    scrapeTimeout: null
+    # -- ServiceMonitor relabel configs to apply to samples before scraping
+    # https://github.com/prometheus-operator/prometheus-operator/blob/master/Documentation/api.md#relabelconfig
+    relabelings: []
+    # -- ServiceMonitor will use http by default, but you can pick https as well
+    scheme: http
+    # -- ServiceMonitor will use these tlsConfig settings to make the health check requests
+    tlsConfig: null
+
+  # metaMonitoringAgent configures the built in Grafana Agent that can scrape metrics and logs and send them to a local or remote destination
+  grafanaAgent:
+    # -- Controls whether to create PodLogs, MetricsInstance, LogsInstance, and GrafanaAgent CRs to scrape the
+    # ServiceMonitors of the chart and ship metrics and logs to the remote endpoints below.
+    # Note that you need to configure serviceMonitor in order to have some metrics available.
+    enabled: false
+
+    # -- Controls whether to install the Grafana Agent Operator and its CRDs.
+    # Note that helm will not install CRDs if this flag is enabled during an upgrade.
+    # In that case install the CRDs manually from https://github.com/grafana/agent/tree/main/production/operator/crds
+    installOperator: false
+
+    logs:
+      # -- Controls whether to create resources PodLogs and LogsInstance resources
+      enabled: true
+
+      # -- Default destination for logs. The config here is translated to Promtail client
+      # configuration to write logs to this Loki-compatible remote. Optional.
+      remote:
+        # -- Full URL for Loki push endpoint. Usually ends in /loki/api/v1/push
+        url: ''
+
+        auth:
+          # -- Used to set X-Scope-OrgID header on requests. Usually not used in combination with username and password.
+          tenantId: ''
+
+          # -- Basic authentication username. Optional.
+          username: ''
+
+          # -- The value under key passwordSecretKey in this secret will be used as the basic authentication password. Required only if passwordSecretKey is set.
+          passwordSecretName: ''
+          # -- The value under this key in passwordSecretName will be used as the basic authentication password. Required only if passwordSecretName is set.
+          passwordSecretKey: ''
+
+      # -- Client configurations for the LogsInstance that will scrape Mimir pods. Follows the format of .remote.
+      additionalClientConfigs: []
+
+    metrics:
+      # -- Controls whether to create MetricsInstance resources and ServiceMonitor resources for scraping Kubernetes (when .scrapeK8s.enabled=true).
+      enabled: true
+
+      # -- Default destination for metrics. The config here is translated to remote_write
+      # configuration to push metrics to this Prometheus-compatible remote. Optional.
+      # Note that you need to configure serviceMonitor in order to have some metrics available.
+      #
+      # If you leave the metamonitoring.grafanaAgent.metrics.remote.url field empty,
+      # then the chart automatically fills in the address of the GEM gateway Service
+      # or the Mimir NGINX Service.
+      #
+      # If you have deployed Mimir, and metamonitoring.grafanaAgent.metrics.remote.url is not set,
+      # then the metamonitoring metrics are be sent to the Mimir cluster.
+      # You can query these metrics using the HTTP header X-Scope-OrgID: metamonitoring
+      #
+      # If you have deployed GEM, then there are two cases:
+      # * If are using the 'trust' authentication type (mimir.structuredConfig.auth.type: trust),
+      #   then the same instructions apply as for Mimir.
+      #
+      # * If you are using the enterprise authentication type (mimir.structuredConfig.auth.type=enterprise, which is also the default when enterprise.enabled=true),
+      #   then you also need to provide a Secret with the authentication token for the tenant.
+      #   The token should be to an access policy with metrics:read scope.
+      #   To set up the Secret, refer to https://grafana.com/docs/mimir/latest/operators-guide/monitor-grafana-mimir/collecting-metrics-and-logs/#collect-metrics-and-logs-via-the-helm-chart
+      #   Assuming you are using the GEM authentication model, the Helm chart values should look like the following example.
+      #
+      # remote:
+      #   auth:
+      #     username: metamonitoring
+      #     passwordSecretName: gem-tokens
+      #     passwordSecretKey: metamonitoring
+      remote:
+        # -- Full URL for Prometheus remote-write. Usually ends in /push.
+        # If you leave the url field empty, then the chart automatically fills in the
+        # address of the GEM gateway Service or the Mimir NGINX Service.
+        url: ''
+
+        # -- Used to add HTTP headers to remote-write requests.
+        headers: {}
+        auth:
+          # -- Basic authentication username. Optional.
+          username: ''
+
+          # -- The value under key passwordSecretKey in this secret will be used as the basic authentication password. Required only if passwordSecretKey is set.
+          passwordSecretName: ''
+          # -- The value under this key in passwordSecretName will be used as the basic authentication password. Required only if passwordSecretName is set.
+          passwordSecretKey: ''
+
+      # -- Additional remote-write for the MetricsInstance that will scrape Mimir pods. Follows the format of .remote.
+      additionalRemoteWriteConfigs: []
+
+      scrapeK8s:
+        # -- When grafanaAgent.enabled and serviceMonitor.enabled, controls whether to create ServiceMonitors CRs
+        # for cadvisor, kubelet, and kube-state-metrics. The scraped metrics are reduced to those pertaining to
+        # Mimir pods only.
+        enabled: true
+
+        # -- Controls service discovery of kube-state-metrics.
+        kubeStateMetrics:
+          namespace: kube-system
+          labelSelectors:
+            app.kubernetes.io/name: kube-state-metrics
+
+      # -- The scrape interval for all ServiceMonitors.
+      scrapeInterval: 60s
+
+    # -- Sets the namespace of the resources. Leave empty or unset to use the same namespace as the Helm release.
+    namespace: ''
+
+    # -- Labels to add to all monitoring.grafana.com custom resources.
+    # Does not affect the ServiceMonitors for kubernetes metrics; use serviceMonitor.labels for that.
+    labels: {}
+
+    # -- Annotations to add to all monitoring.grafana.com custom resources.
+    # Does not affect the ServiceMonitors for kubernetes metrics; use serviceMonitor.annotations for that.
+    annotations: {}
+
+    # -- SecurityContext of Grafana Agent pods. This is different from the SecurityContext that the operator pod runs with.
+    # The operator pod SecurityContext is configured in the grafana-agent-operator.podSecurityContext value.
+    # As of mimir-distributed 4.0.0 the Agent DaemonSet that collects logs needs to run as root and be able to access the
+    # pod logs on each host. Because of that the agent subchart is incompabitble with the PodSecurityPolicy of the
+    # mimir-distributed chart and with the Restricted policy of Pod Security Standards https://kubernetes.io/docs/concepts/security/pod-security-standards/
+    podSecurityContext:
+    #  fsGroup: 10001
+    #  runAsGroup: 10001
+    #  runAsNonRoot: true
+    #  runAsUser: 10001
+    #  seccompProfile:
+    #    type: RuntimeDefault
+
+    # -- SecurityContext of Grafana Agent containers. This is different from the SecurityContext that the operator container runs with.
+    # As of mimir-distributed 4.0.0 the agent subchart needs to have root file system write access so that the Agent pods can write temporary files where.
+    # This makes the subchart incompatible with the PodSecurityPolicy of the mimir-distributed chart.
+    containerSecurityContext:
+    #  allowPrivilegeEscalation: false
+    #  runAsUser: 10001
+    #  capabilities:
+    #    drop: [ALL]
+
+# -- Values exposed by the [Grafana agent-operator chart](https://github.com/grafana/helm-charts/blob/main/charts/agent-operator/values.yaml)
+grafana-agent-operator:
+  podSecurityContext:
+    fsGroup: 10001
+    runAsGroup: 10001
+    runAsNonRoot: true
+    runAsUser: 10001
+    seccompProfile:
+      type: RuntimeDefault
+
+  containerSecurityContext:
+    allowPrivilegeEscalation: false
+    readOnlyRootFilesystem: true
+    capabilities:
+      drop: [ALL]
