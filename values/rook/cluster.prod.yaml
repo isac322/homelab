@@ -330,7 +330,7 @@ cephObjectStores:
       enabled: true
       name: ceph-bucket
       reclaimPolicy: Delete
-      # see https://github.com/rook /rook/blob/master/Documentation/ceph-object-bucket-claim.md#storageclass for available configuration
+      # see https://github.com/rook/rook/blob/master/Documentation/ceph-object-bucket-claim.md#storageclass for available configuration
       parameters:
         # note: objectStoreNamespace and objectStoreName are configured by the chart
         region: ap-northeast-2
