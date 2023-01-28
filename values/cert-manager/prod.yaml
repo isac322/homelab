@@ -47,4 +47,4 @@ cainjector:
       memory: 64Mi
     limits:
       cpu: 100m
-      memory: 512Mi
+      memory: 256Mi
