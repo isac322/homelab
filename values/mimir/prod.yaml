@@ -213,7 +213,7 @@ query_frontend:
       memory: 64Mi
     limits:
       cpu: 500m
-      memory: 128Mi
+      memory: 1024Mi
 
 query_scheduler:
   enabled: true
