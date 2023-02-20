@@ -31,7 +31,7 @@ jobs:
           token: ${{ secrets.CHART_GITHUB_TOKEN }}
 
       - name: Install yq - portable yaml processor
-        uses: mikefarah/yq@v4.30.8
+        uses: mikefarah/yq@v4.31.1
 
       - name: Collect charts
         id: charts
