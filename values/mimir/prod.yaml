@@ -251,7 +251,7 @@ store_gateway:
 
     # Store-gateway data Persistent Volume size
     #
-    size: 20Gi
+    size: 1Gi
 
     # Store-gateway data Persistent Volume Storage Class
     # If defined, storageClassName: <storageClass>
