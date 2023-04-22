@@ -1,0 +1,126 @@
+{{- if .Values.http.ingress.enabled -}}
+{{- if not .Values.http.service.enabled }}
+{{- fail "Please enable service for http under .Values.http.service" }}
+{{- end }}
+---
+apiVersion: networking.k8s.io/v1
+kind: Ingress
+metadata:
+  name: {{ include "blocky.fullname" . }}-debug
+  labels:
+    {{- include "blocky.labels" . | nindent 4 }}
+  {{- with .Values.http.ingress.annotations }}
+  annotations:
+    {{- toYaml . | nindent 4 }}
+  {{- end }}
+spec:
+  ingressClassName: {{ .Values.http.ingress.className }}
+  {{- if .Values.http.ingress.tlsSecretName }}
+  tls:
+    - hosts:
+        {{- range .Values.http.ingress.hosts }}
+        - {{ . | quote }}
+        {{- end }}
+      secretName: {{ .Values.http.ingress.tlsSecretName }}
+  {{- end }}
+  rules:
+    {{- range .Values.http.ingress.hosts }}
+    - host: {{ .host | quote }}
+      http:
+        paths:
+          - path: /debug
+            pathType: Prefix
+            backend:
+              service:
+                name: "{{ include "blocky.fullname" $ }}-http"
+                port:
+                  name: http
+          - path: /api
+            pathType: Prefix
+            backend:
+              service:
+                name: "{{ include "blocky.fullname" $ }}-http"
+                port:
+                  name: http
+    {{- end }}
+{{- end }}
+{{- if and (include "blocky.DohTlsTerminatedOnApp" .) .Values.doh.ingress.enabled -}}
+{{- if not .Values.doh.ingress.enabled }}
+{{- fail "Please enable ingress for DNS-over-HTTPS under .Values.doh.ingress" }}
+{{- end }}
+---
+apiVersion: networking.k8s.io/v1
+kind: Ingress
+metadata:
+  name: {{ include "blocky.fullname" . }}-doh
+  labels:
+    {{- include "blocky.labels" . | nindent 4 }}
+  {{- with .Values.doh.ingress.annotations }}
+  annotations:
+    {{- toYaml . | nindent 4 }}
+  {{- end }}
+spec:
+  ingressClassName: {{ .Values.doh.ingress.className }}
+  {{- if .Values.doh.ingress.tlsSecretName }}
+  tls:
+    - hosts:
+        {{- range .Values.doh.ingress.hosts }}
+        - {{ . | quote }}
+        {{- end }}
+      secretName: {{ .Values.doh.ingress.tlsSecretName }}
+  {{- end }}
+  rules:
+    {{- range .Values.doh.ingress.hosts }}
+    - host: {{ . | quote }}
+      http:
+        paths:
+          - path: /dns-query
+            pathType: Prefix
+            backend:
+              service:
+                name: "{{ include "blocky.fullname" $ }}-doh"
+                port:
+                  name: doh
+    {{- end }}
+{{- else if include "blocky.DohTlsTerminatedOnIngress" . -}}
+{{- if not .Values.http.service.enabled }}
+{{- fail "Please enable service for http under .Values.http.service" }}
+{{- end }}
+{{- if not .Values.doh.ingress.enabled }}
+{{- fail "Please enable ingress for DNS-over-HTTPS under .Values.doh.ingress" }}
+{{- end }}
+---
+apiVersion: networking.k8s.io/v1
+kind: Ingress
+metadata:
+  name: {{ include "blocky.fullname" . }}-doh
+  labels:
+    {{- include "blocky.labels" . | nindent 4 }}
+  {{- with .Values.doh.ingress.annotations }}
+  annotations:
+    {{- toYaml . | nindent 4 }}
+  {{- end }}
+spec:
+  ingressClassName: {{ .Values.doh.ingress.className }}
+  {{- if .Values.doh.ingress.tlsSecretName }}
+  tls:
+    - hosts:
+        {{- range .Values.doh.ingress.hosts }}
+        - {{ . | quote }}
+        {{- end }}
+      secretName: {{ .Values.doh.ingress.tlsSecretName }}
+  {{- end }}
+  rules:
+    {{- range .Values.doh.ingress.hosts }}
+    - host: {{ . | quote }}
+      http:
+        paths:
+          - path: /dns-query
+            pathType: Prefix
+            backend:
+              service:
+                name: "{{ include "blocky.fullname" $ }}-http"
+                port:
+                  name: http
+    {{- end }}
+{{- end }}

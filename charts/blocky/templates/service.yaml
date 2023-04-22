@@ -1,0 +1,102 @@
+{{- if .Values.http.service.enabled }}
+---
+apiVersion: v1
+kind: Service
+metadata:
+  name: {{ include "blocky.fullname" . }}-http
+  labels:
+    {{- include "blocky.labels" . | nindent 4 }}
+  {{- with .Values.http.service.annotations }}
+  annotations:
+    {{- toYaml . | nindent 4 }}
+  {{- end }}
+spec:
+  type: {{ .Values.http.service.type }}
+  ports:
+    - port: {{ .Values.http.port }}
+      targetPort: http
+      protocol: TCP
+      name: http
+  selector:
+    {{- include "blocky.selectorLabels" . | nindent 4 }}
+  {{- with .Values.http.service.externalTrafficPolicy }}
+  externalTrafficPolicy: {{ . }}
+  {{- end }}
+{{- end }}
+---
+apiVersion: v1
+kind: Service
+metadata:
+  name: {{ include "blocky.fullname" . }}-dns
+  labels:
+    {{- include "blocky.labels" . | nindent 4 }}
+  {{- with .Values.dns.service.annotations }}
+  annotations:
+    {{- toYaml . | nindent 4 }}
+  {{- end }}
+spec:
+  type: {{ .Values.dns.service.type }}
+  ports:
+    - port: {{ .Values.dns.port }}
+      targetPort: dns-udp
+      protocol: UDP
+      name: dns-udp
+    - port: {{ .Values.dns.port }}
+      targetPort: dns-tcp
+      protocol: TCP
+      name: dns-tcp
+  selector:
+    {{- include "blocky.selectorLabels" . | nindent 4 }}
+  {{- with .Values.dns.service.externalTrafficPolicy }}
+  externalTrafficPolicy: {{ . }}
+  {{- end }}
+{{- if and .Values.dot.enabled .Values.dot.service.enabled }}
+---
+apiVersion: v1
+kind: Service
+metadata:
+  name: {{ include "blocky.fullname" . }}-dot
+  labels:
+    {{- include "blocky.labels" . | nindent 4 }}
+  {{- with .Values.dot.service.annotations }}
+  annotations:
+    {{- toYaml . | nindent 4 }}
+  {{- end }}
+spec:
+  type: {{ .Values.dot.service.type }}
+  ports:
+    - port: {{ .Values.dot.port }}
+      targetPort: dot
+      protocol: TCP
+      name: dot
+  selector:
+    {{- include "blocky.selectorLabels" . | nindent 4 }}
+  {{- with .Values.dot.service.externalTrafficPolicy }}
+  externalTrafficPolicy: {{ . }}
+  {{- end }}
+{{- end }}
+{{- if and .Values.doh.enabled .Values.doh.service.enabled }}
+---
+apiVersion: v1
+kind: Service
+metadata:
+  name: {{ include "blocky.fullname" . }}-doh
+  labels:
+    {{- include "blocky.labels" . | nindent 4 }}
+  {{- with .Values.doh.service.annotations }}
+  annotations:
+    {{- toYaml . | nindent 4 }}
+  {{- end }}
+spec:
+  type: {{ .Values.doh.service.type }}
+  ports:
+    - port: {{ .Values.doh.port }}
+      targetPort: doh
+      protocol: TCP
+      name: doh
+  selector:
+    {{- include "blocky.selectorLabels" . | nindent 4 }}
+  {{- with .Values.doh.service.externalTrafficPolicy }}
+  externalTrafficPolicy: {{ . }}
+  {{- end }}
+{{- end }}

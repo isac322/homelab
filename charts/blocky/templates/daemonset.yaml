@@ -1,0 +1,114 @@
+apiVersion: apps/v1
+kind: DaemonSet
+metadata:
+  name: {{ include "blocky.fullname" . }}
+  labels:
+    {{- include "blocky.labels" . | nindent 4 }}
+spec:
+  selector:
+    matchLabels:
+      {{- include "blocky.selectorLabels" . | nindent 6 }}
+  template:
+    metadata:
+      annotations:
+        checksum/config: {{ include (print $.Template.BasePath "/configmap.yaml") . | sha256sum }}
+        {{- with .Values.podAnnotations }}
+          {{- toYaml . | nindent 8 }}
+        {{- end }}
+      labels:
+        {{- include "blocky.selectorLabels" . | nindent 8 }}
+    spec:
+      {{- with .Values.imagePullSecrets }}
+      imagePullSecrets:
+        {{- toYaml . | nindent 8 }}
+      {{- end }}
+      serviceAccountName: {{ include "blocky.serviceAccountName" . }}
+      securityContext:
+        {{- toYaml .Values.podSecurityContext | nindent 8 }}
+      containers:
+        - name: {{ .Chart.Name }}
+          securityContext:
+            {{- toYaml .Values.securityContext | nindent 12 }}
+          image: "{{ .Values.image.repository }}:{{ .Values.image.tag | default .Chart.AppVersion }}"
+          imagePullPolicy: {{ .Values.image.pullPolicy }}
+          args:
+            - --config
+            - /app/config/config.yaml
+          ports:
+            - name: http
+              containerPort: {{ .Values.http.port }}
+              protocol: TCP
+            - name: dns-udp
+              containerPort: {{ .Values.dns.port }}
+              protocol: UDP
+            - name: dns-tcp
+              containerPort: {{ .Values.dns.port }}
+              protocol: TCP
+            {{- if .Values.dot.enabled }}
+            - name: dot
+              containerPort: {{ .Values.dot.port }}
+              protocol: TCP
+            {{- end }}
+            {{- if include "blocky.DohTlsTerminatedOnApp" . }}
+            - name: doh
+              containerPort: {{ .Values.doh.port }}
+              protocol: TCP
+            {{- end }}
+          readinessProbe:
+            exec:
+              command:
+                - /app/blocky
+                - healthcheck
+            timeoutSeconds: 1
+            failureThreshold: 1
+            periodSeconds: 1
+          startupProbe:
+            exec:
+              command:
+                - /app/blocky
+                - healthcheck
+            timeoutSeconds: 1
+            failureThreshold: 60
+            periodSeconds: 1
+          resources:
+            {{- toYaml .Values.resources | nindent 12 }}
+          volumeMounts:
+            - mountPath: /app/config
+              name: config
+              readOnly: true
+            {{- if include "blocky.isCertNeeded" . }}
+            - mountPath: /app/cert
+              name: cert
+              readOnly: true
+            {{- end }}
+      {{- with .Values.nodeSelector }}
+      nodeSelector:
+        {{- toYaml . | nindent 8 }}
+      {{- end }}
+      {{- with .Values.affinity }}
+      affinity:
+        {{- toYaml . | nindent 8 }}
+      {{- end }}
+      {{- with .Values.tolerations }}
+      tolerations:
+        {{- toYaml . | nindent 8 }}
+      {{- end }}
+      volumes:
+        - name: config
+          configMap:
+            name: {{ include "blocky.fullname" . }}
+            defaultMode: 0444
+            items:
+              - key: config.yaml
+                path: config.yaml
+        {{- if include "blocky.isCertNeeded" .}}
+        - name: cert
+          secret:
+            secretName: {{ .Values.certificate.spec.secretName }}
+            defaultMode: 0444
+            items:
+              - key: tls.crt
+                path: tls.crt
+              - key: tls.key
+                path: tls.key
+        {{- end }}

@@ -1,0 +1,42 @@
+apiVersion: v1
+kind: Pod
+metadata:
+  name: "{{ include "blocky.fullname" . }}-test-connection"
+  labels:
+    {{- include "blocky.labels" . | nindent 4 }}
+  annotations:
+    "helm.sh/hook": test
+spec:
+  containers:
+    - name: dns-udp
+      image: cznic/knot
+      command: ['kdig']
+      args:
+        - {{ printf "@%s-dns" (include "blocky.fullname" .) | quote }}
+        - +timeout=1
+        - +noretry
+        - -p
+        - {{ .Values.dns.port | quote }}
+    - name: dns-tcp
+      image: cznic/knot
+      command: ['kdig']
+      args:
+        - {{ printf "@%s-dns" (include "blocky.fullname" .) | quote }}
+        - +tcp
+        - +timeout=1
+        - +noretry
+        - -p
+        - {{ .Values.dns.port | quote }}
+    {{- if .Values.dot.enabled }}
+    - name: dot
+      image: cznic/knot
+      command: ['kdig']
+      args:
+        - {{ printf "@%s-dot" (include "blocky.fullname" .) | quote }}
+        - +tls
+        - +timeout=1
+        - +noretry
+        - -p
+        - {{ .Values.dot.port | quote }}
+    {{ end }}
+  restartPolicy: Never

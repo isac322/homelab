@@ -1,0 +1,10 @@
+{{- if include "blocky.isCertNeeded" . }}
+apiVersion: cert-manager.io/v1
+kind: Certificate
+metadata:
+  name: {{ include "blocky.fullname" . }}
+  labels:
+    {{- include "blocky.labels" . | nindent 4 }}
+spec:
+  {{- toYaml .Values.certificate.spec | nindent 2 }}
+{{- end }}

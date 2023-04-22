@@ -1,0 +1,149 @@
+apiVersion: v1
+kind: ConfigMap
+metadata:
+  name: {{ include "blocky.fullname" . }}
+  labels:
+    {{- include "blocky.labels" . | nindent 4 }}
+data:
+  config.yaml: |-
+    upstream:
+      default: {{- toYaml .Values.upstream.defaultUpstreams | nindent 8 }}
+
+      {{ with .Values.upstream.clientSpecificUpstreams }}
+      {{- toYaml . | nindent 6 }}
+      {{- end }}
+
+    upstreamTimeout: {{ .Values.upstream.timeout | quote }}
+
+    startVerifyUpstream: {{ .Values.upstream.startVerify }}
+
+    # optional: Determines how blocky will create outgoing connections. This impacts both upstreams, and lists.
+    # accepted: dual, v4, v6
+    # default: dual
+    {{/* TODO: support this */}}
+    connectIPVersion: dual
+
+    {{- if .Values.customDNS.customize }}
+    customDNS:
+      customTTL: {{ .Values.customDNS.customTTL }}
+      filterUnmappedTypes: {{ .Values.customDNS.filterUnmappedTypes }}
+      # optional: replace domain in the query with other domain before resolver lookup in the mapping
+      rewrite: {{- toYaml .Values.customDNS.rewrite | nindent 8 }}
+      mapping: {{- toYaml .Values.customDNS.mapping | nindent 8 }}
+    {{- end }}
+
+    {{- if .Values.conditional.customize }}
+    conditional:
+      # optional: if false (default), return empty result if after rewrite, the mapped resolver returned an empty answer. If true, the original query will be sent to the upstream resolver
+      # Example: The query "blog.example.com" will be rewritten to "blog.fritz.box" and also redirected to the resolver at 192.168.178.1. If not found and if `fallbackUpstream` was set to `true`, the original query "blog.example.com" will be sent upstream.
+      # Usage: One usecase when having split DNS for internal and external (internet facing) users, but not all subdomains are listed in the internal domain.
+      fallbackUpstream: {{ .Values.conditional.fallbackUpstream }}
+      # optional: replace domain in the query with other domain before resolver lookup in the mapping
+      rewrite: {{- toYaml .Values.conditional.rewrite | nindent 8 }}
+      mapping: {{- toYaml .Values.conditional.mapping | nindent 8 }}
+    {{- end }}
+
+    {{- if .Values.blocking.customize }}
+    blocking:
+      blackLists: {{- toYaml .Values.blocking.blackLists | nindent 8 }}
+      whiteLists: {{- toYaml .Values.blocking.whiteLists | nindent 8 }}
+      clientGroupsBlock: {{- toYaml .Values.blocking.clientGroupsBlock | nindent 8 }}
+      blockType: {{ .Values.blocking.blockType }}
+      blockTTL: {{ .Values.blocking.blockTTL }}
+      refreshPeriod: {{ .Values.blocking.refreshPeriod }}
+      downloadTimeout: {{ .Values.blocking.downloadTimeout }}
+      downloadAttempts: {{ .Values.blocking.downloadAttempts }}
+      downloadCooldown: {{ .Values.blocking.downloadCooldown }}
+      startStrategy: {{ .Values.blocking.startStrategy }}
+    {{- end }}
+
+    {{- if .Values.caching.customize }}
+    caching:
+      minTime: {{ .Values.caching.minTime }}
+      maxTime: {{ .Values.caching.maxTime }}
+      maxItemsCount: {{ .Values.caching.maxItemsCount }}
+      prefetching: {{ .Values.caching.prefetching }}
+      prefetchExpires: {{ .Values.caching.prefetchExpires }}
+      prefetchThreshold: {{ .Values.caching.prefetchThreshold }}
+      prefetchMaxItemsCount: {{ .Values.caching.prefetchMaxItemsCount }}
+      cacheTimeNegative: {{ .Values.caching.cacheTimeNegative }}
+    {{- end }}
+
+    {{- if .Values.clientLookup.customize }}
+    clientLookup:
+      upstream: {{ .Values.clientLookup.upstream }}
+      singleNameOrder: {{- toYaml .Values.clientLookup.singleNameOrder | nindent 8 }}
+      clients: {{- toYaml .Values.clientLookup.clients | nindent 8 }}
+    {{- end }}
+
+    prometheus:
+      enable: {{ .Values.http.service.enabled }}
+      path: {{ .Values.http.prometheusPath }}
+
+    {{- if .Values.queryLog.enabled }}
+    queryLog:
+      type: {{ .Values.queryLog.type }}
+      target: {{ .Values.queryLog.target }}
+      logRetentionDays: {{ .Values.queryLog.logRetentionDays }}
+      creationAttempts: {{ .Values.queryLog.creationAttempts }}
+      creationCooldown: {{ .Values.queryLog.creationCooldown }}
+    {{- end }}
+
+    {{- if .Values.redis.enabled }}
+    redis:
+      address: {{ printf "%s-master" (include "common.names.fullname" .Subcharts.redis) }}:{{ .Values.redis.master.service.ports.redis }}
+      {{- if .Values.redis.auth.enabled }}
+      password: {{ include "redis.password" .Subcharts.redis }}
+      {{- end }}
+      database: {{ .Values.redis.blocky.database }}
+      required: {{ .Values.redis.blocky.required }}
+      connectionAttempts: {{ .Values.redis.blocky.connectionAttempts }}
+      connectionCooldown: {{ .Values.redis.blocky.connectionCooldown }}
+    {{- end }}
+
+    port: {{ .Values.dns.port }}
+    {{- if .Values.dot.enabled }}
+    tlsPort: {{ .Values.dot.port }}
+    {{- end }}
+    {{- if or .Values.http.service.enabled .Values.http.ingress.enabled }}
+    httpPort: {{ .Values.http.port }}
+    {{- end }}
+    {{- if .Values.doh.enabled }}
+    httpsPort: {{ .Values.doh.port }}
+    {{- end }}
+    minTlsServeVersion: {{ .Values.minTlsServeVersion }}
+
+    {{- if include "blocky.isCertNeeded" . }}
+    certFile: /app/cert/tls.crt
+    keyFile: /app/cert/tls.key
+    {{- end }}
+
+    bootstrapDns: {{ .Values.bootstrapDns }}
+
+    {{- if .Values.filtering.customize }}
+    filtering:
+      # optional: drop all queries with following query types. Default: empty
+      queryTypes: {{- toYaml .Values.filtering.queryTypes | nindent 8 }}
+    {{- end }}
+
+    {{- if .Values.hostsFile.customize }}
+    hostsFile:
+      filePath: {{ .Values.hostsFile.filePath }}
+      hostsTTL: {{ .Values.hostsFile.hostsTTL }}
+      refreshPeriod: {{ .Values.hostsFile.refreshPeriod }}
+      filterLoopback: {{ .Values.hostsFile.filterLoopback }}
+    {{- end }}
+
+    # optional: Log level (one from debug, info, warn, error). Default: info
+    logLevel: {{ .Values.serverLog.level }}
+    # optional: Log format (text or json). Default: text
+    logFormat: {{ .Values.serverLog.format }}
+    # optional: log timestamps. Default: true
+    logTimestamp: {{ .Values.serverLog.timestamp }}
+    # optional: obfuscate log output (replace all alphanumeric characters with *) for user sensitive data like request domains or responses to increase privacy. Default: false
+    logPrivacy: {{ .Values.serverLog.privacy }}
+
+    # optional: add EDE error codes to dns response
+    ede:
+      # enabled if true, Default: false
+      enable: {{ .Values.ede.enable }}
