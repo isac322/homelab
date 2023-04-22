@@ -167,7 +167,7 @@ conditional:
 clientLookup:
   customize: false
   # optional: this DNS resolver will be used to perform reverse DNS lookup (typically local router)
-  upstream: 192.168.178.1
+  upstream: ""
   # optional: some routers return multiple names for client (host name and user defined name). Define which single name should be used.
   # Example: take second name if present, if not take first name
   singleNameOrder: []
