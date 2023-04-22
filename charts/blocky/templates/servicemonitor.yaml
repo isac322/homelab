@@ -1,0 +1,33 @@
+{{- if and .Values.prometheus.enabled .Values.prometheus.serviceMonitor.enabled }}
+apiVersion: monitoring.coreos.com/v1
+kind: ServiceMonitor
+metadata:
+  name: {{ template "blocky.fullname" . }}
+  labels:
+    {{- include "blocky.labels" . | nindent 4 }}
+    {{- with .Values.prometheus.serviceMonitor.prometheusInstance }}
+    prometheus: {{ . }}
+    {{- end }}
+    {{- with .Values.prometheus.serviceMonitor.additionalLabels }}
+    {{- toYaml . | nindent 4 }}
+    {{- end }}
+{{- with .Values.prometheus.serviceMonitor.annotations }}
+  annotations:
+    {{- toYaml . | nindent 4 }}
+{{- end }}
+  namespace: {{ .Values.prometheus.serviceMonitor.namespace | default .Release.Namespace | quote }}
+spec:
+  jobLabel: {{ template "blocky.fullname" . }}
+  selector:
+    matchLabels:
+      {{- include "blocky.selectorLabels" . | nindent 6 }}
+  namespaceSelector:
+    matchNames:
+      - {{ .Release.Namespace | quote }}
+  endpoints:
+    - port: {{ include "blocky.fullname" . }}-http
+      path: {{ .Values.prometheus.path }}
+      interval: {{ .Values.prometheus.serviceMonitor.interval }}
+      scrapeTimeout: {{ .Values.prometheus.serviceMonitor.scrapeTimeout }}
+      honorLabels: {{ .Values.prometheus.serviceMonitor.honorLabels }}
+{{- end }}

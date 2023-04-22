@@ -77,8 +77,8 @@ data:
     {{- end }}
 
     prometheus:
-      enable: {{ .Values.http.service.enabled }}
-      path: {{ .Values.http.prometheusPath }}
+      enable: {{ .Values.prometheus.enabled }}
+      path: {{ .Values.prometheus.path }}
 
     {{- if .Values.queryLog.enabled }}
     queryLog:

@@ -50,8 +50,6 @@ http:
     className: ""
     hosts: []
     tlsSecretName: ""
-  # url path, optional (default '/metrics')
-  prometheusPath: /metrics
 
 # DNS-over-TLS
 dot:
@@ -317,6 +315,24 @@ queryLog:
   creationAttempts: 3
   # optional: Time between the creation attempts, default: 2s
   creationCooldown: 2s
+
+
+# optional: export metrics to prometheus
+prometheus:
+  enabled: true
+  # url path, optional (default '/metrics')
+  path: /metrics
+  serviceMonitor:
+    enabled: false
+    namespace: ""
+    prometheusInstance: ""
+    interval: 15s
+    scrapeTimeout: 5s
+    additionalLabels: {}
+    annotations: {}
+    honorLabels: false
+
+
 
 #####
 ## redis

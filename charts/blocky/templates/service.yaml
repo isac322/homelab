@@ -6,9 +6,17 @@ metadata:
   name: {{ include "blocky.fullname" . }}-http
   labels:
     {{- include "blocky.labels" . | nindent 4 }}
-  {{- with .Values.http.service.annotations }}
+  {{- $promAnnotationRequired := and .Values.prometheus.enabled (not .Values.prometheus.serviceMonitor.enabled) }}
+  {{- if or .Values.http.service.annotations $promAnnotationRequired }}
   annotations:
-    {{- toYaml . | nindent 4 }}
+    {{- if $promAnnotationRequired }}
+    prometheus.io/scrape: "true"
+    prometheus.io/path: {{ .Values.prometheus.path | quote }}
+    prometheus.io/port: {{ .Values.http.port | quote }}
+    {{- end }}
+    {{- with .Values.http.service.annotations }}
+      {{- toYaml . | nindent 4 }}
+    {{- end }}
   {{- end }}
 spec:
   type: {{ .Values.http.service.type }}

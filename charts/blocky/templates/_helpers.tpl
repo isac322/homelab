@@ -91,3 +91,8 @@ Create the name of the service account to use
 {{- "" }}
 {{- end }}
 {{- end }}
+
+
+{{- if and .Values.prometheus.enabled (not .Values.http.service.enabled) }}
+{{- fail "Can not enable Prometheus without HTTP service. Please set true `http.service.enabled`." }}
+{{- end }}
