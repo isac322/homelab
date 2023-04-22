@@ -69,6 +69,8 @@ mimir:
       max_global_series_per_user: 1000000
       # Enable TSDB block upload
       compactor_block_upload_enabled: true
+      ingestion_rate: 20000
+      ingestion_burst_size: 400000
 
     common:
       storage:
