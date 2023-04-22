@@ -1,33 +1,33 @@
-apiVersion: argoproj.io/v1alpha1
-kind: Application
-metadata:
-  name: mimir
-spec:
-  destination:
-    name: prod
-    namespace: mimir
-  project: monitoring
-  source:
-    chart: mimir-distributed
-    helm:
-      releaseName: mimir
-      valueFiles:
-        - values.yaml
-        - https://raw.githubusercontent.com/isac322/homelab/HEAD/values/mimir/prod.yaml
-    repoURL: https://grafana.github.io/helm-charts
-    targetRevision: 4.3.1
-  syncPolicy:
-    automated:
-      prune: true
-      selfHeal: true
-    retry:
-      backoff:
-        duration: 5s
-        factor: 2
-        maxDuration: 3m0s
-      limit: 100
-    syncOptions:
-      - CreateNamespace=true
+#apiVersion: argoproj.io/v1alpha1
+#kind: Application
+#metadata:
+#  name: mimir
+#spec:
+#  destination:
+#    name: prod
+#    namespace: mimir
+#  project: monitoring
+#  source:
+#    chart: mimir-distributed
+#    helm:
+#      releaseName: mimir
+#      valueFiles:
+#        - values.yaml
+#        - https://raw.githubusercontent.com/isac322/homelab/HEAD/values/mimir/prod.yaml
+#    repoURL: https://grafana.github.io/helm-charts
+#    targetRevision: 4.3.1
+#  syncPolicy:
+#    automated:
+#      prune: true
+#      selfHeal: true
+#    retry:
+#      backoff:
+#        duration: 5s
+#        factor: 2
+#        maxDuration: 3m0s
+#      limit: 100
+#    syncOptions:
+#      - CreateNamespace=true
 ---
 apiVersion: argoproj.io/v1alpha1
 kind: Application
