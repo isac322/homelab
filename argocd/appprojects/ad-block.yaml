@@ -5,8 +5,7 @@ metadata:
 spec:
   description: Ad blocker
   sourceRepos:
-    - https://k8s-at-home.com/charts/
-    - https://github.com/isac322/homelab.git
+    - https://charts.bhyoo.com
   destinations:
     - namespace: blocky
       name: prod
