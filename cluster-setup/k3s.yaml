@@ -10,6 +10,8 @@
             k3s_become: yes
             k3s_state: installed
             k3s_control_node: "{{ is_k8s_master }}"
+            # https://github.com/rancher/system-upgrade-controller/issues/90#issuecomment-663850596
+            k3s_install_hard_links: true
             k3s_server:
               flannel-backend: none
               disable-network-policy: true
@@ -184,6 +186,8 @@
             k3s_become: yes
             k3s_state: installed
             k3s_control_node: "{{ is_k8s_master }}"
+            # https://github.com/rancher/system-upgrade-controller/issues/90#issuecomment-663850596
+            k3s_install_hard_links: true
             k3s_server:
               flannel-backend: 'host-gw'  # This needs to be in quotes
               disable-helm-controller: true
