@@ -27,3 +27,9 @@ spec:
       limit: 100
     syncOptions:
       - CreateNamespace=true
+  ignoreDifferences:
+    - kind: Certificate
+      group: cert-manager.io
+      jsonPointers:
+        - /spec/duration
+        - /spec/renewBefore
