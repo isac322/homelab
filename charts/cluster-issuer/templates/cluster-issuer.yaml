@@ -8,6 +8,7 @@ spec:
   acme:
     server: {{ .Values.server }}
     email: {{ .Values.email }}
+    preferredChain: "ISRG Root X1"
     privateKeySecretRef:
       name: {{ include "cluster-issuer.fullname" . }}-privkey
     solvers:
