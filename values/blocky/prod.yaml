@@ -132,3 +132,7 @@ redis:
   enabled: true
   blocky:
     required: true
+  master:
+    persistence:
+      size: 512Mi
+      storageClass: ceph-block
