@@ -24,7 +24,7 @@ spec:
             - values.yaml
             - 'https://raw.githubusercontent.com/isac322/homelab/HEAD/values/external-dns/{{cluster}}.yaml'
         repoURL: https://kubernetes-sigs.github.io/external-dns/
-        targetRevision: 1.12.0
+        targetRevision: 1.12.2
       syncPolicy:
         automated:
           prune: true
