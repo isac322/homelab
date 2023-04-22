@@ -21,11 +21,12 @@ spec:
   selector:
     matchLabels:
       {{- include "blocky.selectorLabels" . | nindent 6 }}
+      blocky_svc_type: http
   namespaceSelector:
     matchNames:
       - {{ .Release.Namespace | quote }}
   endpoints:
-    - port: {{ include "blocky.fullname" . }}-http
+    - port: http
       path: {{ .Values.prometheus.path }}
       interval: {{ .Values.prometheus.serviceMonitor.interval }}
       scrapeTimeout: {{ .Values.prometheus.serviceMonitor.scrapeTimeout }}

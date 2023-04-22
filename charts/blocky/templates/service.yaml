@@ -6,6 +6,7 @@ metadata:
   name: {{ include "blocky.fullname" . }}-http
   labels:
     {{- include "blocky.labels" . | nindent 4 }}
+    blocky_svc_type: http
   {{- $promAnnotationRequired := and .Values.prometheus.enabled (not .Values.prometheus.serviceMonitor.enabled) }}
   {{- if or .Values.http.service.annotations $promAnnotationRequired }}
   annotations:
