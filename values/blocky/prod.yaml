@@ -131,7 +131,7 @@ caching:
 redis:
   enabled: true
   blocky:
-    required: true
+    required: false
   auth:
     password: some-password
   master:
