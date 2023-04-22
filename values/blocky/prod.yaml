@@ -132,6 +132,8 @@ redis:
   enabled: true
   blocky:
     required: true
+  auth:
+    password: some-password
   master:
     persistence:
       size: 512Mi
