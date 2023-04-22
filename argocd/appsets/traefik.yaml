@@ -7,7 +7,7 @@ spec:
     - list:
         elements:
           - cluster: backbone
-#          - cluster: prod
+          - cluster: prod
   template:
     metadata:
       name: '{{cluster}}-traefik'
