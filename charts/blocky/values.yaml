@@ -118,8 +118,8 @@ upstream:
   startVerify: false
 
 # optional: These DNS servers are used to resolve upstream DoH and DoT servers that are specified as host names, and list domains. It is useful if no system DNS resolver is configured, and/or to encrypt the bootstrap queries.
-bootstrapDns: []
-#  - upstream: tcp+udp:1.1.1.1
+bootstrapDns:
+  - upstream: tcp+udp:1.1.1.1
 
 # optional: if path defined, use this file for query resolution (A, AAAA and rDNS). Default: empty
 hostsFile:
