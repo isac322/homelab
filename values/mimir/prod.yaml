@@ -156,7 +156,7 @@ ingester:
     enabled: true
 
     # Ingester data Persistent Volume size
-    size: 4Gi
+    size: 8Gi
 
     # Ingester data Persistent Volume Storage Class
     # If defined, storageClassName: <storageClass>
