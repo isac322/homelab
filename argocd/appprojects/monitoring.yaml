@@ -10,9 +10,13 @@ spec:
   destinations:
     - namespace: prometheus
       name: prod
+    - namespace: kube-system
+      name: prod
     - namespace: mimir
       name: prod
     - namespace: prometheus
+      name: backbone
+    - namespace: kube-system
       name: backbone
   clusterResourceWhitelist:
     - group: '*'
