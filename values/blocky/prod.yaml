@@ -168,6 +168,7 @@ filtering:
 caching:
   customize: true
   prefetching: true
+  minTime: 5s
 
 redis:
   enabled: true
