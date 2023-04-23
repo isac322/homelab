@@ -5,7 +5,6 @@ metadata:
 spec:
   description: Monitoring cluster
   sourceRepos:
-    - https://github.com/isac322/homelab.git
     - https://grafana.github.io/helm-charts
     - https://prometheus-community.github.io/helm-charts
   destinations:
