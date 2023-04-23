@@ -563,18 +563,18 @@ metaMonitoring:
     #  capabilities:
     #    drop: [ALL]
 
-# -- Values exposed by the [Grafana agent-operator chart](https://github.com/grafana/helm-charts/blob/main/charts/agent-operator/values.yaml)
-grafana-agent-operator:
-  podSecurityContext:
-    fsGroup: 10001
-    runAsGroup: 10001
-    runAsNonRoot: true
-    runAsUser: 10001
-    seccompProfile:
-      type: RuntimeDefault
-
-  containerSecurityContext:
-    allowPrivilegeEscalation: false
-    readOnlyRootFilesystem: true
-    capabilities:
-      drop: [ALL]
+extraObjects:
+  - apiVersion: objectbucket.io/v1alpha1
+    kind: ObjectBucketClaim
+    metadata:
+      name: mimir-tsdb
+    spec:
+      generateBucketName: mimir-tsdb
+      storageClassName: ceph-bucket
+  - apiVersion: objectbucket.io/v1alpha1
+    kind: ObjectBucketClaim
+    metadata:
+      name: mimir-ruler
+    spec:
+      generateBucketName: mimir-ruler
+      storageClassName: ceph-bucket
