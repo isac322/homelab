@@ -445,6 +445,7 @@
     protocol: udp
     destination_port: 5353
     jump: ACCEPT
+    source: "{{ __register_k8s_internal_node_ip_cidr }}"
     comment: Multicast DNS (mDNS)
   when: iptables_use_mdns
 
@@ -454,6 +455,7 @@
     protocol: udp
     destination_port: 5355
     jump: ACCEPT
+    source: "{{ __register_k8s_internal_node_ip_cidr }}"
     comment: Link-Local Multicast Name Resolution (LLMNR)
   when: iptables_use_llmnr
 
