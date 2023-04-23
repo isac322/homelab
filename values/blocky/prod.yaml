@@ -132,16 +132,7 @@ blocking:
   whiteLists:
     ads:
       - https://raw.githubusercontent.com/anudeepND/whitelist/master/domains/whitelist.txt
-      - https://raw.githubusercontent.com/anudeepND/whitelist/master/domains/referral-sites.txt
       - https://raw.githubusercontent.com/FadeMind/hosts.whitelists/master/whitelist.FadeMind.txt
-      - https://raw.githubusercontent.com/FadeMind/hosts.whitelists/master/whitelist.Ultimate-Hosts-Blacklist.txt
-      - https://raw.githubusercontent.com/FadeMind/hosts.whitelists/master/whitelist.hagezi.txt
-      - https://raw.githubusercontent.com/FadeMind/hosts.whitelists/master/whitelist.hg1978.txt
-      - https://raw.githubusercontent.com/FadeMind/hosts.whitelists/master/whitelist.jawz101.txt
-      - https://raw.githubusercontent.com/FadeMind/hosts.whitelists/master/whitelist.notracking.txt
-      - https://raw.githubusercontent.com/FadeMind/hosts.whitelists/master/whitelist.oisd.txt
-      - https://raw.githubusercontent.com/FadeMind/hosts.whitelists/master/whitelist.ookangzheng.txt
-      - https://raw.githubusercontent.com/FadeMind/hosts.whitelists/master/whitelist.sptfy.txt
       - https://zerodot1.gitlab.io/CoinBlockerLists/white_list.txt
       - |
         codecov.io
