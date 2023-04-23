@@ -239,22 +239,73 @@
     jump: ACCEPT
 
 - name: Allow FTP
-  ansible.builtin.iptables:
-    chain: TCP
-    protocol: tcp
-    destination_port: 21
-    jump: ACCEPT
-    comment: FTP
-  when: iptables_use_ftp
+  block:
+    - ansible.builtin.iptables:
+        chain: TCP
+        protocol: tcp
+        destination_port: 21
+        jump: ACCEPT
+        source: "{{ __register_k8s_internal_node_ip_cidr }}"
+        comment: FTP
+      when: iptables_use_ftp
+
+    - ansible.builtin.iptables:
+        chain: TCP
+        protocol: tcp
+        destination_port: 21
+        jump: ACCEPT
+        in_interface: "{{ wireguard_interface }}"
+        source: "{{ ipv4.network }}/{{ ipv4.prefix }}"
+        comment: FTP
+      when: iptables_use_ftp
+      vars:
+        ipv4: "{{ hostvars[inventory_hostname]['ansible_' + wireguard_interface].ipv4 }}"
 
 - name: Allow FTP (Active mode)
-  ansible.builtin.iptables:
-    chain: TCP
-    protocol: tcp
-    destination_port: 20
-    jump: ACCEPT
-    comment: FTP (Active mode)
-  when: iptables_use_ftp
+  block:
+    - ansible.builtin.iptables:
+        chain: TCP
+        protocol: tcp
+        destination_port: 20
+        jump: ACCEPT
+        source: "{{ __register_k8s_internal_node_ip_cidr }}"
+        comment: FTP (Active mode)
+      when: iptables_use_ftp and iptables_use_ftp_active
+
+    - ansible.builtin.iptables:
+        chain: TCP
+        protocol: tcp
+        destination_port: 20
+        jump: ACCEPT
+        in_interface: "{{ wireguard_interface }}"
+        source: "{{ ipv4.network }}/{{ ipv4.prefix }}"
+        comment: FTP (Active mode)
+      when: iptables_use_ftp and iptables_use_ftp_active
+      vars:
+        ipv4: "{{ hostvars[inventory_hostname]['ansible_' + wireguard_interface].ipv4 }}"
+
+- name: Allow FTP (Passive mode)
+  block:
+    - ansible.builtin.iptables:
+        chain: TCP
+        protocol: tcp
+        destination_port: "{{ iptables_use_ftp_passive_port_range }}"
+        jump: ACCEPT
+        source: "{{ __register_k8s_internal_node_ip_cidr }}"
+        comment: FTP (Passive mode)
+      when: iptables_use_ftp
+
+    - ansible.builtin.iptables:
+        chain: TCP
+        protocol: tcp
+        destination_port: "{{ iptables_use_ftp_passive_port_range }}"
+        jump: ACCEPT
+        in_interface: "{{ wireguard_interface }}"
+        source: "{{ ipv4.network }}/{{ ipv4.prefix }}"
+        comment: FTP (Passive mode)
+      when: iptables_use_ftp
+      vars:
+        ipv4: "{{ hostvars[inventory_hostname]['ansible_' + wireguard_interface].ipv4 }}"
 
 - name: Allow kubelet
   block:
