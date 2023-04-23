@@ -169,6 +169,8 @@ redis:
       storageClass: ceph-block
   metrics:
     enabled: true
+    serviceMonitor:
+      enabled: true
 
 prometheus:
   serviceMonitor:
