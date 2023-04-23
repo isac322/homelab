@@ -151,7 +151,7 @@ data:
       queryTypes: {{- toYaml .Values.filtering.queryTypes | nindent 8 }}
     {{- end }}
 
-    fqdnOnly: {{ .Values.fqdnOnly }}
+    #fqdnOnly: {{ .Values.fqdnOnly }}
 
     {{- if .Values.hostsFile.customize }}
     hostsFile:
