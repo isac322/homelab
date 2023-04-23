@@ -44,8 +44,9 @@ ff02::3 ip6-allhosts
     {%- for host in ansible_play_batch %}
         {%- if hostvars[host]['ansible_interfaces'] is defined %}
             {%- for interface in hostvars[host]['ansible_interfaces'] %}
-                {%- if interface | regex_search('^((?!' +  hosts_excludes_interfaces | join('|') + '*).)*$')  %}
+                {%- if interface | regex_search('^((?!' +  hosts_excludes_interfaces | join('|') + '*).)*$') and 'ipv6' in hostvars[host]['ansible_' + interface] %}
                     {%- for ipv6 in hostvars[host]['ansible_' + interface]['ipv6'] %}
+{#                        # {{ hostvars[host]['ansible_' + interface] }}#}
                         {%- if ipv6['address'] | ansible.utils.ipaddr('private') and hosts_all_private %}
                             {{- ipv6['address'] }} {{ hostvars[host]['ansible_hostname'] }} {{ host }} {% set aliases=[] %}{% if hostvars[host]['hosts_aliases'] is defined %}{% for alias in hostvars[host]['hosts_aliases'] %}{% if alias != hostvars[host]['internel_ansible_host'] %}{{ aliases.append(alias) }}{% endif %}{% endfor %}{% endif %}{{ '\n' -}}
                         {%- elif ipv6['address'] | ansible.utils.ipaddr('public') and hosts_all_public %}
