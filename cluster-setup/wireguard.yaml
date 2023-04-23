@@ -34,6 +34,11 @@
             allowed_groups:
               - prod
               - backbone
+          bhyoo-tablet:
+            ip_address: 10.222.0.132
+            allowed_groups:
+              - prod
+              - backbone
           woo: # daily-receipt
             ip_address: 10.222.0.193
             allowed_groups:
