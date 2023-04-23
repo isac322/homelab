@@ -1,0 +1,38 @@
+apiVersion: argoproj.io/v1alpha1
+kind: ApplicationSet
+metadata:
+  name: descheduler
+spec:
+  generators:
+    - list:
+        elements:
+          - cluster: backbone
+          - cluster: prod
+  template:
+    metadata:
+      name: '{{cluster}}-descheduler'
+    spec:
+      destination:
+        name: '{{cluster}}'
+        namespace: kube-system
+      project: cluster-management
+      source:
+        chart: descheduler
+        helm:
+          releaseName: descheduler
+          valueFiles:
+            - values.yaml
+        repoURL: https://kubernetes-sigs.github.io/descheduler
+        targetRevision: 0.26.1
+      syncPolicy:
+        automated:
+          prune: true
+          selfHeal: true
+        retry:
+          backoff:
+            duration: 5s
+            factor: 2
+            maxDuration: 3m0s
+          limit: 100
+        syncOptions:
+          - CreateNamespace=true

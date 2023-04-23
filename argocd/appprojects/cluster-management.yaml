@@ -1,0 +1,16 @@
+apiVersion: argoproj.io/v1alpha1
+kind: AppProject
+metadata:
+  name: cluster-management
+spec:
+  description: Managing k8s system
+  sourceRepos:
+    - https://kubernetes-sigs.github.io/descheduler
+  destinations:
+    - namespace: kube-system
+      name: backbone
+    - namespace: kube-system
+      name: prod
+  clusterResourceWhitelist:
+    - group: '*'
+      kind: '*'
