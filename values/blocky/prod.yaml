@@ -180,6 +180,8 @@ redis:
     persistence:
       size: 512Mi
       storageClass: ceph-block
+  metrics:
+    enabled: true
 
 prometheus:
   serviceMonitor:
