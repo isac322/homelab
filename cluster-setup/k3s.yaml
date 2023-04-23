@@ -13,6 +13,7 @@
             # https://github.com/rancher/system-upgrade-controller/issues/90#issuecomment-663850596
             k3s_install_hard_links: true
             k3s_server:
+              etcd-expose-metrics: true
               flannel-backend: none
               disable-network-policy: true
               disable-kube-proxy: true
@@ -200,6 +201,7 @@
               kubelet-arg:
                 - "image-gc-high-threshold=60"
                 - "image-gc-low-threshold=40"
+                - "{{ is_k8s_master | ternary('kube-reserved=cpu=500m,memory=1100Mi', 'kube-reserved=cpu=100m,memory=128Mi') }}"
               node-label: "{{ k8s_node_labels }}"
         - ansible.builtin.import_role:
             name: xanmanning.k3s
