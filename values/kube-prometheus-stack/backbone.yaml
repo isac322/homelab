@@ -291,7 +291,7 @@ prometheus:
     ## The remote_write spec configuration for Prometheus.
     ## ref: https://github.com/prometheus-operator/prometheus-operator/blob/main/Documentation/api.md#remotewritespec
     remoteWrite:
-      - url: https://mimir.bhyoo.com/api/v1/push
+      - url: http://mimir.bhyoo.com/api/v1/push
         name: mimir
 #        headers:
 #          X-Scope-OrgID: backbone
