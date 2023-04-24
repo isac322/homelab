@@ -70,7 +70,10 @@ additionalArguments:
 ports:
   # The name of this one can't be changed as it is used for the readiness and
   # liveness probes, but you can adjust its config to your liking
-  web: null
+  web:
+    forwardedHeaders:
+      insecure: true
+
   websecure:
     ## Enable this entrypoint as a default entrypoint. When a service doesn't explicity set an entrypoint it will only use this entrypoint.
     # asDefault: true
