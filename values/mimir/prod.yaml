@@ -360,7 +360,7 @@ gateway:
       cert-manager.io/cluster-issuer: cert-manager-cluster-issuer
       cert-manager.io/private-key-algorithm: ECDSA
       cert-manager.io/private-key-size: '384'
-      traefik.ingress.kubernetes.io/router.entrypoints: websecure
+      traefik.ingress.kubernetes.io/router.entrypoints: web,websecure
 
     # -- Hosts configuration for the Ingress
     hosts:
