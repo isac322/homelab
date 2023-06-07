@@ -28,6 +28,7 @@ spec:
       limit: 100
     syncOptions:
       - CreateNamespace=true
+      - ServerSideApply=true
 ---
 apiVersion: argoproj.io/v1alpha1
 kind: Application
