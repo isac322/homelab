@@ -40,12 +40,10 @@
     - role: ssh_hardening
       vars:
         ssh_print_last_log: true
-        ssh_print_debian_banner: true
         ssh_permit_root_login: "{{ 'prohibit-password' if allow_ssh_root_login|default(false) else 'no' }}"
-        ssh_print_motd: true
+        ssh_print_motd: false
         ssh_print_pam_motd: false
-        ssh_banner: true
-        ssh_banner_path: /etc/issue.net
+        ssh_banner: false
         ssh_host_key_files:
           - /etc/ssh/ssh_host_rsa_key
           - /etc/ssh/ssh_host_ed25519_key
@@ -55,11 +53,11 @@
           - curve25519-sha256
           - curve25519-sha256@libssh.org
           - gss-curve25519-sha256-
-          - diffie-hellman-group14-sha256
           - diffie-hellman-group16-sha512
           - gss-group16-sha512-
           - diffie-hellman-group18-sha512
           - diffie-hellman-group-exchange-sha256
+          - sntrup761x25519-sha512@openssh.com
         ssh_ciphers:
           - chacha20-poly1305@openssh.com
           - aes256-gcm@openssh.com
