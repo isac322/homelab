@@ -256,7 +256,7 @@
         atomic: yes
         chart_ref: argo-cd
         chart_repo_url: https://argoproj.github.io/argo-helm
-        chart_version: 5.29.1
+        chart_version: 5.36.2
         create_namespace: yes
         kubeconfig: /etc/rancher/k3s/k3s.yaml
         release_name: argocd
