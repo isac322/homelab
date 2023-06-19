@@ -37,3 +37,4 @@ spec:
           limit: -1
         syncOptions:
           - CreateNamespace=true
+          - ServerSideApply=true
