@@ -7,7 +7,7 @@ spec:
     - list:
         elements:
           - cluster: backbone
-#          - cluster: prod
+          - cluster: prod
   template:
     metadata:
       name: '{{cluster}}-prometheus-stack'
@@ -24,7 +24,7 @@ spec:
             - values.yaml
             - 'https://raw.githubusercontent.com/isac322/homelab/HEAD/values/kube-prometheus-stack/{{cluster}}.yaml'
         repoURL: https://prometheus-community.github.io/helm-charts
-        targetRevision: 45.19.0
+        targetRevision: 46.8.0
       syncPolicy:
         automated:
           prune: true
