@@ -15,7 +15,7 @@ spec:
         - values.yaml
         - https://raw.githubusercontent.com/isac322/homelab/HEAD/values/traefik/prod-internal.yaml
     repoURL: https://helm.traefik.io/traefik
-    targetRevision: 22.1.0
+    targetRevision: 23.1.0
   syncPolicy:
     automated:
       prune: true
