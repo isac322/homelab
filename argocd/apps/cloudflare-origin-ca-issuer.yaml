@@ -42,7 +42,7 @@ spec:
         - values.yaml
         - https://raw.githubusercontent.com/isac322/homelab/HEAD/values/origin-ca-issuer/prod.yaml
     repoURL: https://cloudflare.github.io/origin-ca-issuer/charts
-    targetRevision: 0.5.1
+    targetRevision: 0.5.0
   syncPolicy:
     automated:
       prune: true
