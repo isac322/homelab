@@ -1,0 +1,42 @@
+persistence:
+  config:
+    enabled: true
+    volumeClaim:
+      storageClass: zfs-temporal
+  download:
+    enabled: true
+    volumeClaim:
+      size: 500Gi
+      storageClass: zfs-temporal
+
+service:
+  rpc:
+    type: LoadBalancer
+    externalTrafficPolicy: Local
+
+affinity:
+  nodeAffinity:
+    requiredDuringSchedulingIgnoredDuringExecution:
+      nodeSelectorTerms:
+        - matchExpressions:
+            - key: homelab.bhyoo.com/zfs-pool-temporal
+              operator: In
+              values:
+                - "true"
+
+#resources:
+#  limits:
+#    cpu: 1000m
+#    memory: 512Mi
+#  requests:
+#    cpu: 50m
+#    memory: 64Mi
+
+#podSecurityContext:
+#  runAsUser: 977
+#  runAsGroup: 977
+#  fsGroup: 977
+#  fsGroupChangePolicy: "OnRootMismatch"
+# readOnlyRootFilesystem: true
+# runAsNonRoot: true
+# runAsUser: 1000

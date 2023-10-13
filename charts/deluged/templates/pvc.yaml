@@ -1,0 +1,24 @@
+{{- range $key, $val := .Values.persistence }}
+{{- if $val.enabled }}
+---
+kind: PersistentVolumeClaim
+apiVersion: v1
+metadata:
+  name: {{ include "deluged.fullname" $ }}-{{ $key }}
+  labels:
+    {{- include "deluged.labels" $ | nindent 4 }}
+spec:
+  accessModes:
+    - {{ $val.volumeClaim.accessMode | quote }}
+  resources:
+    requests:
+      storage: {{ $val.volumeClaim.size | quote }}
+{{- if $val.volumeClaim.storageClass }}
+{{- if (eq "" $val.volumeClaim.storageClass) }}
+  storageClassName: ""
+{{- else }}
+  storageClassName: "{{ $val.volumeClaim.storageClass }}"
+{{- end }}
+{{- end }}
+{{- end -}}
+{{- end }}

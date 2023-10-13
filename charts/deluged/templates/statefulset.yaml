@@ -1,0 +1,161 @@
+apiVersion: apps/v1
+kind: StatefulSet
+metadata:
+  name: {{ include "deluged.fullname" . }}
+  labels:
+    {{- include "deluged.labels" . | nindent 4 }}
+spec:
+  selector:
+    matchLabels:
+      {{- include "deluged.selectorLabels" . | nindent 6 }}
+  template:
+    metadata:
+      {{- with .Values.podAnnotations }}
+      annotations:
+        {{- toYaml . | nindent 8 }}
+      {{- end }}
+      labels:
+        {{- include "deluged.selectorLabels" . | nindent 8 }}
+    spec:
+      {{- with .Values.imagePullSecrets }}
+      imagePullSecrets:
+        {{- toYaml . | nindent 8 }}
+      {{- end }}
+      serviceAccountName: {{ include "deluged.serviceAccountName" . }}
+      securityContext:
+        fsGroup: {{ .Values.gid }}
+        fsGroupChangePolicy: OnRootMismatch
+{{/*        {{- toYaml .Values.podSecurityContext | nindent 8 }}*/}}
+      containers:
+        - name: {{ .Chart.Name }}
+          command:
+            - deluged
+          args:
+            - "--do-not-daemonize"
+            - "--port"
+            - "{{ .Values.rpcPort }}"
+            - "--ui-interface"
+            - "0.0.0.0"
+            - "--interface"
+            - "0.0.0.0"
+            - --read-only-config-keys
+            - allow_remote,daemon_port,download_location,listen_ports,new_release_check,random_port,torrentfiles_location
+            - --loglevel
+            - {{ .Values.logLevel }}
+            - --config
+            - /deluge-configs
+            {{- with .Values.extraArgs }}
+            {{- toYaml . | nindent 12 }}
+            {{- end }}
+          securityContext:
+            {{- toYaml .Values.securityContext | nindent 12 }}
+          image: "{{ .Values.image.repository }}:{{ .Values.image.tag | default .Chart.AppVersion }}"
+          imagePullPolicy: {{ .Values.image.pullPolicy }}
+          env:
+            - name: DELUGED_UID
+              value: {{ .Values.uid | quote }}
+            - name: DELUGED_GID
+              value: {{ .Values.gid | quote }}
+          ports:
+            - name: rpc
+              containerPort: {{ .Values.rpcPort }}
+              protocol: TCP
+            {{- $portCount := ((sub .Values.inboundPortRange.max .Values.inboundPortRange.min) | add1 | int) }}
+            {{- range $i, $_ := until $portCount }}
+            {{- $containerPort := (add ($.Values.inboundPortRange.min | int) $i) }}
+            - containerPort: {{ $containerPort }}
+              name: inbound-port-{{ $i }}
+              {{- if $.Values.inboundPortRange.hostPortEnabled }}
+              hostPort: {{ $containerPort }}
+              {{- end }}
+              protocol: TCP
+            {{- end }}
+          livenessProbe:
+            exec:
+              command:
+                - cat
+                - /deluge-configs/deluged.pid
+          readinessProbe:
+            exec:
+              command:
+                - cat
+                - /deluge-configs/deluged.pid
+          startupProbe:
+            exec:
+              command:
+                - cat
+                - /deluge-configs/deluged.pid
+          resources:
+            {{- toYaml .Values.resources | nindent 12 }}
+          volumeMounts:
+            - mountPath: /deluge-configs
+              name: config
+            - mountPath: /deluge-downloads
+              name: download
+      initContainers:
+        - name: init-configs
+          command:
+            - python
+          args:
+            - -c
+            - |
+              from deluge.configmanager import ConfigManager, set_config_dir;
+              from deluge.core.preferencesmanager import DEFAULT_PREFS;
+              set_config_dir('/deluge-configs');
+              prefs = DEFAULT_PREFS.copy();
+              prefs['allow_remote'] = True;
+              prefs['daemon_port'] = {{ .Values.rpcPort }};
+              # prefs['geoip_db_location'] = '';
+              prefs['download_location'] = '/deluge-downloads';
+              prefs['listen_ports'] = [{{ .Values.inboundPortRange.min }}, {{ .Values.inboundPortRange.max }}];
+              prefs['new_release_check'] = False;
+              prefs['random_port'] = False;
+              prefs['torrentfiles_location'] = '/deluge-downloads';
+              ConfigManager('core.conf', prefs).save();
+          securityContext:
+            {{- toYaml .Values.securityContext | nindent 12 }}
+          image: "{{ .Values.image.repository }}:{{ .Values.image.tag | default .Chart.AppVersion }}"
+          imagePullPolicy: {{ .Values.image.pullPolicy }}
+          env:
+            - name: DELUGED_UID
+              value: {{ .Values.uid | quote }}
+            - name: DELUGED_GID
+              value: {{ .Values.gid | quote }}
+          volumeMounts:
+            - mountPath: /deluge-configs
+              name: config
+      {{- with .Values.nodeSelector }}
+      nodeSelector:
+        {{- toYaml . | nindent 8 }}
+      {{- end }}
+      {{- with .Values.affinity }}
+      affinity:
+        {{- toYaml . | nindent 8 }}
+      {{- end }}
+      {{- with .Values.tolerations }}
+      tolerations:
+        {{- toYaml . | nindent 8 }}
+      {{- end }}
+      volumes:
+        - name: config
+          {{- if .Values.persistence.config.enabled }}
+          persistentVolumeClaim:
+            {{- if .Values.persistence.config.existingVolumeClaimName }}
+            claimName: {{ .Values.persistence.config.existingVolumeClaimName }}
+            {{- else }}
+            claimName: {{ include "deluged.fullname" . }}-config
+            {{- end }}
+          {{- else }}
+          emptyDir: {}
+          {{- end }}
+        - name: download
+          {{- if .Values.persistence.download.enabled }}
+          persistentVolumeClaim:
+            {{- if .Values.persistence.download.existingVolumeClaimName }}
+            claimName: {{ .Values.persistence.download.existingVolumeClaimName }}
+            {{- else }}
+            claimName: {{ include "deluged.fullname" . }}-download
+            {{- end }}
+          {{- else }}
+          emptyDir: {}
+          {{- end }}

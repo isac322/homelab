@@ -1,0 +1,44 @@
+{{- if .Values.service.rpc.enabled }}
+apiVersion: v1
+kind: Service
+metadata:
+  name: {{ include "deluged.fullname" . }}-rpc
+  labels:
+    {{- include "deluged.labels" . | nindent 4 }}
+  {{- with .Values.service.rpc.annotations }}
+  annotations:
+    {{- toYaml . | nindent 8 }}
+  {{- end }}
+spec:
+  type: {{ .Values.service.rpc.type }}
+  externalTrafficPolicy: {{ .Values.service.rpc.externalTrafficPolicy | default "Cluster" }}
+  ports:
+    - port: {{ .Values.service.rpc.port }}
+      targetPort: rpc
+      protocol: TCP
+      name: rpc
+  selector:
+    {{- include "deluged.selectorLabels" . | nindent 4 }}
+{{- end }}
+{{- if and .Values.service.inbound.enabled (not .Values.inboundPortRange.hostPortEnabled) }}
+---
+apiVersion: v1
+kind: Service
+metadata:
+  name: {{ include "deluged.fullname" . }}-inbound
+  labels:
+    {{- include "deluged.labels" . | nindent 4 }}
+spec:
+  type: {{ .Values.service.inbound.type }}
+  ports:
+    {{- $portCount := ((sub .Values.inboundPortRange.max .Values.inboundPortRange.min) | add1 | int) }}
+    {{- range $i, $_ := until $portCount }}
+    {{- $containerPort := (add ($.Values.inboundPortRange.min | int) $i) }}
+    - port: {{ $containerPort }}
+      name: inbound-port-{{ $i }}
+      targetPort: {{ $containerPort }}
+      protocol: TCP
+    {{- end }}
+  selector:
+    {{- include "deluged.selectorLabels" . | nindent 4 }}
+{{- end }}
