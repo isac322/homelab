@@ -24,7 +24,7 @@ spec:
             - values.yaml
             - 'https://raw.githubusercontent.com/isac322/homelab/HEAD/values/cert-manager/{{cluster}}.yaml'
         repoURL: https://charts.jetstack.io
-        targetRevision: v1.12.2
+        targetRevision: v1.13.1
       syncPolicy:
         automated:
           prune: true
