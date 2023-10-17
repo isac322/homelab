@@ -15,7 +15,7 @@ spec:
         - values.yaml
         - https://raw.githubusercontent.com/isac322/homelab/HEAD/values/zfs-localpv/backbone.yaml
     repoURL: https://openebs.github.io/zfs-localpv
-    targetRevision: 2.2.0
+    targetRevision: 2.3.1
   syncPolicy:
     automated:
       prune: true
