@@ -157,7 +157,7 @@ data:
     {{- end }}
 
     fqdnOnly:
-      enabled: {{ .Values.fqdnOnly.enabled }}
+      enable: {{ .Values.fqdnOnly.enabled }}
 
     {{- if .Values.hostsFile.customize }}
     hostsFile:
