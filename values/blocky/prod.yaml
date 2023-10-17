@@ -135,6 +135,8 @@ blocking:
       - |
         newrelic.com
         one.newrelic.com
+        login.newrelic.com
+        /\.?service\.newrelic\.com$/
         thepiratebay.org
     trackers:
       - |
