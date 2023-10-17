@@ -15,7 +15,7 @@ spec:
         - values.yaml
         - https://raw.githubusercontent.com/isac322/homelab/HEAD/values/rook/operator.prod.yaml
     repoURL: https://charts.rook.io/release
-    targetRevision: v1.11.8
+    targetRevision: v1.12.5
   syncPolicy:
     automated:
       prune: true
