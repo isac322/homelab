@@ -134,6 +134,8 @@ blocking:
       - https://raw.githubusercontent.com/anudeepND/whitelist/master/domains/whitelist.txt
       - |
         newrelic.com
+        one.newrelic.com
+        thepiratebay.org
     trackers:
       - |
         newrelic.com
@@ -150,7 +152,11 @@ blocking:
     hackers:
       - all
 
-  downloadTimeout: 4m
+  loading:
+    downloads:
+      timeout: 4m
+    maxErrorsPerSource: -1
+    concurrency: 20
 
 filtering:
   customize: true
@@ -204,6 +210,3 @@ clientLookup:
       - 3.101.216.80 # US
       - 68.183.29.9 # US
       - 3.134.5.68 # US
-
-# FIXME: 0.22 이후에 지우기
-minTlsServeVersion: 1.2
