@@ -470,7 +470,7 @@ prometheus:
         memory: 2048Mi
       limits:
         cpu: 1000m
-        memory: 4096Mi
+        memory: 8Gi
 
     ## Prometheus StorageSpec for persistent data
     ## ref: https://github.com/prometheus-operator/prometheus-operator/blob/main/Documentation/user-guides/storage.md
