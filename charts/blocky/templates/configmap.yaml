@@ -6,18 +6,18 @@ metadata:
     {{- include "blocky.labels" . | nindent 4 }}
 data:
   config.yaml: |-
-    upstream:
-      strategy: {{ .Values.upstream.strategy }}
+    upstreams:
+      strategy: {{ .Values.upstreams.strategy }}
       groups:
-        default: {{- toYaml .Values.upstream.defaultUpstreams | nindent 10 }}
+        default: {{- toYaml .Values.upstreams.defaultUpstreams | nindent 10 }}
 
-        {{ with .Values.upstream.clientSpecificUpstreams }}
+        {{ with .Values.upstreams.clientSpecificUpstreams }}
         {{- toYaml . | nindent 8 }}
         {{- end }}
 
-      timeout: {{ .Values.upstream.timeout | quote }}
+      timeout: {{ .Values.upstreams.timeout | quote }}
 
-    startVerifyUpstream: {{ .Values.upstream.startVerify }}
+    startVerifyUpstream: {{ .Values.upstreams.startVerify }}
 
     connectIPVersion: {{ .Values.connectIPVersion }}
 

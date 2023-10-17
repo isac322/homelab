@@ -95,7 +95,7 @@ certificate:
 #####
 ## upstream
 
-upstream:
+upstreams:
   # Blocky supports different upstream strategies (default `parallel_best`) that determine how and to which upstream DNS servers requests are forwarded.
   strategy: parallel_best
 
