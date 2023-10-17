@@ -7,13 +7,15 @@ metadata:
 data:
   config.yaml: |-
     upstream:
-      default: {{- toYaml .Values.upstream.defaultUpstreams | nindent 8 }}
+      strategy: {{ .Values.upstream.strategy }}
+      groups:
+        default: {{- toYaml .Values.upstream.defaultUpstreams | nindent 10 }}
 
-      {{ with .Values.upstream.clientSpecificUpstreams }}
-      {{- toYaml . | nindent 6 }}
-      {{- end }}
+        {{ with .Values.upstream.clientSpecificUpstreams }}
+        {{- toYaml . | nindent 8 }}
+        {{- end }}
 
-    upstreamTimeout: {{ .Values.upstream.timeout | quote }}
+      timeout: {{ .Values.upstream.timeout | quote }}
 
     startVerifyUpstream: {{ .Values.upstream.startVerify }}
 
@@ -54,12 +56,15 @@ data:
       clientGroupsBlock: {{- toYaml .Values.blocking.clientGroupsBlock | nindent 8 }}
       blockType: {{ .Values.blocking.blockType }}
       blockTTL: {{ .Values.blocking.blockTTL }}
-      refreshPeriod: {{ .Values.blocking.refreshPeriod }}
-      downloadTimeout: {{ .Values.blocking.downloadTimeout }}
-      downloadAttempts: {{ .Values.blocking.downloadAttempts }}
-      downloadCooldown: {{ .Values.blocking.downloadCooldown }}
-      startStrategy: {{ .Values.blocking.startStrategy }}
-      processingConcurrency: {{ .Values.blocking.processingConcurrency }}
+      loading:
+        refreshPeriod: {{ .Values.blocking.loading.refreshPeriod }}
+        downloads:
+          timeout: {{ .Values.blocking.loading.downloads.timeout }}
+          attempts: {{ .Values.blocking.loading.downloads.attempts }}
+          cooldown: {{ .Values.blocking.loading.downloads.cooldown }}
+        strategy: {{ .Values.blocking.loading.strategy }}
+        maxErrorsPerSource: {{ .Values.blocking.loading.maxErrorsPerSource }}
+        concurrency: {{ .Values.blocking.loading.concurrency }}
     {{- end }}
 
     {{- if .Values.caching.customize }}
@@ -151,7 +156,8 @@ data:
       queryTypes: {{- toYaml .Values.filtering.queryTypes | nindent 8 }}
     {{- end }}
 
-    #fqdnOnly: {{ .Values.fqdnOnly }}
+    fqdnOnly:
+      enabled: {{ .Values.fqdnOnly.enabled }}
 
     {{- if .Values.hostsFile.customize }}
     hostsFile:
@@ -159,6 +165,15 @@ data:
       hostsTTL: {{ .Values.hostsFile.hostsTTL }}
       refreshPeriod: {{ .Values.hostsFile.refreshPeriod }}
       filterLoopback: {{ .Values.hostsFile.filterLoopback }}
+      loading:
+        refreshPeriod: {{ .Values.hostsFile.loading.refreshPeriod }}
+        downloads:
+          timeout: {{ .Values.hostsFile.loading.downloads.timeout }}
+          attempts: {{ .Values.hostsFile.loading.downloads.attempts }}
+          cooldown: {{ .Values.hostsFile.loading.downloads.cooldown }}
+        strategy: {{ .Values.hostsFile.loading.strategy }}
+        maxErrorsPerSource: {{ .Values.hostsFile.loading.maxErrorsPerSource }}
+        concurrency: {{ .Values.hostsFile.loading.concurrency }}
     {{- end }}
 
     log:
@@ -175,3 +190,6 @@ data:
     ede:
       # enabled if true, Default: false
       enable: {{ .Values.ede.enable }}
+
+    specialUseDomains:
+      rfc6762-appendixG: {{ .Values.specialUseDomains.rfc6762_appendixG }}

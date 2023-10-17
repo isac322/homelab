@@ -96,6 +96,9 @@ certificate:
 ## upstream
 
 upstream:
+  # Blocky supports different upstream strategies (default `parallel_best`) that determine how and to which upstream DNS servers requests are forwarded.
+  strategy: parallel_best
+
   # these external DNS resolvers will be used. Blocky picks 2 random resolvers from the list for each query
   # format for resolver: [net:]host:[port][/path]. net could be empty (default, shortcut for tcp+udp), tcp+udp, tcp, udp, tcp-tls or https (DoH). If port is empty, default port will be used (53 for udp and tcp, 853 for tcp-tls, 443 for https (Doh))
   # this configuration is mandatory, please define at least one external DNS resolver
@@ -132,6 +135,28 @@ hostsFile:
   refreshPeriod: 1h
   # optional: Whether loopback hosts addresses (127.0.0.0/8 and ::1) should be filtered or not, default: false
   filterLoopback: false
+  loading:
+    # optional: automatically list refresh period (in duration format). Default: 4h.
+    # Negative value -> deactivate automatically refresh.
+    # 0 value -> use default
+    refreshPeriod: 4h
+    # Configures how HTTP(S) sources are downloaded
+    downloads:
+      # optional: Download attempt timeout. Default: 5s
+      timeout: 5s
+      # optional: How many download attempts should be performed. Default: 3
+      attempts: 3
+      # optional: Time between the download attempts. Default: 500ms
+      cooldown: 500ms
+    # optional: This configures how Blocky startup works. The default strategy is blocking.. Default: blocking
+    #  blocking -> all sources are loaded before DNS resolution starts
+    #  failOnError -> like blocking but blocky will shut down if any source fails to load
+    #  fast -> blocky starts serving DNS immediately and sources are loaded asynchronously. The features requiring the sources should enable soon after
+    strategy: blocking
+    # optional: Number of errors allowed when parsing a source before it is considered invalid and parsing stops. A value of -1 disables the limit. Default: 5
+    maxErrorsPerSource: 5
+    # optional: Blocky downloads and processes sources concurrently. This allows limiting how many can be processed in the same time. Larger values can reduce the overall list refresh time at the cost of using more RAM. Please consider reducing this value on systems with limited memory. Default value is 4.
+    concurrency: 4
 
 # optional: Determines how blocky will create outgoing connections. This impacts both upstreams, and lists. accepted: dual, v4, v6, default: dual
 connectIPVersion: dual
@@ -232,20 +257,28 @@ blocking:
   # optional: TTL for answers to blocked domains
   # default: 6h
   blockTTL: 6h
-  # optional: automatically list refresh period (in duration format). Default: 4h.
-  # Negative value -> deactivate automatically refresh.
-  # 0 value -> use default
-  refreshPeriod: 4h
-  # optional: timeout for list download (each url). Default: 60s. Use large values for big lists or slow internet connections
-  downloadTimeout: 60s
-  # optional: How many download attempts should be performed. Default: 3
-  downloadAttempts: 3
-  # optional: Time between the download attempts. Default: 1s
-  downloadCooldown: 1s
-  # optional: if failOnError, application startup will fail if at least one list can't be downloaded / opened. Default: blocking
-  startStrategy: failOnError
-  # optional: Blocky downloads and processes links in a single group concurrently. With parameter processingConcurrency you can adjust how many links can be processed in the same time. Higher value can reduce the overall list refresh time, but more parallel download and processing jobs need more RAM. Please consider to reduce this value on systems with limited memory. Default value is 4.
-  processingConcurrency: 4
+  loading:
+    # optional: automatically list refresh period (in duration format). Default: 4h.
+    # Negative value -> deactivate automatically refresh.
+    # 0 value -> use default
+    refreshPeriod: 4h
+    # Configures how HTTP(S) sources are downloaded
+    downloads:
+      # optional: Download attempt timeout. Default: 5s
+      timeout: 5s
+      # optional: How many download attempts should be performed. Default: 3
+      attempts: 3
+      # optional: Time between the download attempts. Default: 500ms
+      cooldown: 500ms
+    # optional: This configures how Blocky startup works. The default strategy is blocking.. Default: blocking
+    #  blocking -> all sources are loaded before DNS resolution starts
+    #  failOnError -> like blocking but blocky will shut down if any source fails to load
+    #  fast -> blocky starts serving DNS immediately and sources are loaded asynchronously. The features requiring the sources should enable soon after
+    strategy: blocking
+    # optional: Number of errors allowed when parsing a source before it is considered invalid and parsing stops. A value of -1 disables the limit. Default: 5
+    maxErrorsPerSource: 5
+    # optional: Blocky downloads and processes sources concurrently. This allows limiting how many can be processed in the same time. Larger values can reduce the overall list refresh time at the cost of using more RAM. Please consider reducing this value on systems with limited memory. Default value is 4.
+    concurrency: 4
 
 # optional: Under certain circumstances, it may be useful to filter some types of DNS queries. You can define one or more DNS query types, all queries with these types will be dropped (empty answer will be returned).
 filtering:
@@ -254,7 +287,8 @@ filtering:
   queryTypes: []
 
 # optional: In domain environments, it may be useful to only response to FQDN requests. If this option is enabled blocky respond immediately with NXDOMAIN if the request is not a valid FQDN. The request is therefore not further processed by other options like custom or conditional. Please be aware that by enabling it your hostname resolution will break unless every hostname is part of a domain.
-fqdnOnly: false
+fqdnOnly:
+  enabled: false
 
 #####
 ## DNS caching
@@ -345,6 +379,11 @@ prometheus:
     annotations: {}
     honorLabels: false
 
+# optional: SUDN (Special Use Domain Names) are always enabled as they are required by various RFCs.
+# Some RFCs have optional recommendations, which are configurable as described below.
+specialUseDomains:
+  # Block TLDs listed in RFC 6762 Appendix G
+  rfc6762_appendixG: true
 
 
 #####
