@@ -60,7 +60,7 @@ upstreams:
     - tcp-tls:1.1.1.1
     - tcp-tls:1.0.0.1
 #    - tcp-tls:dns-s.safedns.com
-    - tcp-tls:security-filter-dns.cleanbrowsing.org
+#    - tcp-tls:security-filter-dns.cleanbrowsing.org
 
   startVerify: true
 
