@@ -13,8 +13,8 @@ resource "aws_ssm_parameter" "cf_api_token_for_cert_manager_dns_challenge" {
 }
 
 resource "aws_iam_user" "external_secrets" {
-  name = "external-secrets"
-  path = "/homelab/cluster/${var.k8s_cluster_name}/sa/"
+  name = "${var.k8s_cluster_name}-external-secrets"
+  path = "/homelab/sa/"
 }
 resource "aws_iam_user_policy" "secret_read" {
   name   = "secret_read"

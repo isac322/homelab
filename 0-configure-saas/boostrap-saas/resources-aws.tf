@@ -113,7 +113,7 @@ data "aws_iam_policy_document" "terraform-cloud-deployer-policy" {
       "iam:GetUserPolicy",
       "iam:DeleteUserPolicy",
     ]
-    resources = ["arn:aws:iam::${var.aws_admin_account_id}:user/homelab/cluster/*/sa/*"]
+    resources = ["arn:aws:iam::${var.aws_admin_account_id}:user/homelab/sa/*"]
   }
 
   statement {
