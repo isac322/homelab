@@ -9,8 +9,8 @@ spec:
     - https://github.com/isac322/homelab.git
     - https://openebs.github.io/zfs-localpv
   destinations:
-#    - namespace: rook-ceph
-#      name: prod
+    - namespace: rook-ceph
+      name: prod
     - namespace: openebs
       name: backbone
   clusterResourceWhitelist:

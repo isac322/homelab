@@ -8,12 +8,12 @@ spec:
     - https://grafana.github.io/helm-charts
     - https://prometheus-community.github.io/helm-charts
   destinations:
-#    - namespace: prometheus
-#      name: prod
-#    - namespace: kube-system
-#      name: prod
-#    - namespace: mimir
-#      name: prod
+    - namespace: prometheus
+      name: prod
+    - namespace: kube-system
+      name: prod
+    - namespace: mimir
+      name: prod
     - namespace: prometheus
       name: backbone
     - namespace: kube-system

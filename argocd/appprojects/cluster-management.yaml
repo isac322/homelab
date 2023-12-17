@@ -9,8 +9,8 @@ spec:
   destinations:
     - namespace: kube-system
       name: backbone
-#    - namespace: kube-system
-#      name: prod
+    - namespace: kube-system
+      name: prod
   clusterResourceWhitelist:
     - group: '*'
       kind: '*'
