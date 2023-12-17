@@ -1,0 +1,17 @@
+clusterSecretStore:
+  aws:
+    region: ap-northeast-2
+    auth:
+      secretRef:
+        accessKeyIDSecretRef:
+          key: id
+          name: external-secrets-cluster-store-aws
+          namespace: kube-system
+        secretAccessKeySecretRef:
+          key: secret
+          name: external-secrets-cluster-store-aws
+          namespace: kube-system
+
+clusterExternalSecret:
+  cloudflareCAAPIKey:
+    externalKeyName: /homelab/shared/cloudflare/token/origin-ca
