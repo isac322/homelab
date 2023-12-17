@@ -1,17 +1,42 @@
 clusterSecretStore:
   oracle:
-    enabled: true
+    enabled: false
     region: ""
     vaultOCID: ""
-    tenancyOCID: ""
-    userOCID: ""
-    fingerprint: ""
-    privateKey: ""
-    privateKeyB64: ""
+    auth:
+      secretRef: {}
+        # key: ""
+        # name: ""
+        # namespace: ""
+      tenancyOCID: ""
+      userOCID: ""
+  aws:
+    enabled: true
+    region: ""
+    service: ParameterStore # or SecretsManager
+    role: ""
+    auth: {}
+      # secretRef:
+      #   accessKeyIDSecretRef:
+      #     key: ""
+      #     name: ""
+      #     namespace: ""
+      #   secretAccessKeySecretRef:
+      #     key: ""
+      #     name: ""
+      #     namespace: ""
+      #   sessionTokenSecretRef:
+      #     key: ""
+      #     name: ""
+      #     namespace: ""
+      # jwt:
+      #   serviceAccountRef:
+      #     name: ""
 
 clusterExternalSecret:
   cloudflareCAAPIKey:
+    enabled: true
     externalKeyName: ""
     secret:
-      name: cloudflare-ca-api-key
-      key: cloudflare_origin_ca_key
+      name: cloudflare-origin-ca-api-key
+      key: token
