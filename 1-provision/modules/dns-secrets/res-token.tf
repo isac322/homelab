@@ -16,8 +16,8 @@ resource "cloudflare_api_token" "k8s_external_dns" {
 }
 
 
-resource "cloudflare_api_token" "k8s_cert_manager" {
-  name = "${var.k8s_cluster_name}_k8s_cert_manager"
+resource "cloudflare_api_token" "k8s_cert_manager_dns_challenge" {
+  name = "${var.k8s_cluster_name}_k8s_cert_manager_dns_challenge"
 
   policy {
     permission_groups = [

@@ -5,11 +5,11 @@ resource "aws_ssm_parameter" "cf_api_token_for_external_dns" {
   value       = cloudflare_api_token.k8s_external_dns.value
 }
 
-resource "aws_ssm_parameter" "cf_api_token_for_cert_manager" {
-  name        = "/homelab/cluster/${var.k8s_cluster_name}/token/cloudflare/cert-manager"
-  description = "Cloudflare API token for cert-manager"
+resource "aws_ssm_parameter" "cf_api_token_for_cert_manager_dns_challenge" {
+  name        = "/homelab/cluster/${var.k8s_cluster_name}/token/cloudflare/cert-manager-dns-challenge"
+  description = "Cloudflare API token for dns-challenge of cert-manager"
   type        = "SecureString"
-  value       = cloudflare_api_token.k8s_cert_manager.value
+  value       = cloudflare_api_token.k8s_cert_manager_dns_challenge.value
 }
 
 resource "aws_iam_user" "external_secrets" {
@@ -26,7 +26,7 @@ data "aws_iam_policy_document" "secret_read" {
     effect  = "Allow"
     actions = ["ssm:GetParameter"]
     resources = [
-      aws_ssm_parameter.cf_api_token_for_cert_manager.arn,
+      aws_ssm_parameter.cf_api_token_for_cert_manager_dns_challenge.arn,
       aws_ssm_parameter.cf_api_token_for_external_dns.arn,
     ]
   }

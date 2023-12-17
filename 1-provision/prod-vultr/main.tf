@@ -2,17 +2,17 @@ terraform {
   required_version = "~> 1.6"
 
   required_providers {
-    vultr = {
-      source  = "vultr/vultr"
-      version = "~> 2.17"
+    aws = {
+      source  = "hashicorp/aws"
+      version = "~> 5.30"
     }
     cloudflare = {
       source  = "cloudflare/cloudflare"
       version = "~> 4.20"
     }
-    aws = {
-      source  = "hashicorp/aws"
-      version = "~> 5.30"
+    vultr = {
+      source  = "vultr/vultr"
+      version = "~> 2.17"
     }
   }
 
