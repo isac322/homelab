@@ -3,7 +3,7 @@ email: "bh322yoo@gmail.com"
 server: https://acme-v02.api.letsencrypt.org/directory
 
 externalSecrets:
-  remoteSecretName: k8s_cert_manager_api_token
+  remoteSecretName: /homelab/cluster/vultr/token/cloudflare/cert-manager-dns-challenge
   secretStore:
     name: cluster-secrets
     kind: ClusterSecretStore
