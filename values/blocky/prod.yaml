@@ -172,7 +172,7 @@ caching:
   minTime: 5s
 
 redis:
-  enabled: true
+  enabled: false
   blocky:
     required: false
   auth:
