@@ -20,13 +20,15 @@ jobs:
         id: changed-files
         uses: tj-actions/changed-files@v38
         with:
-          files: terraform/backbone/**/*.tf
+          files: |
+            1-provision/env/backbone/**/*.tf
+            1-provision/modules/dns-secrets/**/*.tf
       - name: Terraform
         if: steps.changed-files.outputs.any_changed == 'true' || (github.ref == 'refs/heads/master' && github.event_name == 'push')
         uses: ./.github/actions/terraform
         with:
           token: ${{ secrets.TF_API_TOKEN }}
-          path: terraform/backbone
+          path: 1-provision/env/backbone
 
   prod:
     runs-on: ubuntu-latest
@@ -39,10 +41,13 @@ jobs:
         id: changed-files
         uses: tj-actions/changed-files@v38
         with:
-          files: terraform/prod/**/*.tf
+          files: |
+            1-provision/env/prod-vultr/**/*.tf
+            1-provision/modules/dns-secrets/**/*.tf
+            1-provision/modules/vultr-cluster/**/*.tf
       - name: Terraform
         if: steps.changed-files.outputs.any_changed == 'true' || (github.ref == 'refs/heads/master' && github.event_name == 'push')
         uses: ./.github/actions/terraform
         with:
           token: ${{ secrets.TF_API_TOKEN }}
-          path: terraform/prod
+          path: 1-provision/env/prod-vultr
