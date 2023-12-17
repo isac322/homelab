@@ -26,6 +26,14 @@ provider "cloudflare" {
 }
 provider "aws" {
   region = "ap-northeast-2"
+
+  default_tags {
+    tags = {
+      Owner               = "bhyoo"
+      Project             = "homelab"
+      terraform-base-path = "homelab/1-provision/env/backbone"
+    }
+  }
 }
 
 module "dns_secrets" {

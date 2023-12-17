@@ -104,6 +104,7 @@ data "aws_iam_policy_document" "terraform-cloud-deployer-policy" {
       "iam:GetUser",
       "iam:UpdateUser",
       "iam:DeleteUser",
+      "iam:TagUser",
       "iam:CreateAccessKey",
       "iam:ListAccessKeys",
       "iam:UpdateAccessKey",
@@ -123,6 +124,7 @@ data "aws_iam_policy_document" "terraform-cloud-deployer-policy" {
       "ssm:DeleteParameter",
       "ssm:GetParameter",
       "ssm:GetParameters",
+      "ssm:AddTagsToResource",
       "ssm:ListTagsForResource",
     ]
     resources = ["arn:aws:ssm:*:${var.aws_admin_account_id}:parameter/homelab/cluster/*"]
