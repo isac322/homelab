@@ -1,61 +1,61 @@
-apiVersion: argoproj.io/v1alpha1
-kind: Application
-metadata:
-  name: rook-ceph
-spec:
-  destination:
-    name: prod
-    namespace: rook-ceph
-  project: dfs
-  source:
-    chart: rook-ceph
-    helm:
-      releaseName: rook-ceph
-      valueFiles:
-        - values.yaml
-        - https://raw.githubusercontent.com/isac322/homelab/HEAD/values/rook/operator.prod.yaml
-    repoURL: https://charts.rook.io/release
-    targetRevision: v1.12.5
-  syncPolicy:
-    automated:
-      prune: true
-      selfHeal: true
-    retry:
-      backoff:
-        duration: 5s
-        factor: 2
-        maxDuration: 3m0s
-      limit: 100
-    syncOptions:
-      - CreateNamespace=true
-      - ServerSideApply=true
----
-apiVersion: argoproj.io/v1alpha1
-kind: Application
-metadata:
-  name: rook-ceph-cluster
-spec:
-  destination:
-    name: prod
-    namespace: rook-ceph
-  project: dfs
-  source:
-    chart: rook-ceph-cluster
-    helm:
-      valueFiles:
-        - values.yaml
-        - https://raw.githubusercontent.com/isac322/homelab/HEAD/values/rook/cluster.prod.yaml
-    repoURL: https://charts.rook.io/release
-    targetRevision: v1.12.5
-  syncPolicy:
-    automated:
-      prune: true
-      selfHeal: true
-    retry:
-      backoff:
-        duration: 5s
-        factor: 2
-        maxDuration: 3m0s
-      limit: 100
-    syncOptions:
-      - CreateNamespace=true
+#apiVersion: argoproj.io/v1alpha1
+#kind: Application
+#metadata:
+#  name: rook-ceph
+#spec:
+#  destination:
+#    name: prod
+#    namespace: rook-ceph
+#  project: dfs
+#  source:
+#    chart: rook-ceph
+#    helm:
+#      releaseName: rook-ceph
+#      valueFiles:
+#        - values.yaml
+#        - https://raw.githubusercontent.com/isac322/homelab/HEAD/values/rook/operator.prod.yaml
+#    repoURL: https://charts.rook.io/release
+#    targetRevision: v1.12.5
+#  syncPolicy:
+#    automated:
+#      prune: true
+#      selfHeal: true
+#    retry:
+#      backoff:
+#        duration: 5s
+#        factor: 2
+#        maxDuration: 3m0s
+#      limit: 100
+#    syncOptions:
+#      - CreateNamespace=true
+#      - ServerSideApply=true
+#---
+#apiVersion: argoproj.io/v1alpha1
+#kind: Application
+#metadata:
+#  name: rook-ceph-cluster
+#spec:
+#  destination:
+#    name: prod
+#    namespace: rook-ceph
+#  project: dfs
+#  source:
+#    chart: rook-ceph-cluster
+#    helm:
+#      valueFiles:
+#        - values.yaml
+#        - https://raw.githubusercontent.com/isac322/homelab/HEAD/values/rook/cluster.prod.yaml
+#    repoURL: https://charts.rook.io/release
+#    targetRevision: v1.12.5
+#  syncPolicy:
+#    automated:
+#      prune: true
+#      selfHeal: true
+#    retry:
+#      backoff:
+#        duration: 5s
+#        factor: 2
+#        maxDuration: 3m0s
+#      limit: 100
+#    syncOptions:
+#      - CreateNamespace=true
