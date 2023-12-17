@@ -60,7 +60,7 @@ module "cluster" {
 
   instance_map = {
     v1 = {
-      plan   = "vc2-1c-1gb"
+      plan   = "vc2-1c-2gb"
       region = "icn"
     }
   }
