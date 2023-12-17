@@ -57,3 +57,6 @@ spec:
       limit: 100
     syncOptions:
       - CreateNamespace=true
+    managedNamespaceMetadata:
+      labels:
+        homelab.bhyoo.com/cloudflare-ca-required: 'true'
