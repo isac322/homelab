@@ -64,6 +64,7 @@ spec:
             - target:
                 kind: ExternalSecret
                 name: cloudflare-api-token
+                version: external-secrets.io/v1beta1
               patch: |-
                 - op: replace
                   path: /spec/data/0/remoteRef/key
