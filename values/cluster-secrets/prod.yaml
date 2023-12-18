@@ -13,5 +13,5 @@ clusterSecretStore:
           namespace: kube-system
 
 clusterExternalSecret:
-  cloudflareCAAPIKey:
+  cloudflareOriginCAKey:
     externalKeyName: /homelab/shared/cloudflare/token/origin-ca

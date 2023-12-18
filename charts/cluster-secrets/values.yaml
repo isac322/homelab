@@ -34,7 +34,7 @@ clusterSecretStore:
       #     name: ""
 
 clusterExternalSecret:
-  cloudflareCAAPIKey:
+  cloudflareOriginCAKey:
     enabled: true
     externalKeyName: ""
     secret:
