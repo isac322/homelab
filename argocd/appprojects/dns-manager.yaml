@@ -5,6 +5,7 @@ metadata:
 spec:
   description: Managing external DNS
   sourceRepos:
+    - https://github.com/isac322/homelab.git
     - https://kubernetes-sigs.github.io/external-dns/
   destinations:
     - namespace: dns-manager

@@ -5,7 +5,7 @@ env:
   - name: CF_API_TOKEN
     valueFrom:
       secretKeyRef:
-        name: cloudflare-origin-ca-api-key
+        name: cloudflare-api-token
         key: token
 
 resources:
