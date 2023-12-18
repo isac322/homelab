@@ -68,7 +68,7 @@ spec:
                 - /app/blocky
                 - healthcheck
             timeoutSeconds: 1
-            failureThreshold: 60
+            failureThreshold: 120
             periodSeconds: 1
           resources:
             {{- toYaml .Values.resources | nindent 12 }}
