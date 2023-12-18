@@ -41,34 +41,21 @@ metadata:
   name: external-dns-cf-api-token
 spec:
   generators:
-    - list:
-        elements:
-          - cluster: backbone
-            awsPath: backbone
-          - cluster: prod
-            awsPath: vultr
+    - clusters: {}
   template:
     metadata:
-      name: '{{cluster}}-external-dns-cf-api-token'
+      name: '{{name}}-external-dns-cf-api-token'
     spec:
       destination:
-        name: '{{cluster}}'
+        name: '{{name}}'
         namespace: dns-manager
       project: dns-manager
       source:
         path: apps/objects/external-dns
         repoURL: https://github.com/isac322/homelab.git
         targetRevision: HEAD
-        kustomize:
-          patches:
-            - target:
-                kind: ExternalSecret
-                name: cloudflare-api-token
-                version: external-secrets.io/v1beta1
-              patch: |-
-                - op: replace
-                  path: /spec/data/0/remoteRef/key
-                  value: /homelab/cluster/{{awsPath}}/token/cloudflare/external-dns
+        directory:
+          include: external-secret-{{name}}.yaml
       syncPolicy:
         automated:
           prune: true
