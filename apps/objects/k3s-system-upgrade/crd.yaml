@@ -89,6 +89,17 @@ spec:
                     nullable: true
                     type: integer
                 type: object
+              exclusive:
+                type: boolean
+              imagePullSecrets:
+                items:
+                  properties:
+                    name:
+                      nullable: true
+                      type: string
+                  type: object
+                nullable: true
+                type: array
               jobActiveDeadlineSecs:
                 type: integer
               nodeSelector:
@@ -231,6 +242,89 @@ spec:
                   image:
                     nullable: true
                     type: string
+                  securityContext:
+                    nullable: true
+                    properties:
+                      allowPrivilegeEscalation:
+                        nullable: true
+                        type: boolean
+                      capabilities:
+                        nullable: true
+                        properties:
+                          add:
+                            items:
+                              nullable: true
+                              type: string
+                            nullable: true
+                            type: array
+                          drop:
+                            items:
+                              nullable: true
+                              type: string
+                            nullable: true
+                            type: array
+                        type: object
+                      privileged:
+                        nullable: true
+                        type: boolean
+                      procMount:
+                        nullable: true
+                        type: string
+                      readOnlyRootFilesystem:
+                        nullable: true
+                        type: boolean
+                      runAsGroup:
+                        nullable: true
+                        type: integer
+                      runAsNonRoot:
+                        nullable: true
+                        type: boolean
+                      runAsUser:
+                        nullable: true
+                        type: integer
+                      seLinuxOptions:
+                        nullable: true
+                        properties:
+                          level:
+                            nullable: true
+                            type: string
+                          role:
+                            nullable: true
+                            type: string
+                          type:
+                            nullable: true
+                            type: string
+                          user:
+                            nullable: true
+                            type: string
+                        type: object
+                      seccompProfile:
+                        nullable: true
+                        properties:
+                          localhostProfile:
+                            nullable: true
+                            type: string
+                          type:
+                            nullable: true
+                            type: string
+                        type: object
+                      windowsOptions:
+                        nullable: true
+                        properties:
+                          gmsaCredentialSpec:
+                            nullable: true
+                            type: string
+                          gmsaCredentialSpecName:
+                            nullable: true
+                            type: string
+                          hostProcess:
+                            nullable: true
+                            type: boolean
+                          runAsUserName:
+                            nullable: true
+                            type: string
+                        type: object
+                    type: object
                   volumes:
                     items:
                       properties:
@@ -250,6 +344,8 @@ spec:
               secrets:
                 items:
                   properties:
+                    ignoreUpdates:
+                      type: boolean
                     name:
                       nullable: true
                       type: string
@@ -395,6 +491,89 @@ spec:
                   image:
                     nullable: true
                     type: string
+                  securityContext:
+                    nullable: true
+                    properties:
+                      allowPrivilegeEscalation:
+                        nullable: true
+                        type: boolean
+                      capabilities:
+                        nullable: true
+                        properties:
+                          add:
+                            items:
+                              nullable: true
+                              type: string
+                            nullable: true
+                            type: array
+                          drop:
+                            items:
+                              nullable: true
+                              type: string
+                            nullable: true
+                            type: array
+                        type: object
+                      privileged:
+                        nullable: true
+                        type: boolean
+                      procMount:
+                        nullable: true
+                        type: string
+                      readOnlyRootFilesystem:
+                        nullable: true
+                        type: boolean
+                      runAsGroup:
+                        nullable: true
+                        type: integer
+                      runAsNonRoot:
+                        nullable: true
+                        type: boolean
+                      runAsUser:
+                        nullable: true
+                        type: integer
+                      seLinuxOptions:
+                        nullable: true
+                        properties:
+                          level:
+                            nullable: true
+                            type: string
+                          role:
+                            nullable: true
+                            type: string
+                          type:
+                            nullable: true
+                            type: string
+                          user:
+                            nullable: true
+                            type: string
+                        type: object
+                      seccompProfile:
+                        nullable: true
+                        properties:
+                          localhostProfile:
+                            nullable: true
+                            type: string
+                          type:
+                            nullable: true
+                            type: string
+                        type: object
+                      windowsOptions:
+                        nullable: true
+                        properties:
+                          gmsaCredentialSpec:
+                            nullable: true
+                            type: string
+                          gmsaCredentialSpecName:
+                            nullable: true
+                            type: string
+                          hostProcess:
+                            nullable: true
+                            type: boolean
+                          runAsUserName:
+                            nullable: true
+                            type: string
+                        type: object
+                    type: object
                   volumes:
                     items:
                       properties:
