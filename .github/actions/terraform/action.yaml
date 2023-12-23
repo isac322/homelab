@@ -43,7 +43,7 @@ runs:
       run: terraform -chdir=${{ inputs.path }} plan -no-color -input=false
       shell: bash
 
-    - uses: actions/github-script@v6
+    - uses: actions/github-script@v7
       if: github.event_name == 'pull_request' && (success() || failure())
       env:
         PLAN: "terraform\n${{ steps.plan.outputs.stdout }}"
