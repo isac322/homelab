@@ -14,6 +14,10 @@ updates:
     schedule:
       interval: "daily"
   - package-ecosystem: "terraform" # See documentation for possible values
-    directory: "/terraform/backbone" # Location of package manifests
+    directory: "/0-configure-saas" # Location of package manifests
+    schedule:
+      interval: "daily"
+  - package-ecosystem: "terraform" # See documentation for possible values
+    directory: "/1-provision" # Location of package manifests
     schedule:
       interval: "daily"
