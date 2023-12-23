@@ -14,10 +14,10 @@ updates:
     schedule:
       interval: "daily"
   - package-ecosystem: "terraform" # See documentation for possible values
-    directory: "/0-configure-saas" # Location of package manifests
+    directory: "/1-provision/env/prod-vultr" # Location of package manifests
     schedule:
       interval: "daily"
   - package-ecosystem: "terraform" # See documentation for possible values
-    directory: "/1-provision" # Location of package manifests
+    directory: "/1-provision/env/backbone" # Location of package manifests
     schedule:
       interval: "daily"
