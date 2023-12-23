@@ -30,7 +30,7 @@ spec:
       - CreateNamespace=true
     managedNamespaceMetadata:
       labels:
-        homelab.bhyoo.com/cloudflare-ca-required: 'true'
+        homelab.bhyoo.com/cloudflare-origin-ca-key-required: 'true'
 ---
 apiVersion: argoproj.io/v1alpha1
 kind: Application
@@ -59,4 +59,4 @@ spec:
       - CreateNamespace=true
     managedNamespaceMetadata:
       labels:
-        homelab.bhyoo.com/cloudflare-ca-required: 'true'
+        homelab.bhyoo.com/cloudflare-origin-ca-key-required: 'true'
