@@ -14,4 +14,4 @@ clusterSecretStore:
 
 clusterExternalSecret:
   cloudflareOriginCAKey:
-    externalKeyName: /homelab/shared/cloudflare/token/origin-ca
+    enabled: false
