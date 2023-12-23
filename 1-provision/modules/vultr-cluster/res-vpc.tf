@@ -74,3 +74,21 @@ resource "vultr_firewall_rule" "homelab-wireguard-v6" {
   subnet            = "::"
   subnet_size       = 0
 }
+
+resource "vultr_firewall_rule" "homelab-https-v4" {
+  firewall_group_id = vultr_firewall_group.homelab.id
+  ip_type           = "v4"
+  protocol          = "tcp"
+  port              = "443"
+  subnet            = "0.0.0.0"
+  subnet_size       = 0
+}
+
+resource "vultr_firewall_rule" "homelab-https-v6" {
+  firewall_group_id = vultr_firewall_group.homelab.id
+  ip_type           = "v6"
+  protocol          = "tcp"
+  port              = "443"
+  subnet            = "::"
+  subnet_size       = 0
+}
