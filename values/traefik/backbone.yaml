@@ -1,3 +1,7 @@
+deployment:
+  # Can be either Deployment or DaemonSet
+  kind: DaemonSet
+
 # Pod disruption budget
 podDisruptionBudget:
   enabled: true
@@ -185,6 +189,9 @@ ports:
     # The port protocol (TCP/UDP)
     protocol: TCP
 
+rollingUpdate:
+  maxUnavailable: 0
+  maxSurge: 1
 
 # Options for the main traefik service, where the entrypoints traffic comes
 # from.
