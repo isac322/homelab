@@ -12,11 +12,6 @@ ingressClass:
   enabled: true
   isDefaultClass: true
 
-# Enable experimental features
-experimental:
-  v3:
-    enabled: true
-
 # Create an IngressRoute for the dashboard
 ingressRoute:
   dashboard:
