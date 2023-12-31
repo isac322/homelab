@@ -18,6 +18,7 @@
         - Network:
             - DHCP: "no"
             - MulticastDNS: "yes"
+            - LLMNR: "yes"
             - Address: "{{ desired_ip }}/24"
         - Route:
             - Destination: "0.0.0.0/0"

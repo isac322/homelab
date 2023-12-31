@@ -1,2 +1,2 @@
-k3s_etcd_datastore: true
-private_ip: "{{ ansible_default_ipv4.address }}"
+main_private_ip: "{{ ansible_all_ipv4_addresses | ansible.utils.ipaddr('private') | difference(ansible_all_ipv4_addresses | ansible.utils.ipaddr('private') | ansible.utils.ipaddr(wireguard_network)) | first }}"
+main_public_ip: "{{ ansible_all_ipv4_addresses | ansible.utils.ipaddr('public') | first }}"

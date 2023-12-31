@@ -9,6 +9,7 @@
     - role: iptables-firewall
       vars:
         k8s_role: "{{ 'master' if is_k8s_master else 'worker' }}"
+        use_k3s_ha_embedded_etcd: true
         iptables_reset_all: false
 
 - hosts: prod
@@ -17,10 +18,5 @@
     - role: iptables-firewall
       vars:
         k8s_role: "{{ 'master' if is_k8s_master else 'worker' }}"
-        k8s_internal_node_ip_cidr: 10.0.0.0/14
-        use_k3s_ha_embedded_etcd: true
-        use_k8s_cilium: "{{ is_k8s_master }}"
-        use_k8s_cilium_hubble: "{{ is_k8s_master }}"
-        use_k8s_vxlan: true
-
+        k8s_internal_node_ip_cidr: 10.34.112.0/20
         iptables_reset_all: false

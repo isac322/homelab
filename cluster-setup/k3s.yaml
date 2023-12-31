@@ -1,6 +1,3 @@
-- name: Load public ips
-  import_playbook: load-public-ips.yaml
-
 - hosts: prod
   tasks:
     - name: Install k3s
@@ -12,163 +9,30 @@
             k3s_control_node: "{{ is_k8s_master }}"
             # https://github.com/rancher/system-upgrade-controller/issues/90#issuecomment-663850596
             k3s_install_hard_links: true
+#            k3s_etcd_datastore: true
             k3s_server:
-              etcd-expose-metrics: true
-              flannel-backend: none
-              disable-network-policy: true
-              disable-kube-proxy: true
+              flannel-backend: 'host-gw'  # This needs to be in quotes
               disable-helm-controller: true
               disable:
-                - servicelb
+#                - servicelb
                 - traefik
                 - local-storage
 #                - metrics-server
-              node-ip: "{{ ansible_default_ipv4.address }}"
-              advertise-address: "{{ ansible_default_ipv4.address }}"
+              node-ip: "{{ main_private_ip }}"
+              advertise-address: "{{ main_private_ip }}"
               node-external-ip:
-                - "{{ public_ip }}"
+                - "{{ main_public_ip }}"
                 - "{{ wireguard_ip }}"
               kubelet-arg:
                 - "image-gc-high-threshold=60"
                 - "image-gc-low-threshold=40"
+                - "feature-gates=NodeSwap=true,CloudDualStackNodeIPs=true"
               node-label: "{{ k8s_node_labels }}"
               tls-san:
-                - "{{ inventory_hostname }}"
+                - k8s.homelab.bhyoo.com
+              secrets-encryption: true
         - ansible.builtin.import_role:
             name: xanmanning.k3s
-
-    - name: Install Helm
-      become: yes
-      run_once: yes
-      ansible.builtin.import_role:
-        name: gantsign.helm
-      vars:
-        helm_architecture: arm64
-
-    - name: Install git
-      become: yes
-      run_once: yes
-      ansible.builtin.apt:
-        pkg:
-          - git
-        state: latest
-        install_recommends: no
-        update_cache: yes
-
-    - name: Install Helm diff plugin
-      become: yes
-      run_once: yes
-      kubernetes.core.helm_plugin:
-        plugin_path: https://github.com/databus23/helm-diff
-        state: present
-
-    - name: Install cilium
-      become: yes
-      run_once: yes
-      kubernetes.core.helm:
-        atomic: yes
-        chart_ref: cilium
-        chart_repo_url: https://helm.cilium.io/
-        create_namespace: yes
-        kubeconfig: /etc/rancher/k3s/k3s.yaml
-        release_name: cilium
-        release_namespace: kube-system
-        values:
-          kubeconfig: /etc/rancher/k3s/k3s.yaml
-          k8sServiceHost: 127.0.0.1
-          k8sServicePort: 6443
-          resources:
-            limits:
-              cpu: 4000m
-              memory: 4Gi
-            requests:
-              cpu: 50m
-              memory: 512Mi
-          updateStrategy:
-            type: RollingUpdate
-            rollingUpdate:
-              maxUnavailable: 1
-          rollOutCiliumPods: true
-          bpf:
-            clockProbe: true
-            preallocateMaps: true
-            lbExternalClusterIP: true
-            masquerade: true
-            waitForKubeProxy: true
-#          devices: "{{ ansible_default_ipv4.interface }}"
-          hubble:
-            relay:
-              enabled: true
-              rollOutPods: true
-              resources:
-                limits:
-                  cpu: 100m
-                  memory: 64Mi
-                requests:
-                  cpu: 5m
-                  memory: 32Mi
-            ui:
-              enabled: true
-              rollOutPods: true
-              backend:
-                resources:
-                  limits:
-                    cpu: 100m
-                    memory: 128Mi
-                  requests:
-                    cpu: 5m
-                    memory: 64Mi
-              frontend:
-                resources:
-                  limits:
-                    cpu: 100m
-                    memory: 64Mi
-                  requests:
-                    cpu: 5m
-                    memory: 16Mi
-              ingress:
-                enabled: true
-                className: internal-traefik
-                annotations:
-                  external-dns.alpha.kubernetes.io/cloudflare-proxied: "false"
-                  cert-manager.io/cluster-issuer: cert-manager-cluster-issuer
-                  cert-manager.io/private-key-algorithm: ECDSA
-                  cert-manager.io/private-key-size: '384'
-                  traefik.ingress.kubernetes.io/router.entrypoints: websecure
-                hosts:
-                  - hubble.bhyoo.com
-                tls:
-                  - secretName: hubble-ui-tls
-                    hosts:
-                      - hubble.bhyoo.com
-          ipam:
-            mode: kubernetes
-          k8s:
-            requireIPv4PodCIDR: true
-          kubeProxyReplacement: strict
-          loadBalancer:
-            algorithm: maglev
-#            serviceTopology: true
-          operator:
-            rollOutPods: true
-            replicas: 1
-            resources:
-              limits:
-                cpu: 500m
-                memory: 512Mi
-              requests:
-                cpu: 5m
-                memory: 32Mi
-          nodeinit:
-            enabled: true
-            resources:
-              requests:
-                cpu: 5m
-                memory: 4Mi
-              limits:
-                cpu: 100m
-                memory: 32Mi
-        wait: yes
 
     - name: Create and download kubeconfig
       block:
@@ -180,14 +44,10 @@
             local_kubeconfig_prefix: prod-
             cluster_admins:
               - bhyoo-phone
+              - bhyoo-tablet
               - bhyoo-desktop
               - bhyoo-office
-            namespaced_admins:
-              daily-receipt:
-                - woo
-              zello-draw:
-                - kjh
-                - ldj
+              - bhyoo-laptop
           when: is_k8s_master
 
         - ansible.builtin.include_role:
@@ -207,19 +67,33 @@
             k3s_control_node: "{{ is_k8s_master }}"
             # https://github.com/rancher/system-upgrade-controller/issues/90#issuecomment-663850596
             k3s_install_hard_links: true
+            k3s_etcd_datastore: true
+            k3s_registration_address: "{{ k8s_registration_address }}"
             k3s_server:
+              etcd-expose-metrics: true
               flannel-backend: 'host-gw'  # This needs to be in quotes
               disable-helm-controller: true
               disable:
                 - traefik
                 - servicelb
               advertise-address: "{{ desired_ip }}"
+              node-external-ip: "{{ wireguard_ip }}"
+              kubelet-arg:
+                - "image-gc-high-threshold=60"
+                - "image-gc-low-threshold=40"
+                - "feature-gates=NodeSwap=true,CloudDualStackNodeIPs=true"
+              node-label: "{{ k8s_node_labels }}"
+              secrets-encryption: true
+              tls-san:
+                - "{{ wireguard_ip }}"
+                - "{{ wireguard_external_host }}"
+                - "{{ k8s_registration_address }}"
             k3s_agent:
               node-external-ip: "{{ wireguard_ip }}"
               kubelet-arg:
                 - "image-gc-high-threshold=60"
                 - "image-gc-low-threshold=40"
-                - "{{ is_k8s_master | ternary('kube-reserved=cpu=500m,memory=1100Mi', 'kube-reserved=cpu=100m,memory=128Mi') }}"
+                - "feature-gates=NodeSwap=true,CloudDualStackNodeIPs=true"
               node-label: "{{ k8s_node_labels }}"
         - ansible.builtin.import_role:
             name: xanmanning.k3s
@@ -228,13 +102,16 @@
       block:
         - ansible.builtin.set_fact:
             kubeconfig_path: /etc/rancher/k3s/k3s.yaml
-            api_server_host: "{{ wireguard_ip }}:6443"
+            api_server_host: "{{ k8s_registration_address }}:6443"
             cluster_name: "homelab-backbone"
             local_directory: _kubeconfig
             local_kubeconfig_prefix: backbone-
             cluster_admins:
               - bhyoo-phone
+              - bhyoo-tablet
               - bhyoo-desktop
+              - bhyoo-office
+              - bhyoo-laptop
           when: is_k8s_master
 
         - ansible.builtin.include_role:

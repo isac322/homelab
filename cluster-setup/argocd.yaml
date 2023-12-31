@@ -1,99 +1,47 @@
 ---
 - hosts: prod
-  roles:
-    - role: gantsign.helm
-      vars:
-        helm_architecture: 'arm64'
-
-- hosts: prod
   name: Install cluster secrets on prod
   tasks:
-    - name: Download CRDs of external-secrets
-      run_once: yes
-      ansible.builtin.get_url:
-        url: https://raw.githubusercontent.com/external-secrets/external-secrets/HEAD/deploy/crds/bundle.yaml
-        dest: /tmp/external-secrets-crds.yaml
-        mode: '0644'
-
-    - name: Apply CRDs of external-secrets
+    - name: Create shared secrets
       become: yes
-      run_once: yes
       kubernetes.core.k8s:
         state: present
         wait: yes
-        wait_condition:
-          type: Established
         kubeconfig: /etc/rancher/k3s/k3s.yaml
-        src: /tmp/external-secrets-crds.yaml
-
-    - name: Copy value file
-      run_once: yes
-      ansible.builtin.copy:
-        src: /tmp/prod-cluster-secrets.yaml
-        dest: /tmp/cluster-secrets.yaml
-
-    - name: Install cluster secrets
-      become: yes
-      run_once: yes
-      kubernetes.core.helm:
-        atomic: yes
-        chart_ref: cluster-secrets
-        chart_repo_url: https://charts.bhyoo.com
-        create_namespace: yes
-        kubeconfig: /etc/rancher/k3s/k3s.yaml
-        release_name: cluster-secrets
-        release_namespace: kube-system
-        values_files:
-          - /tmp/cluster-secrets.yaml
-        wait: yes
-
-- hosts: backbone
-  roles:
-    - role: gantsign.helm
-      vars:
-        helm_architecture: 'arm64'
+        definition:
+          apiVersion: v1
+          kind: Secret
+          metadata:
+            name: external-secrets-cluster-store-aws
+            namespace: kube-system
+            annotations:
+              managed-by-ansible: 'true'
+          type: Opaque
+          stringData: "{{ lookup('cloud.terraform.tf_output', 'external_secrets_access_key', project_path='../1-provision/env/prod-vultr') | to_nice_yaml(indent=2) | from_yaml }}"
+      no_log: '{{ ansible_verbosity < 3 }}'
       when: is_k8s_master
 
 - hosts: backbone
   name: Install cluster secrets on backbone
   tasks:
-    - name: Download CRDs of external-secrets
-      ansible.builtin.get_url:
-        url: https://raw.githubusercontent.com/external-secrets/external-secrets/HEAD/deploy/crds/bundle.yaml
-        dest: /tmp/external-secrets-crds.yaml
-        mode: '0644'
-      when: is_k8s_master
-
-    - name: Apply CRDs of external-secrets
+    - name: Create shared secrets
       become: yes
+      run_once: yes
       kubernetes.core.k8s:
         state: present
         wait: yes
-        wait_condition:
-          type: Established
         kubeconfig: /etc/rancher/k3s/k3s.yaml
-        src: /tmp/external-secrets-crds.yaml
-      when: is_k8s_master
-
-    - name: Copy value file
-      ansible.builtin.copy:
-        src: /tmp/backbone-cluster-secrets.yaml
-        dest: /tmp/cluster-secrets.yaml
-      when: is_k8s_master
-
-    - name: Install cluster secrets
-      become: yes
-      kubernetes.core.helm:
-        atomic: yes
-        chart_ref: cluster-secrets
-        chart_repo_url: https://charts.bhyoo.com
-        create_namespace: yes
-        kubeconfig: /etc/rancher/k3s/k3s.yaml
-        release_name: cluster-secrets
-        release_namespace: kube-system
-        values_files:
-          - /tmp/cluster-secrets.yaml
-        wait: yes
+        definition:
+          apiVersion: v1
+          kind: Secret
+          metadata:
+            name: external-secrets-cluster-store-aws
+            namespace: kube-system
+            annotations:
+              managed-by-ansible: 'true'
+          type: Opaque
+          stringData: "{{ lookup('cloud.terraform.tf_output', 'external_secrets_access_key', project_path='../1-provision/env/backbone') | to_nice_yaml(indent=2) | from_yaml }}"
+      no_log: '{{ ansible_verbosity < 3 }}'
       when: is_k8s_master
 
 - hosts: prod
@@ -210,8 +158,16 @@
 - hosts: backbone
   name: Install argocd
   tasks:
+    - name: install Helm
+      ansible.builtin.import_role:
+        name: gantsign.helm
+      vars:
+        helm_architecture: 'arm64'
+      when: is_k8s_master
+
     - name: Create argocd namespace on backbone cluster
       become: yes
+      run_once: yes
       kubernetes.core.k8s:
         state: present
         wait: yes
@@ -223,6 +179,7 @@
 
     - name: Create Secret for prod cluster on backbone cluster
       become: yes
+      run_once: yes
       kubernetes.core.k8s:
         state: present
         wait: yes
@@ -245,6 +202,7 @@
       when: is_k8s_master
 
     - name: Copy value file
+      run_once: yes
       ansible.builtin.copy:
         src: ../values/argo-cd/backbone.yaml
         dest: /tmp/argo-cd-values.yaml
@@ -252,6 +210,7 @@
 
     - name: Install argocd
       become: yes
+      run_once: yes
       kubernetes.core.helm:
         atomic: yes
         chart_ref: argo-cd
@@ -267,6 +226,7 @@
       when: is_k8s_master
 
     - name: Copy value file
+      run_once: yes
       ansible.builtin.copy:
         src: ../values/argocd-apps/backbone.yaml
         dest: /tmp/argocd-apps-values.yaml
@@ -274,11 +234,12 @@
 
     - name: Install argocd-apps
       become: yes
+      run_once: yes
       kubernetes.core.helm:
         atomic: yes
         chart_ref: argocd-apps
         chart_repo_url: https://argoproj.github.io/argo-helm
-        chart_version: 0.0.1
+        chart_version: 1.4.1
         create_namespace: yes
         kubeconfig: /etc/rancher/k3s/k3s.yaml
         release_name: argocd-apps

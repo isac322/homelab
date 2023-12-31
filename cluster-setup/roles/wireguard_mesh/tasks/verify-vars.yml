@@ -19,17 +19,15 @@
   run_once: yes
   ansible.builtin.assert:
     that:
-      - '{{
-          (
-            ansible_loop.allitems
-            |rejectattr("key", "eq", item.key)
-            |map(attribute="value.cidr")
-            |map("ansible.utils.network_in_network", item.value.cidr)
-            |unique
-            |difference([False])
-            |length
-          ) == 0
-        }}'
+      - '(
+           ansible_loop.allitems
+           |rejectattr("key", "eq", item.key)
+           |map(attribute="value.cidr")
+           |map("ansible.utils.network_in_network", item.value.cidr)
+           |unique
+           |difference([False])
+           |length
+         ) == 0'
     fail_msg: 'subnet overlapped'
   loop: "{{ mesh_group_config|dict2items }}"
   loop_control:
@@ -39,16 +37,14 @@
   run_once: yes
   ansible.builtin.assert:
     that:
-      - '{{
-          (
-            mesh_group_config.values()
-            |map(attribute="cidr")
-            |map("ansible.utils.network_in_network", item.ip_address)
-            |unique
-            |difference([False])
-            |length
-          ) == 0
-        }}'
+      - '(
+           mesh_group_config.values()
+           |map(attribute="cidr")
+           |map("ansible.utils.network_in_network", item.ip_address)
+           |unique
+           |difference([False])
+           |length
+         ) == 0'
     fail_msg: 'subnet overlapped'
   loop: "{{ edges.values() }}"
   loop_control:

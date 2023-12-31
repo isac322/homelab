@@ -4,17 +4,17 @@
   roles:
     - role: wireguard_mesh
       vars:
-        cidr_block: 10.222.0.0/24
+        cidr_block: "{{ wireguard_network }}"
         local_directory: _wireguard
         wireguard_port: 51902
         wireguard_ip_address: "{{ wireguard_ip }}"  # host specific
-        wireguard_host: "{{ external_host|default(inventory_hostname) }}"
+        wireguard_host: "{{ wireguard_external_host|default(inventory_hostname) }}"
         wireguard_internal_host: "{{ inventory_hostname }}"
         mesh_group_config:
           backbone:
             cidr: 10.222.0.0/26
             ansible_groups: ['backbone']
-            gateway_host: 'n2p1'
+            gateway_host: 'rpi5.local'
           prod:
             cidr: 10.222.0.64/26
             ansible_groups: ['prod']
@@ -29,7 +29,7 @@
             allowed_groups:
               - prod
               - backbone
-          bhyoo-office:
+          bhyoo-laptop:
             ip_address: 10.222.0.131
             allowed_groups:
               - prod
@@ -39,15 +39,8 @@
             allowed_groups:
               - prod
               - backbone
-          woo: # daily-receipt
-            ip_address: 10.222.0.193
+          bhyoo-office:
+            ip_address: 10.222.0.133
             allowed_groups:
               - prod
-          kjh: # zello-draw
-            ip_address: 10.222.0.194
-            allowed_groups:
-              - prod
-          ldj: # zello-draw
-            ip_address: 10.222.0.195
-            allowed_groups:
-              - prod
+              - backbone

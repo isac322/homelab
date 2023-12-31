@@ -255,11 +255,9 @@
         destination_port: 21
         jump: ACCEPT
         in_interface: "{{ wireguard_interface }}"
-        source: "{{ ipv4.network }}/{{ ipv4.prefix }}"
+        source: "{{ wireguard_network }}"
         comment: FTP
       when: iptables_use_ftp
-      vars:
-        ipv4: "{{ hostvars[inventory_hostname]['ansible_' + wireguard_interface].ipv4 }}"
 
 - name: Allow FTP (Active mode)
   block:
@@ -278,11 +276,9 @@
         destination_port: 20
         jump: ACCEPT
         in_interface: "{{ wireguard_interface }}"
-        source: "{{ ipv4.network }}/{{ ipv4.prefix }}"
+        source: "{{ wireguard_network }}"
         comment: FTP (Active mode)
       when: iptables_use_ftp and iptables_use_ftp_active
-      vars:
-        ipv4: "{{ hostvars[inventory_hostname]['ansible_' + wireguard_interface].ipv4 }}"
 
 - name: Allow FTP (Passive mode)
   block:
@@ -301,11 +297,9 @@
         destination_port: "{{ iptables_use_ftp_passive_port_range }}"
         jump: ACCEPT
         in_interface: "{{ wireguard_interface }}"
-        source: "{{ ipv4.network }}/{{ ipv4.prefix }}"
+        source: "{{ wireguard_network }}"
         comment: FTP (Passive mode)
       when: iptables_use_ftp
-      vars:
-        ipv4: "{{ hostvars[inventory_hostname]['ansible_' + wireguard_interface].ipv4 }}"
 
 - name: Allow kubelet
   block:
@@ -333,11 +327,9 @@
         destination_port: 6443
         jump: ACCEPT
         in_interface: "{{ wireguard_interface }}"
-        source: "{{ ipv4.network }}/{{ ipv4.prefix }}"
+        source: "{{ wireguard_network }}"
         comment: kubelet
       when: k8s_role == "master"
-      vars:
-        ipv4: "{{ hostvars[inventory_hostname]['ansible_' + wireguard_interface].ipv4 }}"
 
 - name: Allow kubelet metrics
   block:

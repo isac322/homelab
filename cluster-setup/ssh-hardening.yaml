@@ -8,7 +8,7 @@
             - key: "{{ lookup('file', './ssh_pub_keys/desktop.pub') }}"
             - key: "{{ lookup('file', './ssh_pub_keys/laptop.pub') }}"
             - key: "{{ lookup('file', './ssh_pub_keys/mobile.pub') }}"
-            - key: "{{ lookup('file', './ssh_pub_keys/office.pub') }}"
+            - key: "{{ lookup('file', './ssh_pub_keys/tablet.pub') }}"
 
 - hosts: backbone
   tasks:
@@ -24,13 +24,13 @@
             - key: "{{ lookup('file', './ssh_pub_keys/desktop.pub') }}"
             - key: "{{ lookup('file', './ssh_pub_keys/laptop.pub') }}"
             - key: "{{ lookup('file', './ssh_pub_keys/mobile.pub') }}"
-            - key: "{{ lookup('file', './ssh_pub_keys/office.pub') }}"
+            - key: "{{ lookup('file', './ssh_pub_keys/tablet.pub') }}"
         - name: "{{ admin_user }}"
           authorized_keys:
             - key: "{{ lookup('file', './ssh_pub_keys/desktop.pub') }}"
             - key: "{{ lookup('file', './ssh_pub_keys/laptop.pub') }}"
             - key: "{{ lookup('file', './ssh_pub_keys/mobile.pub') }}"
-            - key: "{{ lookup('file', './ssh_pub_keys/office.pub') }}"
+            - key: "{{ lookup('file', './ssh_pub_keys/tablet.pub') }}"
 
 - hosts: all
   become: yes
@@ -50,6 +50,7 @@
         ssh_host_rsa_key_size: 4096
         sshd_moduli_minimum: 3071
         ssh_kex:
+          - sntrup761x25519-sha512@openssh.com
           - curve25519-sha256
           - curve25519-sha256@libssh.org
           - gss-curve25519-sha256-
@@ -57,7 +58,6 @@
           - gss-group16-sha512-
           - diffie-hellman-group18-sha512
           - diffie-hellman-group-exchange-sha256
-          - sntrup761x25519-sha512@openssh.com
         ssh_ciphers:
           - chacha20-poly1305@openssh.com
           - aes256-gcm@openssh.com
@@ -70,12 +70,12 @@
           - hmac-sha2-512-etm@openssh.com
           - umac-128-etm@openssh.com
         ssh_host_key_algorithms:
-          - ssh-ed25519
-          - ssh-ed25519-cert-v01@openssh.com
-          - sk-ssh-ed25519@openssh.com
           - sk-ssh-ed25519-cert-v01@openssh.com
-          - rsa-sha2-512
+          - ssh-ed25519-cert-v01@openssh.com
           - rsa-sha2-512-cert-v01@openssh.com
-          - rsa-sha2-256
           - rsa-sha2-256-cert-v01@openssh.com
+          - sk-ssh-ed25519@openssh.com
+          - ssh-ed25519
+          - rsa-sha2-512
+          - rsa-sha2-256
         sshd_log_level: INFO
