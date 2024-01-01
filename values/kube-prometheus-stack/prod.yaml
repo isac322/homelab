@@ -111,7 +111,7 @@ grafana:
     ##
     annotations:
       external-dns.alpha.kubernetes.io/cloudflare-proxied: "false"
-      cert-manager.io/cluster-issuer: cert-manager-cluster-acme-issuer
+      cert-manager.io/cluster-issuer: cluster-issuer-acme
       cert-manager.io/private-key-algorithm: ECDSA
       cert-manager.io/private-key-size: '384'
       traefik.ingress.kubernetes.io/router.entrypoints: websecure
@@ -412,7 +412,7 @@ prometheus:
 
     annotations:
       external-dns.alpha.kubernetes.io/cloudflare-proxied: "false"
-      cert-manager.io/cluster-issuer: cert-manager-cluster-acme-issuer
+      cert-manager.io/cluster-issuer: cluster-issuer-acme
       cert-manager.io/private-key-algorithm: ECDSA
       cert-manager.io/private-key-size: '384'
       traefik.ingress.kubernetes.io/router.entrypoints: websecure

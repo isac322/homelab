@@ -1,0 +1,10 @@
+acme:
+  email: "bh322yoo@gmail.com"
+  # could be https://acme-staging-v02.api.letsencrypt.org/directory for testing
+  server: https://acme-v02.api.letsencrypt.org/directory
+
+  externalSecrets:
+    remoteSecretName: /homelab/cluster/vultr/token/cloudflare/cert-manager-dns-challenge
+    secretStore:
+      name: cluster-secrets
+      kind: ClusterSecretStore

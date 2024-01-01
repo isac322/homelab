@@ -13,7 +13,7 @@ certificate:
     dnsNames:
       - &host dnsb.bhyoo.com
     issuerRef:
-      name: cert-manager-cluster-acme-issuer
+      name: cluster-issuer-acme
       kind: ClusterIssuer
 
 dns:
