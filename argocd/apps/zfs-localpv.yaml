@@ -1,56 +1,56 @@
-#apiVersion: argoproj.io/v1alpha1
-#kind: Application
-#metadata:
-#  name: zfs-localpv
-#spec:
-#  destination:
-#    name: backbone
-#    namespace: openebs
-#  project: dfs
-#  source:
-#    chart: zfs-localpv
-#    helm:
-#      releaseName: zfs-localpv
-#      valueFiles:
-#        - values.yaml
-#        - https://raw.githubusercontent.com/isac322/homelab/HEAD/values/zfs-localpv/backbone.yaml
-#    repoURL: https://openebs.github.io/zfs-localpv
-#    targetRevision: 2.3.1
-#  syncPolicy:
-#    automated:
-#      prune: true
-#      selfHeal: true
-#    retry:
-#      backoff:
-#        duration: 5s
-#        factor: 2
-#        maxDuration: 3m0s
-#      limit: 100
-#    syncOptions:
-#      - CreateNamespace=true
-#---
-#apiVersion: argoproj.io/v1alpha1
-#kind: Application
-#metadata:
-#  name: zfs-localpv-storageclass
-#spec:
-#  destination:
-#    name: backbone
-#    namespace: openebs
-#  project: dfs
-#  source:
-#    path: apps/objects/zfs-localpv
-#    repoURL: https://github.com/isac322/homelab.git
-#    targetRevision: HEAD
-#  syncPolicy:
-#    automated:
-#      prune: true
-#      selfHeal: true
-#    retry:
-#      backoff:
-#        duration: 5s
-#        factor: 2
-#        maxDuration: 3m0s
-#      limit: 100
-#    syncOptions:
-#      - CreateNamespace=true
+apiVersion: argoproj.io/v1alpha1
+kind: Application
+metadata:
+  name: zfs-localpv
+spec:
+  destination:
+    name: backbone
+    namespace: openebs
+  project: dfs
+  source:
+    chart: zfs-localpv
+    helm:
+      releaseName: zfs-localpv
+      valueFiles:
+        - values.yaml
+        - https://raw.githubusercontent.com/isac322/homelab/HEAD/values/zfs-localpv/backbone.yaml
+    repoURL: https://openebs.github.io/zfs-localpv
+    targetRevision: 2.3.1
+  syncPolicy:
+    automated:
+      prune: true
+      selfHeal: true
+    retry:
+      backoff:
+        duration: 5s
+        factor: 2
+        maxDuration: 3m0s
+      limit: 100
+    syncOptions:
+      - CreateNamespace=true
+---
+apiVersion: argoproj.io/v1alpha1
+kind: Application
+metadata:
+  name: zfs-localpv-storageclass
+spec:
+  destination:
+    name: backbone
+    namespace: openebs
+  project: dfs
+  source:
+    path: apps/objects/zfs-localpv
+    repoURL: https://github.com/isac322/homelab.git
+    targetRevision: HEAD
+  syncPolicy:
+    automated:
+      prune: true
+      selfHeal: true
+    retry:
+      backoff:
+        duration: 5s
+        factor: 2
+        maxDuration: 3m0s
+      limit: 100
+    syncOptions:
+      - CreateNamespace=true
