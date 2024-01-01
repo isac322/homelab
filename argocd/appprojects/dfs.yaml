@@ -8,8 +8,7 @@ spec:
     - https://charts.rook.io/release
     - https://github.com/isac322/homelab.git
     - https://openebs.github.io/zfs-localpv
-    - https://openebs.github.io/zfs-localpv
-    - csi-driver-nfs
+    - https://raw.githubusercontent.com/kubernetes-csi/csi-driver-nfs/master/charts
   destinations:
     - namespace: rook-ceph
       name: prod
