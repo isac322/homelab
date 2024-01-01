@@ -28,3 +28,29 @@ spec:
       limit: 100
     syncOptions:
       - CreateNamespace=true
+---
+apiVersion: argoproj.io/v1alpha1
+kind: Application
+metadata:
+  name: csi-driver-nfs-storageclass
+spec:
+  destination:
+    name: backbone
+    namespace: csi-driver-nfs
+  project: dfs
+  source:
+    path: apps/objects/csi-driver-nfs
+    repoURL: https://github.com/isac322/homelab.git
+    targetRevision: HEAD
+  syncPolicy:
+    automated:
+      prune: true
+      selfHeal: true
+    retry:
+      backoff:
+        duration: 5s
+        factor: 2
+        maxDuration: 3m0s
+      limit: 100
+    syncOptions:
+      - CreateNamespace=true
