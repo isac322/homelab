@@ -4,8 +4,6 @@ feature:
   propagateHostMountOptions: false
 
 controller:
-  runOnMaster: true
-  runOnControlPlane: true
   defaultOnDeletePolicy: retain  # available values: delete, retain
   resources:
     csiProvisioner:
