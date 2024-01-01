@@ -1,0 +1,40 @@
+apiVersion: argoproj.io/v1alpha1
+kind: ApplicationSet
+metadata:
+  name: prometheus-stack
+spec:
+  generators:
+    - list:
+        elements:
+          - cluster: backbone
+#          - cluster: prod
+  template:
+    metadata:
+      name: '{{cluster}}-prometheus-stack'
+    spec:
+      destination:
+        name: '{{cluster}}'
+        namespace: prometheus
+      project: monitoring
+      source:
+        chart: kube-prometheus-stack
+        helm:
+          releaseName: kube-prometheus-stack
+          valueFiles:
+            - values.yaml
+            - 'https://raw.githubusercontent.com/isac322/homelab/HEAD/values/kube-prometheus-stack/{{cluster}}.yaml'
+        repoURL: https://prometheus-community.github.io/helm-charts
+        targetRevision: 51.6.1
+      syncPolicy:
+        automated:
+          prune: true
+          selfHeal: true
+        retry:
+          backoff:
+            duration: 5s
+            factor: 2
+            maxDuration: 3m0s
+          limit: -1
+        syncOptions:
+          - CreateNamespace=true
+          - ServerSideApply=true
