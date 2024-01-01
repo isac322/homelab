@@ -35,7 +35,7 @@ spec:
 apiVersion: argoproj.io/v1alpha1
 kind: Application
 metadata:
-  name: argocd-apps
+  name: argocd-apps [meta]
 spec:
   destination:
     name: backbone
