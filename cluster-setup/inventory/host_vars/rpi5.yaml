@@ -3,7 +3,10 @@ ansible_user: bhyoo
 desired_ip: 172.30.1.5
 gateway_ip: 172.30.1.254
 
+# k8s
 is_k8s_master: true
+k8s_node_labels:
+  - "homelab.bhyoo.com/vpn-gateway=true"
 
 # iptables-firewall
 is_wireguard_gateway: true

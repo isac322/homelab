@@ -6,7 +6,6 @@ gateway_ip: 172.30.1.254
 
 is_k8s_master: true
 k8s_node_labels:
-  - "homelab.bhyoo.com/vpn-gateway=true"
   - "homelab.bhyoo.com/zfs-node=true"
   - "homelab.bhyoo.com/zfs-pool-nas=true"
   - "homelab.bhyoo.com/zfs-pool-temporal=true"
