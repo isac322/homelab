@@ -5,7 +5,7 @@ metadata:
   name: prometheus
 provisioner: nfs.csi.k8s.io
 parameters:
-  server: n2p2.local
+  server: n2p2
   share: /mnt/k8s/prometheus
   # csi.storage.k8s.io/provisioner-secret is only needed for providing mountOptions in DeleteVolume
   # csi.storage.k8s.io/provisioner-secret-name: "mount-options"
