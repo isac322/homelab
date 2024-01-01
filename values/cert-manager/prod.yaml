@@ -14,6 +14,10 @@ resources:
     cpu: 500m
     memory: 128Mi
 
+containerSecurityContext:
+  readOnlyRootFilesystem: true
+  runAsNonRoot: true
+
 prometheus:
   enabled: true
   servicemonitor:
@@ -44,7 +48,7 @@ cainjector:
   resources:
     requests:
       cpu: 10m
-      memory: 128Mi
+      memory: 64Mi
     limits:
       cpu: 100m
       memory: 256Mi

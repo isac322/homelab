@@ -9,16 +9,19 @@ strategy:
 resources:
   requests:
     cpu: 10m
-    memory: 128Mi
+    memory: 64Mi
   limits:
     cpu: 500m
-    memory: 256Mi
+    memory: 128Mi
+
+containerSecurityContext:
+  readOnlyRootFilesystem: true
+  runAsNonRoot: true
 
 prometheus:
   enabled: true
   servicemonitor:
-    enabled: false
-
+    enabled: true
 
 webhook:
   strategy:
@@ -30,7 +33,7 @@ webhook:
   resources:
     requests:
       cpu: 10m
-      memory: 32Mi
+      memory: 16Mi
     limits:
       cpu: 100m
       memory: 128Mi
@@ -45,8 +48,7 @@ cainjector:
   resources:
     requests:
       cpu: 10m
-      memory: 128Mi
+      memory: 64Mi
     limits:
       cpu: 100m
       memory: 256Mi
-
