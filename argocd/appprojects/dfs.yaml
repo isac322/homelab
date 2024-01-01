@@ -8,10 +8,14 @@ spec:
     - https://charts.rook.io/release
     - https://github.com/isac322/homelab.git
     - https://openebs.github.io/zfs-localpv
+    - https://openebs.github.io/zfs-localpv
+    - csi-driver-nfs
   destinations:
     - namespace: rook-ceph
       name: prod
     - namespace: openebs
+      name: backbone
+    - namespace: csi-driver-nfs
       name: backbone
   clusterResourceWhitelist:
     - group: '*'
