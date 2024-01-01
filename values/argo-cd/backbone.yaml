@@ -29,6 +29,10 @@ configs:
       name: cloudflare-origin-ca-issuer-helm
       type: helm
       url: https://cloudflare.github.io/origin-ca-issuer/charts
+    csi-driver-nfs:
+      name: csi-driver-nfs
+      type: helm
+      url: https://raw.githubusercontent.com/kubernetes-csi/csi-driver-nfs/master/charts
     cloudflare-origin-ca-issuer-git:
       name: cloudflare-origin-ca-issuer-git
       type: git
