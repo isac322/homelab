@@ -238,6 +238,27 @@
     destination_port: 22
     jump: ACCEPT
 
+- name: Allow NFSv4
+  block:
+    - ansible.builtin.iptables:
+        chain: TCP
+        protocol: tcp
+        destination_port: 2049
+        jump: ACCEPT
+        source: "{{ __register_k8s_internal_node_ip_cidr }}"
+        comment: NFS
+      when: iptables_use_nfs
+
+    - ansible.builtin.iptables:
+        chain: TCP
+        protocol: tcp
+        destination_port: 2049
+        jump: ACCEPT
+        in_interface: "{{ wireguard_interface }}"
+        source: "{{ wireguard_network }}"
+        comment: NFS
+      when: iptables_use_nfs
+
 - name: Allow FTP
   block:
     - ansible.builtin.iptables:
