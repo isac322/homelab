@@ -1,9 +1,0 @@
-email: ""
-# could be https://acme-staging-v02.api.letsencrypt.org/directory for testing
-server: "https://acme-v02.api.letsencrypt.org/directory"
-
-externalSecrets:
-  remoteSecretName: ""
-  secretStore:
-    name: ""
-    kind: ClusterSecretStore
