@@ -76,6 +76,7 @@
               disable:
                 - traefik
                 - servicelb
+                - local-storage
               advertise-address: "{{ desired_ip }}"
               node-external-ip: "{{ wireguard_ip }}"
               kubelet-arg:
