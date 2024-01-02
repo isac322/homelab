@@ -910,6 +910,12 @@ prometheus:
       # name:
       # key:
 
+    securityContext:
+      runAsGroup: 65534
+      runAsNonRoot: true
+      runAsUser: 65534
+      fsGroup: 65534
+
   additionalRulesForClusterRole: []
   #  - apiGroups: [ "" ]
   #    resources:
