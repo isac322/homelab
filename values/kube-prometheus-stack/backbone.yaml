@@ -41,29 +41,29 @@ grafana:
   ingress:
     ## If true, Grafana Ingress will be created
     ##
-    enabled: false
+    enabled: true
 
     ## IngressClassName for Grafana Ingress.
     ## Should be provided if Ingress is enable.
     ##
-    # ingressClassName: nginx
+    ingressClassName: traefik
 
     ## Annotations for Grafana Ingress
     ##
-    annotations: {}
-      # kubernetes.io/ingress.class: nginx
-      # kubernetes.io/tls-acme: "true"
-
-    ## Labels to be added to the Ingress
-    ##
-    labels: {}
+    annotations:
+      external-dns.alpha.kubernetes.io/cloudflare-proxied: "false"
+      cert-manager.io/cluster-issuer: cluster-issuer-acme
+      cert-manager.io/private-key-algorithm: ECDSA
+      cert-manager.io/private-key-size: '384'
+      traefik.ingress.kubernetes.io/router.entrypoints: websecure
 
     ## Hostnames.
     ## Must be provided if Ingress is enable.
     ##
     # hosts:
     #   - grafana.domain.com
-    hosts: []
+    hosts:
+      - grafana.bhyoo.com
 
     ## Path for grafana ingress
     path: /
@@ -71,10 +71,10 @@ grafana:
     ## TLS configuration for grafana Ingress
     ## Secret must be manually created in the namespace
     ##
-    tls: []
-    # - secretName: grafana-general-tls
-    #   hosts:
-    #   - grafana.example.com
+    tls:
+      - secretName: grafana-general-tls
+        hosts:
+          - grafana.bhyoo.com
 
   sidecar:
     dashboards:
