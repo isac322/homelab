@@ -15,7 +15,7 @@ spec:
         - values.yaml
         - 'https://raw.githubusercontent.com/isac322/homelab/HEAD/values/kube-prometheus-stack/backbone.yaml'
     repoURL: https://prometheus-community.github.io/helm-charts
-    targetRevision: 51.6.1
+    targetRevision: 55.5.2
   syncPolicy:
     automated:
       prune: true
