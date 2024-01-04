@@ -401,24 +401,25 @@ prometheusOperator:
 ##
 prometheus:
   ingress:
-    enabled: false
+    enabled: true
 
     # For Kubernetes >= 1.18 you should specify the ingress-controller via the field ingressClassName
     # See https://kubernetes.io/blog/2020/04/02/improvements-to-the-ingress-api-in-kubernetes-1.18/#specifying-the-class-of-an-ingress
-    # ingressClassName: nginx
+    ingressClassName: traefik
 
-    annotations: {}
-    labels: {}
-
-    ## Redirect ingress to an additional defined port on the service
-    # servicePort: 8081
+    annotations:
+      cert-manager.io/cluster-issuer: cluster-issuer-acme
+      cert-manager.io/private-key-algorithm: ECDSA
+      cert-manager.io/private-key-size: '384'
+      traefik.ingress.kubernetes.io/router.entrypoints: websecure
 
     ## Hostnames.
     ## Must be provided if Ingress is enabled.
     ##
     # hosts:
     #   - prometheus.domain.com
-    hosts: []
+    hosts:
+      - prometheus.bhyoo.com
 
     ## Paths to use for ingress rules - one path should match the prometheusSpec.routePrefix
     ##
@@ -432,10 +433,10 @@ prometheus:
     ## TLS configuration for Prometheus Ingress
     ## Secret must be manually created in the namespace
     ##
-    tls: []
-      # - secretName: prometheus-general-tls
-      #   hosts:
-      #     - prometheus.example.com
+    tls:
+      - secretName: prometheus-general-tls
+        hosts:
+          - prometheus.bhyoo.com
 
   ## Settings affecting prometheusSpec
   ## ref: https://github.com/prometheus-operator/prometheus-operator/blob/main/Documentation/api.md#prometheusspec
