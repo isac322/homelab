@@ -12,6 +12,13 @@ resource "aws_ssm_parameter" "cf_api_token_for_cert_manager_dns_challenge" {
   value       = cloudflare_api_token.k8s_cert_manager_dns_challenge.value
 }
 
+resource "aws_ssm_parameter" "cf_api_token_for_cloudflared_operator" {
+  name        = "/homelab/cluster/${var.k8s_cluster_name}/token/cloudflare/cloudflared-operator"
+  description = "Cloudflare API token for cloudflared-operator"
+  type        = "SecureString"
+  value       = cloudflare_api_token.k8s_cloudflared_operator.value
+}
+
 resource "aws_iam_user" "external_secrets" {
   name = "${var.k8s_cluster_name}-external-secrets"
   path = "/homelab/sa/"
