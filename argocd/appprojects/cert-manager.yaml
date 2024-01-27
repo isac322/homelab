@@ -7,7 +7,7 @@ spec:
   sourceRepos:
     - https://charts.jetstack.io
     - https://charts.bhyoo.com
-    - https://cloudflare.github.io/origin-ca-issuer/charts
+    - oci://ghcr.io/cloudflare/origin-ca-issuer-charts/origin-ca-issuer
     - https://github.com/cloudflare/origin-ca-issuer.git
   destinations:
     - namespace: cert-manager
