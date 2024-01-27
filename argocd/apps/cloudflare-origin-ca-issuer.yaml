@@ -41,7 +41,7 @@ spec:
       valueFiles:
         - values.yaml
         - https://raw.githubusercontent.com/isac322/homelab/HEAD/values/origin-ca-issuer/prod.yaml
-    repoURL: oci://ghcr.io/cloudflare/origin-ca-issuer-charts/origin-ca-issuer
+    repoURL: ghcr.io/cloudflare/origin-ca-issuer-charts/origin-ca-issuer
     targetRevision: 0.5.2
   syncPolicy:
     automated:
