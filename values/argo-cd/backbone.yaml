@@ -29,7 +29,7 @@ configs:
       enableOCI: "true"
       name: cloudflare-origin-ca-issuer-helm
       type: helm
-      url: oci://ghcr.io/cloudflare/origin-ca-issuer-charts/origin-ca-issuer
+      url: ghcr.io/cloudflare/origin-ca-issuer-charts/origin-ca-issuer
     csi-driver-nfs:
       name: csi-driver-nfs
       type: helm
