@@ -22,6 +22,7 @@ dns:
     annotations:
       static-lb.bhyoo.com/exclude-ingress-ip-nets: ""
       external-dns.alpha.kubernetes.io/cloudflare-proxied: "false"
+      external-dns.alpha.kubernetes.io/exclude: "true"
     externalTrafficPolicy: Local
 
 dot:
@@ -35,6 +36,7 @@ dot:
       static-lb.bhyoo.com/internal-ip-mappings: ingress
       static-lb.bhyoo.com/external-ip-mappings: external
       static-lb.bhyoo.com/exclude-external-ip-nets: 10.222.0.0/16
+      external-dns.alpha.kubernetes.io/exclude: "true"
     externalTrafficPolicy: Local
 
 doh:
@@ -48,6 +50,7 @@ doh:
     annotations:
       traefik.ingress.kubernetes.io/router.entrypoints: websecure
       external-dns.alpha.kubernetes.io/cloudflare-proxied: "false"
+      external-dns.alpha.kubernetes.io/exclude: "true"
     hosts:
       - *host
     tlsSecretName: *secretName

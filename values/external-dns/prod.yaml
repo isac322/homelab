@@ -38,3 +38,4 @@ provider: cloudflare
 extraArgs:
   - --service-type-filter=LoadBalancer
   - --cloudflare-proxied
+  - --annotation-filter="external-dns.alpha.kubernetes.io/exclude notin (true)"
