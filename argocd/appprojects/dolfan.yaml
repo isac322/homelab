@@ -1,0 +1,14 @@
+apiVersion: argoproj.io/v1alpha1
+kind: AppProject
+metadata:
+  name: dolfan
+spec:
+  description: DolFan backend
+  sourceRepos:
+    - registry-1.docker.io/bitnamicharts
+  destinations:
+    - namespace: dolfan
+      name: backbone
+  clusterResourceWhitelist:
+    - group: '*'
+      kind: '*'
