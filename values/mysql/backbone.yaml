@@ -251,7 +251,7 @@ rbac:
 volumePermissions:
   ## @param volumePermissions.enabled Enable init container that changes the owner and group of the persistent volume(s) mountpoint to `runAsUser:fsGroup`
   ##
-  enabled: true
+  enabled: false
   ## @param volumePermissions.resourcesPreset Set container resources according to one common preset (allowed values: none, nano, small, medium, large, xlarge, 2xlarge). This is ignored if volumePermissions.resources is set (volumePermissions.resources is recommended for production).
   ## More information: https://github.com/bitnami/charts/blob/main/bitnami/common/templates/_resources.tpl#L15
   ##
@@ -275,7 +275,7 @@ volumePermissions:
 metrics:
   ## @param metrics.enabled Start a side-car prometheus exporter
   ##
-  enabled: false
+  enabled: true
 
   ## Mysqld Prometheus exporter resource requests and limits
   ## ref: https://kubernetes.io/docs/concepts/configuration/manage-compute-resources-container/
