@@ -1,3 +1,6 @@
+global:
+  domain: argocd.bhyoo.com
+
 configs:
   clusterCredentials:
     - name: backbone
@@ -96,16 +99,7 @@ server:
       traefik.ingress.kubernetes.io/router.entrypoints: websecure
 
     ingressClassName: traefik
-
-    hosts:
-      - argocd.bhyoo.com
-
-    tls:
-      - hosts:
-          - argocd.bhyoo.com
-        secretName: argocd-server-cert
-
-    https: false
+    tls: true
 
   metrics:
     enabled: true
