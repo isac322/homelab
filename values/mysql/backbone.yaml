@@ -139,7 +139,7 @@ primary:
   containerSecurityContext:
     enabled: true
     seLinuxOptions: { }
-    runAsUser: 65534
+    runAsUser: 1001
     runAsGroup: 65534
     runAsNonRoot: true
     allowPrivilegeEscalation: false
@@ -251,7 +251,7 @@ rbac:
 volumePermissions:
   ## @param volumePermissions.enabled Enable init container that changes the owner and group of the persistent volume(s) mountpoint to `runAsUser:fsGroup`
   ##
-  enabled: false
+  enabled: true
   ## @param volumePermissions.resourcesPreset Set container resources according to one common preset (allowed values: none, nano, small, medium, large, xlarge, 2xlarge). This is ignored if volumePermissions.resources is set (volumePermissions.resources is recommended for production).
   ## More information: https://github.com/bitnami/charts/blob/main/bitnami/common/templates/_resources.tpl#L15
   ##
