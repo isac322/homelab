@@ -783,7 +783,7 @@ cluster:
   externalAccess:
     ## @param cluster.externalAccess.enabled Enable access to the Redis
     ##
-    enabled: true
+    enabled: false
     ## @param cluster.externalAccess.hostMode Set cluster preferred endpoint type as hostname
     ## ref: https://github.com/redis/redis/pull/9530
     ##
