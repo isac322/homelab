@@ -12,6 +12,7 @@ spec:
     helm:
       valueFiles:
         - values.yaml
+        - https://raw.githubusercontent.com/isac322/homelab/HEAD/values/dolfan/backbone.yaml
     repoURL: registry-1.docker.io/bitnamicharts
     targetRevision: 10.0.0
   syncPolicy:
