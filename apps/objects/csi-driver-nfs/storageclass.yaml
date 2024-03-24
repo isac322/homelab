@@ -18,12 +18,11 @@ mountOptions:
 apiVersion: storage.k8s.io/v1
 kind: StorageClass
 metadata:
-  name: mysql
+  name: slow-hot-storage
 provisioner: nfs.csi.k8s.io
 parameters:
   server: n2p2
-  share: /mnt/k8s/mysql
-  mountPermissions: '0777'
+  share: /mnt/k8s
   # csi.storage.k8s.io/provisioner-secret is only needed for providing mountOptions in DeleteVolume
   # csi.storage.k8s.io/provisioner-secret-name: "mount-options"
   # csi.storage.k8s.io/provisioner-secret-namespace: "default"
