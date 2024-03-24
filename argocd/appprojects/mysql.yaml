@@ -1,0 +1,14 @@
+apiVersion: argoproj.io/v1alpha1
+kind: AppProject
+metadata:
+  name: mysql
+spec:
+  description: MySQL
+  sourceRepos:
+    - registry-1.docker.io/bitnamicharts
+  destinations:
+    - namespace: mysql
+      name: backbone
+  clusterResourceWhitelist:
+    - group: '*'
+      kind: '*'

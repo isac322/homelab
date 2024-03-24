@@ -1,0 +1,35 @@
+apiVersion: argoproj.io/v1alpha1
+kind: Application
+metadata:
+  name: mysql
+spec:
+  destination:
+    name: backbone
+    namespace: mysql
+  project: mysql
+  source:
+    chart: mysql
+    helm:
+      valueFiles:
+        - values.yaml
+        - https://raw.githubusercontent.com/isac322/homelab/HEAD/values/mysql/backbone.yaml
+    repoURL: registry-1.docker.io/bitnamicharts
+    targetRevision: 10.1.0
+  syncPolicy:
+    automated:
+      prune: true
+      selfHeal: true
+    retry:
+      backoff:
+        duration: 5s
+        factor: 2
+        maxDuration: 3m0s
+      limit: 100
+    syncOptions:
+      - CreateNamespace=true
+  ignoreDifferences:
+    - kind: Certificate
+      group: cert-manager.io
+      jsonPointers:
+        - /spec/duration
+        - /spec/renewBefore
