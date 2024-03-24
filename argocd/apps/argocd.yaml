@@ -48,7 +48,7 @@ spec:
         - values.yaml
         - https://raw.githubusercontent.com/isac322/homelab/HEAD/values/argocd-apps/backbone.yaml
     repoURL: https://argoproj.github.io/argo-helm
-    targetRevision: 1.5.0
+    targetRevision: 2.0.0
   syncPolicy:
     automated:
       prune: true

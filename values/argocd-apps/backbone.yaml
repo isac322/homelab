@@ -1,5 +1,5 @@
 applications:
-  - name: argocd-apps
+  argocd-apps:
     namespace: argocd
     finalizers:
       - resources-finalizer.argocd.argoproj.io
@@ -24,7 +24,7 @@ applications:
           factor: 2
           maxDuration: 3m0s
         limit: -1
-  - name: argocd-appprojects
+  argocd-appprojects:
     namespace: argocd
     finalizers:
       - resources-finalizer.argocd.argoproj.io
@@ -49,7 +49,7 @@ applications:
           factor: 2
           maxDuration: 3m0s
         limit: -1
-  - name: argocd-appsets
+  argocd-appsets:
     namespace: argocd
     finalizers:
       - resources-finalizer.argocd.argoproj.io
@@ -76,7 +76,7 @@ applications:
         limit: -1
 
 projects:
-  - name: argocd
+  argocd:
     namespace: argocd
     finalizers:
       - resources-finalizer.argocd.argoproj.io
