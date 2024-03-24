@@ -110,6 +110,44 @@ startdbScriptsConfigMap: ""
 ## @section MySQL Primary parameters
 ##
 primary:
+  ## MySQL primary Pod security context
+  ## ref: https://kubernetes.io/docs/tasks/configure-pod-container/security-context/#set-the-security-context-for-a-pod
+  ## @param primary.podSecurityContext.enabled Enable security context for MySQL primary pods
+  ## @param primary.podSecurityContext.fsGroupChangePolicy Set filesystem group change policy
+  ## @param primary.podSecurityContext.sysctls Set kernel settings using the sysctl interface
+  ## @param primary.podSecurityContext.supplementalGroups Set filesystem extra groups
+  ## @param primary.podSecurityContext.fsGroup Group ID for the mounted volumes' filesystem
+  ##
+  podSecurityContext:
+    enabled: true
+    fsGroupChangePolicy: Always
+    sysctls: [ ]
+    supplementalGroups: [ ]
+    fsGroup: 65534
+  ## MySQL primary container security context
+  ## ref: https://kubernetes.io/docs/tasks/configure-pod-container/security-context/#set-the-security-context-for-a-container
+  ## @param primary.containerSecurityContext.enabled MySQL primary container securityContext
+  ## @param primary.containerSecurityContext.seLinuxOptions [object,nullable] Set SELinux options in container
+  ## @param primary.containerSecurityContext.runAsUser User ID for the MySQL primary container
+  ## @param primary.containerSecurityContext.runAsGroup Group ID for the MySQL primary container
+  ## @param primary.containerSecurityContext.runAsNonRoot Set MySQL primary container's Security Context runAsNonRoot
+  ## @param primary.containerSecurityContext.allowPrivilegeEscalation Set container's privilege escalation
+  ## @param primary.containerSecurityContext.capabilities.drop Set container's Security Context runAsNonRoot
+  ## @param primary.containerSecurityContext.seccompProfile.type Set Client container's Security Context seccomp profile
+  ## @param primary.containerSecurityContext.readOnlyRootFilesystem Set container's Security Context read-only root filesystem
+  ##
+  containerSecurityContext:
+    enabled: true
+    seLinuxOptions: { }
+    runAsUser: 65534
+    runAsGroup: 65534
+    runAsNonRoot: true
+    allowPrivilegeEscalation: false
+    capabilities:
+      drop: [ "ALL" ]
+    seccompProfile:
+      type: "RuntimeDefault"
+    readOnlyRootFilesystem: true
   ## MySQL primary container's resource requests and limits
   ## ref: https://kubernetes.io/docs/concepts/configuration/manage-compute-resources-container/
   ## We usually recommend not to specify default resources and to leave this as a conscious
