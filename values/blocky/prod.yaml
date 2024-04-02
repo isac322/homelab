@@ -137,6 +137,7 @@ blocking:
       - https://raw.githubusercontent.com/anudeepND/whitelist/master/domains/whitelist.txt
       - |
         sentry.io
+        sentry-cdn.com
         thepiratebay.org
     trackers:
       - |
