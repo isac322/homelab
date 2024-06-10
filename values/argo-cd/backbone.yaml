@@ -3,7 +3,7 @@ global:
 
 configs:
   clusterCredentials:
-    - name: backbone
+    backbone:
       server: https://kubernetes.default.svc
       config: { }
 
