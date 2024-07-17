@@ -430,6 +430,12 @@ redis:
 
 ###########################################
 
+updateStrategy:
+  # -- Customize updateStrategy: RollingUpdate or OnDelete
+  type: RollingUpdate
+  rollingUpdate:
+    maxUnavailable: 1
+
 podAnnotations: {}
 
 podSecurityContext:

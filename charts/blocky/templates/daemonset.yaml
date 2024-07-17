@@ -8,6 +8,10 @@ spec:
   selector:
     matchLabels:
       {{- include "blocky.selectorLabels" . | nindent 6 }}
+  {{- with .Values.updateStrategy }}
+  updateStrategy:
+    {{- toYaml . | trim | nindent 4 }}
+  {{- end }}
   template:
     metadata:
       annotations:
