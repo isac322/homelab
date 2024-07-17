@@ -70,7 +70,7 @@ upstreams:
 blocking:
   customize: true
 
-  blackLists:
+  denylists:
     ads:
       - https://s3.amazonaws.com/lists.disconnect.me/simple_ad.txt
       - https://raw.githubusercontent.com/StevenBlack/hosts/master/alternates/fakenews-gambling/hosts
@@ -132,7 +132,7 @@ blocking:
     all:
       - |
         /.*/
-  whiteLists:
+  allowlists:
     ads:
       - https://raw.githubusercontent.com/anudeepND/whitelist/master/domains/whitelist.txt
       - |
@@ -157,8 +157,8 @@ blocking:
 
   loading:
     downloads:
-      timeout: 4m
-    maxErrorsPerSource: 20
+      timeout: 10m
+    maxErrorsPerSource: -1
     concurrency: 20
 
 filtering:
@@ -185,6 +185,9 @@ redis:
     enabled: true
     serviceMonitor:
       enabled: true
+
+ede:
+  enable: true
 
 prometheus:
   serviceMonitor:
