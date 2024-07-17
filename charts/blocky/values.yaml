@@ -96,6 +96,10 @@ certificate:
 ## upstream
 
 upstreams:
+  init:
+    # The "init" is testing the given resolvers for each group. The potentially fatal error, depending on the strategy, is if a group has no functional resolvers. Default: blocking
+    strategy: blocking
+
   # Blocky supports different upstream strategies (default `parallel_best`) that determine how and to which upstream DNS servers requests are forwarded.
   strategy: parallel_best
 
@@ -127,8 +131,8 @@ bootstrapDns:
 # optional: if path defined, use this file for query resolution (A, AAAA and rDNS). Default: empty
 hostsFile:
   customize: false
-  # optional: Path to hosts file (e.g. /etc/hosts on Linux)
-  filePath: ""
+  # optional: Host files (e.g. /etc/hosts on Linux)
+  sources: []
   # optional: TTL, default: 1h
   hostsTTL: 1h
   # optional: Time between hosts file refresh, default: 1h
@@ -177,6 +181,8 @@ customDNS:
     # example.com: printer.lan
   mapping: {}
     # printer.lan: 192.168.178.3,2001:0db8:85a3:08d3:1319:8a2e:0370:7344
+  # CNAME records are supported by utilizing the zone parameter. The zone file is a multiline string containing a DNS Zone File.
+  zone: ""
 
 # optional: definition, which DNS resolver(s) should be used for queries to the domain (with all sub-domains). Multiple resolvers must be separated by a comma
 # Example: Query client.fritz.box will ask DNS server 192.168.178.1. This is necessary for local network, to resolve clients by host name
@@ -215,7 +221,7 @@ clientLookup:
 blocking:
   customize: false
   # definition of blacklist groups. Can be external link (http/https) or local file
-  blackLists: {}
+  denylists: {}
     # ads:
     #   - https://s3.amazonaws.com/lists.disconnect.me/simple_ad.txt
     #   - https://raw.githubusercontent.com/StevenBlack/hosts/master/hosts
@@ -228,7 +234,7 @@ blocking:
     # special:
     #   - https://raw.githubusercontent.com/StevenBlack/hosts/master/alternates/fakenews/hosts
   # definition of whitelist groups. Attention: if the same group has black and whitelists, whitelists will be used to disable particular blacklist entries. If a group has only whitelist entries -> this means only domains from this list are allowed, all other domains will be blocked
-  whiteLists: {}
+  allowlists: {}
     # ads:
     #   - whitelist.txt
     #   - |
@@ -345,6 +351,17 @@ ede:
   # enabled if true, Default: false
   enable: false
 
+# optional: EDNS Client Subnet (ECS)
+ecs:
+  # Use ECS information if it is present with a netmask is 32 for IPv4 or 128 for IPv6 as CientIP. Default: false
+  useAsClient: false
+  # Forward ECS option to upstream
+  forward: fase
+  # Add ECS option for IPv4 requests if mask is greater than zero (max value 32)
+  ipv4Mask: 0
+  # Add ECS option for IPv6 requests if mask is greater than zero (max value 128)
+  ipv6Mask: 0
+
 # optional: write query information (question, answer, client, duration etc.) to daily csv file
 queryLog:
   enabled: false
@@ -362,6 +379,8 @@ queryLog:
   creationCooldown: 2
   # optional: which information should be logged, default: all
   fields: []
+  # optional: Interval to write data in bulk to the external database
+  flushInterval: 30s
 
 
 # optional: export metrics to prometheus

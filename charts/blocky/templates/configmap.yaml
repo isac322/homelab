@@ -32,6 +32,9 @@ data:
       {{- with .Values.customDNS.mapping }}
       mapping: {{- toYaml . | nindent 8 }}
       {{- end }}
+      {{- with .Values.customDNS.zone }}
+      zone: {{ . }}
+      {{- end }}
     {{- end }}
 
     {{- if .Values.conditional.customize }}
@@ -51,8 +54,8 @@ data:
 
     {{- if .Values.blocking.customize }}
     blocking:
-      blackLists: {{- toYaml .Values.blocking.blackLists | nindent 8 }}
-      whiteLists: {{- toYaml .Values.blocking.whiteLists | nindent 8 }}
+      denylists: {{- toYaml .Values.blocking.denylists | nindent 8 }}
+      allowlists: {{- toYaml .Values.blocking.allowlists | nindent 8 }}
       clientGroupsBlock: {{- toYaml .Values.blocking.clientGroupsBlock | nindent 8 }}
       blockType: {{ .Values.blocking.blockType }}
       blockTTL: {{ .Values.blocking.blockTTL }}
@@ -161,7 +164,7 @@ data:
 
     {{- if .Values.hostsFile.customize }}
     hostsFile:
-      filePath: {{ .Values.hostsFile.filePath }}
+      sources: {{- toYaml .Values.hostsFile.sources | nindent 6 }}
       hostsTTL: {{ .Values.hostsFile.hostsTTL }}
       refreshPeriod: {{ .Values.hostsFile.refreshPeriod }}
       filterLoopback: {{ .Values.hostsFile.filterLoopback }}
@@ -190,6 +193,17 @@ data:
     ede:
       # enabled if true, Default: false
       enable: {{ .Values.ede.enable }}
+
+    # optional: EDNS Client Subnet (ECS)
+    ecs:
+      # Use ECS information if it is present with a netmask is 32 for IPv4 or 128 for IPv6 as CientIP. Default: false
+      useAsClient: {{ .Values.ecs.useAsClient }}
+      # Forward ECS option to upstream
+      forward: {{ .Values.ecs.forward }}
+      # Add ECS option for IPv4 requests if mask is greater than zero (max value 32)
+      ipv4Mask: {{ .Values.ecs.ipv4Mask }}
+      # Add ECS option for IPv6 requests if mask is greater than zero (max value 128)
+      ipv6Mask: {{ .Values.ecs.ipv6Mask }}
 
     specialUseDomains:
       rfc6762-appendixG: {{ .Values.specialUseDomains.rfc6762_appendixG }}
