@@ -356,7 +356,7 @@ ecs:
   # Use ECS information if it is present with a netmask is 32 for IPv4 or 128 for IPv6 as CientIP. Default: false
   useAsClient: false
   # Forward ECS option to upstream
-  forward: fase
+  forward: false
   # Add ECS option for IPv4 requests if mask is greater than zero (max value 32)
   ipv4Mask: 0
   # Add ECS option for IPv6 requests if mask is greater than zero (max value 128)
