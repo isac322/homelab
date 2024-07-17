@@ -158,7 +158,7 @@ blocking:
   loading:
     downloads:
       timeout: 10m
-    maxErrorsPerSource: -1
+    maxErrorsPerSource: 20
     concurrency: 20
 
 filtering:
