@@ -17,8 +17,6 @@ data:
 
       timeout: {{ .Values.upstreams.timeout | quote }}
 
-    startVerifyUpstream: {{ .Values.upstreams.startVerify }}
-
     connectIPVersion: {{ .Values.connectIPVersion }}
 
     {{- if .Values.customDNS.customize }}

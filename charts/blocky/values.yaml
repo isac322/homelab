@@ -121,9 +121,6 @@ upstreams:
   # optional: timeout to query the upstream resolver. Default: 2s
   timeout: 2s
 
-  # optional: If true, blocky will fail to start unless at least one upstream server per group is reachable. Default: false
-  startVerify: false
-
 # optional: These DNS servers are used to resolve upstream DoH and DoT servers that are specified as host names, and list domains. It is useful if no system DNS resolver is configured, and/or to encrypt the bootstrap queries.
 bootstrapDns:
   - upstream: tcp+udp:1.1.1.1
