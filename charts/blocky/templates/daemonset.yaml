@@ -63,17 +63,17 @@ spec:
               command:
                 - /app/blocky
                 - healthcheck
-            timeoutSeconds: 1
-            failureThreshold: 1
-            periodSeconds: 1
+            timeoutSeconds: {{ .Values.readinessProbe.timeoutSeconds }}
+            failureThreshold: {{ .Values.readinessProbe.failureThreshold }}
+            periodSeconds: {{ .Values.readinessProbe.periodSeconds }}
           startupProbe:
             exec:
               command:
                 - /app/blocky
                 - healthcheck
-            timeoutSeconds: 1
-            failureThreshold: 120
-            periodSeconds: 1
+            timeoutSeconds: {{ .Values.startupProbe.timeoutSeconds }}
+            failureThreshold: {{ .Values.startupProbe.failureThreshold }}
+            periodSeconds: {{ .Values.startupProbe.periodSeconds }}
           resources:
             {{- toYaml .Values.resources | nindent 12 }}
           volumeMounts:
