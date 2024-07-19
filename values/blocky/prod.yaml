@@ -171,9 +171,7 @@ filtering:
     - AAAA
 
 caching:
-  customize: true
-  prefetching: true
-  minTime: 5s
+  customize: false
 
 redis:
   enabled: false
