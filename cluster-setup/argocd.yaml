@@ -239,7 +239,7 @@
         atomic: yes
         chart_ref: argocd-apps
         chart_repo_url: https://argoproj.github.io/argo-helm
-        chart_version: 2.0.0
+        chart_version: 2.0.2
         create_namespace: yes
         kubeconfig: /etc/rancher/k3s/k3s.yaml
         release_name: argocd-apps
