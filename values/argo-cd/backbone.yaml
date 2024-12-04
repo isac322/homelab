@@ -103,6 +103,7 @@ server:
       cert-manager.io/private-key-size: 384
       traefik.ingress.kubernetes.io/router.entrypoints: websecure
 
+    secretName: argocd-server-tls
     ingressClassName: traefik
     tls: true
 
