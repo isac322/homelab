@@ -12,6 +12,7 @@ parameters:
   # csi.storage.k8s.io/provisioner-secret-name: "mount-options"
   # csi.storage.k8s.io/provisioner-secret-namespace: "default"
 reclaimPolicy: Delete
+allowVolumeExpansion: true
 mountOptions:
   - nfsvers=4.2
 ---
@@ -28,5 +29,23 @@ parameters:
   # csi.storage.k8s.io/provisioner-secret-name: "mount-options"
   # csi.storage.k8s.io/provisioner-secret-namespace: "default"
 reclaimPolicy: Retain
+allowVolumeExpansion: true
+mountOptions:
+  - nfsvers=4.2
+---
+apiVersion: storage.k8s.io/v1
+kind: StorageClass
+metadata:
+  name: temporal
+provisioner: nfs.csi.k8s.io
+parameters:
+  server: n2p1
+  share: /mnt/temporal/k8s
+  mountPermissions: '0777'
+  # csi.storage.k8s.io/provisioner-secret is only needed for providing mountOptions in DeleteVolume
+  # csi.storage.k8s.io/provisioner-secret-name: "mount-options"
+  # csi.storage.k8s.io/provisioner-secret-namespace: "default"
+reclaimPolicy: Delete
+allowVolumeExpansion: true
 mountOptions:
   - nfsvers=4.2
