@@ -49,7 +49,7 @@ jobs:
         run: |
           set -e
           arch="$(dpkg --print-architecture)"
-          curl -s https://api.github.com/repos/helm/chart-releaser/releases/latest \
+          curl -s https://api.github.com/repos/helm/chart-releaser/releases/tags/v1.6.1 \
           | yq --indent 0 --no-colors --input-format json --unwrapScalar \
             ".assets[] | select(.name | test("\""^chart-releaser_.+_linux_${arch}\.tar\.gz$"\"")) | .browser_download_url" \
           | xargs curl -SsL \
