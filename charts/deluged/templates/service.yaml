@@ -35,9 +35,13 @@ spec:
     {{- range $i, $_ := until $portCount }}
     {{- $containerPort := (add ($.Values.inboundPortRange.min | int) $i) }}
     - port: {{ $containerPort }}
-      name: inbound-port-{{ $i }}
+      name: inbound-tcp-port-{{ $i }}
       targetPort: {{ $containerPort }}
       protocol: TCP
+    - port: {{ $containerPort }}
+      name: inbound-udp-port-{{ $i }}
+      targetPort: {{ $containerPort }}
+      protocol: UDP
     {{- end }}
   selector:
     {{- include "deluged.selectorLabels" . | nindent 4 }}
