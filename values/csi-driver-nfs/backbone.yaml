@@ -4,7 +4,7 @@ feature:
   propagateHostMountOptions: false
 
 controller:
-  defaultOnDeletePolicy: retain  # available values: delete, retain
+  enableSnapshotter: false
   resources:
     csiProvisioner:
       limits:
