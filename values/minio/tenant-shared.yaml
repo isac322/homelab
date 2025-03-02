@@ -178,7 +178,7 @@ extraResources:
     {{- else -}}
       {{- $generatedUser := randAlphaNum 16 -}}
       {{- $generatedPassword := randAlphaNum 32 -}}
-      {{- $env := printf "export MINIO_ROOT_USER='%s'\nexport MINIO_ROOT_PASSWORD='%s'" $generatedUser $generatedPassword -}}
+      {{- $env := printf "export MINIO_ROOT_USER=%s\nexport MINIO_ROOT_PASSWORD=%s" $generatedUser $generatedPassword -}}
       {{- $config = $env | b64enc -}}
     {{- end -}}
     apiVersion: v1
