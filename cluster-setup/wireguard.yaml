@@ -14,7 +14,7 @@
           backbone:
             cidr: 10.222.0.0/26
             ansible_groups: ['backbone']
-            gateway_host: 'rpi5.local'
+            gateway_host: 'rpi5'
           prod:
             cidr: 10.222.0.64/26
             ansible_groups: ['prod']
@@ -43,4 +43,28 @@
             ip_address: 10.222.0.133
             allowed_groups:
               - prod
+              - backbone
+          jay-phone:
+            ip_address: 10.222.0.193
+            allowed_groups:
+              - backbone
+          jay-tablet:
+            ip_address: 10.222.0.194
+            allowed_groups:
+              - backbone
+          jay-desktop:
+            ip_address: 10.222.0.195
+            allowed_groups:
+              - backbone
+          yjyoo-phone:
+            ip_address: 10.222.0.225
+            allowed_groups:
+              - backbone
+          gyhan-phone:
+            ip_address: 10.222.0.226
+            allowed_groups:
+              - backbone
+          gyhan-tablet:
+            ip_address: 10.222.0.227
+            allowed_groups:
               - backbone

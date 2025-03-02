@@ -13,3 +13,10 @@
     - role: etc_hosts
       vars:
         etc_hosts_ipv6: false
+        hosts_dns_hostname:
+          - address: 172.30.1.3
+            hostname: k8s.backbone.homelab.bhyoo.com
+          - address: 172.30.1.4
+            hostname: k8s.backbone.homelab.bhyoo.com
+          - address: 172.30.1.5
+            hostname: k8s.backbone.homelab.bhyoo.com
