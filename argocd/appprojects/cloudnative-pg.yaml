@@ -1,0 +1,14 @@
+apiVersion: argoproj.io/v1alpha1
+kind: AppProject
+metadata:
+  name: cloudnative-pg
+spec:
+  description: CloudNative-PG
+  sourceRepos:
+    - https://cloudnative-pg.github.io/charts/
+  destinations:
+    - namespace: cnpg-system
+      name: backbone
+  clusterResourceWhitelist:
+    - group: '*'
+      kind: '*'

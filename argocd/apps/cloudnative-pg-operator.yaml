@@ -1,0 +1,29 @@
+apiVersion: argoproj.io/v1alpha1
+kind: Application
+metadata:
+  name: cnpg-operator
+spec:
+  destination:
+    name: backbone
+    namespace: cnpg-system
+  project: cloudnative-pg
+  source:
+    chart: cloudnative-pg
+    helm:
+      valueFiles:
+        - values.yaml
+        - https://raw.githubusercontent.com/isac322/homelab/HEAD/values/cloudnative-pg/operator.yaml
+    repoURL: https://cloudnative-pg.github.io/charts/
+    targetRevision: 0.23.0
+  syncPolicy:
+    automated:
+      prune: true
+      selfHeal: true
+    retry:
+      backoff:
+        duration: 5s
+        factor: 2
+        maxDuration: 3m0s
+      limit: 100
+    syncOptions:
+      - CreateNamespace=true
