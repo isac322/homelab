@@ -1,0 +1,211 @@
+# Root key for MinIO Tenant Chart
+tenant:
+  ###
+  # The Tenant name
+  #
+  # Change this to match your preferred MinIO Tenant name.
+  name: shared-minio
+  ###
+  # The Kubernetes secret name that contains MinIO environment variable configurations.
+  # The secret is expected to have a key named config.env containing environment variables exports.
+  configuration:
+    name: shared-minio-env-configuration
+  ###
+  # Root key for dynamically creating a secret for use with configuring root MinIO User
+  # Specify the ``name`` and then a list of environment variables.
+  #
+  # .. important::
+  #
+  #    Do not use this in production environments.
+  #    This field is intended for use with rapid development or testing only.
+  #
+  # For example:
+  #
+  # .. code-block:: yaml
+  #
+  #    name: myminio-env-configuration
+  #    accessKey: minio
+  #    secretKey: minio123
+  #
+  configSecret:
+    name: shared-minio-env-configuration
+    accessKey: null
+    secretKey: null
+    existingSecret: true
+
+  ###
+  # If this variable is set to true, then enable the usage of an existing Kubernetes secret to set environment variables for the Tenant.
+  # The existing Kubernetes secret name must be placed under .tenant.configuration.name e.g. existing-minio-env-configuration
+  # The secret must contain a key ``config.env``.
+  # The values should be a series of export statements to set environment variables for the Tenant.
+  # For example:
+  #
+  # .. code-block:: shell
+  #
+  #    stringData:
+  #       config.env: |-
+  #         export MINIO_ROOT_USER=ROOTUSERNAME
+  #         export MINIO_ROOT_PASSWORD=ROOTUSERPASSWORD
+  #
+  #   existingSecret: false
+  ###
+  # Top level key for configuring MinIO Pool(s) in this Tenant.
+  #
+  # See `Operator CRD: Pools <https://min.io/docs/minio/kubernetes/upstream/reference/operator-crd.html#pool>`__ for more information on all subfields.
+  pools:
+    ###
+    # The number of MinIO Tenant Pods / Servers in this pool.
+    # For standalone mode, supply 1. For distributed mode, supply 4 or more.
+    # Note that the operator does not support upgrading from standalone to distributed mode.
+    - servers: 4
+      ###
+      # Custom name for the pool
+      name: pool-0
+      ###
+      # The number of volumes attached per MinIO Tenant Pod / Server.
+      volumesPerServer: 4
+      ###
+      # The capacity per volume requested per MinIO Tenant Pod.
+      size: 10Gi
+      ###
+      # The `storageClass <https://kubernetes.io/docs/concepts/storage/storage-classes/>`__ to associate with volumes generated for this pool.
+      #
+      # If using Amazon Elastic Block Store (EBS) CSI driver
+      # Please make sure to set xfs for "csi.storage.k8s.io/fstype" parameter under StorageClass.parameters.
+      # Docs: https://github.com/kubernetes-sigs/aws-ebs-csi-driver/blob/master/docs/parameters.md
+      storageClassName: nas
+      ###
+      # Specify `storageAnnotations <https://kubernetes.io/docs/concepts/overview/working-with-objects/annotations/>`__ to associate to PVCs.
+      storageAnnotations: { }
+      ###
+      # Specify `storageLabels <https://kubernetes.io/docs/concepts/overview/working-with-objects/labels/>`__ to associate to PVCs.
+      storageLabels: { }
+      ###
+      # Specify `annotations <https://kubernetes.io/docs/concepts/overview/working-with-objects/annotations/>`__ to associate to Tenant pods.
+      annotations: { }
+      ###
+      # Specify `labels <https://kubernetes.io/docs/concepts/overview/working-with-objects/labels/>`__ to associate to Tenant pods.
+      labels: { }
+      ###
+      #
+      # An array of `Toleration labels <https://kubernetes.io/docs/concepts/scheduling-eviction/taint-and-toleration/>`__ to associate to Tenant pods.
+      #
+      # These settings determine the distribution of pods across worker nodes.
+      tolerations: [ ]
+      ###
+      # Any `Node Selectors <https://kubernetes.io/docs/concepts/scheduling-eviction/assign-pod-node/>`__ to apply to Tenant pods.
+      #
+      # The Kubernetes scheduler uses these selectors to determine which worker nodes onto which it can deploy Tenant pods.
+      #
+      # If no worker nodes match the specified selectors, the Tenant deployment will fail.
+      nodeSelector: { }
+      ###
+      #
+      # The `affinity <https://kubernetes.io/docs/tasks/configure-pod-container/assign-pods-nodes-using-node-affinity/>`__ or anti-affinity settings to apply to Tenant pods.
+      #
+      # These settings determine the distribution of pods across worker nodes and can help prevent or allow colocating pods onto the same worker nodes.
+      affinity: { }
+      ###
+      # 
+      # The `Requests or Limits <https://kubernetes.io/docs/concepts/configuration/manage-resources-containers/>`__ for resources to associate to Tenant pods.
+      #
+      # These settings can control the minimum and maximum resources requested for each pod.
+      # If no worker nodes can meet the specified requests, the Operator may fail to deploy.
+      resources: { }
+
+  ###
+  # Configures a Prometheus-compatible scraping endpoint at the specified port.
+  metrics:
+    enabled: true
+    port: 9000
+    protocol: http
+  ###
+  # Configures external certificate settings for the Tenant.
+  certificate:
+    ###
+    # Enable automatic Kubernetes based `certificate generation and signing <https://kubernetes.io/docs/tasks/tls/managing-tls-in-a-cluster>`__
+    requestAutoCert: false
+  ###
+  # Array of objects describing one or more buckets to create during tenant provisioning.
+  # Example:
+  # 
+  # .. code-block:: yaml
+  #
+  #    - name: my-minio-bucket
+  #         objectLock: false        # optional
+  #         region: us-east-1        # optional
+  buckets:
+    - name: immich-postgresql-backup
+      region: ap-northeast-2
+  ###
+  # Array of Kubernetes secrets from which the Operator generates MinIO users during tenant provisioning.
+  #
+  # Each secret should specify the ``CONSOLE_ACCESS_KEY`` and ``CONSOLE_SECRET_KEY`` as the access key and secret key for that user.
+  users:
+    - name: minio-key-immich-postgresql
+  ###
+  # Directs the Operator to add the Tenant's metric scrape configuration to an existing Kubernetes Prometheus deployment managed by the Prometheus Operator.
+  prometheusOperator: true
+
+###
+# Configures `Ingress <https://kubernetes.io/docs/concepts/services-networking/ingress/>`__ for the Tenant S3 API and Console.
+#
+# Set the keys to conform to the Ingress controller and configuration of your choice.
+ingress:
+  console:
+    enabled: true
+    ingressClassName: traefik
+    annotations:
+      cert-manager.io/cluster-issuer: cluster-issuer-acme
+      cert-manager.io/private-key-algorithm: ECDSA
+      cert-manager.io/private-key-size: '384'
+      traefik.ingress.kubernetes.io/router.entrypoints: websecure
+    tls:
+      - hosts:
+          - minio.bhyoo.com
+        secretName: minio-bhyoo.com
+    host: minio.bhyoo.com
+# Use an extraResources template section to include additional Kubernetes resources
+# with the Helm deployment.
+extraResources:
+  - |-
+    {{- $secretName := .Values.tenant.configSecret.name -}}
+    {{- $namespace := .Release.Namespace -}}
+    {{- $existingSecret := lookup "v1" "Secret" $namespace $secretName -}}
+    {{- $config := "" -}}
+    {{- if $existingSecret -}}
+      {{- $config = index $existingSecret.data "config.env" -}}
+    {{- else -}}
+      {{- $generatedUser := randAlphaNum 16 -}}
+      {{- $generatedPassword := randAlphaNum 32 -}}
+      {{- $env := printf "export MINIO_ROOT_USER='%s'\nexport MINIO_ROOT_PASSWORD='%s'" $generatedUser $generatedPassword -}}
+      {{- $config = $env | b64enc -}}
+    {{- end -}}
+    apiVersion: v1
+    kind: Secret
+    type: Opaque
+    metadata:
+      name: {{ $secretName }}
+    data:
+      config.env: {{ $config | quote }}
+  - |-
+    {{- $secretName := "minio-key-immich-postgresql" -}}
+    {{- $namespace := .Release.Namespace -}}
+    {{- $existingSecret := lookup "v1" "Secret" $namespace $secretName -}}
+    {{- $user := "" -}}
+    {{- $password := "" -}}
+    {{- if $existingSecret -}}
+      {{- $user = index $existingSecret.data "minio-root-user" -}}
+      {{- $password = index $existingSecret.data "minio-root-password" -}}
+    {{- else -}}
+      {{- $user = randAlphaNum 16 | b64enc -}}
+      {{- $password = randAlphaNum 32 | b64enc -}}
+    {{- end -}}
+    apiVersion: v1
+    kind: Secret
+    type: Opaque
+    metadata:
+      name: {{ $secretName }}
+    data:
+      CONSOLE_ACCESS_KEY: {{ $user | quote }}
+      CONSOLE_SECRET_KEY: {{ $password | quote }}
