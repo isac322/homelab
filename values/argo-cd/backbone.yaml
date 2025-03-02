@@ -41,11 +41,15 @@ configs:
       name: cloudflare-origin-ca-issuer-git
       type: git
       url: https://github.com/cloudflare/origin-ca-issuer.git
-    bitnami-helm:
-      enableOCI: "true"
-      name: bitnami
+#    bitnami-helm:
+#      enableOCI: "true"
+#      name: bitnami
+#      type: helm
+#      url: registry-1.docker.io/bitnamicharts
+    minio:
+      name: minio
       type: helm
-      url: registry-1.docker.io/bitnamicharts
+      url: https://operator.min.io/
 
   params:
     server.insecure: true

@@ -1,0 +1,14 @@
+apiVersion: argoproj.io/v1alpha1
+kind: AppProject
+metadata:
+  name: object-storage
+spec:
+  description: Managing Object Storages
+  sourceRepos:
+    - https://operator.min.io/
+  destinations:
+    - namespace: object-storage
+      name: backbone
+  clusterResourceWhitelist:
+    - group: '*'
+      kind: '*'
