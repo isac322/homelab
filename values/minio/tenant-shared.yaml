@@ -163,7 +163,7 @@ ingress:
     tls:
       - hosts:
           - minio.bhyoo.com
-        secretName: minio-bhyoo.com
+        secretName: minio-bhyoo-com
     host: minio.bhyoo.com
 # Use an extraResources template section to include additional Kubernetes resources
 # with the Helm deployment.
@@ -195,8 +195,8 @@ extraResources:
     {{- $user := "" -}}
     {{- $password := "" -}}
     {{- if $existingSecret -}}
-      {{- $user = index $existingSecret.data "minio-root-user" -}}
-      {{- $password = index $existingSecret.data "minio-root-password" -}}
+      {{- $user = index $existingSecret.data "CONSOLE_ACCESS_KEY" -}}
+      {{- $password = index $existingSecret.data "CONSOLE_SECRET_KEY" -}}
     {{- else -}}
       {{- $user = randAlphaNum 16 | b64enc -}}
       {{- $password = randAlphaNum 32 | b64enc -}}
