@@ -116,7 +116,7 @@ tenant:
   ###
   # Configures a Prometheus-compatible scraping endpoint at the specified port.
   metrics:
-    enabled: true
+    enabled: false
     port: 9000
     protocol: http
   ###
