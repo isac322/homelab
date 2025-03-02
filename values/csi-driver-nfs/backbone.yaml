@@ -1,7 +1,5 @@
-feature:
-  enableFSGroupPolicy: true
-  enableInlineVolume: false
-  propagateHostMountOptions: false
+driver:
+  mountPermissions: '0777'
 
 controller:
   enableSnapshotter: false
