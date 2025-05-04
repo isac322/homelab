@@ -95,6 +95,11 @@ ports:
     forwardedHeaders:
       insecure: true
 
+    # -- See [upstream documentation](https://doc.traefik.io/traefik/routing/entrypoints/#transport)
+    transport:
+      respondingTimeouts:
+        readTimeout: 900s
+
 rollingUpdate:
   maxUnavailable: 0
   maxSurge: 1
