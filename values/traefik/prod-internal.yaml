@@ -87,18 +87,6 @@ ports:
     http3:
       enabled: true
 
-    ## Set TLS at the entrypoint
-    ## https://doc.traefik.io/traefik/routing/entrypoints/#tls
-    tls:
-      enabled: true
-      # this is the name of a TLSOption definition
-      options: ""
-      certResolver: ""
-      domains: []
-      # - main: example.com
-      #   sans:
-      #     - foo.example.com
-      #     - bar.example.com
     #
     # Trust forwarded  headers information (X-Forwarded-*).
     forwardedHeaders:
@@ -118,22 +106,6 @@ ports:
     #   - namespace-name1@kubernetescrd
     #   - namespace-name2@kubernetescrd
     middlewares: []
-  metrics:
-    # When using hostNetwork, use another port to avoid conflict with node exporter:
-    # https://github.com/prometheus/prometheus/wiki/Default-port-allocations
-    port: 9100
-    # hostPort: 9100
-    # Defines whether the port is exposed if service.type is LoadBalancer or
-    # NodePort.
-    #
-    # You may not want to expose the metrics port on production deployments.
-    # If you want to access it from outside of your cluster,
-    # use `kubectl port-forward` or create a secure ingress
-    expose: false
-    # The exposed port for this service
-    exposedPort: 9100
-    # The port protocol (TCP/UDP)
-    protocol: TCP
 
 rollingUpdate:
   maxUnavailable: 0

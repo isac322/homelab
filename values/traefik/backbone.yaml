@@ -12,16 +12,12 @@ ingressClass:
   enabled: true
   isDefaultClass: true
 
-# Create an IngressRoute for the dashboard
-ingressRoute:
-  dashboard:
-    enabled: false
-
 #
 # Configure providers
 #
 providers:
   kubernetesIngress:
+    ingressClass: traefik
     publishedService:
       enabled: true
 
@@ -65,48 +61,6 @@ metrics:
     ## order to allow creating a custom router for prometheus@internal service.
     # manualRouting: true
 
-tracing: {}
-  # instana:
-  #   localAgentHost: 127.0.0.1
-  #   localAgentPort: 42699
-  #   logLevel: info
-  #   enableAutoProfile: true
-  # datadog:
-  #   localAgentHostPort: 127.0.0.1:8126
-  #   debug: false
-  #   globalTag: ""
-  #   prioritySampling: false
-  # jaeger:
-  #   samplingServerURL: http://localhost:5778/sampling
-  #   samplingType: const
-  #   samplingParam: 1.0
-  #   localAgentHostPort: 127.0.0.1:6831
-  #   gen128Bit: false
-  #   propagation: jaeger
-  #   traceContextHeaderName: uber-trace-id
-  #   disableAttemptReconnecting: true
-  #   collector:
-  #      endpoint: ""
-  #      user: ""
-  #      password: ""
-  # zipkin:
-  #   httpEndpoint: http://localhost:9411/api/v2/spans
-  #   sameSpan: false
-  #   id128Bit: true
-  #   sampleRate: 1.0
-  # haystack:
-  #   localAgentHost: 127.0.0.1
-  #   localAgentPort: 35000
-  #   globalTag: ""
-  #   traceIDHeaderName: ""
-  #   parentIDHeaderName: ""
-  #   spanIDHeaderName: ""
-  #   baggagePrefixHeaderName: ""
-  # elastic:
-  #   serverURL: http://localhost:8200
-  #   secretToken: ""
-  #   serviceEnvironment: ""
-
 globalArguments: []
 
 #
@@ -136,53 +90,10 @@ ports:
     http3:
       enabled: true
 
-    ## Set TLS at the entrypoint
-    ## https://doc.traefik.io/traefik/routing/entrypoints/#tls
-    tls:
-      enabled: true
-      # this is the name of a TLSOption definition
-      options: ""
-      certResolver: ""
-      domains: []
-      # - main: example.com
-      #   sans:
-      #     - foo.example.com
-      #     - bar.example.com
     #
     # Trust forwarded  headers information (X-Forwarded-*).
     forwardedHeaders:
       insecure: true
-    #
-    # Enable the Proxy Protocol header parsing for the entry point
-    # proxyProtocol:
-    #   trustedIPs: []
-    #   insecure: false
-    #
-    # One can apply Middlewares on an entrypoint
-    # https://doc.traefik.io/traefik/middlewares/overview/
-    # https://doc.traefik.io/traefik/routing/entrypoints/#middlewares
-    # /!\ It introduces here a link between your static configuration and your dynamic configuration /!\
-    # It follows the provider naming convention: https://doc.traefik.io/traefik/providers/overview/#provider-namespace
-    # middlewares:
-    #   - namespace-name1@kubernetescrd
-    #   - namespace-name2@kubernetescrd
-    middlewares: []
-  metrics:
-    # When using hostNetwork, use another port to avoid conflict with node exporter:
-    # https://github.com/prometheus/prometheus/wiki/Default-port-allocations
-    port: 9100
-    # hostPort: 9100
-    # Defines whether the port is exposed if service.type is LoadBalancer or
-    # NodePort.
-    #
-    # You may not want to expose the metrics port on production deployments.
-    # If you want to access it from outside of your cluster,
-    # use `kubectl port-forward` or create a secure ingress
-    expose: false
-    # The exposed port for this service
-    exposedPort: 9100
-    # The port protocol (TCP/UDP)
-    protocol: TCP
 
 rollingUpdate:
   maxUnavailable: 0
