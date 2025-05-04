@@ -26,7 +26,7 @@
               kubelet-arg:
                 - "image-gc-high-threshold=60"
                 - "image-gc-low-threshold=40"
-                - "feature-gates=NodeSwap=true,CloudDualStackNodeIPs=true"
+                - "feature-gates=NodeSwap=true"
               node-label: "{{ k8s_node_labels }}"
               tls-san:
                 - k8s.homelab.bhyoo.com
@@ -81,7 +81,7 @@
               kubelet-arg:
                 - "image-gc-high-threshold=60"
                 - "image-gc-low-threshold=40"
-                - "feature-gates=NodeSwap=true,CloudDualStackNodeIPs=true"
+                - "feature-gates=NodeSwap=true"
               node-label: "{{ k8s_node_labels }}"
               secrets-encryption: true
               tls-san:
@@ -93,7 +93,7 @@
               kubelet-arg:
                 - "image-gc-high-threshold=60"
                 - "image-gc-low-threshold=40"
-                - "feature-gates=NodeSwap=true,CloudDualStackNodeIPs=true"
+                - "feature-gates=NodeSwap=true"
               node-label: "{{ k8s_node_labels }}"
         - ansible.builtin.import_role:
             name: xanmanning.k3s
