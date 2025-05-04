@@ -10,7 +10,7 @@ spec:
   project: cert-manager
   source:
     path: deploy/crds
-    targetRevision: v0.11.0
+    targetRevision: v0.12.1
     repoURL: https://github.com/cloudflare/origin-ca-issuer.git
   syncPolicy:
     automated:
@@ -42,7 +42,7 @@ spec:
         - values.yaml
         - https://raw.githubusercontent.com/isac322/homelab/HEAD/values/origin-ca-issuer/prod.yaml
     repoURL: ghcr.io/cloudflare/origin-ca-issuer-charts
-    targetRevision: 0.5.11
+    targetRevision: 0.5.12
   syncPolicy:
     automated:
       prune: true
