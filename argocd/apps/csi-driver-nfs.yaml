@@ -15,7 +15,7 @@ spec:
         - values.yaml
         - https://raw.githubusercontent.com/isac322/homelab/HEAD/values/csi-driver-nfs/backbone.yaml
     repoURL: https://raw.githubusercontent.com/kubernetes-csi/csi-driver-nfs/master/charts
-    targetRevision: v4.10.0
+    targetRevision: v4.11.0
   syncPolicy:
     automated:
       prune: true
