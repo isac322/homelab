@@ -17,4 +17,7 @@ operator:
       cpu: 200m
       memory: 64Mi
       ephemeral-storage: 500Mi
-
+    limits:
+      cpu: 200m
+      memory: 64Mi
+      ephemeral-storage: 500Mi
