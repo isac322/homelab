@@ -60,13 +60,13 @@ tenant:
     - servers: 4
       ###
       # Custom name for the pool
-      name: pool-0
+      name: ha-slow
       ###
       # The number of volumes attached per MinIO Tenant Pod / Server.
       volumesPerServer: 4
       ###
       # The capacity per volume requested per MinIO Tenant Pod.
-      size: 100Gi
+      size: 20Gi
       ###
       # The `storageClass <https://kubernetes.io/docs/concepts/storage/storage-classes/>`__ to associate with volumes generated for this pool.
       #
@@ -116,7 +116,7 @@ tenant:
   ###
   # Configures a Prometheus-compatible scraping endpoint at the specified port.
   metrics:
-    enabled: false
+    enabled: true
     port: 9000
     protocol: http
   ###
@@ -145,7 +145,7 @@ tenant:
     - name: minio-key-immich-postgresql
   ###
   # Directs the Operator to add the Tenant's metric scrape configuration to an existing Kubernetes Prometheus deployment managed by the Prometheus Operator.
-  prometheusOperator: true
+  prometheusOperator: false
 
 ###
 # Configures `Ingress <https://kubernetes.io/docs/concepts/services-networking/ingress/>`__ for the Tenant S3 API and Console.
@@ -203,6 +203,8 @@ extraResources:
             config.env: |-
               export MINIO_ROOT_USER={{ `{{ .accessKeyId }}` }}
               export MINIO_ROOT_PASSWORD={{ `{{ .secretKey }}` }}
+            accessKeyId: {{ `{{ .accessKeyId }}` }}
+            secretKey: {{ `{{ .secretKey }}` }}
       dataFrom:
         - sourceRef:
             generatorRef:
@@ -237,6 +239,8 @@ extraResources:
             config.env: |-
               export CONSOLE_ACCESS_KEY={{ `{{ .accessKeyId }}` }}
               export CONSOLE_SECRET_KEY={{ `{{ .secretKey }}` }}
+            accessKeyId: {{ `{{ .accessKeyId }}` }}
+            secretKey: {{ `{{ .secretKey }}` }}
       dataFrom:
         - sourceRef:
             generatorRef:
