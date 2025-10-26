@@ -4,12 +4,12 @@ tenant:
   # The Tenant name
   #
   # Change this to match your preferred MinIO Tenant name.
-  name: shared-minio
+  name: ha-slow
   ###
   # The Kubernetes secret name that contains MinIO environment variable configurations.
   # The secret is expected to have a key named config.env containing environment variables exports.
   configuration:
-    name: shared-minio-env-configuration
+    name: ha-slow-env-configuration
   ###
   # Root key for dynamically creating a secret for use with configuring root MinIO User
   # Specify the ``name`` and then a list of environment variables.
@@ -28,7 +28,7 @@ tenant:
   #    secretKey: minio123
   #
   configSecret:
-    name: shared-minio-env-configuration
+    name: ha-slow-env-configuration
     accessKey: null
     secretKey: null
     existingSecret: true
@@ -66,14 +66,14 @@ tenant:
       volumesPerServer: 4
       ###
       # The capacity per volume requested per MinIO Tenant Pod.
-      size: 10Gi
+      size: 100Gi
       ###
       # The `storageClass <https://kubernetes.io/docs/concepts/storage/storage-classes/>`__ to associate with volumes generated for this pool.
       #
       # If using Amazon Elastic Block Store (EBS) CSI driver
       # Please make sure to set xfs for "csi.storage.k8s.io/fstype" parameter under StorageClass.parameters.
       # Docs: https://github.com/kubernetes-sigs/aws-ebs-csi-driver/blob/master/docs/parameters.md
-      storageClassName: nas
+      storageClassName: slow-ha-xfs-4k
       ###
       # Specify `storageAnnotations <https://kubernetes.io/docs/concepts/overview/working-with-objects/annotations/>`__ to associate to PVCs.
       storageAnnotations: { }
@@ -168,44 +168,81 @@ ingress:
 # Use an extraResources template section to include additional Kubernetes resources
 # with the Helm deployment.
 extraResources:
+  # language=GoTemplate
   - |-
-    {{- $secretName := .Values.tenant.configSecret.name -}}
-    {{- $namespace := .Release.Namespace -}}
-    {{- $existingSecret := lookup "v1" "Secret" $namespace $secretName -}}
-    {{- $config := "" -}}
-    {{- if $existingSecret -}}
-      {{- $config = index $existingSecret.data "config.env" -}}
-    {{- else -}}
-      {{- $generatedUser := randAlphaNum 16 -}}
-      {{- $generatedPassword := randAlphaNum 32 -}}
-      {{- $env := printf "export MINIO_ROOT_USER=%s\nexport MINIO_ROOT_PASSWORD=%s" $generatedUser $generatedPassword -}}
-      {{- $config = $env | b64enc -}}
-    {{- end -}}
-    apiVersion: v1
-    kind: Secret
-    type: Opaque
+    apiVersion: generators.external-secrets.io/v1alpha1
+    kind: Password
     metadata:
-      name: {{ $secretName }}
-    data:
-      config.env: {{ $config | quote }}
+      name: {{ .Values.tenant.name }}-access-key-id
+    spec:
+      length: 12
+      encoding: base32
+  # language=GoTemplate
   - |-
-    {{- $secretName := "minio-key-immich-postgresql" -}}
-    {{- $namespace := .Release.Namespace -}}
-    {{- $existingSecret := lookup "v1" "Secret" $namespace $secretName -}}
-    {{- $user := "" -}}
-    {{- $password := "" -}}
-    {{- if $existingSecret -}}
-      {{- $user = index $existingSecret.data "CONSOLE_ACCESS_KEY" -}}
-      {{- $password = index $existingSecret.data "CONSOLE_SECRET_KEY" -}}
-    {{- else -}}
-      {{- $user = randAlphaNum 16 | b64enc -}}
-      {{- $password = randAlphaNum 32 | b64enc -}}
-    {{- end -}}
-    apiVersion: v1
-    kind: Secret
-    type: Opaque
+    apiVersion: generators.external-secrets.io/v1alpha1
+    kind: Password
     metadata:
-      name: {{ $secretName }}
-    data:
-      CONSOLE_ACCESS_KEY: {{ $user | quote }}
-      CONSOLE_SECRET_KEY: {{ $password | quote }}
+      name: {{ .Values.tenant.name }}-secret-key
+    spec:
+      length: 30
+      encoding: base64
+  # language=GoTemplate
+  - |-
+    apiVersion: external-secrets.io/v1
+    kind: ExternalSecret
+    metadata:
+      name: {{ .Values.tenant.configSecret.name }}
+    spec:
+      refreshPolicy: CreatedOnce
+      target:
+        name: {{ .Values.tenant.configSecret.name }}
+        # this is how the Kind=Secret will look like
+        template:
+          engineVersion: v2
+          data:
+            config.env: |-
+              export MINIO_ROOT_USER={{ .accessKeyId }}
+              export MINIO_ROOT_PASSWORD={{ .secretKey }}
+      data:
+        - sourceKey: accessKeyId
+          sourceRef:
+            generatorRef:
+              apiVersion: generators.external-secrets.io/v1alpha1
+              kind: Password
+              name: {{ .Values.tenant.name }}-access-key-id
+        - sourceKey: secretKey
+          sourceRef:
+            generatorRef:
+              apiVersion: generators.external-secrets.io/v1alpha1
+              kind: Password
+              name: {{ .Values.tenant.name }}-secret-key
+  # language=GoTemplate
+  - |-
+    apiVersion: external-secrets.io/v1
+    kind: ExternalSecret
+    metadata:
+      name: minio-key-immich-postgresql
+    spec:
+      refreshPolicy: CreatedOnce
+      target:
+        name: minio-key-immich-postgresql
+        # this is how the Kind=Secret will look like
+        template:
+          engineVersion: v2
+          data:
+            config.env: |-
+              export CONSOLE_ACCESS_KEY={{ .accessKeyId }}
+              export CONSOLE_SECRET_KEY={{ .secretKey }}
+      data:
+        - sourceKey: accessKeyId
+          sourceRef:
+            generatorRef:
+              apiVersion: generators.external-secrets.io/v1alpha1
+              kind: Password
+              name: {{ .Values.tenant.name }}-access-key-id
+        - sourceKey: secretKey
+          sourceRef:
+            generatorRef:
+              apiVersion: generators.external-secrets.io/v1alpha1
+              kind: Password
+              name: {{ .Values.tenant.name }}-secret-key
