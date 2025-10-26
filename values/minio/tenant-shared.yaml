@@ -194,6 +194,7 @@ extraResources:
       name: {{ .Values.tenant.configSecret.name }}
     spec:
       refreshPolicy: CreatedOnce
+      refreshInterval: 0s
       target:
         name: {{ .Values.tenant.configSecret.name }}
         # this is how the Kind=Secret will look like
@@ -230,6 +231,7 @@ extraResources:
       name: minio-key-immich-postgresql
     spec:
       refreshPolicy: CreatedOnce
+      refreshInterval: 0s
       target:
         name: minio-key-immich-postgresql
         # this is how the Kind=Secret will look like
