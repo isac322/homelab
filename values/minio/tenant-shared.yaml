@@ -175,7 +175,7 @@ extraResources:
     metadata:
       name: {{ .Values.tenant.name }}-access-key-id
     spec:
-      length: 12
+      length: 15
       encoding: base32
   # language=GoTemplate
   - |-
@@ -233,16 +233,20 @@ extraResources:
             config.env: |-
               export CONSOLE_ACCESS_KEY={{ `{{ .accessKeyId }}` }}
               export CONSOLE_SECRET_KEY={{ `{{ .secretKey }}` }}
-      data:
-        - sourceKey: accessKeyId
-          sourceRef:
+      dataFrom:
+        - sourceRef:
             generatorRef:
               apiVersion: generators.external-secrets.io/v1alpha1
               kind: Password
               name: {{ .Values.tenant.name }}-access-key-id
-        - sourceKey: secretKey
-          sourceRef:
+          rewrite:
+            - transform:
+                template: "accessKeyId"
+        - sourceRef:
             generatorRef:
               apiVersion: generators.external-secrets.io/v1alpha1
               kind: Password
               name: {{ .Values.tenant.name }}-secret-key
+          rewrite:
+            - transform:
+                template: "secretKey"
