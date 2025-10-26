@@ -201,8 +201,8 @@ extraResources:
           engineVersion: v2
           data:
             config.env: |-
-              export MINIO_ROOT_USER={{ .accessKeyId }}
-              export MINIO_ROOT_PASSWORD={{ .secretKey }}
+              export MINIO_ROOT_USER={{ `{{ .accessKeyId }}` }}
+              export MINIO_ROOT_PASSWORD={{ `{{ .secretKey }}` }}
       data:
         - sourceKey: accessKeyId
           sourceRef:
@@ -231,8 +231,8 @@ extraResources:
           engineVersion: v2
           data:
             config.env: |-
-              export CONSOLE_ACCESS_KEY={{ .accessKeyId }}
-              export CONSOLE_SECRET_KEY={{ .secretKey }}
+              export CONSOLE_ACCESS_KEY={{ `{{ .accessKeyId }}` }}
+              export CONSOLE_SECRET_KEY={{ `{{ .secretKey }}` }}
       data:
         - sourceKey: accessKeyId
           sourceRef:
