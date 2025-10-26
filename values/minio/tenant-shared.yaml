@@ -203,19 +203,23 @@ extraResources:
             config.env: |-
               export MINIO_ROOT_USER={{ `{{ .accessKeyId }}` }}
               export MINIO_ROOT_PASSWORD={{ `{{ .secretKey }}` }}
-      data:
-        - sourceKey: accessKeyId
-          sourceRef:
+      dataFrom:
+        - sourceRef:
             generatorRef:
               apiVersion: generators.external-secrets.io/v1alpha1
               kind: Password
               name: {{ .Values.tenant.name }}-access-key-id
-        - sourceKey: secretKey
-          sourceRef:
+          rewrite:
+            - transform:
+                template: "accessKeyId"
+        - sourceRef:
             generatorRef:
               apiVersion: generators.external-secrets.io/v1alpha1
               kind: Password
               name: {{ .Values.tenant.name }}-secret-key
+          rewrite:
+            - transform:
+                template: "secretKey"
   # language=GoTemplate
   - |-
     apiVersion: external-secrets.io/v1
