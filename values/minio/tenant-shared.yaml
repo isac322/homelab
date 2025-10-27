@@ -201,11 +201,11 @@ extraResources:
         template:
           engineVersion: v2
           data:
+            accessKeyId: {{ `{{ .accessKeyId }}` }}
+            secretKey: {{ `{{ .secretKey }}` }}
             config.env: |-
               export MINIO_ROOT_USER={{ `{{ .accessKeyId }}` }}
               export MINIO_ROOT_PASSWORD={{ `{{ .secretKey }}` }}
-            accessKeyId: {{ `{{ .accessKeyId }}` }}
-            secretKey: {{ `{{ .secretKey }}` }}
       dataFrom:
         - sourceRef:
             generatorRef:
@@ -238,11 +238,11 @@ extraResources:
         template:
           engineVersion: v2
           data:
+            accessKeyId: {{ `{{ .accessKeyId }}` }}
+            secretKey: {{ `{{ .secretKey }}` }}
             config.env: |-
               export CONSOLE_ACCESS_KEY={{ `{{ .accessKeyId }}` }}
               export CONSOLE_SECRET_KEY={{ `{{ .secretKey }}` }}
-            accessKeyId: {{ `{{ .accessKeyId }}` }}
-            secretKey: {{ `{{ .secretKey }}` }}
       dataFrom:
         - sourceRef:
             generatorRef:
