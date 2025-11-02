@@ -36,7 +36,7 @@ resource "cloudflare_api_token" "k8s_cloudflared_operator" {
 
   policy {
     permission_groups = [
-      data.cloudflare_api_token_permission_groups.all.account["Argo Tunnel Write"],
+      data.cloudflare_api_token_permission_groups.all.account["Cloudflare Tunnel Write"],
       data.cloudflare_api_token_permission_groups.all.account["Account Settings Read"],
     ]
     resources = {
