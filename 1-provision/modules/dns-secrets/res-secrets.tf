@@ -19,6 +19,19 @@ resource "aws_ssm_parameter" "cf_api_token_for_cloudflared_operator" {
   value       = cloudflare_api_token.k8s_cloudflared_operator.value
 }
 
+resource "tls_private_key" "democratic_csi" {
+  count     = var.use_democratic_csi ? 1 : 0
+  algorithm = "ED25519"
+}
+
+resource "aws_ssm_parameter" "democratic_csi_ssh_private_key" {
+  count       = var.use_democratic_csi ? 1 : 0
+  name        = "/homelab/cluster/${var.k8s_cluster_name}/ssh/democratic-csi/private-key"
+  description = "SSH private key for Democratic CSI"
+  type        = "SecureString"
+  value       = tls_private_key.democratic_csi[0].private_key_openssh
+}
+
 resource "aws_iam_user" "external_secrets" {
   name = "${var.k8s_cluster_name}-external-secrets"
   path = "/homelab/sa/"
@@ -32,10 +45,13 @@ data "aws_iam_policy_document" "secret_read" {
   statement {
     effect  = "Allow"
     actions = ["ssm:GetParameter"]
-    resources = [
-      aws_ssm_parameter.cf_api_token_for_cert_manager_dns_challenge.arn,
-      aws_ssm_parameter.cf_api_token_for_external_dns.arn,
-    ]
+    resources = concat(
+      [
+        aws_ssm_parameter.cf_api_token_for_cert_manager_dns_challenge.arn,
+        aws_ssm_parameter.cf_api_token_for_external_dns.arn,
+      ],
+      var.use_democratic_csi ? [aws_ssm_parameter.democratic_csi_ssh_private_key[0].arn] : []
+    )
   }
 }
 resource "aws_iam_user_group_membership" "cf_origin_ca" {

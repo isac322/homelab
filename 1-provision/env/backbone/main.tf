@@ -41,6 +41,7 @@ module "dns_secrets" {
 
   k8s_cluster_name                            = "backbone"
   aws_iam_group_name_cf_origin_ca_cert_issuer = var.aws_iam_group_name_cf_origin_ca_cert_issuer
+  use_democratic_csi                          = true
 
   providers = {
     aws        = aws
