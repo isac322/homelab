@@ -1,8 +1,8 @@
-ansible_host: 172.30.1.4
+ansible_host: 192.168.219.4
 ansible_user: root
 ansible_password: odroid
-desired_ip: 172.30.1.4
-gateway_ip: 172.30.1.254
+desired_ip: 192.168.219.4
+gateway_ip: 192.168.219.1
 
 iptables_use_nfs: true
 

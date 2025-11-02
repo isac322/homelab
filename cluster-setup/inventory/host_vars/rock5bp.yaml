@@ -1,0 +1,10 @@
+ansible_host: 192.168.219.6
+ansible_user: bhyoo
+desired_ip: 192.168.219.6
+gateway_ip: 192.168.219.1
+
+# k8s
+is_k8s_master: true
+
+# wireguard_mesh
+wireguard_ip: "10.222.0.4"
