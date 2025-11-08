@@ -5,11 +5,8 @@ tenant:
   #
   # Change this to match your preferred MinIO Tenant name.
   name: ssd-ha
-  ###
-  # The Kubernetes secret name that contains MinIO environment variable configurations.
-  # The secret is expected to have a key named config.env containing environment variables exports.
-  configuration:
-    name: ssd-ha-env-configuration
+  image:
+    tag: RELEASE.2025-09-07T16-13-09Z
   ###
   # Root key for dynamically creating a secret for use with configuring root MinIO User
   # Specify the ``name`` and then a list of environment variables.
@@ -29,8 +26,6 @@ tenant:
   #
   configSecret:
     name: ssd-ha-env-configuration
-    accessKey: null
-    secretKey: null
     existingSecret: true
 
   ###
@@ -75,38 +70,7 @@ tenant:
       # Docs: https://github.com/kubernetes-sigs/aws-ebs-csi-driver/blob/master/docs/parameters.md
       storageClassName: ssd-ha-xfs
       ###
-      # Specify `storageAnnotations <https://kubernetes.io/docs/concepts/overview/working-with-objects/annotations/>`__ to associate to PVCs.
-      storageAnnotations: { }
-      ###
-      # Specify `storageLabels <https://kubernetes.io/docs/concepts/overview/working-with-objects/labels/>`__ to associate to PVCs.
-      storageLabels: { }
-      ###
-      # Specify `annotations <https://kubernetes.io/docs/concepts/overview/working-with-objects/annotations/>`__ to associate to Tenant pods.
-      annotations: { }
-      ###
-      # Specify `labels <https://kubernetes.io/docs/concepts/overview/working-with-objects/labels/>`__ to associate to Tenant pods.
-      labels: { }
-      ###
       #
-      # An array of `Toleration labels <https://kubernetes.io/docs/concepts/scheduling-eviction/taint-and-toleration/>`__ to associate to Tenant pods.
-      #
-      # These settings determine the distribution of pods across worker nodes.
-      tolerations: [ ]
-      ###
-      # Any `Node Selectors <https://kubernetes.io/docs/concepts/scheduling-eviction/assign-pod-node/>`__ to apply to Tenant pods.
-      #
-      # The Kubernetes scheduler uses these selectors to determine which worker nodes onto which it can deploy Tenant pods.
-      #
-      # If no worker nodes match the specified selectors, the Tenant deployment will fail.
-      nodeSelector: { }
-      ###
-      #
-      # The `affinity <https://kubernetes.io/docs/tasks/configure-pod-container/assign-pods-nodes-using-node-affinity/>`__ or anti-affinity settings to apply to Tenant pods.
-      #
-      # These settings determine the distribution of pods across worker nodes and can help prevent or allow colocating pods onto the same worker nodes.
-      affinity: { }
-      ###
-      # 
       # The `Requests or Limits <https://kubernetes.io/docs/concepts/configuration/manage-resources-containers/>`__ for resources to associate to Tenant pods.
       #
       # These settings can control the minimum and maximum resources requested for each pod.
@@ -132,15 +96,16 @@ tenant:
   # .. code-block:: yaml
   #
   #    - name: my-minio-bucket
-  #         objectLock: false        # optional
-  #         region: us-east-1        # optional
+  #      objectLock: false        # optional
+  #      region: us-east-1        # optional
   buckets:
     - name: immich-postgresql-backup
       region: ap-northeast-2
   ###
   # Array of Kubernetes secrets from which the Operator generates MinIO users during tenant provisioning.
-  #
+  # Each element in the array is an object consisting of a key-value pair ``name: <string>``, where the ``<string>`` references an opaque Kubernetes secret.
   # Each secret should specify the ``CONSOLE_ACCESS_KEY`` and ``CONSOLE_SECRET_KEY`` as the access key and secret key for that user.
+  # The Operator creates each user with the ``consoleAdmin`` policy by default. You can change the assigned policy after the Tenant starts.
   users:
     - name: minio-key-immich-postgresql
   ###
@@ -238,11 +203,8 @@ extraResources:
         template:
           engineVersion: v2
           data:
-            accessKeyId: "{{ `{{ .accessKeyId }}` }}"
-            secretKey: "{{ `{{ .secretKey }}` }}"
-            config.env: |-
-              export CONSOLE_ACCESS_KEY="{{ `{{ .accessKeyId }}` }}"
-              export CONSOLE_SECRET_KEY="{{ `{{ .secretKey }}` }}"
+            CONSOLE_ACCESS_KEY: "{{ `{{ .accessKeyId }}` }}"
+            CONSOLE_SECRET_KEY: "{{ `{{ .secretKey }}` }}"
       dataFrom:
         - sourceRef:
             generatorRef:
