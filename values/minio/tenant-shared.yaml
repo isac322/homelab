@@ -4,12 +4,12 @@ tenant:
   # The Tenant name
   #
   # Change this to match your preferred MinIO Tenant name.
-  name: ha-slow
+  name: ssd-ha
   ###
   # The Kubernetes secret name that contains MinIO environment variable configurations.
   # The secret is expected to have a key named config.env containing environment variables exports.
   configuration:
-    name: ha-slow-env-configuration
+    name: ssd-ha-env-configuration
   ###
   # Root key for dynamically creating a secret for use with configuring root MinIO User
   # Specify the ``name`` and then a list of environment variables.
@@ -28,7 +28,7 @@ tenant:
   #    secretKey: minio123
   #
   configSecret:
-    name: ha-slow-env-configuration
+    name: ssd-ha-env-configuration
     accessKey: null
     secretKey: null
     existingSecret: true
@@ -60,7 +60,7 @@ tenant:
     - servers: 4
       ###
       # Custom name for the pool
-      name: ha-slow
+      name: ssd-ha
       ###
       # The number of volumes attached per MinIO Tenant Pod / Server.
       volumesPerServer: 1
@@ -73,7 +73,7 @@ tenant:
       # If using Amazon Elastic Block Store (EBS) CSI driver
       # Please make sure to set xfs for "csi.storage.k8s.io/fstype" parameter under StorageClass.parameters.
       # Docs: https://github.com/kubernetes-sigs/aws-ebs-csi-driver/blob/master/docs/parameters.md
-      storageClassName: slow-ha-xfs-4k
+      storageClassName: ssd-ha-xfs
       ###
       # Specify `storageAnnotations <https://kubernetes.io/docs/concepts/overview/working-with-objects/annotations/>`__ to associate to PVCs.
       storageAnnotations: { }
