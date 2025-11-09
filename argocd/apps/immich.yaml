@@ -58,4 +58,4 @@ spec:
   ignoreDifferences:
     - kind: Certificate
       jsonPointers:
-        - /spec/data
+        - /data
