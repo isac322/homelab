@@ -108,6 +108,7 @@ tenant:
   # The Operator creates each user with the ``consoleAdmin`` policy by default. You can change the assigned policy after the Tenant starts.
   users:
     - name: minio-key-immich-postgresql
+    - name: cnpg-immich
   ###
   # Directs the Operator to add the Tenant's metric scrape configuration to an existing Kubernetes Prometheus deployment managed by the Prometheus Operator.
   prometheusOperator: false
@@ -199,6 +200,46 @@ extraResources:
       refreshInterval: 0s
       target:
         name: minio-key-immich-postgresql
+        # this is how the Kind=Secret will look like
+        template:
+          metadata:
+            annotations:
+              reflector.v1.k8s.emberstack.com/reflection-allowed: "true"
+              reflector.v1.k8s.emberstack.com/reflection-allowed-namespaces: "immich"
+          engineVersion: v2
+          data:
+            CONSOLE_ACCESS_KEY: "{{ `{{ .accessKeyId }}` }}"
+            ACCESS_KEY_ID: "{{ `{{ .accessKeyId }}` }}"
+            CONSOLE_SECRET_KEY: "{{ `{{ .secretKey }}` }}"
+            ACCESS_SECRET_KEY: "{{ `{{ .secretKey }}` }}"
+      dataFrom:
+        - sourceRef:
+            generatorRef:
+              apiVersion: generators.external-secrets.io/v1alpha1
+              kind: Password
+              name: {{ .Values.tenant.name }}-access-key-id
+          rewrite:
+            - transform:
+                template: "accessKeyId"
+        - sourceRef:
+            generatorRef:
+              apiVersion: generators.external-secrets.io/v1alpha1
+              kind: Password
+              name: {{ .Values.tenant.name }}-secret-key
+          rewrite:
+            - transform:
+                template: "secretKey"
+  # language=GoTemplate
+  - |-
+    apiVersion: external-secrets.io/v1
+    kind: ExternalSecret
+    metadata:
+      name: cnpg-immich
+    spec:
+      refreshPolicy: CreatedOnce
+      refreshInterval: 0s
+      target:
+        name: cnpg-immich
         # this is how the Kind=Secret will look like
         template:
           metadata:
