@@ -23,11 +23,13 @@ cluster:
   imageName: ghcr.io/tensorchord/cloudnative-vectorchord:16.10-0.5.3
   storage:
     storageClass: ssd-ha-xfs
-    size: 100Gi
+    size: 10Gi
   postgresql:
     shared_preload_libraries:
       - vectors.so
       - vchord.so
+  postgresUID: 26
+  postgresGID: 999
   monitoring:
     enabled: true
 #  services:
