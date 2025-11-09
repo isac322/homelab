@@ -1,0 +1,146 @@
+csiDriver:
+  # should be globally unique for a given cluster
+  name: "org.democratic-csi.iscsi"
+
+# add note here about volume expansion requirements
+storageClasses:
+  - name: ssd-ha-xfs
+    defaultClass: false
+    reclaimPolicy: Delete
+    volumeBindingMode: Immediate
+    allowVolumeExpansion: true
+    parameters:
+      # for block-based storage can be ext3, ext4, xfs
+      # for nfs should be nfs
+      fsType: xfs
+      democratic-csi.org/load-config-from-pvc: "true"
+
+      # if true, volumes created from other snapshots will be
+      # zfs send/received instead of zfs cloned
+      # detachedVolumesFromSnapshots: "false"
+
+      # if true, volumes created from other volumes will be
+      # zfs send/received instead of zfs cloned
+      # detachedVolumesFromVolumes: "false"
+
+# if your cluster supports snapshots you may enable below
+volumeSnapshotClasses: []
+#- name: zfs-generic-iscsi-csi
+#  parameters:
+#  # if true, snapshots will be created with zfs send/receive
+#  # detachedSnapshots: "false"
+#  secrets:
+#    snapshotter-secret:
+
+driver:
+  config:
+    # please see the most up-to-date example of the corresponding config here:
+    # https://github.com/democratic-csi/democratic-csi/tree/master/examples
+    # YOU MUST COPY THE DATA HERE INLINE!
+    driver: zfs-generic-iscsi
+    sshConnection:
+      host: rock5bp
+      username: democratic-csi
+      privateKey: "$SSH_PRIVATE_KEY"
+
+    zfs:
+      # can be used to override defaults if necessary
+      # the example below is useful for TrueNAS 12
+      cli:
+        sudoEnabled: true
+      #  paths:
+      #    zfs: /usr/local/sbin/zfs
+      #    zpool: /usr/local/sbin/zpool
+      #    sudo: /usr/local/bin/sudo
+      #    chroot: /usr/sbin/chroot
+
+      # can be used to set arbitrary values on the dataset/zvol
+      # can use handlebars templates with the parameters from the storage class/CO
+      #datasetProperties:
+      #  "org.freenas:description": "{{ parameters.[csi.storage.k8s.io/pvc/namespace] }}/{{ parameters.[csi.storage.k8s.io/pvc/name] }}"
+      #  "org.freenas:test": "{{ parameters.foo }}"
+      #  "org.freenas:test2": "some value"
+
+      datasetParentName: hot-data/k8s
+      # do NOT make datasetParentName and detachedSnapshotsDatasetParentName overlap
+      # they may be siblings, but neither should be nested in the other
+      # do NOT comment this option out even if you don't plan to use snapshots, just leave it with dummy value
+      detachedSnapshotsDatasetParentName: tanks/k8s/test-snapshots
+
+      # "" (inherit), lz4, gzip-9, etc
+      zvolCompression: off
+      # "" (inherit), on, off, verify
+      zvolDedup: off
+      zvolEnableReservation: false
+      # 512, 1K, 2K, 4K, 8K, 16K, 64K, 128K default is 16K
+#      zvolBlocksize: 4k
+
+    iscsi:
+      shareStrategy: "targetCli"
+
+      # https://kifarunix.com/how-to-install-and-configure-iscsi-storage-server-on-ubuntu-18-04/
+      # https://kifarunix.com/how-install-and-configure-iscsi-storage-server-on-centos-7/
+      # https://linuxlasse.net/linux/howtos/ISCSI_and_ZFS_ZVOL
+      # http://www.linux-iscsi.org/wiki/ISCSI
+      # https://bugzilla.redhat.com/show_bug.cgi?id=1659195
+      # http://atodorov.org/blog/2015/04/07/how-to-configure-iscsi-target-on-red-hat-enterprise-linux-7/
+      shareStrategyTargetCli:
+        sudoEnabled: true
+        basename: "iqn.2020-04.com.bhyoo.backbone"
+        tpg:
+          attributes:
+            # set to 1 to enable CHAP
+            authentication: 0
+            # this is required currently as we do not register all node iqns
+            # the effective outcome of this is, allow all iqns to connect
+            generate_node_acls: 1
+            cache_dynamic_acls: 1
+            # if generate_node_acls is 1 then must turn this off as well (assuming you want write ability)
+            demo_mode_write_protect: 0
+          #auth:
+          # CHAP
+          #userid: "foo"
+          #password: "bar"
+          # mutual CHAP
+          #mutual_userid: "baz"
+          #mutual_password: "bar"
+        block:
+          attributes:
+            # set to 1 to enable Thin Provisioning Unmap
+            emulate_tpu: 0
+      targetPortal: rock5bp:3260
+      # for multipath
+#      targetPortals: [] # [ "server[:port]", "server[:port]", ... ]
+      # leave empty to omit usage of -I with iscsiadm
+#      interface: ""
+
+      # MUST ensure uniqueness
+      # full iqn limit is 223 bytes, plan accordingly
+      # default is "{{ name }}"
+      #nameTemplate: "{{ parameters.[csi.storage.k8s.io/pvc/namespace] }}-{{ parameters.[csi.storage.k8s.io/pvc/name] }}"
+#      namePrefix: iscsi-
+#      nameSuffix:
+
+controller:
+  driver:
+    image:
+      tag: next
+      pullPolicy: Always
+    extraEnv:
+      - name: SSH_PRIVATE_KEY
+        valueFrom:
+          secretKeyRef:
+            name: openssh-private-key
+            key: ssh-privatekey
+
+node:
+  driver:
+    image:
+      tag: next
+      pullPolicy: Always
+    extraEnv:
+      - name: SSH_PRIVATE_KEY
+        valueFrom:
+          secretKeyRef:
+            name: openssh-private-key
+            key: ssh-privatekey

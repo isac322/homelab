@@ -1,0 +1,31 @@
+apiVersion: argoproj.io/v1alpha1
+kind: Application
+metadata:
+  name: democratic-csi-ssd-iscsi
+spec:
+  destination:
+    name: backbone
+    namespace: democratic-csi
+  project: dfs-pg
+  source:
+    chart: democratic-csi
+    name: ssd-iscsi
+    helm:
+      valueFiles:
+        - values.yaml
+        - https://raw.githubusercontent.com/isac322/homelab/HEAD/values/democratic-csi/backbone.yaml
+    repoURL: https://democratic-csi.github.io/charts/
+    targetRevision: 0.15.0
+  syncPolicy:
+    automated:
+      prune: true
+      selfHeal: true
+    retry:
+      backoff:
+        duration: 5s
+        factor: 2
+        maxDuration: 3m0s
+      limit: 100
+    syncOptions:
+      - CreateNamespace=true
+      - ServerSideApply=true

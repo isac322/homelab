@@ -50,6 +50,19 @@ configs:
       name: minio
       type: helm
       url: https://operator.min.io/
+    cloudnative-pg:
+      name: cloudnative-pg
+      type: helm
+      url: https://cloudnative-pg.github.io/charts/
+    kubernetes-reflector:
+      enableOCI: "true"
+      name: kubernetes-reflector
+      type: helm
+      url: ghcr.io/emberstack/helm-charts/reflector
+    democratic-csi:
+      name: democratic-csi
+      type: helm
+      url: https://democratic-csi.github.io/charts/
 
   params:
     server.insecure: true

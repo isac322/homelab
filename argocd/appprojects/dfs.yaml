@@ -9,12 +9,15 @@ spec:
     - https://github.com/isac322/homelab.git
     - https://openebs.github.io/zfs-localpv
     - https://raw.githubusercontent.com/kubernetes-csi/csi-driver-nfs/master/charts
+    - https://democratic-csi.github.io/charts/
   destinations:
     - namespace: rook-ceph
       name: prod
     - namespace: openebs
       name: backbone
     - namespace: csi-driver-nfs
+      name: backbone
+    - namespace: democratic-csi
       name: backbone
   clusterResourceWhitelist:
     - group: '*'
