@@ -1,0 +1,55 @@
+apiVersion: argoproj.io/v1alpha1
+kind: Application
+metadata:
+  name: immich-cnpg-cluster
+spec:
+  destination:
+    name: backbone
+    namespace: immich
+  project: immich
+  source:
+    chart: cluster
+    helm:
+      valueFiles:
+        - values.yaml
+        - https://raw.githubusercontent.com/isac322/homelab/HEAD/values/cloudnative-pg/cluster-immich.yaml
+    repoURL: https://cloudnative-pg.github.io/charts/
+    targetRevision: 0.3.1
+  syncPolicy:
+    automated:
+      prune: true
+      selfHeal: true
+    retry:
+      backoff:
+        duration: 5s
+        factor: 2
+        maxDuration: 3m0s
+      limit: 100
+    syncOptions:
+      - CreateNamespace=true
+---
+apiVersion: argoproj.io/v1alpha1
+kind: Application
+metadata:
+  name: immich-cnpg-s3-creds
+spec:
+  destination:
+    name: backbone
+    namespace: immich
+  project: immich
+  source:
+    path: apps/objects/immich
+    repoURL: https://github.com/isac322/homelab.git
+    targetRevision: HEAD
+  syncPolicy:
+    automated:
+      prune: true
+      selfHeal: true
+    retry:
+      backoff:
+        duration: 5s
+        factor: 2
+        maxDuration: 3m0s
+      limit: 100
+    syncOptions:
+      - CreateNamespace=true

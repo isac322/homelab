@@ -1,0 +1,15 @@
+apiVersion: argoproj.io/v1alpha1
+kind: AppProject
+metadata:
+  name: immich
+spec:
+  description: Immich
+  sourceRepos:
+    - ghcr.io/immich-app/immich-charts
+    - https://cloudnative-pg.github.io/charts/
+  destinations:
+    - namespace: immich
+      name: backbone
+  clusterResourceWhitelist:
+    - group: '*'
+      kind: '*'
