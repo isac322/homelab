@@ -12,6 +12,7 @@ spec:
   source:
     chart: cluster
     helm:
+      releaseName: cnpg
       valueFiles:
         - values.yaml
         - https://raw.githubusercontent.com/isac322/homelab/HEAD/values/cloudnative-pg/cluster-immich.yaml
@@ -58,6 +59,6 @@ spec:
     syncOptions:
       - CreateNamespace=true
   ignoreDifferences:
-    - kind: Certificate
+    - kind: Secret
       jsonPointers:
         - /data
