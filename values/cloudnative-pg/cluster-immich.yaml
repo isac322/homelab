@@ -15,8 +15,6 @@ recovery:
   s3:
     bucket: immich-postgresql-backup
     region: ap-northeast-2
-  pitrTarget:
-    time: "2025-11-09T13:49:27Z"
 
 cluster:
   instances: 1
