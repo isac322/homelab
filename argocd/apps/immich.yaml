@@ -2,6 +2,8 @@ apiVersion: argoproj.io/v1alpha1
 kind: Application
 metadata:
   name: immich-cnpg-cluster
+  finalizers:
+    - resources-finalizer.argocd.argoproj.io
 spec:
   destination:
     name: backbone
@@ -53,3 +55,7 @@ spec:
       limit: 100
     syncOptions:
       - CreateNamespace=true
+  ignoreDifferences:
+    - kind: Certificate
+      jsonPointers:
+        - /spec/data
