@@ -20,7 +20,7 @@ recovery:
 
 cluster:
   instances: 1
-  imageName: ghcr.io/tensorchord/cloudnative-vectorchord:16.10-0.5.3
+  imageName: isac322/pgvectors-vchord:16.10-pgvectors0.3.0-vchord0.5.3
   storage:
     storageClass: ssd-ha-xfs
     size: 10Gi
