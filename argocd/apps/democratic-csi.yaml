@@ -6,7 +6,7 @@ spec:
   destination:
     name: backbone
     namespace: democratic-csi
-  project: dfs-pg
+  project: dfs
   source:
     chart: democratic-csi
     name: ssd-iscsi
