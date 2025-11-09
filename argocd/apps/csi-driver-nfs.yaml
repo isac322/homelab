@@ -2,6 +2,8 @@ apiVersion: argoproj.io/v1alpha1
 kind: Application
 metadata:
   name: csi-driver-nfs
+  finalizers:
+    - resources-finalizer.argocd.argoproj.io
 spec:
   destination:
     name: backbone
@@ -33,6 +35,8 @@ apiVersion: argoproj.io/v1alpha1
 kind: Application
 metadata:
   name: csi-driver-nfs-storageclass
+  finalizers:
+    - resources-finalizer.argocd.argoproj.io
 spec:
   destination:
     name: backbone

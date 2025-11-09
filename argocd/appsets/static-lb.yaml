@@ -11,6 +11,8 @@ spec:
   template:
     metadata:
       name: '{{cluster}}-static-lb'
+      finalizers:
+        - resources-finalizer.argocd.argoproj.io
     spec:
       destination:
         name: '{{cluster}}'

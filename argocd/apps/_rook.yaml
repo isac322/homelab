@@ -2,6 +2,8 @@ apiVersion: argoproj.io/v1alpha1
 kind: Application
 metadata:
   name: rook-ceph
+  finalizers:
+    - resources-finalizer.argocd.argoproj.io
 spec:
   destination:
     name: prod
@@ -34,6 +36,8 @@ apiVersion: argoproj.io/v1alpha1
 kind: Application
 metadata:
   name: rook-ceph-cluster
+  finalizers:
+    - resources-finalizer.argocd.argoproj.io
 spec:
   destination:
     name: prod

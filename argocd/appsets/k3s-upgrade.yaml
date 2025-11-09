@@ -11,6 +11,8 @@ spec:
   template:
     metadata:
       name: '{{cluster}}-k3s-upgrade'
+      finalizers:
+        - resources-finalizer.argocd.argoproj.io
     spec:
       destination:
         name: '{{cluster}}'

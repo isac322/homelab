@@ -8,6 +8,8 @@ spec:
   template:
     metadata:
       name: '{{name}}-external-dns'
+      finalizers:
+        - resources-finalizer.argocd.argoproj.io
     spec:
       destination:
         name: '{{name}}'
@@ -45,6 +47,8 @@ spec:
   template:
     metadata:
       name: '{{name}}-external-dns-cf-api-token'
+      finalizers:
+        - resources-finalizer.argocd.argoproj.io
     spec:
       destination:
         name: '{{name}}'
