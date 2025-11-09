@@ -6,7 +6,7 @@ tenant:
   # Change this to match your preferred MinIO Tenant name.
   name: ssd-ha
   image:
-    tag: RELEASE.2025-09-07T16-13-09Z
+    tag: RELEASE.2025-04-22T22-12-26Z
   ###
   # Root key for dynamically creating a secret for use with configuring root MinIO User
   # Specify the ``name`` and then a list of environment variables.
@@ -131,6 +131,7 @@ ingress:
           - minio.bhyoo.com
         secretName: minio-bhyoo-com
     host: minio.bhyoo.com
+
 # Use an extraResources template section to include additional Kubernetes resources
 # with the Helm deployment.
 extraResources:
