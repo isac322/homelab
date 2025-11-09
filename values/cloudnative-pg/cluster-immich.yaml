@@ -7,13 +7,12 @@ nameOverride: immich
 
 cluster:
   instances: 1
-  imageName: isac322/pgvectors-vchord:16.10-pgvectors0.3.0-vchord0.5.3
+  imageName: ghcr.io/tensorchord/cloudnative-vectorchord:16.10-0.5.3
   storage:
     storageClass: ssd-ha-xfs
     size: 10Gi
   postgresql:
     shared_preload_libraries:
-      - vectors.so
       - vchord.so
   postgresUID: 26
   postgresGID: 999
@@ -21,7 +20,7 @@ cluster:
     enabled: true
 
 backups:
-  enabled: false
+  enabled: true
   endpointURL: "http://ssd-ha-hl.object-storage.svc:9000"
   provider: s3
   data:
