@@ -5,6 +5,7 @@ metadata:
 spec:
   description: Immich
   sourceRepos:
+    - https://github.com/isac322/homelab.git
     - ghcr.io/immich-app/immich-charts
     - https://cloudnative-pg.github.io/charts/
   destinations:
