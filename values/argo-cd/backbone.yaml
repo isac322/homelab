@@ -54,11 +54,11 @@ configs:
       name: cloudnative-pg
       type: helm
       url: https://cloudnative-pg.github.io/charts/
-    kubernetes-reflector:
+    emberstack:
       enableOCI: "true"
-      name: kubernetes-reflector
+      name: emberstack
       type: helm
-      url: ghcr.io/emberstack/helm-charts/reflector
+      url: ghcr.io/emberstack/helm-charts
     democratic-csi:
       name: democratic-csi
       type: helm

@@ -13,7 +13,7 @@ spec:
       valueFiles:
         - values.yaml
         - https://raw.githubusercontent.com/isac322/homelab/HEAD/values/reflector/backbone.yaml
-    repoURL: ghcr.io/emberstack/helm-charts/reflector
+    repoURL: ghcr.io/emberstack/helm-charts
     targetRevision: 9.1.38
   syncPolicy:
     automated:
