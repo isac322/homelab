@@ -11,8 +11,8 @@ spec:
   project: dfs
   source:
     chart: democratic-csi
-    name: ssd-iscsi
     helm:
+      releaseName: ssd-iscsi
       valueFiles:
         - values.yaml
         - https://raw.githubusercontent.com/isac322/homelab/HEAD/values/democratic-csi/backbone.yaml
