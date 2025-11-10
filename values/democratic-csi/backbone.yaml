@@ -6,7 +6,7 @@ csiDriver:
 storageClasses:
   - name: ssd-ha-xfs
     defaultClass: false
-    reclaimPolicy: Delete
+    reclaimPolicy: Retain
     volumeBindingMode: Immediate
     allowVolumeExpansion: true
     parameters:
