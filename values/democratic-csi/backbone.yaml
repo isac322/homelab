@@ -124,6 +124,7 @@ driver:
 controller:
   driver:
     image:
+      registry: docker.io/isac322/democratic-csi
       tag: next
       pullPolicy: Always
     extraEnv:
@@ -136,6 +137,7 @@ controller:
 node:
   driver:
     image:
+      registry: docker.io/isac322/democratic-csi
       tag: next
       pullPolicy: Always
     extraEnv:
