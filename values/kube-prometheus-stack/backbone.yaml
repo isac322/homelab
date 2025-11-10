@@ -1,4 +1,4 @@
-nameOverride: prometheus
+nameOverride: shared
 
 ## Deprecated way to provide custom recording or alerting rules to be deployed into the cluster.
 ##

@@ -12,7 +12,7 @@ spec:
   source:
     chart: kube-prometheus-stack
     helm:
-      releaseName: prometheus
+      releaseName: shared
       valueFiles:
         - values.yaml
         - 'https://raw.githubusercontent.com/isac322/homelab/HEAD/values/kube-prometheus-stack/backbone.yaml'
