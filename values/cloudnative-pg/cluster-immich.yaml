@@ -6,7 +6,7 @@ version:
 nameOverride: immich
 
 cluster:
-  instances: 0
+  instances: 1
   imageName: ghcr.io/tensorchord/cloudnative-vectorchord:16.10-0.5.3
   storage:
     storageClass: ssd-ha-xfs
@@ -20,7 +20,7 @@ cluster:
     enabled: true
 
 backups:
-  enabled: true
+  enabled: false
   endpointURL: "http://ssd-ha-hl.object-storage.svc:9000"
   provider: s3
   data:
