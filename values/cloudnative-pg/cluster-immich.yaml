@@ -6,7 +6,7 @@ version:
 nameOverride: immich
 
 cluster:
-  instances: 1
+  instances: 0
   imageName: ghcr.io/tensorchord/cloudnative-vectorchord:16.10-0.5.3
   storage:
     storageClass: ssd-ha-xfs
