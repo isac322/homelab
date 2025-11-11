@@ -70,6 +70,10 @@ tenant:
       # Docs: https://github.com/kubernetes-sigs/aws-ebs-csi-driver/blob/master/docs/parameters.md
       storageClassName: ssd-ha-xfs
       ###
+      # Specify `storageAnnotations <https://kubernetes.io/docs/concepts/overview/working-with-objects/annotations/>`__ to associate to PVCs.
+      storageAnnotations:
+        democratic-csi.org/config: '{"zfs":{"zvolBlocksize":"128K","datasetProperties":{"compression":"off","dedup":"off","logbias":"throughput","sync":"standard","primarycache":"metadata","redundant_metadata":"most"}}}'
+      ###
       #
       # The `Requests or Limits <https://kubernetes.io/docs/concepts/configuration/manage-resources-containers/>`__ for resources to associate to Tenant pods.
       #
