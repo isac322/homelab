@@ -1,86 +1,18 @@
 apiVersion: storage.k8s.io/v1
 kind: StorageClass
 metadata:
-  name: zfs-filesystem
+  name: ssh-ha-cnpg
 allowVolumeExpansion: true
 parameters:
-  recordsize: "128k"
-  compression: "off"
-  dedup: "off"
-  fstype: "zfs"
-  acltype: posix
-  poolname: "slow-hot-storage/k8s/filesystem"
-provisioner: zfs.csi.openebs.io
-allowedTopologies:
-  - matchLabelExpressions:
-      - key: "homelab.bhyoo.com/zfs-pool-slow-hot-storage"
-        values:
-          - "true"
----
-apiVersion: storage.k8s.io/v1
-kind: StorageClass
-metadata:
-  name: zfs-filesystem-retain
-allowVolumeExpansion: true
-parameters:
-  recordsize: "128k"
-  compression: "off"
-  dedup: "off"
-  fstype: "zfs"
-  acltype: posix
-  poolname: "slow-hot-storage/k8s/filesystem"
+  poolname: "hot-data/k8s"
+  fstype: xfs
+  volblocksize: 8K
+  compression: lz4
+  dedup: off
 provisioner: zfs.csi.openebs.io
 reclaimPolicy: Retain
 allowedTopologies:
   - matchLabelExpressions:
-      - key: "homelab.bhyoo.com/zfs-pool-slow-hot-storage"
+      - key: "kubernetes.io/hostname"
         values:
-          - "true"
----
-apiVersion: storage.k8s.io/v1
-kind: StorageClass
-metadata:
-  name: zfs-block
-allowVolumeExpansion: true
-parameters:
-  poolname: "slow-hot-storage/k8s/block"
-provisioner: zfs.csi.openebs.io
-allowedTopologies:
-  - matchLabelExpressions:
-      - key: "homelab.bhyoo.com/zfs-pool-slow-hot-storage"
-        values:
-          - "true"
----
-apiVersion: storage.k8s.io/v1
-kind: StorageClass
-metadata:
-  name: zfs-block-retain
-allowVolumeExpansion: true
-parameters:
-  poolname: "slow-hot-storage/k8s/block"
-provisioner: zfs.csi.openebs.io
-reclaimPolicy: Retain
-allowedTopologies:
-  - matchLabelExpressions:
-      - key: "homelab.bhyoo.com/zfs-pool-slow-hot-storage"
-        values:
-          - "true"
----
-apiVersion: storage.k8s.io/v1
-kind: StorageClass
-metadata:
-  name: zfs-temporal
-allowVolumeExpansion: true
-parameters:
-  recordsize: "16k"
-  compression: "off"
-  dedup: "off"
-  fstype: "zfs"
-  acltype: posix
-  poolname: "temporal/pvc"
-provisioner: zfs.csi.openebs.io
-allowedTopologies:
-  - matchLabelExpressions:
-      - key: "homelab.bhyoo.com/zfs-pool-temporal"
-        values:
-          - "true"
+          - "rock5bp"
