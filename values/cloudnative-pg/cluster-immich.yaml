@@ -1,20 +1,9 @@
 type: postgresql
-mode: recovery
+mode: standalone
 version:
   postgresql: "16"
 
 nameOverride: immich
-
-recovery:
-  method: object_store
-  endpointURL: "http://ssd-ha-hl.object-storage.svc:9000"
-  clusterName: cnpg-immich
-  secret:
-    name: immich-s3-creds
-    create: false
-  s3:
-    bucket: immich-postgresql-backup
-    region: ap-northeast-2
 
 cluster:
   instances: 1
