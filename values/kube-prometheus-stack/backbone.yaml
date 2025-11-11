@@ -401,6 +401,7 @@ prometheusOperator:
 ## Deploy a Prometheus instance
 ##
 prometheus:
+  enabled: false
   ingress:
     enabled: true
 
