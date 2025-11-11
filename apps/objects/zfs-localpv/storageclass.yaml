@@ -1,14 +1,14 @@
 apiVersion: storage.k8s.io/v1
 kind: StorageClass
 metadata:
-  name: ssh-ha-cnpg
+  name: ssd-ha-cnpg
 allowVolumeExpansion: true
 parameters:
   poolname: "hot-data/k8s"
-  fstype: xfs
-  volblocksize: 8K
-  compression: lz4
-  dedup: off
+  fstype: "xfs"
+  volblocksize: "8K"
+  compression: "lz4"
+  dedup: "off"
 provisioner: zfs.csi.openebs.io
 reclaimPolicy: Retain
 allowedTopologies:
