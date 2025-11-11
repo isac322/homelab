@@ -829,6 +829,9 @@ prometheus:
     ## Using PersistentVolumeClaim
     ##
       volumeClaimTemplate:
+        metadata:
+          annotations:
+            democratic-csi.org/config: '{"zfs":{"zvolBlocksize":"16K","datasetProperties":{"compression":"lz4","dedup":"off","logbias":"throughput","sync":"standard","primarycache":"metadata","redundant_metadata":"most"}}}'
         spec:
           storageClassName: ssd-ha-xfs
           accessModes: ["ReadWriteOnce"]
