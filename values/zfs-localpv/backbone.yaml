@@ -1,18 +1,13 @@
-rbac:
-  # rbac.pspEnabled: `true` if PodSecurityPolicy resources should be created
-  pspEnabled: false
-
 # zfsNode contains the configurables for
 # the zfs node daemonset
 zfsNode:
-  componentName: openebs-zfs-node
   resources:
     limits:
       cpu: 100m
       memory: 128Mi
     requests:
-      cpu: 10m
-      memory: 32Mi
+      cpu: 100m
+      memory: 128Mi
   ## Labels to be added to openebs-zfs node pods
   nodeSelector:
     homelab.bhyoo.com/zfs-node: 'true'
@@ -20,24 +15,11 @@ zfsNode:
 # zfsController contains the configurables for
 # the zfs controller statefulset
 zfsController:
-  componentName: openebs-zfs-controller
   replicas: 1
-  serviceName: openebs-zfs
   resources:
     limits:
-      cpu: 500m
-      memory: 256Mi
-    requests:
-      cpu: 50m
+      cpu: 200m
       memory: 128Mi
-  ## Labels to be added to openebs-zfs controller pods
-  podLabels:
-    name: openebs-zfs-controller
-  nodeSelector:
-    homelab.bhyoo.com/zfs-node: 'true'
-
-
-# zfsPlugin is the common csi container used by the
-# controller statefulset and node daemonset
-zfsPlugin:
-  name: "openebs-zfs-plugin"
+    requests:
+      cpu: 200m
+      memory: 128Mi
