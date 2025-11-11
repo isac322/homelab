@@ -34,7 +34,7 @@ spec:
 apiVersion: argoproj.io/v1alpha1
 kind: Application
 metadata:
-  name: immich-cnpg-s3-creds
+  name: immich-cnpg-s3-external
   finalizers:
     - resources-finalizer.argocd.argoproj.io
 spec:
