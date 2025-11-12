@@ -123,7 +123,7 @@ machine-learning:
   persistence:
     cache:
       enabled: true
-      size: 10Gi
+      size: 32Gi
       type: persistentVolumeClaim
       accessMode: ReadWriteOnce
       storageClass: ssd-ha-cnpg
