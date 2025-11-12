@@ -125,7 +125,7 @@ machine-learning:
       enabled: true
       size: 10Gi
       type: persistentVolumeClaim
-      accessMode: ReadWriteMany
+      accessMode: ReadWriteOnce
       storageClass: ssd-ha-cnpg
     rk-drivers:
       enabled: true
