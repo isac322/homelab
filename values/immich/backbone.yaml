@@ -126,3 +126,11 @@ machine-learning:
   resources:
     limits:
       rock-chips.com/rknpu: 1
+  volumes:
+    - hostPath:
+        path: /proc/device-tree/compatible
+      name: rockchip-compatible
+  volumeMounts:
+    - mountPath: /proc/device-tree/compatible
+      name: rockchip-compatible
+      readOnly: true
