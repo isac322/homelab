@@ -116,6 +116,10 @@ machine-learning:
             TRANSFORMERS_CACHE: /cache
             HF_XET_CACHE: /cache/huggingface-xet
             MPLCONFIGDIR: /cache/matplotlib-config
+          securityContext:
+            appArmorProfile:
+              type: Unconfined
+            privileged: true
   persistence:
     cache:
       enabled: true
@@ -123,10 +127,10 @@ machine-learning:
       type: persistentVolumeClaim
       accessMode: ReadWriteMany
       storageClass: ssd-ha-cnpg
-    rockchip-compatible:
+    rk-drivers:
       enabled: true
       type: hostPath
-      hostPath: /proc/device-tree/compatible
+      hostPath: /dev/dri
   resources:
     limits:
       rock-chips.com/rknpu: 1
