@@ -34,6 +34,39 @@ spec:
 apiVersion: argoproj.io/v1alpha1
 kind: Application
 metadata:
+  name: immich-app
+  finalizers:
+    - resources-finalizer.argocd.argoproj.io
+spec:
+  destination:
+    name: backbone
+    namespace: immich
+  project: immich
+  source:
+    chart: immich
+    helm:
+      releaseName: immich
+      valueFiles:
+        - values.yaml
+        - https://raw.githubusercontent.com/isac322/homelab/HEAD/values/immich/backbone.yaml
+    repoURL: ghcr.io/immich-app/immich-charts
+    targetRevision: 0.10.2
+  syncPolicy:
+    automated:
+      prune: true
+      selfHeal: true
+    retry:
+      backoff:
+        duration: 5s
+        factor: 2
+        maxDuration: 3m0s
+      limit: 100
+    syncOptions:
+      - CreateNamespace=true
+---
+apiVersion: argoproj.io/v1alpha1
+kind: Application
+metadata:
   name: immich-cnpg-s3-external
   finalizers:
     - resources-finalizer.argocd.argoproj.io
