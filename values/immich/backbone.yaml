@@ -245,3 +245,13 @@ machine-learning:
           main:
             - path: /lib/firmware/mali_csffw.bin
               readOnly: true
+    sub-cache:
+      enabled: true
+      size: 32Gi
+      type: persistentVolumeClaim
+      accessMode: ReadWriteOnce
+      storageClass: local-path
+      advancedMounts:
+        sub:
+          main:
+            - {}
