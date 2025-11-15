@@ -10,9 +10,9 @@ controllers:
       main:
         image:
           tag: v2.2.3
-        env:
+        env: &envs
           REDIS_HOSTNAME: '{{ printf "%s-valkey" .Release.Name }}'
-          IMMICH_MACHINE_LEARNING_URL: '{{ printf "http://%s-machine-learning:3003" .Release.Name }}'
+          IMMICH_MACHINE_LEARNING_URL: '{{ printf "http://%s-machine-learning-heterogeneous:3003" .Release.Name }}'
           # Add the env vars to connect to your database here.
           DB_HOSTNAME:
             valueFrom:
@@ -35,12 +35,7 @@ controllers:
                 key: password
                 name: cnpg-immich-superuser
           DB_DATABASE_NAME: app
-          MACHINE_LEARNING_RKNN_THREADS: 3
           TZ: Asia/Seoul
-        securityContext:
-          appArmorProfile:
-            type: Unconfined
-          privileged: true
 
 immich:
   metrics:
@@ -82,11 +77,18 @@ server:
   enabled: true
   controllers:
     main:
+      pod:
+        nodeSelector:
+          homelab.bhyoo.com/gpu: rkmpp
       containers:
         main:
           image:
             repository: ghcr.io/immich-app/immich-server
             pullPolicy: IfNotPresent
+          securityContext:
+            appArmorProfile:
+              type: Unconfined
+            privileged: true
   ingress:
     main:
       enabled: true
@@ -141,20 +143,63 @@ machine-learning:
   enabled: true
   controllers:
     main:
+      pod:
+        nodeSelector:
+          homelab.bhyoo.com/npu: rknn
       containers:
         main:
           image:
-            repository: ghcr.io/immich-app/immich-machine-learning
             tag: v2.2.3-rknn
-            pullPolicy: IfNotPresent
           env:
-            TRANSFORMERS_CACHE: /cache
-            HF_XET_CACHE: /cache/huggingface-xet
-            MPLCONFIGDIR: /cache/matplotlib-config
+            MACHINE_LEARNING_RKNN_THREADS: 3
           securityContext:
             appArmorProfile:
               type: Unconfined
             privileged: true
+          resources:
+            limits:
+              rock-chips.com/rknpu: 1
+    sub:
+      type: deployment
+      strategy: RollingUpdate
+      pod:
+        nodeSelector:
+          homelab.bhyoo.com/gpu: mali
+      containers:
+        main:
+          env: *envs
+          image:
+            repository: ghcr.io/immich-app/immich-machine-learning
+            tag: v2.2.3-armnn
+            pullPolicy: IfNotPresent
+          ports:
+            - name: http
+              containerPort: 3003
+              protocol: TCP
+          probes:
+            liveness: &probes
+              enabled: true
+              custom: true
+              spec:
+                httpGet:
+                  path: /ping
+                  port: http
+                initialDelaySeconds: 0
+                periodSeconds: 10
+                timeoutSeconds: 1
+                failureThreshold: 3
+            readiness: *probes
+            startup:
+              enabled: true
+              custom: true
+              spec:
+                httpGet:
+                  path: /ping
+                  port: http
+                initialDelaySeconds: 0
+                periodSeconds: 10
+                timeoutSeconds: 1
+                failureThreshold: 60
   persistence:
     cache:
       enabled: true
@@ -162,10 +207,41 @@ machine-learning:
       type: persistentVolumeClaim
       accessMode: ReadWriteOnce
       storageClass: ssd-ha-cnpg
+      advancedMounts:
+        main:
+          main:
+            - {}
     rk-drivers:
       enabled: true
       type: hostPath
       hostPath: /dev/dri
-  resources:
-    limits:
-      rock-chips.com/rknpu: 1
+      advancedMounts:
+        main:
+          main:
+            - {}
+    mali-device:
+      enabled: true
+      type: hostPath
+      hostPath: /dev/mali0
+      advancedMounts:
+        sub:
+          main:
+            - {}
+    mali-library:
+      enabled: true
+      type: hostPath
+      hostPath: /usr/lib/aarch64-linux-gnu/libmali.so.0.51.0
+      advancedMounts:
+        sub:
+          main:
+            - path: /usr/lib/libmali.so
+              readOnly: true
+    mali-firmware:
+      enabled: true
+      type: hostPath
+      hostPath: /home/bhyoo/mali_csffw.bin
+      advancedMounts:
+        sub:
+          main:
+            - path: /lib/firmware/mali_csffw.bin
+              readOnly: true
