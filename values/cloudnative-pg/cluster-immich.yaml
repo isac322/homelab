@@ -24,7 +24,7 @@ cluster:
     enabled: true
 
 backups:
-  enabled: false
+  enabled: true
   endpointURL: "http://ssd-ha-hl.object-storage.svc:9000"
   provider: s3
   data:
