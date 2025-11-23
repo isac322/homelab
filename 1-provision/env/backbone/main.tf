@@ -1,14 +1,18 @@
 terraform {
-  required_version = "~> 1.6"
+  required_version = "~> 1.13"
 
   required_providers {
     aws = {
       source  = "hashicorp/aws"
-      version = "~> 5.30"
+      version = "~> 5.100.0"
     }
     cloudflare = {
       source  = "cloudflare/cloudflare"
-      version = "~> 4.20"
+      version = "~> 5.12.0"
+    }
+    tls = {
+      source  = "hashicorp/tls"
+      version = "~> 4.1.0"
     }
   }
 
@@ -46,5 +50,6 @@ module "dns_secrets" {
   providers = {
     aws        = aws
     cloudflare = cloudflare
+    tls        = tls
   }
 }
