@@ -16,11 +16,6 @@ resources:
     cpu: 100m
     memory: 100Mi
 
-logLevel: info
-logFormat: text
-
-interval: 1m
-
 sources:
   - node
   - service
@@ -34,7 +29,8 @@ txtOwnerId: k8s-backbone
 domainFilters:
   - bhyoo.com
 
-provider: cloudflare
+provider:
+  name: cloudflare
 
 extraArgs:
   - --service-type-filter=LoadBalancer

@@ -16,11 +16,6 @@ resources:
     cpu: 100m
     memory: 100Mi
 
-logLevel: info
-logFormat: text
-
-interval: 1m
-
 sources:
   - service
   - ingress
@@ -33,9 +28,9 @@ txtOwnerId: k8s-vultr
 domainFilters:
   - bhyoo.com
 
-provider: cloudflare
+provider:
+  name: cloudflare
 
 extraArgs:
   - --service-type-filter=LoadBalancer
   - --cloudflare-proxied
-  - --annotation-filter="external-dns.alpha.kubernetes.io/exclude notin (true)"
