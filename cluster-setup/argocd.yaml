@@ -158,13 +158,6 @@
 - hosts: backbone
   name: Install argocd
   tasks:
-    - name: install Helm
-      ansible.builtin.import_role:
-        name: gantsign.helm
-      vars:
-        helm_architecture: 'arm64'
-      when: is_k8s_master
-
     - name: Create argocd namespace on backbone cluster
       become: yes
       run_once: yes
@@ -201,6 +194,13 @@
             config: "{{ _register_argocd_cluster_config | to_json }}"
       when: is_k8s_master
 
+    - name: install Helm
+      ansible.builtin.import_role:
+        name: gantsign.helm
+      vars:
+        helm_architecture: 'arm64'
+      when: is_k8s_master
+
     - name: Copy value file
       run_once: yes
       ansible.builtin.copy:
@@ -215,7 +215,7 @@
         atomic: yes
         chart_ref: argo-cd
         chart_repo_url: https://argoproj.github.io/argo-helm
-        chart_version: 7.9.0
+        chart_version: 9.1.3
         create_namespace: yes
         kubeconfig: /etc/rancher/k3s/k3s.yaml
         release_name: argocd
