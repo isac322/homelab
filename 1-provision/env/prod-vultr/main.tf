@@ -1,18 +1,22 @@
 terraform {
-  required_version = "~> 1.6"
+  required_version = "~> 1.13"
 
   required_providers {
     aws = {
       source  = "hashicorp/aws"
-      version = "~> 5.30"
+      version = "~> 5.100.0"
     }
     cloudflare = {
       source  = "cloudflare/cloudflare"
-      version = "~> 4.20"
+      version = "~> 5.12.0"
     }
     vultr = {
       source  = "vultr/vultr"
-      version = "~> 2.17"
+      version = "~> 2.27.1"
+    }
+    tls = {
+      source  = "hashicorp/tls"
+      version = "~> 4.1.0"
     }
   }
 
@@ -33,6 +37,9 @@ provider "cloudflare" {
 }
 provider "aws" {
   region = "ap-northeast-2"
+  # shared_config_files      = ["/home/bhyoo/.aws/config"]
+  # shared_credentials_files = ["/home/bhyoo/.aws/credentials"]
+  # profile                  = "personal"
 
   default_tags {
     tags = {
@@ -52,6 +59,7 @@ module "dns_secrets" {
   providers = {
     aws        = aws
     cloudflare = cloudflare
+    tls        = tls
   }
 }
 
@@ -71,9 +79,10 @@ module "cluster" {
   }
   ssh_keys = {
     desktop = "ssh-ed25519 AAAAC3NzaC1lZDI1NTE5AAAAIJn1FChNUhCeKJyYZwWAt9v5q1Xm+fVwHDufTPRGsrKt bhyoo@bhyoo-desktop"
-    mobile  = "ecdsa-sha2-nistp256 AAAAE2VjZHNhLXNoYTItbmlzdHAyNTYAAAAIbmlzdHAyNTYAAABBBMSLM7M7rcPnxRXOVUn3aNtCxCaxQmhIBiHvYIphQzOXnxVSVjKDzw8Ieb3jl3HcUTJ6RMfGdceukSx6Czo99B4="
+    mobile  = "ecdsa-sha2-nistp256 AAAAE2VjZHNhLXNoYTItbmlzdHAyNTYAAAAIbmlzdHAyNTYAAABBBB+cibIZ3Lb2CqszA7NTNoro5riObOfz3cqHeeocM5DX2zKePCCNNUJz6CnkPjBIh23pYfSH+HCyOldoi/2ynLw="
     tablet  = "ecdsa-sha2-nistp256 AAAAE2VjZHNhLXNoYTItbmlzdHAyNTYAAAAIbmlzdHAyNTYAAABBBEZj/byuEy23ADQpubcvI6e6wuiOoGnHbYLoNx9icWo5c8KS2gf3RMRQ4hptvr/UVT9FIA5rD06yeKXYLBRNW4s="
     laptop  = "ssh-ed25519 AAAAC3NzaC1lZDI1NTE5AAAAIPo4HReAviwkmOkdPJcwzjF0kINMdBoy2p+P7qxrOM3O bhyoo@latitude7490-manjaro"
+    office  = "ssh-ed25519 AAAAC3NzaC1lZDI1NTE5AAAAIPjoa/Ig+76qbbUSAavPGzLoBI36jLPdyMKg8XLli0Ib bhyoo@isac-macbook.local"
   }
 
   cloudflare_main_zone_id = var.cloudflare_main_zone_id

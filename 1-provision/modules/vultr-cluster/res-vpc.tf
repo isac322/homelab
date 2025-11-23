@@ -1,8 +1,8 @@
-resource "vultr_vpc2" "homelab" {
-  description   = "homelab"
-  region        = var.vpc_network.region
-  ip_block      = var.vpc_network.network
-  prefix_length = var.vpc_network.prefix
+resource "vultr_vpc" "homelab" {
+  description    = "homelab"
+  region         = var.vpc_network.region
+  v4_subnet      = var.vpc_network.network
+  v4_subnet_mask = var.vpc_network.prefix
 }
 
 resource "vultr_firewall_group" "homelab" {

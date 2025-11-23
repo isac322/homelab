@@ -7,16 +7,16 @@ resource "vultr_instance" "instances" {
 
   plan              = each.value.plan
   region            = each.value.region
-  os_id             = 1743
+  os_id             = 2284
   label             = join(".", [each.key, data.cloudflare_zone.main.name])
   hostname          = join(".", [each.key, data.cloudflare_zone.main.name])
   enable_ipv6       = true
   backups           = "disabled"
   ddos_protection   = false
   activation_email  = false
-  vpc2_ids          = [vultr_vpc2.homelab.id]
+  vpc_ids           = [vultr_vpc.homelab.id]
   ssh_key_ids       = [for k in vultr_ssh_key.bhyoo : k.id]
-  script_id         = vultr_startup_script.cleanup_ubuntu_22_04.id
+  script_id         = vultr_startup_script.cleanup_ubuntu_24_04.id
   firewall_group_id = vultr_firewall_group.homelab.id
 }
 
@@ -27,8 +27,8 @@ resource "vultr_ssh_key" "bhyoo" {
   ssh_key = each.value
 }
 
-resource "vultr_startup_script" "cleanup_ubuntu_22_04" {
-  name   = "cleanup_ubuntu_22_04"
+resource "vultr_startup_script" "cleanup_ubuntu_24_04" {
+  name   = "cleanup_ubuntu_24_04"
   type   = "boot"
-  script = filebase64("${path.module}/cleanup_ubuntu_22_04.sh")
+  script = filebase64("${path.module}/cleanup_ubuntu_24_04.sh")
 }
