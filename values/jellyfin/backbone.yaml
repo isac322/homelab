@@ -20,7 +20,6 @@ securityContext:
   privileged: true
   appArmorProfile:
     type: Unconfined
-  readOnlyRootFilesystem: true
   # capabilities:
   #   drop:
   #   - ALL
