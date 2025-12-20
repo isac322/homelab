@@ -10,13 +10,18 @@ podLabels: {}
 
 # -- Security context for the pod.
 podSecurityContext:
+  runAsNonRoot: true
+  runAsUser: 110
   runAsGroup: 5101
+  supplementalGroups:
+    - 44
 
 # -- Security context for the container.
 securityContext:
   privileged: true
   appArmorProfile:
     type: Unconfined
+  readOnlyRootFilesystem: true
   # capabilities:
   #   drop:
   #   - ALL
@@ -121,6 +126,10 @@ volumes:
   - hostPath:
       path: /dev/rga
     name: rk-rga
+  - name: jellyfin-cache
+    emptyDir: {}
+  - name: jellyfin-log
+    emptyDir: {}
 
 # -- Additional volume mounts for the Jellyfin container.
 volumeMounts:
@@ -134,6 +143,10 @@ volumeMounts:
     name: rk-mali
   - mountPath: /dev/rga
     name: rk-rga
+  - mountPath: /var/cache/jellyfin
+    name: jellyfin-cache
+  - mountPath: /var/log/jellyfin
+    name: jellyfin-log
 # - name: foo
 #   mountPath: "/etc/foo"
 #   readOnly: true
