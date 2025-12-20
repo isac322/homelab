@@ -57,7 +57,7 @@ service:
   # # -- Custom name for the service port
   # name: http
   # -- Service type (ClusterIP, NodePort, or LoadBalancer).
-  type: LoadBalancer
+  type: NodePort
   # -- Configure dual-stack IP family policy. See: https://kubernetes.io/docs/concepts/services-networking/dual-stack/
   ipFamilyPolicy: ""
   # -- Supported IP families (IPv4, IPv6).
@@ -77,7 +77,7 @@ service:
   # -- Labels for the service.
   labels: {}
   # -- External traffic policy (Cluster or Local).
-  externalTrafficPolicy: Local
+  #  externalTrafficPolicy: Local
   # -- NodePort for the service (if applicable).
   #  nodePort:
 
