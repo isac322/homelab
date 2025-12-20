@@ -10,10 +10,13 @@ podLabels: {}
 
 # -- Security context for the pod.
 podSecurityContext:
-  runAsUser: 0
-  runAsGroup: 5101
+  runAsUser: 110
+  runAsGroup: 110
   supplementalGroups:
     - 44
+    - 5101
+    - 5102
+    - 5103
 
 # -- Security context for the container.
 securityContext:
@@ -107,10 +110,10 @@ volumes:
   - hostPath:
       path: /dev/rga
     name: rk-rga
-#  - name: jellyfin-cache
-#    emptyDir: {}
-#  - name: jellyfin-log
-#    emptyDir: {}
+  - name: jellyfin-cache
+    emptyDir: {}
+  - name: jellyfin-log
+    emptyDir: {}
 
 # -- Additional volume mounts for the Jellyfin container.
 volumeMounts:
@@ -124,10 +127,10 @@ volumeMounts:
     name: rk-mali
   - mountPath: /dev/rga
     name: rk-rga
-#  - mountPath: /var/cache/jellyfin
-#    name: jellyfin-cache
-#  - mountPath: /var/log/jellyfin
-#    name: jellyfin-log
+  - mountPath: /var/cache/jellyfin
+    name: jellyfin-cache
+  - mountPath: /var/log/jellyfin
+    name: jellyfin-log
 # - name: foo
 #   mountPath: "/etc/foo"
 #   readOnly: true
