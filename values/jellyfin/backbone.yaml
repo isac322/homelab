@@ -13,13 +13,19 @@ podSecurityContext: {}
   # fsGroup: 2000
 
 # -- Security context for the container.
-securityContext: {}
+securityContext:
+  privileged: true
+  appArmorProfile:
+    type: Unconfined
   # capabilities:
   #   drop:
   #   - ALL
-  # readOnlyRootFilesystem: true
-  # runAsNonRoot: true
-  # runAsUser: 1000
+  readOnlyRootFilesystem: true
+  runAsNonRoot: true
+  runAsUser: 110
+  runAsGroup: 5101
+  supplementalGroups:
+    - 44
 
 # -- Define a custom runtimeClassName for the pod.
 runtimeClassName: ''
@@ -102,14 +108,35 @@ resources: {}
   #   memory: 128Mi
 
 # -- Additional volumes to mount in the Jellyfin pod.
-volumes: []
-# - name: foo
-#   secret:
-#     secretName: mysecret
-#     optional: false
+volumes:
+  - hostPath:
+      path: /dev/dma_heap
+    name: rk-dma-heap
+  - hostPath:
+      path: /dev/mpp_service
+    name: rk-dma-mpp-service
+  - hostPath:
+      path: /dev/dri
+    name: rk-drivers
+  - hostPath:
+      path: /dev/mali0
+    name: rk-mali
+  - hostPath:
+      path: /dev/rga
+    name: rk-rga
 
 # -- Additional volume mounts for the Jellyfin container.
-volumeMounts: []
+volumeMounts:
+  - mountPath: /dev/dma_heap
+    name: rk-dma-heap
+  - mountPath: /dev/mpp_service
+    name: rk-dma-mpp-service
+  - mountPath: /dev/dri
+    name: rk-drivers
+  - mountPath: /dev/mali0
+    name: rk-mali
+  - mountPath: /dev/rga
+    name: rk-rga
 # - name: foo
 #   mountPath: "/etc/foo"
 #   readOnly: true
