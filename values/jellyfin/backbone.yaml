@@ -12,6 +12,7 @@ podLabels: {}
 podSecurityContext:
   runAsUser: 110
   runAsGroup: 110
+  fsGroup: 110
   supplementalGroups:
     - 44
     - 5101
