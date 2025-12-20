@@ -71,7 +71,7 @@ service:
   # -- Labels for the service.
   labels: {}
   # -- External traffic policy (Cluster or Local).
-  externalTrafficPolicy: Cluster
+  externalTrafficPolicy: Local
   # -- NodePort for the service (if applicable).
   #  nodePort:
 
