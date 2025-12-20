@@ -195,16 +195,16 @@ metrics:
     enabled: true
 
 # -- additional init containers to run inside the pod.
-extraInitContainers:
-  - name: init-permissions
-    image: busybox:1.37.0-uclibc
-    command: ["sh", "-c", "chown -R 110:110 /config && chown -R 110:110 /var/log/jellyfin && chown -R 110:110 /var/cache/jellyfin"]
-    volumeMounts:
-      - name: config
-        mountPath: /config
-      - name: jellyfin-log
-        mountPath: /var/log/jellyfin
-      - name: jellyfin-cache
-        mountPath: /var/cache/jellyfin
-    securityContext:
-      runAsUser: 0
+#extraInitContainers:
+#  - name: init-permissions
+#    image: busybox:1.37.0-uclibc
+#    command: ["sh", "-c", "chown -R 110:110 /config && chown -R 110:110 /var/log/jellyfin && chown -R 110:110 /var/cache/jellyfin"]
+#    volumeMounts:
+#      - name: config
+#        mountPath: /config
+#      - name: jellyfin-log
+#        mountPath: /var/log/jellyfin
+#      - name: jellyfin-cache
+#        mountPath: /var/cache/jellyfin
+#    securityContext:
+#      runAsUser: 0
