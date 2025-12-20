@@ -43,8 +43,9 @@ dnsConfig: {}
 # -- Define a dnsPolicy. See https://kubernetes.io/docs/concepts/services-networking/dns-pod-service/#pod-s-dns-policy
 dnsPolicy: ""
 
-# -- Annotations to add to the deployment.
-deploymentAnnotations: {}
+# -- Deployment strategy configuration. See `kubectl explain deployment.spec.strategy`.
+deploymentStrategy:
+  type: Recreate
 
 service:
   # # -- Custom name for the service port
@@ -138,9 +139,7 @@ jellyfin:
   # -- Custom command to use as container entrypoint.
   command: []
   # -- Additional arguments for the entrypoint command.
-  args:
-    - "--restore-archive"
-    - "/media/jellyfin-backup-20251220155340.zip"
+  args: []
   # -- Additional environment variables for the container.
   env: []
 
