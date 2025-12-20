@@ -1,0 +1,15 @@
+apiVersion: argoproj.io/v1alpha1
+kind: AppProject
+metadata:
+  name: nas
+spec:
+  description: NAS
+  sourceRepos:
+    - https://jellyfin.github.io/jellyfin-helm
+    - https://github.com/isac322/homelab.git
+  destinations:
+    - namespace: nas
+      name: backbone
+  clusterResourceWhitelist:
+    - group: '*'
+      kind: '*'
