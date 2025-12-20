@@ -20,7 +20,6 @@ securityContext:
   # capabilities:
   #   drop:
   #   - ALL
-  readOnlyRootFilesystem: false
   runAsNonRoot: true
   runAsUser: 110
   runAsGroup: 5101
