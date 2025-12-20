@@ -8,7 +8,7 @@ spec:
     - https://jellyfin.github.io/jellyfin-helm
     - https://github.com/isac322/homelab.git
   destinations:
-    - namespace: nas
+    - namespace: jellyfin
       name: backbone
   clusterResourceWhitelist:
     - group: '*'
