@@ -9,22 +9,24 @@ podAnnotations: {}
 podLabels: {}
 
 # -- Security context for the pod.
-podSecurityContext: {}
-  # fsGroup: 2000
+podSecurityContext:
+  runAsUser: 110
+  runAsGroup: 5101
+  supplementalGroups:
+    - 44
 
 # -- Security context for the container.
 securityContext:
   privileged: true
   appArmorProfile:
     type: Unconfined
+  readOnlyRootFilesystem: true
   # capabilities:
   #   drop:
   #   - ALL
-  runAsNonRoot: true
-  runAsUser: 110
-  runAsGroup: 5101
-  supplementalGroups:
-    - 44
+  # readOnlyRootFilesystem: true
+  # runAsNonRoot: true
+  # runAsUser: 1000
 
 # -- Define a custom runtimeClassName for the pod.
 runtimeClassName: ''
