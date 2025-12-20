@@ -10,10 +10,7 @@ podLabels: {}
 
 # -- Security context for the pod.
 podSecurityContext:
-  runAsUser: 110
   runAsGroup: 5101
-  supplementalGroups:
-    - 44
 
 # -- Security context for the container.
 securityContext:
