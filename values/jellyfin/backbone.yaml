@@ -181,7 +181,7 @@ persistence:
     # -- Type of volume for media storage (pvc, hostPath, emptyDir). If 'enabled' is false, 'emptyDir' is used regardless of this setting.
     type: hostPath
     # -- Path on the host node for media storage, only used if type is 'hostPath'.
-    hostPath: "/mnt/data"
+    hostPath: "/mnt/data/media"
 
 # -- Configuration for metrics collection and monitoring
 metrics:
