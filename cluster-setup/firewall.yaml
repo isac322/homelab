@@ -10,6 +10,7 @@
       vars:
         k8s_role: "{{ 'master' if is_k8s_master else 'worker' }}"
         use_k3s_ha_embedded_etcd: true
+        iptables_use_iscsi: "{{ is_iscsi_node or is_iscsi_server }}"
         iptables_reset_all: false
 
 - hosts: prod

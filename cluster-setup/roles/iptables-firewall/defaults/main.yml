@@ -2,9 +2,12 @@
 iptables_use_ftp: false
 iptables_use_ftp_active: false
 iptables_use_ftp_passive_port_range: 30000:35000
+iptables_use_iscsi: false
+iptables_use_jellyfin: false
 iptables_use_nfs: false
 iptables_use_mdns: false
 iptables_use_llmnr: false
+iptables_use_dns: false
 iptables_reset_all: false
 iptables_tricking_port_scanners: false
 

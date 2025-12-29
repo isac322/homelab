@@ -21,7 +21,7 @@
 
 - name: Install iptables-persistent
   ansible.builtin.apt:
-    update_cache: yes
+    update_cache: no
     package:
       - iptables-persistent
     install_recommends: no
@@ -34,13 +34,19 @@
 
 - name: Reset iptables
   block:
-    - name: ACCEPT INPUT chain
+    # 1. 기본 체인 정책을 ACCEPT로 설정
+    - name: Set default policies to ACCEPT
       ansible.builtin.iptables:
         chain_management: yes
-        chain: INPUT
+        chain: "{{ item }}"
         policy: ACCEPT
+      loop:
+        - INPUT
+        - FORWARD
+        - OUTPUT
 
-    - name: Flush rules
+    # 2. 모든 테이블의 모든 체인 플러시 (규칙 삭제)
+    - name: Flush all tables
       ansible.builtin.iptables:
         flush: yes
         table: "{{ item }}"
@@ -51,7 +57,32 @@
         - raw
         - security
 
-    - name: Delete chains
+    # 3. 각 테이블의 기본 체인들도 플러시 (체인 간 참조 제거)
+    - name: Flush default chains in nat table
+      ansible.builtin.iptables:
+        flush: yes
+        chain: "{{ item }}"
+        table: nat
+      loop:
+        - PREROUTING
+        - INPUT
+        - OUTPUT
+        - POSTROUTING
+
+    - name: Flush default chains in mangle table
+      ansible.builtin.iptables:
+        flush: yes
+        chain: "{{ item }}"
+        table: mangle
+      loop:
+        - PREROUTING
+        - INPUT
+        - FORWARD
+        - OUTPUT
+        - POSTROUTING
+
+    # 4. 사용자 정의 체인 삭제 시도 (여러 번 시도)
+    - name: Delete user-defined chains (first attempt)
       ansible.builtin.command:
         cmd: "iptables -t {{ item }} -X"
       loop:
@@ -61,24 +92,319 @@
         - raw
         - security
 
-    - name: Accept INPUT chain
-      ansible.builtin.iptables:
-        chain_management: yes
-        chain: INPUT
-        policy: ACCEPT
-
-    - name: Accept FORWARD chain
-      ansible.builtin.iptables:
-        chain_management: yes
-        chain: FORWARD
-        policy: ACCEPT
-
-    - name: Accept OUTPUT chain
-      ansible.builtin.iptables:
-        chain_management: yes
-        chain: OUTPUT
-        policy: ACCEPT
+    # 5. 실패한 체인들을 위한 추가 처리
+    - name: Force clean stubborn chains
+      ansible.builtin.shell: |
+        # 모든 체인 다시 플러시
+        iptables -t {{ item }} -F
+        # 체인 삭제 재시도
+        iptables -t {{ item }} -X
+      loop:
+        - filter
+        - nat
+        - mangle
+        - raw
+        - security
   when: iptables_reset_all
+
+- name: Configure DNS rates limit
+  when: iptables_use_dns
+  vars:
+    dns_recent_name: dns_bad
+    dns_recent_seconds: 600
+
+    dns_udp53_limit: "50/second"
+    dns_udp53_burst: 100
+
+    dns_tcp53_limit: "50/second"
+    dns_tcp53_burst: 100
+
+    dns_tcp853_limit: "100/second"
+    dns_tcp853_burst: 200
+  block:
+    # =========================
+    #  Create chains
+    # =========================
+    - name: Create DNS_GUARD chain
+      ansible.builtin.iptables:
+        table: raw
+        chain: DNS_GUARD
+        chain_management: yes
+        state: present
+
+    - name: Create DNS_GUARD_UDP chain
+      ansible.builtin.iptables:
+        table: raw
+        chain: DNS_GUARD_UDP
+        chain_management: yes
+        state: present
+
+    - name: Create DNS_GUARD_TCP53 chain
+      ansible.builtin.iptables:
+        table: raw
+        chain: DNS_GUARD_TCP53
+        chain_management: yes
+        state: present
+
+    - name: Create DNS_GUARD_DOT853 chain
+      ansible.builtin.iptables:
+        table: raw
+        chain: DNS_GUARD_DOT853
+        chain_management: yes
+        state: present
+
+    # =========================
+    #  PREROUTING -> DNS_GUARD
+    # =========================
+    - name: PREROUTING jump to DNS_GUARD [UDP 53]
+      ansible.builtin.iptables:
+        table: raw
+        chain: PREROUTING
+        in_interface: "{{ ansible_default_ipv4.interface }}"
+        protocol: udp
+        destination_port: 53
+        jump: DNS_GUARD
+        state: present
+
+    - name: PREROUTING jump to DNS_GUARD [TCP 53]
+      ansible.builtin.iptables:
+        table: raw
+        chain: PREROUTING
+        in_interface: "{{ ansible_default_ipv4.interface }}"
+        protocol: tcp
+        destination_port: 53
+        jump: DNS_GUARD
+        state: present
+
+    - name: PREROUTING jump to DNS_GUARD [TCP 853]
+      ansible.builtin.iptables:
+        table: raw
+        chain: PREROUTING
+        in_interface: "{{ ansible_default_ipv4.interface }}"
+        protocol: tcp
+        destination_port: 853
+        jump: DNS_GUARD
+        state: present
+
+    # =========================
+    #  DNS_GUARD chain rules
+    #  (recent module not supported by ansible.builtin.iptables)
+    # =========================
+    - name: Check DNS_GUARD - drop bad IPs
+      ansible.builtin.command:
+        cmd: >-
+          iptables -t raw -C DNS_GUARD
+          -m recent --name {{ dns_recent_name }} --update --seconds {{ dns_recent_seconds }} --rsource
+          -j DROP
+      register: __check_dns_guard_drop_bad
+      changed_when: false
+      failed_when: __check_dns_guard_drop_bad.rc not in [0, 1]
+
+    - name: Add DNS_GUARD - drop bad IPs
+      ansible.builtin.command:
+        cmd: >-
+          iptables -t raw -A DNS_GUARD
+          -m recent --name {{ dns_recent_name }} --update --seconds {{ dns_recent_seconds }} --rsource
+          -j DROP
+      when: __check_dns_guard_drop_bad.rc == 1
+      changed_when: true
+
+    - name: DNS_GUARD jump to DNS_GUARD_UDP
+      ansible.builtin.iptables:
+        table: raw
+        chain: DNS_GUARD
+        protocol: udp
+        destination_port: 53
+        jump: DNS_GUARD_UDP
+        state: present
+
+    - name: DNS_GUARD jump to DNS_GUARD_TCP53
+      ansible.builtin.iptables:
+        table: raw
+        chain: DNS_GUARD
+        protocol: tcp
+        destination_port: 53
+        jump: DNS_GUARD_TCP53
+        state: present
+
+    - name: DNS_GUARD jump to DNS_GUARD_DOT853
+      ansible.builtin.iptables:
+        table: raw
+        chain: DNS_GUARD
+        protocol: tcp
+        destination_port: 853
+        jump: DNS_GUARD_DOT853
+        state: present
+
+    - name: DNS_GUARD RETURN
+      ansible.builtin.iptables:
+        table: raw
+        chain: DNS_GUARD
+        jump: RETURN
+        state: present
+
+    # =========================
+    #  DNS_GUARD_UDP chain rules
+    #  (hashlimit/recent modules not supported by ansible.builtin.iptables)
+    # =========================
+    - name: Check DNS_GUARD_UDP - hashlimit LOG
+      ansible.builtin.command:
+        cmd: >-
+          iptables -t raw -C DNS_GUARD_UDP
+          -i {{ ansible_default_ipv4.interface }} -p udp --dport 53
+          -m hashlimit --hashlimit-above {{ dns_udp53_limit }} --hashlimit-burst {{ dns_udp53_burst }}
+          --hashlimit-mode srcip --hashlimit-name dns53_udp_abuse
+          -m recent --set --name {{ dns_recent_name }} --rsource
+          -j LOG --log-prefix "DNS53_UDP_ABUSE " --log-level 4
+      register: __check_udp_log
+      changed_when: false
+      failed_when: __check_udp_log.rc not in [0, 1]
+
+    - name: Add DNS_GUARD_UDP - hashlimit LOG
+      ansible.builtin.command:
+        cmd: >-
+          iptables -t raw -A DNS_GUARD_UDP
+          -i {{ ansible_default_ipv4.interface }} -p udp --dport 53
+          -m hashlimit --hashlimit-above {{ dns_udp53_limit }} --hashlimit-burst {{ dns_udp53_burst }}
+          --hashlimit-mode srcip --hashlimit-name dns53_udp_abuse
+          -m recent --set --name {{ dns_recent_name }} --rsource
+          -j LOG --log-prefix "DNS53_UDP_ABUSE " --log-level 4
+      when: __check_udp_log.rc == 1
+      changed_when: true
+
+    - name: Check DNS_GUARD_UDP - rcheck DROP
+      ansible.builtin.command:
+        cmd: >-
+          iptables -t raw -C DNS_GUARD_UDP
+          -m recent --rcheck --name {{ dns_recent_name }} --rsource
+          -j DROP
+      register: __check_udp_drop
+      changed_when: false
+      failed_when: __check_udp_drop.rc not in [0, 1]
+
+    - name: Add DNS_GUARD_UDP - rcheck DROP
+      ansible.builtin.command:
+        cmd: >-
+          iptables -t raw -A DNS_GUARD_UDP
+          -m recent --rcheck --name {{ dns_recent_name }} --rsource
+          -j DROP
+      when: __check_udp_drop.rc == 1
+      changed_when: true
+
+    - name: DNS_GUARD_UDP RETURN
+      ansible.builtin.iptables:
+        table: raw
+        chain: DNS_GUARD_UDP
+        jump: RETURN
+        state: present
+
+    # =========================
+    #  DNS_GUARD_TCP53 chain rules
+    # =========================
+    - name: Check DNS_GUARD_TCP53 - hashlimit LOG
+      ansible.builtin.command:
+        cmd: >-
+          iptables -t raw -C DNS_GUARD_TCP53
+          -i {{ ansible_default_ipv4.interface }} -p tcp --dport 53
+          -m hashlimit --hashlimit-above {{ dns_tcp53_limit }} --hashlimit-burst {{ dns_tcp53_burst }}
+          --hashlimit-mode srcip --hashlimit-name dns53_tcp_abuse
+          -m recent --set --name {{ dns_recent_name }} --rsource
+          -j LOG --log-prefix "DNS53_TCP_ABUSE " --log-level 4
+      register: __check_tcp53_log
+      changed_when: false
+      failed_when: __check_tcp53_log.rc not in [0, 1]
+
+    - name: Add DNS_GUARD_TCP53 - hashlimit LOG
+      ansible.builtin.command:
+        cmd: >-
+          iptables -t raw -A DNS_GUARD_TCP53
+          -i {{ ansible_default_ipv4.interface }} -p tcp --dport 53
+          -m hashlimit --hashlimit-above {{ dns_tcp53_limit }} --hashlimit-burst {{ dns_tcp53_burst }}
+          --hashlimit-mode srcip --hashlimit-name dns53_tcp_abuse
+          -m recent --set --name {{ dns_recent_name }} --rsource
+          -j LOG --log-prefix "DNS53_TCP_ABUSE " --log-level 4
+      when: __check_tcp53_log.rc == 1
+      changed_when: true
+
+    - name: Check DNS_GUARD_TCP53 - rcheck DROP
+      ansible.builtin.command:
+        cmd: >-
+          iptables -t raw -C DNS_GUARD_TCP53
+          -m recent --rcheck --name {{ dns_recent_name }} --rsource
+          -j DROP
+      register: __check_tcp53_drop
+      changed_when: false
+      failed_when: __check_tcp53_drop.rc not in [0, 1]
+
+    - name: Add DNS_GUARD_TCP53 - rcheck DROP
+      ansible.builtin.command:
+        cmd: >-
+          iptables -t raw -A DNS_GUARD_TCP53
+          -m recent --rcheck --name {{ dns_recent_name }} --rsource
+          -j DROP
+      when: __check_tcp53_drop.rc == 1
+      changed_when: true
+
+    - name: DNS_GUARD_TCP53 RETURN
+      ansible.builtin.iptables:
+        table: raw
+        chain: DNS_GUARD_TCP53
+        jump: RETURN
+        state: present
+
+    # =========================
+    #  DNS_GUARD_DOT853 chain rules
+    # =========================
+    - name: Check DNS_GUARD_DOT853 - hashlimit LOG
+      ansible.builtin.command:
+        cmd: >-
+          iptables -t raw -C DNS_GUARD_DOT853
+          -i {{ ansible_default_ipv4.interface }} -p tcp --dport 853
+          -m hashlimit --hashlimit-above {{ dns_tcp853_limit }} --hashlimit-burst {{ dns_tcp853_burst }}
+          --hashlimit-mode srcip --hashlimit-name dns853_tcp_abuse
+          -m recent --set --name {{ dns_recent_name }} --rsource
+          -j LOG --log-prefix "DNS853_TCP_ABUSE " --log-level 4
+      register: __check_dot853_log
+      changed_when: false
+      failed_when: __check_dot853_log.rc not in [0, 1]
+
+    - name: Add DNS_GUARD_DOT853 - hashlimit LOG
+      ansible.builtin.command:
+        cmd: >-
+          iptables -t raw -A DNS_GUARD_DOT853
+          -i {{ ansible_default_ipv4.interface }} -p tcp --dport 853
+          -m hashlimit --hashlimit-above {{ dns_tcp853_limit }} --hashlimit-burst {{ dns_tcp853_burst }}
+          --hashlimit-mode srcip --hashlimit-name dns853_tcp_abuse
+          -m recent --set --name {{ dns_recent_name }} --rsource
+          -j LOG --log-prefix "DNS853_TCP_ABUSE " --log-level 4
+      when: __check_dot853_log.rc == 1
+      changed_when: true
+
+    - name: Check DNS_GUARD_DOT853 - rcheck DROP
+      ansible.builtin.command:
+        cmd: >-
+          iptables -t raw -C DNS_GUARD_DOT853
+          -m recent --rcheck --name {{ dns_recent_name }} --rsource
+          -j DROP
+      register: __check_dot853_drop
+      changed_when: false
+      failed_when: __check_dot853_drop.rc not in [0, 1]
+
+    - name: Add DNS_GUARD_DOT853 - rcheck DROP
+      ansible.builtin.command:
+        cmd: >-
+          iptables -t raw -A DNS_GUARD_DOT853
+          -m recent --rcheck --name {{ dns_recent_name }} --rsource
+          -j DROP
+      when: __check_dot853_drop.rc == 1
+      changed_when: true
+
+    - name: DNS_GUARD_DOT853 RETURN
+      ansible.builtin.iptables:
+        table: raw
+        chain: DNS_GUARD_DOT853
+        jump: RETURN
+        state: present
 
 - name: Create TCP chain
 #  ansible.builtin.command:
@@ -247,7 +573,6 @@
         jump: ACCEPT
         source: "{{ __register_k8s_internal_node_ip_cidr }}"
         comment: NFS
-      when: iptables_use_nfs
 
     - ansible.builtin.iptables:
         chain: TCP
@@ -257,7 +582,7 @@
         in_interface: "{{ wireguard_interface }}"
         source: "{{ wireguard_network }}"
         comment: NFS
-      when: iptables_use_nfs
+  when: iptables_use_nfs
 
 - name: Allow FTP
   block:
@@ -268,7 +593,6 @@
         jump: ACCEPT
         source: "{{ __register_k8s_internal_node_ip_cidr }}"
         comment: FTP
-      when: iptables_use_ftp
 
     - ansible.builtin.iptables:
         chain: TCP
@@ -278,7 +602,7 @@
         in_interface: "{{ wireguard_interface }}"
         source: "{{ wireguard_network }}"
         comment: FTP
-      when: iptables_use_ftp
+  when: iptables_use_ftp
 
 - name: Allow FTP (Active mode)
   block:
@@ -289,7 +613,6 @@
         jump: ACCEPT
         source: "{{ __register_k8s_internal_node_ip_cidr }}"
         comment: FTP (Active mode)
-      when: iptables_use_ftp and iptables_use_ftp_active
 
     - ansible.builtin.iptables:
         chain: TCP
@@ -299,7 +622,7 @@
         in_interface: "{{ wireguard_interface }}"
         source: "{{ wireguard_network }}"
         comment: FTP (Active mode)
-      when: iptables_use_ftp and iptables_use_ftp_active
+  when: iptables_use_ftp and iptables_use_ftp_active
 
 - name: Allow FTP (Passive mode)
   block:
@@ -331,7 +654,6 @@
         jump: ACCEPT
         source: "{{ __register_k8s_internal_node_ip_cidr }}"
         comment: kubelet
-      when: k8s_role == "master"
 
     - ansible.builtin.iptables:
         chain: TCP
@@ -340,7 +662,6 @@
         jump: ACCEPT
         source: "{{ k8s_pod_cidr }}"
         comment: kubelet
-      when: k8s_role == "master"
 
     - ansible.builtin.iptables:
         chain: TCP
@@ -350,7 +671,8 @@
         in_interface: "{{ wireguard_interface }}"
         source: "{{ wireguard_network }}"
         comment: kubelet
-      when: k8s_role == "master"
+
+  when: k8s_role == "master"
 
 - name: Allow kubelet metrics
   block:
@@ -361,7 +683,6 @@
         jump: ACCEPT
         source: "{{ __register_k8s_internal_node_ip_cidr }}"
         comment: kubelet metrics
-      when: k8s_role != ""
     - ansible.builtin.iptables:
         chain: TCP
         protocol: tcp
@@ -369,7 +690,7 @@
         jump: ACCEPT
         source: "{{ k8s_pod_cidr }}"
         comment: kubelet metrics
-      when: k8s_role != ""
+  when: k8s_role != ""
 
 - name: Allow node exporter
   block:
@@ -380,7 +701,6 @@
         jump: ACCEPT
         source: "{{ __register_k8s_internal_node_ip_cidr }}"
         comment: node exporter
-      when: k8s_role != ""
     - ansible.builtin.iptables:
         chain: TCP
         protocol: tcp
@@ -388,7 +708,7 @@
         jump: ACCEPT
         source: "{{ k8s_pod_cidr }}"
         comment: node exporter
-      when: k8s_role != ""
+  when: k8s_role != ""
 
 - name: Allow k3s embedded etcd
   ansible.builtin.iptables:
@@ -419,7 +739,6 @@
         jump: ACCEPT
         source: "{{ __register_k8s_internal_node_ip_cidr }}"
         comment: cilium hubble
-      when: k8s_role != "" and use_k8s_cilium_hubble
     - ansible.builtin.iptables:
         chain: TCP
         protocol: tcp
@@ -427,7 +746,7 @@
         jump: ACCEPT
         source: "{{ k8s_pod_cidr }}"
         comment: cilium hubble
-      when: k8s_role != "" and use_k8s_cilium_hubble
+  when: k8s_role != "" and use_k8s_cilium_hubble
 
 - name: Allow k8s metallb L2 LB
   ansible.builtin.iptables:
@@ -438,6 +757,35 @@
     source: "{{ __register_k8s_internal_node_ip_cidr }}"
     comment: metallb L2 LB
   when: k8s_role != "" and use_k8s_metallb
+
+- name: Allow Jellyfin
+  block:
+    - ansible.builtin.iptables:
+        chain: TCP
+        protocol: tcp
+        destination_port: 8096
+        jump: ACCEPT
+        source: "{{ __register_k8s_internal_node_ip_cidr }}"
+        comment: Jellyfin
+    - ansible.builtin.iptables:
+        chain: TCP
+        protocol: tcp
+        destination_port: 8096
+        jump: ACCEPT
+        in_interface: "{{ wireguard_interface }}"
+        source: "{{ wireguard_network }}"
+        comment: Jellyfin
+  when: iptables_use_jellyfin
+
+- name: Allow ISCSI
+  ansible.builtin.iptables:
+    chain: TCP
+    protocol: tcp
+    destination_port: 3260
+    jump: ACCEPT
+    source: "{{ __register_k8s_internal_node_ip_cidr }}"
+    comment: ISCSI
+  when: iptables_use_iscsi
 
 # UDP
 
