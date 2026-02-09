@@ -3,6 +3,9 @@ nameOverride: ""
 # -- Override the default full name of the chart.
 fullnameOverride: ""
 
+image:
+  tag: 10.11.6
+
 # -- Annotations to add to the pod.
 podAnnotations: {}
 # -- Additional labels to add to the pod.
