@@ -9,7 +9,7 @@ controllers:
     containers:
       main:
         image:
-          tag: v2.4.1
+          tag: v2.5.5
         env: &envs
           REDIS_HOSTNAME: '{{ printf "%s-valkey" .Release.Name }}'
           IMMICH_MACHINE_LEARNING_URL: '{{ printf "http://%s-machine-learning-heterogeneous:3003" .Release.Name }}'
@@ -151,7 +151,7 @@ machine-learning:
       containers:
         main:
           image:
-            tag: v2.4.1-rknn
+            tag: v2.5.5-rknn
           env:
             MACHINE_LEARNING_RKNN_THREADS: 3
           securityContext:
@@ -172,7 +172,7 @@ machine-learning:
           env: *envs
           image:
             repository: ghcr.io/immich-app/immich-machine-learning
-            tag: v2.4.1-armnn
+            tag: v2.5.5-armnn
             pullPolicy: IfNotPresent
           ports:
             - name: http
