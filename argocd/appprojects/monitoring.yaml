@@ -14,6 +14,8 @@ spec:
       name: prod
     - namespace: mimir
       name: prod
+    - namespace: loki
+      name: backbone
     - namespace: prometheus
       name: backbone
     - namespace: kube-system
