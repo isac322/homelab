@@ -47,11 +47,6 @@ alloy:
 
       loki.source.kubernetes "pods" {
         targets    = discovery.relabel.pods.output
-        forward_to = [loki.process.pods.receiver]
-      }
-
-      loki.process "pods" {
-        stage.cri {}
         forward_to = [loki.write.backbone.receiver]
       }
 
