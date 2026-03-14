@@ -6,6 +6,9 @@ resources:
     cpu: 100m
     memory: 64Mi
 
+grafanaDashboard:
+  enabled: true
+
 serviceMonitor:
   enabled: true
 

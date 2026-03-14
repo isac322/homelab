@@ -148,6 +148,42 @@ grafana:
   #   version: 1
 
 
+  dashboardProviders:
+    dashboardproviders.yaml:
+      apiVersion: 1
+      providers:
+        - name: community
+          orgId: 1
+          folder: Community
+          type: file
+          disableDeletion: true
+          editable: false
+          options:
+            path: /var/lib/grafana/dashboards/community
+
+  dashboards:
+    community:
+      node-exporter-full:
+        gnetId: 1860
+        revision: 42
+        datasource: Prometheus
+      traefik:
+        gnetId: 17346
+        revision: 9
+        datasource: Prometheus
+      argocd:
+        gnetId: 14584
+        revision: 1
+        datasource: Prometheus
+      cert-manager:
+        gnetId: 20842
+        revision: 3
+        datasource: Prometheus
+      minio:
+        gnetId: 13502
+        revision: 26
+        datasource: Prometheus
+
 ## Component scraping the kubelet and kubelet-hosted cAdvisor
 ##
 kubelet:
