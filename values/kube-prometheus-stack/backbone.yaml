@@ -79,9 +79,9 @@ grafana:
       annotations: {}
       multicluster:
         global:
-          enabled: false
+          enabled: true
         etcd:
-          enabled: false
+          enabled: true
       provider:
         allowUiUpdates: false
     datasources:
@@ -452,6 +452,14 @@ prometheus:
     ## ref: https://github.com/prometheus-operator/prometheus-operator/blob/main/Documentation/api.md#monitoring.coreos.com/v1.Prometheus
     additionalArgs: []
 
+    scrapeClasses:
+      - name: default
+        default: true
+        relabelings:
+          - targetLabel: cluster
+            replacement: backbone
+            action: replace
+
     ## Interval between consecutive scrapes.
     ## Defaults to 30s.
     ## ref: https://github.com/prometheus-operator/prometheus-operator/blob/release-0.44/pkg/prometheus/promcfg.go#L180-L183
@@ -724,7 +732,7 @@ prometheus:
     ## Allow out-of-order/out-of-bounds samples ingested into Prometheus for a specified duration
     ## See https://prometheus.io/docs/prometheus/latest/configuration/configuration/#tsdb
     tsdb:
-      outOfOrderTimeWindow: 0s
+      outOfOrderTimeWindow: 5m
 
     ## Enable compression of the write-ahead log using Snappy.
     ##
