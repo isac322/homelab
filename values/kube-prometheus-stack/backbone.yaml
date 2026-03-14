@@ -25,6 +25,11 @@ alertmanager:
 grafana:
   plugins:
     - grafana-lokiexplore-app
+    - grafana-metricsdrilldown-app
+
+  grafana.ini:
+    date_formats:
+      default_timezone: Asia/Seoul
 
   ## Timezone for the default dashboards
   ## Other options are: browser or a specific timezone, i.e. Europe/Luxembourg
