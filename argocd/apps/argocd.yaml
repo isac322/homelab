@@ -25,12 +25,6 @@ spec:
         factor: 2
         maxDuration: 3m0s
       limit: -1
-  ignoreDifferences:
-    - kind: Certificate
-      group: cert-manager.io
-      jsonPointers:
-        - /spec/duration
-        - /spec/renewBefore
 ---
 apiVersion: argoproj.io/v1alpha1
 kind: Application

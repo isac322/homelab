@@ -28,7 +28,7 @@ webhook:
         kind: ClusterIssuer
         name: cluster-issuer-self-signed
       duration: 8760h
-      renewBefore: 24h
+      renewBefore: 2200h
 
 certController:
   create: false
