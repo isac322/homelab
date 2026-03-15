@@ -86,11 +86,11 @@ dex:
 redis:
   resources:
     limits:
-      cpu: 200m
-      memory: 128Mi
-    requests:
       cpu: 100m
       memory: 64Mi
+    requests:
+      cpu: 10m
+      memory: 16Mi
 
   metrics:
     enabled: true
@@ -106,11 +106,11 @@ redis:
 server:
   resources:
     limits:
-      cpu: 1000m
-      memory: 128Mi
+      cpu: 500m
+      memory: 256Mi
     requests:
-      cpu: 100m
-      memory: 64Mi
+      cpu: 50m
+      memory: 96Mi
 
   ingress:
     enabled: true
@@ -130,11 +130,11 @@ server:
 repoServer:
   resources:
     limits:
-      cpu: 1000m
+      cpu: 1500m
       memory: 1Gi
     requests:
-      cpu: 100m
-      memory: 128Mi
+      cpu: 200m
+      memory: 512Mi
 
   metrics:
     enabled: true
@@ -142,11 +142,11 @@ repoServer:
 applicationSet:
   resources:
     limits:
-      cpu: 500m
+      cpu: 250m
       memory: 128Mi
     requests:
-      cpu: 100m
-      memory: 64Mi
+      cpu: 10m
+      memory: 48Mi
 
   metrics:
     enabled: true

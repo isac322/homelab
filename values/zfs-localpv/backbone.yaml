@@ -6,8 +6,8 @@ zfsNode:
       cpu: 100m
       memory: 128Mi
     requests:
-      cpu: 100m
-      memory: 128Mi
+      cpu: 10m
+      memory: 64Mi
   ## Labels to be added to openebs-zfs node pods
   nodeSelector:
     homelab.bhyoo.com/zfs-node: 'true'
@@ -19,7 +19,7 @@ zfsController:
   resources:
     limits:
       cpu: 200m
-      memory: 128Mi
+      memory: 256Mi
     requests:
-      cpu: 200m
+      cpu: 10m
       memory: 128Mi

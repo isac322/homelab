@@ -14,10 +14,10 @@ operator:
   # If no worker nodes can meet the specified requests, the Operator may fail to deploy.
   resources:
     requests:
-      cpu: 200m
-      memory: 128Mi
+      cpu: 50m
+      memory: 64Mi
       ephemeral-storage: 500Mi
     limits:
-      cpu: 200m
+      cpu: 500m
       memory: 128Mi
       ephemeral-storage: 500Mi

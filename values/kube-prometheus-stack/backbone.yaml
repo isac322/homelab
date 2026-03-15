@@ -171,7 +171,6 @@ prometheus-node-exporter:
 ## Manages Prometheus and Alertmanager components
 ##
 prometheusOperator:
-  enabled: true
 
   admissionWebhooks:
     annotations:
@@ -187,11 +186,11 @@ prometheusOperator:
 
   resources:
     requests:
+      cpu: 10m
+      memory: 32Mi
+    limits:
       cpu: 200m
       memory: 128Mi
-    limits:
-      cpu: 500m
-      memory: 256Mi
 
 ## Deploy a Prometheus instance
 ##
@@ -245,11 +244,11 @@ prometheus:
     ##
     resources:
       requests:
-        cpu: 500m
+        cpu: 200m
         memory: 2048Mi
       limits:
         cpu: 1000m
-        memory: 8Gi
+        memory: 6Gi
 
     ## Prometheus StorageSpec for persistent data
     ## ref: https://github.com/prometheus-operator/prometheus-operator/blob/main/Documentation/user-guides/storage.md

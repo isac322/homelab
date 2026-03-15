@@ -34,6 +34,17 @@ kubelet:
 kubeEtcd:
   enabled: false
 
+## Manages Prometheus and Alertmanager components
+##
+prometheusOperator:
+  resources:
+    requests:
+      cpu: 10m
+      memory: 32Mi
+    limits:
+      cpu: 200m
+      memory: 128Mi
+
 ## Deploy a Prometheus instance
 ##
 prometheus:
@@ -57,3 +68,13 @@ prometheus:
     remoteWrite:
       - url: "https://prometheus.bhyoo.com/api/v1/write"
         name: backbone
+
+    ## Resource limits & requests
+    ##
+    resources:
+      requests:
+        cpu: 30m
+        memory: 256Mi
+      limits:
+        cpu: 500m
+        memory: 1Gi

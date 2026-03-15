@@ -19,10 +19,10 @@ strategy:
 resources:
   requests:
     cpu: 10m
-    memory: 64Mi
+    memory: 16Mi
   limits:
-    cpu: 500m
-    memory: 128Mi
+    cpu: 200m
+    memory: 64Mi
 
 containerSecurityContext:
   readOnlyRootFilesystem: true
@@ -42,11 +42,11 @@ webhook:
 
   resources:
     requests:
-      cpu: 10m
-      memory: 16Mi
+      cpu: 5m
+      memory: 8Mi
     limits:
-      cpu: 100m
-      memory: 128Mi
+      cpu: 50m
+      memory: 96Mi
 
 cainjector:
   strategy:
@@ -58,7 +58,7 @@ cainjector:
   resources:
     requests:
       cpu: 10m
-      memory: 64Mi
+      memory: 32Mi
     limits:
       cpu: 100m
-      memory: 256Mi
+      memory: 128Mi

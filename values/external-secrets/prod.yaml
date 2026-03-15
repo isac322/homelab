@@ -1,10 +1,10 @@
 resources:
   requests:
     cpu: 10m
-    memory: 48Mi
+    memory: 32Mi
   limits:
     cpu: 100m
-    memory: 64Mi
+    memory: 96Mi
 
 serviceMonitor:
   enabled: true
@@ -16,7 +16,7 @@ webhook:
   resources:
     requests:
       cpu: 5m
-      memory: 32Mi
+      memory: 8Mi
     limits:
       cpu: 50m
       memory: 64Mi

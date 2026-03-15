@@ -21,7 +21,7 @@ resources:
     cpu: 10m
     memory: 64Mi
   limits:
-    cpu: 500m
+    cpu: 200m
     memory: 128Mi
 
 containerSecurityContext:
@@ -42,11 +42,11 @@ webhook:
 
   resources:
     requests:
-      cpu: 10m
-      memory: 16Mi
+      cpu: 5m
+      memory: 32Mi
     limits:
-      cpu: 100m
-      memory: 128Mi
+      cpu: 50m
+      memory: 64Mi
 
 cainjector:
   strategy:
@@ -61,4 +61,4 @@ cainjector:
       memory: 64Mi
     limits:
       cpu: 100m
-      memory: 256Mi
+      memory: 128Mi
