@@ -1,3 +1,9 @@
+## CRD upgrade job to avoid ServerSideApply timeout on large CRDs
+##
+crds:
+  upgradeJob:
+    enabled: true
+
 nameOverride: shared
 
 ## Configuration for alertmanager
