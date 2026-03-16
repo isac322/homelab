@@ -1,5 +1,5 @@
 apiVersion: objectstorage.k8s.io/v1alpha1
-kind: BucketAccessClaim
+kind: BucketAccess
 metadata:
   name: cnpg-immich-backup
 spec:
