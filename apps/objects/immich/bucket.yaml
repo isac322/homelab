@@ -3,6 +3,9 @@ kind: Bucket
 metadata:
   name: cnpg-immich-backup
 spec:
+  bucketClaim:
+    name: cnpg-immich-backup
+    namespace: immich
   bucketClassName: versitygw
   driverName: versitygw.cosi.dev
   deletionPolicy: Retain
