@@ -8,6 +8,12 @@ driver:
       cpu: 100m
       memory: 128Mi
 
+bucketClass:
+  name: versitygw-hdd-cosi-driver
+
+bucketAccessClass:
+  name: versitygw-hdd-cosi-driver
+
 versitygw:
   serviceName: "versitygw-hdd"
   credentials:
