@@ -20,6 +20,26 @@ persistence:
   create: false
   claimName: versitygw-data
 
+ingress:
+  enabled: true
+  className: traefik
+  annotations:
+    external-dns.alpha.kubernetes.io/cloudflare-proxied: "false"
+    cert-manager.io/cluster-issuer: cluster-issuer-acme
+    cert-manager.io/private-key-algorithm: ECDSA
+    cert-manager.io/private-key-size: "384"
+    traefik.ingress.kubernetes.io/router.entrypoints: websecure
+  hosts:
+    - host: versitygw.bhyoo.com
+      paths:
+        - path: /
+          pathType: Prefix
+          servicePort: webui
+  tls:
+    - secretName: versitygw-webui-tls
+      hosts:
+        - versitygw.bhyoo.com
+
 resources:
   requests:
     cpu: 250m
