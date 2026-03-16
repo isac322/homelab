@@ -9,6 +9,10 @@ admin:
 
 webui:
   enabled: true
+  apiGateways:
+    - "https://s3.bhyoo.com"
+  adminGateways:
+    - "https://admin-s3.bhyoo.com"
 
 iam:
   enabled: true
@@ -36,10 +40,25 @@ ingress:
         - path: /
           pathType: Prefix
           servicePort: webui
+    - host: s3.bhyoo.com
+      paths:
+        - path: /
+          pathType: Prefix
+    - host: admin-s3.bhyoo.com
+      paths:
+        - path: /
+          pathType: Prefix
+          servicePort: admin
   tls:
     - secretName: versitygw-webui-tls
       hosts:
         - versitygw.bhyoo.com
+    - secretName: versitygw-s3-tls
+      hosts:
+        - s3.bhyoo.com
+    - secretName: versitygw-admin-tls
+      hosts:
+        - admin-s3.bhyoo.com
 
 resources:
   requests:
