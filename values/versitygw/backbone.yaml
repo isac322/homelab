@@ -1,4 +1,5 @@
 gateway:
+  corsAllowOrigin: "https://versitygw.bhyoo.com"
   backend:
     type: posix
     args: "/mnt/data"
