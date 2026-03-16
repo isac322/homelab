@@ -1,0 +1,75 @@
+csiDriver:
+  name: "org.democratic-csi.hdd-iscsi"
+
+storageClasses:
+  - name: hdd-ha-xfs
+    defaultClass: false
+    reclaimPolicy: Delete
+    volumeBindingMode: Immediate
+    allowVolumeExpansion: true
+    parameters:
+      fsType: xfs
+      democratic-csi.org/load-config-from-pvc: "true"
+
+volumeSnapshotClasses: []
+
+driver:
+  config:
+    driver: zfs-generic-iscsi
+    sshConnection:
+      host: rock5bp
+      username: democratic-csi
+      privateKey: "$SSH_PRIVATE_KEY"
+
+    zfs:
+      cli:
+        sudoEnabled: true
+
+      datasetParentName: nas/k8s
+      detachedSnapshotsDatasetParentName: nas/k8s/snapshots
+
+      zvolCompression: off
+      zvolDedup: off
+      zvolEnableReservation: false
+
+    iscsi:
+      shareStrategy: "targetCli"
+      shareStrategyTargetCli:
+        sudoEnabled: true
+        basename: "iqn.2020-04.com.bhyoo.backbone"
+        tpg:
+          attributes:
+            authentication: 0
+            generate_node_acls: 1
+            cache_dynamic_acls: 1
+            demo_mode_write_protect: 0
+        block:
+          attributes:
+            emulate_tpu: 0
+      targetPortal: rock5bp:3260
+
+controller:
+  driver:
+    image:
+      registry: docker.io/isac322/democratic-csi
+      tag: next
+      pullPolicy: Always
+    extraEnv:
+      - name: SSH_PRIVATE_KEY
+        valueFrom:
+          secretKeyRef:
+            name: openssh-private-key
+            key: ssh-privatekey
+
+node:
+  driver:
+    image:
+      registry: docker.io/isac322/democratic-csi
+      tag: next
+      pullPolicy: Always
+    extraEnv:
+      - name: SSH_PRIVATE_KEY
+        valueFrom:
+          secretKeyRef:
+            name: openssh-private-key
+            key: ssh-privatekey
