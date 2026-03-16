@@ -30,7 +30,7 @@ backups:
   endpointURL: "http://versitygw.object-storage.svc:7070"
   provider: s3
   data:
-    compression: zstd
+    compression: gzip
     encryption: ''
   wal:
     compression: zstd
