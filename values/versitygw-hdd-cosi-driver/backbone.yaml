@@ -1,5 +1,5 @@
 driver:
-  name: versitygw.cosi.dev
+  name: versitygw-hdd.cosi.dev
   resources:
     requests:
       cpu: 10m
@@ -7,6 +7,11 @@ driver:
     limits:
       cpu: 100m
       memory: 128Mi
+
+versitygw:
+  serviceName: "versitygw-hdd"
+  credentials:
+    secretName: "versitygw-hdd-root-credentials"
 
 sidecar:
   resources:

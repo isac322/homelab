@@ -1,7 +1,7 @@
 apiVersion: argoproj.io/v1alpha1
 kind: Application
 metadata:
-  name: versitygw-cosi-driver
+  name: versitygw-hdd-cosi-driver
   finalizers:
     - resources-finalizer.argocd.argoproj.io
 spec:
@@ -14,10 +14,10 @@ spec:
     repoURL: ghcr.io/isac322/charts
     targetRevision: 0.3.0
     helm:
-      releaseName: versitygw-cosi-driver
+      releaseName: versitygw-hdd-cosi-driver
       valueFiles:
         - values.yaml
-        - https://raw.githubusercontent.com/isac322/homelab/HEAD/values/versitygw-cosi-driver/backbone.yaml
+        - https://raw.githubusercontent.com/isac322/homelab/HEAD/values/versitygw-hdd-cosi-driver/backbone.yaml
   syncPolicy:
     automated:
       prune: true
