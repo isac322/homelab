@@ -4,6 +4,14 @@ metadata:
   name: object-storage
 spec:
   description: Managing Object Storages
+  sourceRepos:
+    - ghcr.io/versity/versitygw/charts
+    - ghcr.io/isac322/charts
+    - https://github.com/isac322/homelab.git
+    - https://github.com/kubernetes-sigs/container-object-storage-interface.git
+  destinations:
+    - namespace: object-storage
+      name: backbone
   clusterResourceWhitelist:
     - group: '*'
       kind: '*'

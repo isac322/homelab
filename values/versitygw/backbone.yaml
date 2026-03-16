@@ -1,0 +1,29 @@
+gateway:
+  backend:
+    type: posix
+    args: "/mnt/data"
+
+admin:
+  enabled: true
+
+webui:
+  enabled: true
+
+iam:
+  enabled: true
+
+auth:
+  existingSecret: versitygw-root-credentials
+
+persistence:
+  enabled: true
+  create: false
+  claimName: versitygw-data
+
+resources:
+  requests:
+    cpu: 250m
+    memory: 512Mi
+  limits:
+    cpu: "1"
+    memory: 1Gi

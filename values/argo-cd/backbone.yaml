@@ -59,6 +59,15 @@ configs:
       name: democratic-csi
       type: helm
       url: https://democratic-csi.github.io/charts/
+    cosi-git:
+      name: cosi-git
+      type: git
+      url: https://github.com/kubernetes-sigs/container-object-storage-interface.git
+    versitygw-cosi-driver-helm:
+      enableOCI: "true"
+      name: versitygw-cosi-driver-helm
+      type: helm
+      url: ghcr.io/isac322/charts
 
   params:
     server.insecure: true

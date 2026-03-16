@@ -1,0 +1,13 @@
+apiVersion: v1
+kind: PersistentVolumeClaim
+metadata:
+  name: versitygw-data
+  annotations:
+    democratic-csi.org/config: '{"zfs":{"zvolBlocksize":"128K","datasetProperties":{"compression":"off","dedup":"off","logbias":"throughput","sync":"standard","primarycache":"metadata","redundant_metadata":"most"}}}'
+spec:
+  accessModes:
+    - ReadWriteOnce
+  storageClassName: ssd-ha-xfs
+  resources:
+    requests:
+      storage: 100Gi
