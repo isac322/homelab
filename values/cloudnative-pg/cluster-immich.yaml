@@ -18,6 +18,8 @@ cluster:
   postgresql:
     shared_preload_libraries:
       - vchord.so
+    parameters:
+      wal_compression: zstd
   postgresUID: 26
   postgresGID: 999
   monitoring:
@@ -28,8 +30,10 @@ backups:
   endpointURL: "http://versitygw.object-storage.svc:7070"
   provider: s3
   data:
+    compression: zstd
     encryption: ''
   wal:
+    compression: zstd
     encryption: ''
   secret:
     create: false
@@ -38,7 +42,7 @@ backups:
     bucket: cnpg-immich-backup
     region: ap-northeast-2
   scheduledBackups:
-    - name: daily-backup # Daily at midnight
-      schedule: "0 0 0 * * *" # Daily at midnight
+    - name: daily-backup # Weekly on Sunday at midnight
+      schedule: "0 0 0 * * 0" # Weekly on Sunday at midnight
       backupOwnerReference: self
   retentionPolicy: "30d"
