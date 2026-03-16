@@ -25,7 +25,7 @@ cluster:
 
 backups:
   enabled: true
-  endpointURL: "http://ssd-ha-hl.object-storage.svc:9000"
+  endpointURL: "http://versitygw.object-storage.svc:7070"
   provider: s3
   data:
     encryption: ''
@@ -35,7 +35,7 @@ backups:
     create: false
     name: immich-s3-creds
   s3:
-    bucket: immich-postgresql-backup
+    bucket: cnpg-immich-backup
     region: ap-northeast-2
   scheduledBackups:
     - name: daily-backup # Daily at midnight

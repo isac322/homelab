@@ -1,0 +1,10 @@
+apiVersion: objectstorage.k8s.io/v1alpha1
+kind: Bucket
+metadata:
+  name: cnpg-immich-backup
+spec:
+  bucketClassName: versitygw
+  driverName: versitygw.cosi.dev
+  deletionPolicy: Retain
+  protocols:
+    - S3

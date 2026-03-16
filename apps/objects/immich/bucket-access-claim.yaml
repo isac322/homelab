@@ -1,0 +1,9 @@
+apiVersion: objectstorage.k8s.io/v1alpha1
+kind: BucketAccessClaim
+metadata:
+  name: cnpg-immich-backup
+spec:
+  bucketClaimName: cnpg-immich-backup
+  bucketAccessClassName: versitygw
+  credentialsSecretName: cnpg-immich-backup-creds
+  protocol: S3
