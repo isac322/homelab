@@ -46,10 +46,6 @@ configs:
 #      name: bitnami
 #      type: helm
 #      url: registry-1.docker.io/bitnamicharts
-    minio:
-      name: minio
-      type: helm
-      url: https://operator.min.io/
     cloudnative-pg:
       name: cloudnative-pg
       type: helm

@@ -117,10 +117,6 @@ grafana:
         gnetId: 20842
         revision: 3
         datasource: Prometheus
-      minio:
-        gnetId: 13502
-        revision: 26
-        datasource: Prometheus
 
 ## Component scraping the kubelet and kubelet-hosted cAdvisor
 ##
