@@ -16,7 +16,7 @@ query:
   enabled: true
   replicaCount: 1
   stores:
-    - dnssrv+_grpc._tcp.shared-prometheus-thanos-discovery.prometheus.svc.cluster.local
+    - dnssrv+_grpc._tcp.prometheus-operated.prometheus.svc.cluster.local
   replicaLabels:
     - prometheus_replica
   resources:
