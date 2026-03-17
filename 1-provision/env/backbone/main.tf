@@ -44,6 +44,7 @@ module "dns_secrets" {
   source = "./dns-secrets"
 
   k8s_cluster_name                            = "backbone"
+  cloudflare_account_id                       = var.cloudflare_account_id
   aws_iam_group_name_cf_origin_ca_cert_issuer = var.aws_iam_group_name_cf_origin_ca_cert_issuer
   use_democratic_csi                          = true
 

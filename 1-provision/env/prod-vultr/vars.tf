@@ -15,6 +15,11 @@ variable "cloudflare_main_zone_id" {
   sensitive   = true
 }
 
+variable "cloudflare_account_id" {
+  type        = string
+  description = "Cloudflare Account ID"
+}
+
 variable "aws_iam_group_name_cf_origin_ca_cert_issuer" {
   type = string
 }

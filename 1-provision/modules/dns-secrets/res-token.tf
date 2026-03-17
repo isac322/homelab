@@ -52,8 +52,8 @@ resource "cloudflare_api_token" "k8s_cert_manager_dns_challenge" {
   }]
 }
 
-resource "cloudflare_api_token" "k8s_cloudflared_operator" {
-  name = "${var.k8s_cluster_name}_k8s_cloudflared_operator"
+resource "cloudflare_api_token" "k8s_cloudflared_gateway" {
+  name = "${var.k8s_cluster_name}_k8s_cloudflared_gateway"
 
   policies = [
     {
@@ -69,7 +69,6 @@ resource "cloudflare_api_token" "k8s_cloudflared_operator" {
       effect = "allow"
       permission_groups = [
         { id = local.account_permission_groups["Cloudflare Tunnel Write"] },
-        { id = local.account_permission_groups["Account Settings Read"] },
       ]
       resources = {
         "com.cloudflare.api.account.*" = "*"
