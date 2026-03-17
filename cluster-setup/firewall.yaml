@@ -6,6 +6,8 @@
       sysctl_items:
         - name: net.ipv4.ip_forward
           value: 1
+        - name: fs.inotify.max_user_instances
+          value: 1024
     - role: iptables-firewall
       vars:
         k8s_role: "{{ 'master' if is_k8s_master else 'worker' }}"
@@ -16,6 +18,10 @@
 - hosts: prod
   become: yes
   roles:
+    - role: robertdebock.sysctl
+      sysctl_items:
+        - name: fs.inotify.max_user_instances
+          value: 1024
     - role: iptables-firewall
       vars:
         k8s_role: "{{ 'master' if is_k8s_master else 'worker' }}"
