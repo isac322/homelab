@@ -99,6 +99,8 @@ controller:
 
   metrics:
     enabled: true
+    serviceMonitor:
+      enabled: true
 
 dex:
   enabled: false
@@ -114,6 +116,8 @@ redis:
 
   metrics:
     enabled: true
+    serviceMonitor:
+      enabled: true
     resources:
       limits:
         cpu: 50m
@@ -146,6 +150,8 @@ server:
 
   metrics:
     enabled: true
+    serviceMonitor:
+      enabled: true
 
 repoServer:
   resources:
@@ -158,6 +164,8 @@ repoServer:
 
   metrics:
     enabled: true
+    serviceMonitor:
+      enabled: true
 
 applicationSet:
   resources:
@@ -170,6 +178,8 @@ applicationSet:
 
   metrics:
     enabled: true
+    serviceMonitor:
+      enabled: true
 
 notifications:
   enabled: false

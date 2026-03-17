@@ -49,6 +49,8 @@ metrics:
   prometheus:
     ## Entry point used to expose metrics.
     entryPoint: metrics
+    serviceMonitor:
+      enabled: true
     ## Enable metrics on entry points. Default=true
     # addEntryPointsLabels: false
     ## Enable metrics on routers. Default=false

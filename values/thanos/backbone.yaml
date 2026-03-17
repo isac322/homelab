@@ -7,6 +7,11 @@ image:
   repository: thanos/thanos
   tag: v0.41.0
 
+metrics:
+  enabled: true
+  serviceMonitor:
+    enabled: true
+
 existingObjstoreSecret: thanos-objstore-config
 existingObjstoreSecretItems:
   - key: objstore.yml
