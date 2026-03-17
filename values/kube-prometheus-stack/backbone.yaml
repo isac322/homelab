@@ -286,7 +286,7 @@ prometheus:
         scheme: http
         kubernetes_sd_configs:
           - role: node
-        relabelings:
+        relabel_configs:
           - source_labels: [__meta_kubernetes_node_label_node_role_kubernetes_io_etcd]
             action: keep
             regex: "true"
@@ -297,7 +297,7 @@ prometheus:
             target_label: __address__
           - target_label: cluster
             replacement: backbone
-        metric_relabelings:
+        metric_relabel_configs:
           - source_labels: [__name__]
             regex: etcd_.*
             action: keep
