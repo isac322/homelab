@@ -26,7 +26,7 @@ driver:
         sudoEnabled: true
 
       datasetParentName: nas/k8s
-      detachedSnapshotsDatasetParentName: nas/k8s/snapshots
+      detachedSnapshotsDatasetParentName: nas/k8s-snapshots
 
       zvolCompression: off
       zvolDedup: off
