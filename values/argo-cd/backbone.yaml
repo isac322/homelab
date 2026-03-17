@@ -76,6 +76,10 @@ configs:
       name: cloudflare-kubernetes-gateway-git
       type: git
       url: https://github.com/pl4nty/cloudflare-kubernetes-gateway.git
+    prometheus-community:
+      name: prometheus-community
+      type: helm
+      url: https://prometheus-community.github.io/helm-charts
 
   cm:
     resource.customizations.health.gateway.networking.k8s.io_HTTPRoute: |
