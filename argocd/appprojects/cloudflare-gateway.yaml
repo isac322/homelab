@@ -1,0 +1,18 @@
+apiVersion: argoproj.io/v1alpha1
+kind: AppProject
+metadata:
+  name: cloudflare-gateway
+spec:
+  description: Cloudflare Tunnel via Gateway API
+  sourceRepos:
+    - https://github.com/isac322/homelab.git
+    - https://github.com/kubernetes-sigs/gateway-api.git
+    - https://github.com/pl4nty/cloudflare-kubernetes-gateway.git
+  destinations:
+    - namespace: cloudflare-gateway
+      name: backbone
+    - namespace: argocd
+      name: backbone
+  clusterResourceWhitelist:
+    - group: '*'
+      kind: '*'
