@@ -55,11 +55,11 @@ resource "aws_iam_role" "terraform-cloud-deployer" {
   name               = "terraform-cloud-deployer"
   path               = "/cicd/"
   assume_role_policy = data.aws_iam_policy_document.terraform-cloud-deployer-assume-role-policy.json
-
-  inline_policy {
-    name   = "resource-manager"
-    policy = data.aws_iam_policy_document.terraform-cloud-deployer-policy.json
-  }
+}
+resource "aws_iam_role_policy" "terraform-cloud-deployer" {
+  name   = "resource-manager"
+  role   = aws_iam_role.terraform-cloud-deployer.id
+  policy = data.aws_iam_policy_document.terraform-cloud-deployer-policy.json
 }
 data "aws_iam_policy_document" "terraform-cloud-deployer-assume-role-policy" {
   statement {

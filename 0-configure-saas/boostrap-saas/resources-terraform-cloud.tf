@@ -100,7 +100,9 @@ resource "tfe_variable" "cf_token_generator" {
   variable_set_id = tfe_variable_set.cloudflare.id
 }
 data "cloudflare_zone" "main" {
-  name = var.cloudflare_main_domain
+  filter = {
+    name = var.cloudflare_main_domain
+  }
 }
 resource "tfe_variable" "cf_main_zone_id" {
   key             = "cloudflare_main_zone_id"
@@ -111,7 +113,7 @@ resource "tfe_variable" "cf_main_zone_id" {
 }
 resource "tfe_variable" "cf_account_id" {
   key             = "cloudflare_account_id"
-  value           = data.cloudflare_zone.main.account_id
+  value           = data.cloudflare_zone.main.account.id
   category        = "terraform"
   variable_set_id = tfe_variable_set.cloudflare.id
 }
