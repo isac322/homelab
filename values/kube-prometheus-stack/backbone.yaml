@@ -3,6 +3,7 @@
 crds:
   upgradeJob:
     enabled: true
+    forceConflicts: true
 
 nameOverride: shared
 

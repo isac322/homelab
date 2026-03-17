@@ -3,6 +3,7 @@
 crds:
   upgradeJob:
     enabled: true
+    forceConflicts: true
 
 ## Provide a name in place of kube-prometheus-stack for `app:` labels
 ##
