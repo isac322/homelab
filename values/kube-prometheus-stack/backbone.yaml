@@ -219,6 +219,9 @@ prometheus:
           - prometheus.bhyoo.com
 
   prometheusSpec:
+    podMonitorSelectorNilUsesHelmValues: false
+    serviceMonitorSelectorNilUsesHelmValues: false
+
     scrapeClasses:
       - name: default
         default: true

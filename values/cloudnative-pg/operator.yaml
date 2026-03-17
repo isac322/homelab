@@ -13,6 +13,8 @@ resources: {}
 monitoring:
   # -- Specifies whether the monitoring should be enabled. Requires Prometheus Operator CRDs.
   podMonitorEnabled: true
+  podMonitorAdditionalLabels:
+    release: shared
 
   grafanaDashboard:
     create: true
