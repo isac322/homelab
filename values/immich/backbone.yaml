@@ -77,7 +77,6 @@ server:
   enabled: true
   controllers:
     main:
-      replicas: 0
       strategy: Recreate
       pod:
         nodeSelector:
@@ -145,7 +144,6 @@ machine-learning:
   enabled: true
   controllers:
     main:
-      replicas: 0
       strategy: Recreate
       pod:
         nodeSelector:
@@ -164,7 +162,6 @@ machine-learning:
             limits:
               rock-chips.com/rknpu: 1
     sub:
-      replicas: 0
       type: deployment
       strategy: RollingUpdate
       pod:
