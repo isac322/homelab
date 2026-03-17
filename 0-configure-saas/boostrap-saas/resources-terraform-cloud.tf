@@ -109,6 +109,12 @@ resource "tfe_variable" "cf_main_zone_id" {
   sensitive       = true
   variable_set_id = tfe_variable_set.cloudflare.id
 }
+resource "tfe_variable" "cf_account_id" {
+  key             = "cloudflare_account_id"
+  value           = data.cloudflare_zone.main.account_id
+  category        = "terraform"
+  variable_set_id = tfe_variable_set.cloudflare.id
+}
 
 ##
 
