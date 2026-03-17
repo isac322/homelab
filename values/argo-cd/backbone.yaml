@@ -77,6 +77,13 @@ configs:
       type: git
       url: https://github.com/pl4nty/cloudflare-kubernetes-gateway.git
 
+  cm:
+    resource.customizations.health.gateway.networking.k8s.io_HTTPRoute: |
+      hs = {}
+      hs.status = "Healthy"
+      hs.message = ""
+      return hs
+
   params:
     server.insecure: true
     server.enable.gzip: true
