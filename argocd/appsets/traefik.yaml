@@ -18,15 +18,18 @@ spec:
         name: '{{cluster}}'
         namespace: ingress-ctrl
       project: ingress-controller
-      source:
-        chart: traefik
-        helm:
-          releaseName: traefik
-          valueFiles:
-            - values.yaml
-            - 'https://raw.githubusercontent.com/isac322/homelab/HEAD/values/traefik/{{cluster}}.yaml'
-        repoURL: https://helm.traefik.io/traefik
-        targetRevision: 35.2.0
+      sources:
+        - repoURL: https://github.com/isac322/homelab.git
+          targetRevision: HEAD
+          ref: homelab
+        - chart: traefik
+          helm:
+            releaseName: traefik
+            valueFiles:
+              - values.yaml
+              - '$homelab/values/traefik/{{cluster}}.yaml'
+          repoURL: https://helm.traefik.io/traefik
+          targetRevision: 35.2.0
       syncPolicy:
         automated:
           prune: true

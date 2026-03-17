@@ -18,15 +18,18 @@ spec:
         name: '{{cluster}}'
         namespace: prometheus
       project: monitoring
-      source:
-        chart: kube-prometheus-stack
-        helm:
-          releaseName: shared
-          valueFiles:
-            - values.yaml
-            - 'https://raw.githubusercontent.com/isac322/homelab/HEAD/values/kube-prometheus-stack/{{cluster}}.yaml'
-        repoURL: https://prometheus-community.github.io/helm-charts
-        targetRevision: 82.10.3
+      sources:
+        - repoURL: https://github.com/isac322/homelab.git
+          targetRevision: HEAD
+          ref: homelab
+        - chart: kube-prometheus-stack
+          helm:
+            releaseName: shared
+            valueFiles:
+              - values.yaml
+              - '$homelab/values/kube-prometheus-stack/{{cluster}}.yaml'
+          repoURL: https://prometheus-community.github.io/helm-charts
+          targetRevision: 82.10.3
       syncPolicy:
         automated:
           prune: true

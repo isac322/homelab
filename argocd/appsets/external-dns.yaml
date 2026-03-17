@@ -15,15 +15,18 @@ spec:
         name: '{{name}}'
         namespace: dns-manager
       project: dns-manager
-      source:
-        chart: external-dns
-        helm:
-          releaseName: external-dns
-          valueFiles:
-            - values.yaml
-            - 'https://raw.githubusercontent.com/isac322/homelab/HEAD/values/external-dns/{{name}}.yaml'
-        repoURL: https://kubernetes-sigs.github.io/external-dns/
-        targetRevision: 1.19.0
+      sources:
+        - repoURL: https://github.com/isac322/homelab.git
+          targetRevision: HEAD
+          ref: homelab
+        - chart: external-dns
+          helm:
+            releaseName: external-dns
+            valueFiles:
+              - values.yaml
+              - '$homelab/values/external-dns/{{name}}.yaml'
+          repoURL: https://kubernetes-sigs.github.io/external-dns/
+          targetRevision: 1.19.0
       syncPolicy:
         automated:
           prune: true
