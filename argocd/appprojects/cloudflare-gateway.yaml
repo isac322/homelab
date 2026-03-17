@@ -11,8 +11,6 @@ spec:
   destinations:
     - namespace: cloudflare-gateway
       name: backbone
-    - namespace: argocd
-      name: backbone
   clusterResourceWhitelist:
     - group: '*'
       kind: '*'

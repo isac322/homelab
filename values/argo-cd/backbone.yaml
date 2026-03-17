@@ -68,6 +68,14 @@ configs:
       name: versitygw-cosi-driver-helm
       type: helm
       url: ghcr.io/isac322/charts
+    gateway-api-git:
+      name: gateway-api-git
+      type: git
+      url: https://github.com/kubernetes-sigs/gateway-api.git
+    cloudflare-kubernetes-gateway-git:
+      name: cloudflare-kubernetes-gateway-git
+      type: git
+      url: https://github.com/pl4nty/cloudflare-kubernetes-gateway.git
 
   params:
     server.insecure: true

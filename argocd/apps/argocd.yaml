@@ -55,3 +55,29 @@ spec:
         factor: 2
         maxDuration: 3m0s
       limit: -1
+---
+apiVersion: argoproj.io/v1alpha1
+kind: Application
+metadata:
+  name: argocd-objects
+  finalizers:
+    - resources-finalizer.argocd.argoproj.io
+spec:
+  destination:
+    name: backbone
+    namespace: argocd
+  project: argocd
+  source:
+    repoURL: https://github.com/isac322/homelab.git
+    path: apps/objects/argocd
+    targetRevision: HEAD
+  syncPolicy:
+    automated:
+      prune: true
+      selfHeal: true
+    retry:
+      backoff:
+        duration: 5s
+        factor: 2
+        maxDuration: 3m0s
+      limit: 100
