@@ -24,6 +24,8 @@ cluster:
   postgresGID: 999
   monitoring:
     enabled: true
+    prometheusRule:
+      enabled: false
 
 backups:
   enabled: true
