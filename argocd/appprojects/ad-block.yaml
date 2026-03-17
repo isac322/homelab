@@ -6,6 +6,7 @@ spec:
   description: Ad blocker
   sourceRepos:
     - https://charts.bhyoo.com
+    - https://github.com/isac322/homelab.git
   destinations:
     - namespace: blocky
       name: prod

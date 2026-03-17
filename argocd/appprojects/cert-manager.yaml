@@ -9,6 +9,7 @@ spec:
     - https://charts.bhyoo.com
     - ghcr.io/cloudflare/origin-ca-issuer-charts
     - https://github.com/cloudflare/origin-ca-issuer.git
+    - https://github.com/isac322/homelab.git
   destinations:
     - namespace: cert-manager
       name: prod

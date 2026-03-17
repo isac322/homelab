@@ -6,6 +6,7 @@ spec:
   description: Ingress controller of kubernetes cluster
   sourceRepos:
     - https://helm.traefik.io/traefik
+    - https://github.com/isac322/homelab.git
   destinations:
     - namespace: ingress-ctrl
       name: backbone

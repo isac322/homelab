@@ -6,6 +6,7 @@ spec:
   description: CloudNative-PG
   sourceRepos:
     - https://cloudnative-pg.github.io/charts/
+    - https://github.com/isac322/homelab.git
   destinations:
     - namespace: cnpg-system
       name: backbone
