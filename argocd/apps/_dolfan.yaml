@@ -9,14 +9,17 @@ spec:
     name: backbone
     namespace: dolfan
   project: dolfan
-  source:
-    chart: redis-cluster
-    helm:
-      valueFiles:
-        - values.yaml
-        - https://raw.githubusercontent.com/isac322/homelab/HEAD/values/dolfan/backbone.yaml
-    repoURL: registry-1.docker.io/bitnamicharts
-    targetRevision: 10.0.0
+  sources:
+    - repoURL: https://github.com/isac322/homelab.git
+      targetRevision: HEAD
+      ref: homelab
+    - chart: redis-cluster
+      helm:
+        valueFiles:
+          - values.yaml
+          - $homelab/values/dolfan/backbone.yaml
+      repoURL: registry-1.docker.io/bitnamicharts
+      targetRevision: 10.0.0
   syncPolicy:
     automated:
       prune: true

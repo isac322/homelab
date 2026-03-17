@@ -9,15 +9,18 @@ spec:
     name: backbone
     namespace: object-storage
   project: object-storage
-  source:
-    chart: versitygw-cosi-driver
-    repoURL: ghcr.io/isac322/charts
-    targetRevision: 0.3.0
-    helm:
-      releaseName: versitygw-hdd-cosi-driver
-      valueFiles:
-        - values.yaml
-        - https://raw.githubusercontent.com/isac322/homelab/HEAD/values/versitygw-hdd-cosi-driver/backbone.yaml
+  sources:
+    - repoURL: https://github.com/isac322/homelab.git
+      targetRevision: HEAD
+      ref: homelab
+    - chart: versitygw-cosi-driver
+      repoURL: ghcr.io/isac322/charts
+      targetRevision: 0.3.0
+      helm:
+        releaseName: versitygw-hdd-cosi-driver
+        valueFiles:
+          - values.yaml
+          - $homelab/values/versitygw-hdd-cosi-driver/backbone.yaml
   syncPolicy:
     automated:
       prune: true

@@ -9,14 +9,17 @@ spec:
     name: backbone
     namespace: object-storage
   project: object-storage
-  source:
-    chart: operator
-    helm:
-      valueFiles:
-        - values.yaml
-        - https://raw.githubusercontent.com/isac322/homelab/HEAD/values/minio/backbone.yaml
-    repoURL: https://operator.min.io/
-    targetRevision: 7.1.1
+  sources:
+    - repoURL: https://github.com/isac322/homelab.git
+      targetRevision: HEAD
+      ref: homelab
+    - chart: operator
+      helm:
+        valueFiles:
+          - values.yaml
+          - $homelab/values/minio/backbone.yaml
+      repoURL: https://operator.min.io/
+      targetRevision: 7.1.1
   syncPolicy:
     automated:
       prune: true
@@ -41,14 +44,17 @@ spec:
     name: backbone
     namespace: object-storage
   project: object-storage
-  source:
-    chart: tenant
-    helm:
-      valueFiles:
-        - values.yaml
-        - https://raw.githubusercontent.com/isac322/homelab/HEAD/values/minio/tenant-shared.yaml
-    repoURL: https://operator.min.io/
-    targetRevision: 7.1.1
+  sources:
+    - repoURL: https://github.com/isac322/homelab.git
+      targetRevision: HEAD
+      ref: homelab
+    - chart: tenant
+      helm:
+        valueFiles:
+          - values.yaml
+          - $homelab/values/minio/tenant-shared.yaml
+      repoURL: https://operator.min.io/
+      targetRevision: 7.1.1
   syncPolicy:
     automated:
       prune: true

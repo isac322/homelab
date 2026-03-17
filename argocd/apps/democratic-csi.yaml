@@ -9,15 +9,18 @@ spec:
     name: backbone
     namespace: democratic-csi
   project: dfs
-  source:
-    chart: democratic-csi
-    helm:
-      releaseName: ssd-iscsi
-      valueFiles:
-        - values.yaml
-        - https://raw.githubusercontent.com/isac322/homelab/HEAD/values/democratic-csi/backbone.yaml
-    repoURL: https://democratic-csi.github.io/charts/
-    targetRevision: 0.15.0
+  sources:
+    - repoURL: https://github.com/isac322/homelab.git
+      targetRevision: HEAD
+      ref: homelab
+    - chart: democratic-csi
+      helm:
+        releaseName: ssd-iscsi
+        valueFiles:
+          - values.yaml
+          - $homelab/values/democratic-csi/backbone.yaml
+      repoURL: https://democratic-csi.github.io/charts/
+      targetRevision: 0.15.0
   syncPolicy:
     automated:
       prune: true
@@ -43,15 +46,18 @@ spec:
     name: backbone
     namespace: democratic-csi
   project: dfs
-  source:
-    chart: democratic-csi
-    helm:
-      releaseName: hdd-iscsi
-      valueFiles:
-        - values.yaml
-        - https://raw.githubusercontent.com/isac322/homelab/HEAD/values/democratic-csi/hdd-backbone.yaml
-    repoURL: https://democratic-csi.github.io/charts/
-    targetRevision: 0.15.0
+  sources:
+    - repoURL: https://github.com/isac322/homelab.git
+      targetRevision: HEAD
+      ref: homelab
+    - chart: democratic-csi
+      helm:
+        releaseName: hdd-iscsi
+        valueFiles:
+          - values.yaml
+          - $homelab/values/democratic-csi/hdd-backbone.yaml
+      repoURL: https://democratic-csi.github.io/charts/
+      targetRevision: 0.15.0
   syncPolicy:
     automated:
       prune: true

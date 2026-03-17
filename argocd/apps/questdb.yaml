@@ -1,26 +1,26 @@
 apiVersion: argoproj.io/v1alpha1
 kind: Application
 metadata:
-  name: jellyfin
+  name: questdb
   finalizers:
     - resources-finalizer.argocd.argoproj.io
 spec:
   destination:
     name: backbone
-    namespace: jellyfin
-  project: nas
+    namespace: questdb
+  project: questdb
   sources:
     - repoURL: https://github.com/isac322/homelab.git
       targetRevision: HEAD
       ref: homelab
-    - chart: jellyfin
+    - chart: questdb
       helm:
-        releaseName: jellyfin
+        releaseName: questdb
         valueFiles:
           - values.yaml
-          - $homelab/values/jellyfin/backbone.yaml
-      repoURL: https://jellyfin.github.io/jellyfin-helm
-      targetRevision: 2.7.0
+          - $homelab/values/questdb/backbone.yaml
+      repoURL: https://helm.questdb.io/
+      targetRevision: 1.0.21
   syncPolicy:
     automated:
       prune: true

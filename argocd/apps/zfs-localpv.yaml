@@ -9,15 +9,18 @@ spec:
     name: backbone
     namespace: openebs
   project: dfs
-  source:
-    chart: zfs-localpv
-    helm:
-      releaseName: zfs-localpv
-      valueFiles:
-        - values.yaml
-        - https://raw.githubusercontent.com/isac322/homelab/HEAD/values/zfs-localpv/backbone.yaml
-    repoURL: https://openebs.github.io/zfs-localpv
-    targetRevision: 2.8.0
+  sources:
+    - repoURL: https://github.com/isac322/homelab.git
+      targetRevision: HEAD
+      ref: homelab
+    - chart: zfs-localpv
+      helm:
+        releaseName: zfs-localpv
+        valueFiles:
+          - values.yaml
+          - $homelab/values/zfs-localpv/backbone.yaml
+      repoURL: https://openebs.github.io/zfs-localpv
+      targetRevision: 2.8.0
   syncPolicy:
     automated:
       prune: true
