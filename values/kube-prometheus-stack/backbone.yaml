@@ -228,8 +228,10 @@ prometheus:
     scrapeClasses:
       - name: default
         default: true
-        relabelings:
-          - targetLabel: cluster
+        metricRelabelings:
+          - sourceLabels: [cluster]
+            regex: "^$"
+            targetLabel: cluster
             replacement: backbone
             action: replace
 
