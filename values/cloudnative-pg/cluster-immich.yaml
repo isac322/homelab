@@ -25,7 +25,12 @@ cluster:
   monitoring:
     enabled: true
     prometheusRule:
-      enabled: false
+      excludeRules:
+        # chart 0.6.0 PromQL syntax bug (ranges only allowed for vector selectors)
+        - CNPGClusterLogicalReplicationErrorsCritical
+        - CNPGClusterLogicalReplicationErrors
+        - CNPGClusterLogicalReplicationStoppedCritical
+        - CNPGClusterLogicalReplicationStopped
 
 backups:
   enabled: true
