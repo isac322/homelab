@@ -29,9 +29,23 @@ grafana:
 kubelet:
   namespace: kube-system
 
-## Component scraping etcd
-##
+  serviceMonitor:
+    ## In K3s, kubelet /metrics exposes the same metrics as apiserver (port 6443)
+    ## because all components share a single binary. Keep only kubelet-specific metrics.
+    metricRelabelings:
+      - sourceLabels: [__name__]
+        regex: kubelet_.*|scrape_.*|up
+        action: keep
+
+## K3s bundles all control plane components into a single binary.
+## Their metrics are already collected via the apiserver job.
 kubeEtcd:
+  enabled: false
+kubeProxy:
+  enabled: false
+kubeControllerManager:
+  enabled: false
+kubeScheduler:
   enabled: false
 
 ## Manages Prometheus and Alertmanager components

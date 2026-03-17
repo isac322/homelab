@@ -132,32 +132,34 @@ kubelet:
     attachMetadata:
       node: true
 
-## Component scraping etcd
-##
+    ## In K3s, kubelet /metrics exposes the same 651 metrics as apiserver (port 6443)
+    ## because all components share a single binary. Keep only kubelet-specific metrics
+    ## to avoid duplication. Recording rules and alerts use job="kubelet" with kubelet_*.
+    metricRelabelings:
+      - sourceLabels: [__name__]
+        regex: kubelet_.*|scrape_.*|up
+        action: keep
+
+## K3s bundles all control plane components into a single binary, so
+## kube-proxy, kube-controller-manager, and kube-scheduler do not expose
+## separate metrics endpoints. Their metrics are already collected via the
+## apiserver job.
+kubeProxy:
+  enabled: false
+kubeControllerManager:
+  enabled: false
+kubeScheduler:
+  enabled: false
+
+## etcd metrics are scraped via additionalScrapeConfigs (node SD) instead of
+## the default ServiceMonitor, because K3s has no component=etcd Pod.
+## Keep kubeEtcd enabled for the dashboard and alert rules only.
 kubeEtcd:
   enabled: true
-
   service:
-    enabled: true
-    port: 2381
-    targetPort: 2381
-
+    enabled: false
   serviceMonitor:
-    enabled: true
-    scheme: http
-
-## Component scraping kube proxy
-##
-kubeProxy:
-  enabled: true
-
-  service:
-    enabled: true
-    port: 10249
-    targetPort: 10249
-
-  serviceMonitor:
-    enabled: true
+    enabled: false
 
 ## Configuration for prometheus-node-exporter subchart
 ##
@@ -273,6 +275,32 @@ prometheus:
           resources:
             requests:
               storage: 256Gi
+
+    ## Scrape etcd server metrics via Kubernetes node service discovery.
+    ## K3s has no component=etcd Pod, so the kubeEtcd ServiceMonitor can't discover targets.
+    ## Port 2381 is open on all control-plane nodes (etcd-expose-metrics: true in K3s config).
+    ## The etcd port also exposes apiserver/containerd metrics, so we keep only etcd_*.
+    ## job_name "etcd" matches the dashboard/alert pattern job=~".*etcd.*".
+    additionalScrapeConfigs:
+      - job_name: etcd
+        scheme: http
+        kubernetes_sd_configs:
+          - role: node
+        relabelings:
+          - source_labels: [__meta_kubernetes_node_label_node_role_kubernetes_io_etcd]
+            action: keep
+            regex: "true"
+          - source_labels: [__address__]
+            action: replace
+            regex: (.+?)(?::\d+)?
+            replacement: $1:2381
+            target_label: __address__
+          - target_label: cluster
+            replacement: backbone
+        metric_relabelings:
+          - source_labels: [__name__]
+            regex: etcd_.*
+            action: keep
 
     securityContext:
       runAsGroup: 2000
