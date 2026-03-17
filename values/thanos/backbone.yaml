@@ -1,0 +1,76 @@
+image:
+  registry: quay.io
+  repository: thanos/thanos
+  tag: v0.41.0
+
+existingObjstoreSecret: thanos-objstore-config
+existingObjstoreSecretItems:
+  - key: objstore.yml
+    path: objstore.yml
+
+query:
+  enabled: true
+  replicaCount: 1
+  stores:
+    - dnssrv+_grpc._tcp.shared-prometheus-thanos-discovery.prometheus.svc.cluster.local
+  replicaLabels:
+    - prometheus_replica
+  resources:
+    requests:
+      cpu: 50m
+      memory: 128Mi
+    limits:
+      cpu: 500m
+      memory: 512Mi
+
+queryFrontend:
+  enabled: true
+  replicaCount: 1
+  resources:
+    requests:
+      cpu: 20m
+      memory: 64Mi
+    limits:
+      cpu: 200m
+      memory: 256Mi
+
+storegateway:
+  enabled: true
+  replicaCount: 1
+  resources:
+    requests:
+      cpu: 50m
+      memory: 128Mi
+    limits:
+      cpu: 500m
+      memory: 512Mi
+  persistence:
+    enabled: true
+    storageClass: ssd-ha-xfs
+    size: 8Gi
+
+compactor:
+  enabled: true
+  resources:
+    requests:
+      cpu: 50m
+      memory: 256Mi
+    limits:
+      cpu: 1000m
+      memory: 1Gi
+  persistence:
+    enabled: true
+    storageClass: ssd-ha-xfs
+    size: 16Gi
+  retentionResolutionRaw: 30d
+  retentionResolution5m: 180d
+  retentionResolution1h: 0d
+
+ruler:
+  enabled: false
+receive:
+  enabled: false
+receiveDistributor:
+  enabled: false
+bucketweb:
+  enabled: false

@@ -1,0 +1,32 @@
+apiVersion: argoproj.io/v1alpha1
+kind: Application
+metadata:
+  name: thanos
+  finalizers:
+    - resources-finalizer.argocd.argoproj.io
+spec:
+  destination:
+    name: backbone
+    namespace: prometheus
+  project: monitoring
+  source:
+    chart: thanos
+    repoURL: oci://registry-1.docker.io/bitnamicharts
+    targetRevision: 17.3.1
+    helm:
+      releaseName: thanos
+      valueFiles:
+        - values.yaml
+        - https://raw.githubusercontent.com/isac322/homelab/HEAD/values/thanos/backbone.yaml
+  syncPolicy:
+    automated:
+      prune: true
+      selfHeal: true
+    retry:
+      backoff:
+        duration: 5s
+        factor: 2
+        maxDuration: 3m0s
+      limit: 100
+    syncOptions:
+      - CreateNamespace=true

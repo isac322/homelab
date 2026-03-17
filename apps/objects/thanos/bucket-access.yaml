@@ -1,0 +1,9 @@
+apiVersion: objectstorage.k8s.io/v1alpha1
+kind: BucketAccess
+metadata:
+  name: thanos
+spec:
+  bucketClaimName: thanos
+  bucketAccessClassName: versitygw-hdd-cosi-driver
+  credentialsSecretName: thanos-bucket-creds
+  protocol: S3

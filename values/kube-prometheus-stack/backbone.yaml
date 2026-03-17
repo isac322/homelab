@@ -66,13 +66,7 @@ grafana:
           enabled: true
     datasources:
       enabled: true
-      defaultDatasourceEnabled: true
-      isDefaultDatasource: true
-
-      uid: prometheus
-
-      ## Set method for HTTP to send query to datasource
-      httpMethod: POST
+      defaultDatasourceEnabled: false
 
       label: grafana_datasource
       labelValue: "1"
@@ -80,9 +74,17 @@ grafana:
       alertmanager:
         enabled: false
 
-  ## Configure additional grafana datasources (passed through tpl)
-  ## ref: http://docs.grafana.org/administration/provisioning/#datasources
   additionalDataSources:
+    - name: Thanos
+      uid: prometheus
+      type: prometheus
+      access: proxy
+      url: http://thanos-query-frontend.prometheus.svc.cluster.local:9090
+      isDefault: true
+      editable: true
+      jsonData:
+        httpMethod: POST
+        timeInterval: 30s
     - name: Loki
       uid: loki
       type: loki
@@ -234,7 +236,13 @@ prometheus:
 
     ## How long to retain metrics
     ##
-    retention: 10d
+    retention: 30d
+
+    thanos:
+      objectStorageConfig:
+        existingSecret:
+          name: thanos-objstore-config
+          key: objstore.yml
 
     ## Allow out-of-order/out-of-bounds samples ingested into Prometheus for a specified duration
     ## See https://prometheus.io/docs/prometheus/latest/configuration/configuration/#tsdb
