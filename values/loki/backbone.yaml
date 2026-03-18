@@ -16,7 +16,7 @@ loki:
   storage:
     type: filesystem
   limits_config:
-    retention_period: 168h
+    retention_period: 8760h
     allow_structured_metadata: true
     volume_enabled: true
   compactor:
