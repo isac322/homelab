@@ -20,7 +20,7 @@ spec:
           - values.yaml
           - $homelab/values/zfs-localpv/backbone.yaml
       repoURL: https://openebs.github.io/zfs-localpv
-      targetRevision: 2.8.0
+      targetRevision: 2.9.1
   syncPolicy:
     automated:
       prune: true

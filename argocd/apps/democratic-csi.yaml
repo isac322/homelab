@@ -20,7 +20,7 @@ spec:
           - values.yaml
           - $homelab/values/democratic-csi/backbone.yaml
       repoURL: https://democratic-csi.github.io/charts/
-      targetRevision: 0.15.0
+      targetRevision: 0.15.1
   syncPolicy:
     automated:
       prune: true
@@ -57,7 +57,7 @@ spec:
           - values.yaml
           - $homelab/values/democratic-csi/hdd-backbone.yaml
       repoURL: https://democratic-csi.github.io/charts/
-      targetRevision: 0.15.0
+      targetRevision: 0.15.1
   syncPolicy:
     automated:
       prune: true
