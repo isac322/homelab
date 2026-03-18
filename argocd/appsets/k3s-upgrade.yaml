@@ -18,11 +18,13 @@ spec:
         name: '{{cluster}}'
         namespace: system-upgrade
       project: system-upgrade
-      # https://github.com/rancher/system-upgrade-controller/issues/183
-      source:
-        path: apps/objects/k3s-system-upgrade
-        targetRevision: HEAD
-        repoURL: https://github.com/isac322/homelab.git
+      sources:
+        - repoURL: https://github.com/rancher/system-upgrade-controller.git
+          targetRevision: v0.19.0
+          path: .
+        - repoURL: https://github.com/isac322/homelab.git
+          targetRevision: HEAD
+          path: apps/objects/k3s-system-upgrade
       syncPolicy:
         automated:
           prune: true

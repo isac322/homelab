@@ -6,6 +6,7 @@ spec:
   description: Upgrading k8s system
   sourceRepos:
     - https://github.com/isac322/homelab.git
+    - https://github.com/rancher/system-upgrade-controller.git
   destinations:
     - namespace: system-upgrade
       name: backbone
