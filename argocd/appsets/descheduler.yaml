@@ -25,7 +25,7 @@ spec:
           valueFiles:
             - values.yaml
         repoURL: https://kubernetes-sigs.github.io/descheduler
-        targetRevision: 0.32.2
+        targetRevision: 0.35.1
       syncPolicy:
         automated:
           prune: true
