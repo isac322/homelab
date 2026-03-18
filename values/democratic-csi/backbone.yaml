@@ -121,12 +121,60 @@ driver:
 #      namePrefix: iscsi-
 #      nameSuffix:
 
+csiProxy:
+  resources:
+    requests:
+      cpu: 5m
+      memory: 12Mi
+    limits:
+      cpu: 10m
+      memory: 24Mi
+
 controller:
+  externalAttacher:
+    resources:
+      requests:
+        cpu: 5m
+        memory: 16Mi
+      limits:
+        cpu: 50m
+        memory: 32Mi
+  externalProvisioner:
+    resources:
+      requests:
+        cpu: 5m
+        memory: 16Mi
+      limits:
+        cpu: 50m
+        memory: 32Mi
+  externalResizer:
+    resources:
+      requests:
+        cpu: 5m
+        memory: 24Mi
+      limits:
+        cpu: 50m
+        memory: 32Mi
+  externalSnapshotter:
+    resources:
+      requests:
+        cpu: 5m
+        memory: 16Mi
+      limits:
+        cpu: 50m
+        memory: 32Mi
   driver:
     image:
       registry: docker.io/isac322/democratic-csi
       tag: next
       pullPolicy: Always
+    resources:
+      requests:
+        cpu: 15m
+        memory: 128Mi
+      limits:
+        cpu: 100m
+        memory: 256Mi
     extraEnv:
       - name: SSH_PRIVATE_KEY
         valueFrom:
@@ -135,11 +183,34 @@ controller:
             key: ssh-privatekey
 
 node:
+  cleanup:
+    resources:
+      requests:
+        cpu: 5m
+        memory: 8Mi
+      limits:
+        cpu: 10m
+        memory: 16Mi
+  driverRegistrar:
+    resources:
+      requests:
+        cpu: 5m
+        memory: 32Mi
+      limits:
+        cpu: 50m
+        memory: 64Mi
   driver:
     image:
       registry: docker.io/isac322/democratic-csi
       tag: next
       pullPolicy: Always
+    resources:
+      requests:
+        cpu: 30m
+        memory: 128Mi
+      limits:
+        cpu: 200m
+        memory: 256Mi
     extraEnv:
       - name: SSH_PRIVATE_KEY
         valueFrom:

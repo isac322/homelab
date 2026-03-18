@@ -52,7 +52,22 @@ grafana:
         hosts:
           - grafana.bhyoo.com
 
+  resources:
+    requests:
+      cpu: 50m
+      memory: 192Mi
+    limits:
+      cpu: 300m
+      memory: 384Mi
+
   sidecar:
+    resources:
+      requests:
+        cpu: 20m
+        memory: 128Mi
+      limits:
+        cpu: 100m
+        memory: 192Mi
     dashboards:
       enabled: true
       label: grafana_dashboard
@@ -162,6 +177,17 @@ kubeEtcd:
   serviceMonitor:
     enabled: false
 
+## Configuration for kube-state-metrics subchart
+##
+kube-state-metrics:
+  resources:
+    requests:
+      cpu: 10m
+      memory: 64Mi
+    limits:
+      cpu: 100m
+      memory: 128Mi
+
 ## Configuration for prometheus-node-exporter subchart
 ##
 prometheus-node-exporter:
@@ -197,6 +223,15 @@ prometheusOperator:
     limits:
       cpu: 200m
       memory: 128Mi
+
+  prometheusConfigReloader:
+    resources:
+      requests:
+        cpu: 5m
+        memory: 32Mi
+      limits:
+        cpu: 10m
+        memory: 64Mi
 
 ## Deploy a Prometheus instance
 ##
@@ -250,6 +285,13 @@ prometheus:
     retention: 30d
 
     thanos:
+      resources:
+        requests:
+          cpu: 10m
+          memory: 48Mi
+        limits:
+          cpu: 100m
+          memory: 384Mi
       objectStorageConfig:
         existingSecret:
           name: thanos-objstore-config

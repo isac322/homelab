@@ -7,6 +7,13 @@ controller:
 
 alloy:
   stabilityLevel: generally-available
+  resources:
+    requests:
+      cpu: 50m
+      memory: 256Mi
+    limits:
+      cpu: 200m
+      memory: 512Mi
   configMap:
     create: true
     content: |-

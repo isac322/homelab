@@ -87,13 +87,13 @@ service:
   #  nodePort:
 
 # -- Resource requests and limits for the Jellyfin container.
-resources: {}
-  # limits:
-  #   cpu: 100m
-  #   memory: 128Mi
-  # requests:
-  #   cpu: 100m
-  #   memory: 128Mi
+resources:
+  requests:
+    cpu: 10m
+    memory: 512Mi
+  limits:
+    cpu: "1"
+    memory: 6Gi
 
 # -- Additional volumes to mount in the Jellyfin pod.
 volumes:

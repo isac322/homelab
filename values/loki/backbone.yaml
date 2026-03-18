@@ -51,6 +51,24 @@ chunksCache:
 resultsCache:
   enabled: false
 
+sidecar:
+  resources:
+    requests:
+      cpu: 5m
+      memory: 64Mi
+    limits:
+      cpu: 10m
+      memory: 128Mi
+
+gateway:
+  resources:
+    requests:
+      cpu: 5m
+      memory: 16Mi
+    limits:
+      cpu: 50m
+      memory: 32Mi
+
 lokiCanary:
   enabled: false
 

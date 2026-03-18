@@ -62,6 +62,17 @@ immich:
 
 valkey:
   enabled: true
+  controllers:
+    main:
+      containers:
+        main:
+          resources:
+            requests:
+              cpu: 15m
+              memory: 24Mi
+            limits:
+              cpu: 100m
+              memory: 64Mi
   persistence:
     data:
       enabled: true
@@ -86,6 +97,13 @@ server:
           image:
             repository: ghcr.io/immich-app/immich-server
             pullPolicy: IfNotPresent
+          resources:
+            requests:
+              cpu: 100m
+              memory: 1Gi
+            limits:
+              cpu: "2"
+              memory: 3Gi
           securityContext:
             appArmorProfile:
               type: Unconfined
@@ -159,7 +177,12 @@ machine-learning:
               type: Unconfined
             privileged: true
           resources:
+            requests:
+              cpu: 50m
+              memory: 2Gi
             limits:
+              cpu: "1"
+              memory: 12Gi
               rock-chips.com/rknpu: 1
     sub:
       type: deployment
@@ -174,6 +197,13 @@ machine-learning:
             repository: ghcr.io/immich-app/immich-machine-learning
             tag: v2.5.6-armnn
             pullPolicy: IfNotPresent
+          resources:
+            requests:
+              cpu: 50m
+              memory: 512Mi
+            limits:
+              cpu: 500m
+              memory: 4Gi
           ports:
             - name: http
               containerPort: 3003

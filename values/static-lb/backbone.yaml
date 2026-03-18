@@ -4,7 +4,7 @@ resources:
     memory: 16Mi
   limits:
     cpu: 10m
-    memory: 32Mi
+    memory: 48Mi
 
 # where to assign node's internal ips (enum: ingress, external)
 internalIPMappings: []
