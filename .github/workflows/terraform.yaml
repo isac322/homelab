@@ -15,7 +15,7 @@ jobs:
       pull-requests: write
     steps:
       - name: Checkout
-        uses: actions/checkout@v4
+        uses: actions/checkout@v6
       - name: Get changed files
         id: changed-files
         uses: tj-actions/changed-files@v47
@@ -36,7 +36,7 @@ jobs:
       pull-requests: write
     steps:
       - name: Checkout
-        uses: actions/checkout@v4
+        uses: actions/checkout@v6
       - name: Get changed files
         id: changed-files
         uses: tj-actions/changed-files@v47
