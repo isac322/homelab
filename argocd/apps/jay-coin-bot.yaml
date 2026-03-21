@@ -1,14 +1,14 @@
 apiVersion: argoproj.io/v1alpha1
 kind: Application
 metadata:
-  name: jay-india
+  name: jay-coin-bot
   finalizers:
     - resources-finalizer.argocd.argoproj.io
 spec:
   destination:
     name: prod
-    namespace: jay-india
-  project: jay-india
+    namespace: jay-coin-bot
+  project: jay-coin-bot
   sources:
     - repoURL: https://github.com/isac322/homelab.git
       targetRevision: HEAD
