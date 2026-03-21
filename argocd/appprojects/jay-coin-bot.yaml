@@ -1,0 +1,15 @@
+apiVersion: argoproj.io/v1alpha1
+kind: AppProject
+metadata:
+  name: jay-coin-bot
+spec:
+  description: Jay's coin bot
+  sourceRepos:
+    - ghcr.io/jayjeong8/charts
+    - https://github.com/isac322/homelab.git
+  destinations:
+    - namespace: jay-coin-bot
+      name: backbone
+  clusterResourceWhitelist:
+    - group: '*'
+      kind: '*'

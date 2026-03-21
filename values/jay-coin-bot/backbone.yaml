@@ -1,0 +1,12 @@
+env:
+  MAX_POSITIONS: "2"
+  MOMENTUM_WEIGHTS: "0.7,0.2,0.1"
+  STOP_LOSS_PCT: "0.01"
+  STRATEGY_MODE: "rotation"
+
+secrets:
+  create: false
+  name: upbit-credentials
+
+imagePullSecrets:
+  - name: ghcr-creds
