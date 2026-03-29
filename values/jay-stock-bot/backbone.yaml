@@ -1,0 +1,6 @@
+secrets:
+  create: false
+  name: stock-credentials
+
+imagePullSecrets:
+  - name: ghcr-creds

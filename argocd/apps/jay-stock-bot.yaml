@@ -1,0 +1,37 @@
+apiVersion: argoproj.io/v1alpha1
+kind: Application
+metadata:
+  name: jay-stock-bot
+  finalizers:
+    - resources-finalizer.argocd.argoproj.io
+spec:
+  destination:
+    name: backbone
+    namespace: jay-stock-bot
+  project: jay-stock-bot
+  sources:
+    - repoURL: https://github.com/isac322/homelab.git
+      targetRevision: HEAD
+      ref: homelab
+    - chart: stock-bot
+      helm:
+        valueFiles:
+          - values.yaml
+          - $homelab/values/jay-stock-bot/backbone.yaml
+        parameters:
+          - name: image.tag
+            value: latest
+      repoURL: ghcr.io/jayjeong8/charts
+      targetRevision: 0.1.0
+  syncPolicy:
+    automated:
+      prune: true
+      selfHeal: true
+    retry:
+      backoff:
+        duration: 5s
+        factor: 2
+        maxDuration: 3m0s
+      limit: 100
+    syncOptions:
+      - CreateNamespace=true
