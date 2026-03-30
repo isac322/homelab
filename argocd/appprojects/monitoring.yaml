@@ -6,6 +6,7 @@ spec:
   description: Monitoring cluster
   sourceRepos:
     - https://grafana.github.io/helm-charts
+    - https://grafana-community.github.io/helm-charts
     - https://prometheus-community.github.io/helm-charts
     - https://github.com/isac322/homelab.git
     - registry-1.docker.io/bitnamicharts
