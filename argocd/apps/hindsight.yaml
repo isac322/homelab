@@ -1,0 +1,69 @@
+apiVersion: argoproj.io/v1alpha1
+kind: Application
+metadata:
+  name: hindsight-cnpg-cluster
+  finalizers:
+    - resources-finalizer.argocd.argoproj.io
+spec:
+  destination:
+    name: backbone
+    namespace: hindsight
+  project: hindsight
+  sources:
+    - repoURL: https://github.com/isac322/homelab.git
+      targetRevision: HEAD
+      ref: homelab
+    - chart: cluster
+      helm:
+        releaseName: cnpg
+        valueFiles:
+          - values.yaml
+          - $homelab/values/cloudnative-pg/cluster-hindsight.yaml
+      repoURL: https://cloudnative-pg.github.io/charts/
+      targetRevision: 0.6.0
+  syncPolicy:
+    automated:
+      prune: true
+      selfHeal: true
+    retry:
+      backoff:
+        duration: 5s
+        factor: 2
+        maxDuration: 3m0s
+      limit: 100
+    syncOptions:
+      - CreateNamespace=true
+---
+# Kustomize source: renders Hindsight Helm chart + patches (volume mount)
+# + raw manifests (ExternalSecrets, BucketClaim, SecretStore)
+apiVersion: argoproj.io/v1alpha1
+kind: Application
+metadata:
+  name: hindsight-app
+  finalizers:
+    - resources-finalizer.argocd.argoproj.io
+spec:
+  destination:
+    name: backbone
+    namespace: hindsight
+  project: hindsight
+  source:
+    path: apps/objects/hindsight
+    repoURL: https://github.com/isac322/homelab.git
+    targetRevision: HEAD
+  syncPolicy:
+    automated:
+      prune: true
+      selfHeal: true
+    retry:
+      backoff:
+        duration: 5s
+        factor: 2
+        maxDuration: 3m0s
+      limit: 100
+    syncOptions:
+      - CreateNamespace=true
+  ignoreDifferences:
+    - kind: Secret
+      jsonPointers:
+        - /data

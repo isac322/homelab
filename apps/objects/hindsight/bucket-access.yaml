@@ -1,0 +1,9 @@
+apiVersion: objectstorage.k8s.io/v1alpha1
+kind: BucketAccess
+metadata:
+  name: cnpg-hindsight-backup
+spec:
+  bucketAccessClassName: versitygw
+  bucketClaimName: cnpg-hindsight-backup
+  credentialsSecretName: cnpg-hindsight-backup-creds
+  protocol: S3

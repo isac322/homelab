@@ -16,3 +16,15 @@ variable "use_democratic_csi" {
   type        = bool
   default     = false
 }
+
+variable "hindsight_openai_api_key" {
+  description = "OpenAI API key for Hindsight embeddings (text-embedding-3-large)"
+  type        = string
+  sensitive   = true
+}
+
+variable "hindsight_gcp_sa_key" {
+  description = "GCP Service Account key JSON for Vertex AI access (Hindsight LLM)"
+  type        = string
+  sensitive   = true
+}

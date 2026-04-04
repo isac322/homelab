@@ -82,6 +82,7 @@ configs:
       url: https://prometheus-community.github.io/helm-charts
 
   cm:
+    kustomize.buildOptions: "--enable-helm"
     resource.customizations.health.gateway.networking.k8s.io_HTTPRoute: |
       hs = {}
       hs.status = "Healthy"

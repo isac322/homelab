@@ -1,0 +1,16 @@
+apiVersion: argoproj.io/v1alpha1
+kind: AppProject
+metadata:
+  name: hindsight
+spec:
+  description: Hindsight agent memory server
+  sourceRepos:
+    - https://github.com/isac322/homelab.git
+    - https://cloudnative-pg.github.io/charts/
+    - ghcr.io/vectorize-io/charts
+  destinations:
+    - namespace: hindsight
+      name: backbone
+  clusterResourceWhitelist:
+    - group: '*'
+      kind: '*'

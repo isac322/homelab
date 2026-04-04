@@ -39,6 +39,24 @@ resource "aws_ssm_parameter" "democratic_csi_ssh_private_key" {
   value       = tls_private_key.democratic_csi[0].private_key_openssh
 }
 
+# --- Hindsight agent memory server ---
+
+resource "aws_ssm_parameter" "hindsight_openai_api_key" {
+  name        = "/homelab/cluster/${var.k8s_cluster_name}/token/openai/hindsight-embeddings"
+  description = "OpenAI API key for Hindsight embeddings (text-embedding-3-large)"
+  type        = "SecureString"
+  value       = var.hindsight_openai_api_key
+}
+
+resource "aws_ssm_parameter" "hindsight_gcp_sa_key" {
+  name        = "/homelab/cluster/${var.k8s_cluster_name}/hindsight/gcp-vertex-ai-sa-key"
+  description = "GCP Service Account key JSON for Vertex AI access (Hindsight LLM)"
+  type        = "SecureString"
+  value = var.hindsight_gcp_sa_key
+}
+
+# --- External Secrets IAM ---
+
 resource "aws_iam_user" "external_secrets" {
   name = "${var.k8s_cluster_name}-external-secrets"
   path = "/homelab/sa/"
@@ -58,6 +76,8 @@ data "aws_iam_policy_document" "secret_read" {
         aws_ssm_parameter.cf_api_token_for_external_dns.arn,
         aws_ssm_parameter.cf_api_token_for_cloudflared_gateway.arn,
         aws_ssm_parameter.cf_account_id.arn,
+        aws_ssm_parameter.hindsight_openai_api_key.arn,
+        aws_ssm_parameter.hindsight_gcp_sa_key.arn,
       ],
       var.use_democratic_csi ? [aws_ssm_parameter.democratic_csi_ssh_private_key[0].arn] : []
     )

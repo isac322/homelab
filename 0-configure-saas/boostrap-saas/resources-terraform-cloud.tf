@@ -136,3 +136,29 @@ resource "tfe_variable" "vultr_pat" {
   sensitive       = true
   variable_set_id = tfe_variable_set.vultr.id
 }
+
+##
+
+resource "tfe_variable_set" "hindsight" {
+  name         = "hindsight-credentials"
+  description  = "Hindsight agent memory server credentials"
+  organization = tfe_organization.this.name
+}
+resource "tfe_workspace_variable_set" "hindsight_to_backbone" {
+  variable_set_id = tfe_variable_set.hindsight.id
+  workspace_id    = tfe_workspace.backbone.id
+}
+resource "tfe_variable" "hindsight_openai_api_key" {
+  key             = "hindsight_openai_api_key"
+  value           = var.hindsight_openai_api_key
+  category        = "terraform"
+  sensitive       = true
+  variable_set_id = tfe_variable_set.hindsight.id
+}
+resource "tfe_variable" "hindsight_gcp_sa_key" {
+  key             = "hindsight_gcp_sa_key"
+  value           = var.hindsight_gcp_sa_key
+  category        = "terraform"
+  sensitive       = true
+  variable_set_id = tfe_variable_set.hindsight.id
+}

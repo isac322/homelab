@@ -1,0 +1,13 @@
+apiVersion: objectstorage.k8s.io/v1alpha1
+kind: Bucket
+metadata:
+  name: cnpg-hindsight-backup
+spec:
+  bucketClaim:
+    name: cnpg-hindsight-backup
+    namespace: hindsight
+  bucketClassName: versitygw
+  driverName: versitygw.cosi.dev
+  deletionPolicy: Retain
+  protocols:
+    - S3

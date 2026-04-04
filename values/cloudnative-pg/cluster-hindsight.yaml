@@ -1,0 +1,62 @@
+type: postgresql
+mode: standalone
+version:
+  postgresql: "18"
+
+nameOverride: hindsight
+
+cluster:
+  instances: 1
+  imageName: tensorchord/cloudnative-vectorchord:18.3-1.1.1
+  storage:
+    storageClass: ssd-ha-cnpg
+    size: 10Gi
+  walStorage:
+    enabled: true
+    storageClass: ssd-ha-cnpg
+    size: 10Gi
+  postgresql:
+    shared_preload_libraries:
+      - vchord.so
+    parameters:
+      wal_compression: zstd
+  postgresUID: 26
+  postgresGID: 999
+  initdb:
+    database: hindsight
+    owner: hindsight
+    postInitSQL:
+      - CREATE EXTENSION IF NOT EXISTS vector;
+      - CREATE EXTENSION IF NOT EXISTS vchord CASCADE;
+  monitoring:
+    enabled: true
+    prometheusRule:
+      excludeRules:
+        # chart 0.6.0 PromQL syntax bug
+        - CNPGClusterLogicalReplicationErrorsCritical
+        - CNPGClusterLogicalReplicationErrors
+        - CNPGClusterLogicalReplicationStoppedCritical
+        - CNPGClusterLogicalReplicationStopped
+
+backups:
+  enabled: true
+  endpointURL: "http://versitygw.object-storage.svc:7070"
+  provider: s3
+  data:
+    compression: gzip
+    encryption: ''
+  wal:
+    compression: zstd
+    maxParallel: 2
+    encryption: ''
+  secret:
+    create: false
+    name: hindsight-s3-creds
+  s3:
+    bucket: cnpg-hindsight-backup
+    region: ap-northeast-2
+  scheduledBackups:
+    - name: daily-backup
+      schedule: "0 0 2 * * *"
+      backupOwnerReference: self
+  retentionPolicy: "7d"

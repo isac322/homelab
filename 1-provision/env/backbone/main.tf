@@ -47,6 +47,8 @@ module "dns_secrets" {
   cloudflare_account_id                       = var.cloudflare_account_id
   aws_iam_group_name_cf_origin_ca_cert_issuer = var.aws_iam_group_name_cf_origin_ca_cert_issuer
   use_democratic_csi                          = true
+  hindsight_openai_api_key                    = var.hindsight_openai_api_key
+  hindsight_gcp_sa_key                        = var.hindsight_gcp_sa_key
 
   providers = {
     aws        = aws

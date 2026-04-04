@@ -1,0 +1,52 @@
+apiVersion: kustomize.config.k8s.io/v1beta1
+kind: Kustomization
+
+namespace: hindsight
+
+helmCharts:
+  - name: hindsight
+    repo: oci://ghcr.io/vectorize-io/charts
+    version: 0.4.22
+    releaseName: hindsight
+    namespace: hindsight
+    valuesFile: values.yaml
+
+resources:
+  - secret-store.yaml
+  - external-secret-hindsight.yaml
+  - external-secret-s3-creds.yaml
+  - bucket-claim.yaml
+  - bucket.yaml
+  - bucket-access.yaml
+  - model-cache-pvc.yaml
+
+patches:
+  - target:
+      kind: Deployment
+      name: hindsight-api
+    patch: |-
+      apiVersion: apps/v1
+      kind: Deployment
+      metadata:
+        name: hindsight-api
+      spec:
+        template:
+          spec:
+            volumes:
+              - name: gcp-sa-key
+                secret:
+                  secretName: hindsight-gcp-sa-key
+              - name: model-cache
+                persistentVolumeClaim:
+                  claimName: hindsight-model-cache
+            containers:
+              - name: api
+                env:
+                  - name: HINDSIGHT_API_LLM_VERTEXAI_SERVICE_ACCOUNT_KEY
+                    value: /etc/gcp/sa-key.json
+                volumeMounts:
+                  - name: gcp-sa-key
+                    mountPath: /etc/gcp
+                    readOnly: true
+                  - name: model-cache
+                    mountPath: /home/hindsight/.cache
