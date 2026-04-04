@@ -12,7 +12,7 @@ spec:
   source:
     repoURL: https://github.com/kubernetes-sigs/gateway-api.git
     path: config/crd/standard
-    targetRevision: v1.2.1
+    targetRevision: v1.5.1
   syncPolicy:
     automated:
       prune: true
