@@ -345,6 +345,7 @@ When the user asks to proceed with upgrades after reviewing the report, follow t
    - `chore: upgrade monitoring stack (alloy v1.6.2 -> v1.7.0, loki v9.3.6 -> v9.4.0)`
    - `chore: upgrade cert-manager v1.20.0 -> v1.21.0`
 4. Explain what you upgraded and why it's safe
+5. **→ Push + Verify + Retain** (see below)
 
 ### L2: Config — Change and Explain
 
@@ -353,6 +354,7 @@ When the user asks to proceed with upgrades after reviewing the report, follow t
 3. Explain each change: what it does and why it's needed
 4. Apply the changes
 5. Commit: `chore: upgrade <workload> to <version>` with a body listing config changes
+6. **→ Push + Verify + Retain** (see below)
 
 ### L3: External — Checklist First
 
@@ -360,6 +362,7 @@ When the user asks to proceed with upgrades after reviewing the report, follow t
 2. Ask the user to confirm when external steps are done
 3. Then apply version + config changes as in L2
 4. Commit and explain what was done
+5. **→ Push + Verify + Retain** (see below)
 
 ### L4: Migration — Plan and Verify
 
@@ -370,6 +373,7 @@ When the user asks to proceed with upgrades after reviewing the report, follow t
    - Rollback plan
 2. Walk through each step, waiting for user confirmation at critical points
 3. Update versions only after migration is verified successful
+4. **→ Push + Verify + Retain** (see below)
 
 ### L5: Breaking — Impact-Driven Planning
 
@@ -380,6 +384,7 @@ When the user asks to proceed with upgrades after reviewing the report, follow t
 2. Propose a phased approach (e.g., upgrade CRDs first, then operator, then workloads)
 3. Each phase needs explicit user approval
 4. Consider whether waiting for next major release or migrating to an alternative is better
+5. **→ Push + Verify + Retain** (see below)
 
 ### Deprecated Workloads
 
@@ -387,6 +392,56 @@ When a workload is deprecated:
 1. Research the recommended successor
 2. Present a migration plan comparing the current workload with its replacement
 3. If the user wants to proceed, treat it as a new deployment + decommission of the old one
+4. **→ Push + Verify + Retain** (see below)
+
+### Push + Verify + Retain (automatic after every upgrade batch)
+
+This sequence runs automatically after every commit+push. It is not optional — it is part of the upgrade workflow.
+
+**Step A: Push**
+```bash
+git push
+```
+
+**Step B: Verify ArgoCD Sync**
+
+Wait ~30-60 seconds for ArgoCD to detect the change, then check sync status:
+```bash
+# Check specific app sync status
+kubectl --context private-backbone get app -n argocd <app-name> -o jsonpath='{.status.sync.status} {.status.health.status}' 2>/dev/null
+# Or check all apps at once
+kubectl --context private-backbone get apps -n argocd -o custom-columns='NAME:.metadata.name,SYNC:.status.sync.status,HEALTH:.status.health.status' 2>/dev/null | grep -v Synced
+```
+
+If sync failed or health is Degraded:
+1. Check the ArgoCD Application events: `kubectl --context private-backbone describe app -n argocd <app-name> | tail -20`
+2. Diagnose the issue (CRD mismatch, values schema error, resource conflict, etc.)
+3. Fix the issue (edit files, re-commit, re-push)
+4. Verify again until sync succeeds
+
+**Step C: Retain to Hindsight (automatic)**
+
+After push+verify, always retain the upgrade outcome. This builds institutional knowledge that makes future upgrades faster and safer.
+
+**On success:**
+```
+retain(bank_id="homelab-version-mgmt", 
+  content="Upgraded <workloads> from <old> to <new> (<safety-level>). ArgoCD sync successful, no issues. <brief note on what changed>",
+  context="upgrade-event", 
+  tags=["domain:k8s", "type:upgrade-event", "workload:<name>"],
+  timestamp="<ISO8601 now>")
+```
+
+**On failure + fix:**
+```
+retain(bank_id="homelab-version-mgmt",
+  content="Upgraded <workload> from <old> to <new>. ArgoCD sync FAILED: <error>. Root cause: <diagnosis>. Fixed by: <what was changed>. Lesson: <what to check next time>.",
+  context="upgrade-event",
+  tags=["domain:k8s", "type:upgrade-event", "type:gotcha", "workload:<name>"],
+  timestamp="<ISO8601 now>")
+```
+
+Failure retains are the most valuable — they prevent the same mistake from happening twice. Include enough detail that a future agent can recognize the same situation and avoid it.
 
 ---
 
@@ -407,48 +462,38 @@ Scanning 30-40 workloads can be slow if done sequentially. Optimize:
 5. **Cache-friendly**: If the user runs this again soon, the helm repo data is already cached locally
 6. **Targeted research**: For changelog analysis, focus on breaking changes and required actions. Don't exhaustively list every minor bug fix — summarize non-breaking changes briefly and spend your effort on the changes that actually affect upgrade safety.
 
-## Phase 3: Retain Findings to Memory
+## Automatic Memory (built into every phase)
 
-After generating the report (and after executing upgrades if Phase 2 was performed), retain valuable findings to Hindsight. The goal is to store knowledge that accelerates future version checks — not raw data that can be fetched fresh.
+Memory retention is NOT a separate phase — it happens automatically at the end of Phase 1 and after each upgrade batch in Phase 2. If you completed Phase 1 or Phase 2 without retaining, you did it wrong.
+
+### When to retain (automatic triggers)
+
+| Trigger | What to retain | Tags |
+|---------|---------------|------|
+| After Phase 1 report | Classification reasoning for non-obvious decisions, newly discovered gotchas, new deployment context | `type:classification-reasoning`, `type:gotcha`, `type:structure` |
+| After each Phase 2 push+verify | Upgrade outcome (success/failure), sync issues and fixes | `type:upgrade-event`, `type:gotcha` (if failure) |
 
 ### What to retain
 
-For each workload analyzed, retain the **reasoning and context**, not just the conclusion:
+Retain the **reasoning and context** — things that save time or prevent mistakes next time:
 
-**Safety classification reasoning** (tag: `type:classification-reasoning`):
-```
-retain(bank_id="homelab-version-mgmt", content="Alloy 1.6.2→1.7.0 classified as L1 Safe despite OTel Collector v0.147.0 breaking changes (loki_source_awsfirehose metric rename). Reason: backbone's alloy config only uses loki.source.kubernetes and loki.write — no OTel/OTLP/Firehose features. The breaking change has zero impact on this deployment.", context="classification-reasoning", tags=["domain:k8s", "workload:alloy", "type:classification-reasoning"])
-```
-
-**Deployment context discoveries** (tag: `type:structure`):
-```
-retain(bank_id="homelab-version-mgmt", content="immich ArgoCD Application defines 3 sub-apps: immich-app (helm+image, chart from ghcr.io/immich-app), immich-cnpg-cluster (helm, cloudnative-pg chart), immich-cnpg-s3-external (raw-yaml). Only immich-app has explicit image tag pinning in values/immich/backbone.yaml.", context="architecture", tags=["domain:k8s", "workload:immich", "type:structure"])
-```
-
-**Discovered gotchas** (tag: `type:gotcha`):
-```
-retain(bank_id="homelab-version-mgmt", content="Traefik chart v39+ enforces strict JSON schema validation. Running helm template with current prod-internal values against v39.0.7 fails with 3 errors: globalArguments not allowed (removed in v36), rollingUpdate at wrong nesting level, ports.websecure.middlewares needs http nesting. For large version gaps, recommend full values rewrite from helm show values rather than incremental patching.", context="version-check", tags=["domain:k8s", "workload:traefik", "type:gotcha"])
-```
-
-**Dependency relationships** (tag: `type:dependency`):
-```
-retain(bank_id="homelab-version-mgmt", content="prometheus-stack is deployed as ApplicationSet with list generator targeting both backbone and prod clusters. Version changes affect both clusters simultaneously.", context="architecture", tags=["domain:k8s", "workload:prometheus-stack", "type:dependency"])
-```
-
-**helm template / helm show values diff findings** when they reveal incompatibilities (tag: `type:gotcha`).
+- **Safety classification reasoning**: WHY a level was assigned, especially when the conclusion was non-obvious (e.g., "L1 despite upstream breaking changes because this deployment doesn't use that feature")
+- **Deployment context**: Features actually in use vs not (e.g., "alloy only uses loki.write, not OTel")
+- **Gotchas**: helm template failures, schema incompatibilities, version discrepancies, sync failures and their fixes
+- **Upgrade outcomes**: What was upgraded, did ArgoCD sync succeed, what broke and how it was fixed
+- **Dependency discoveries**: Shared modules, coordinated upgrades needed
 
 ### What NOT to retain
 
-- The full report text (it's a version snapshot that stales immediately)
-- Raw API responses (version lists, full changelog text)
-- The specific helm/curl commands executed (repeatable mechanical steps)
-- Sub-agent raw output (extract conclusions, discard the verbose intermediate work)
-- Current version numbers in isolation (only as part of an upgrade event or classification)
-- "Upgrade was successful, no issues" without specific learnings (no-signal noise)
+- Full report text (stale snapshot)
+- Raw API responses, version lists, changelog text (fetch fresh)
+- CLI commands executed (repeatable)
+- "Upgraded successfully, no issues" without specific learnings (noise)
+- Current version numbers alone (only as part of upgrade events)
 
 ### Retain sparingly
 
-Don't retain everything — only findings that would save time or prevent mistakes in a future version check. A single well-written retain about WHY a safety level was chosen is worth more than ten retains listing what versions were found.
+One well-written retain about WHY a safety level was chosen is worth more than ten retains listing version numbers. Focus on knowledge that can't be derived by re-scanning the repo.
 
 ---
 

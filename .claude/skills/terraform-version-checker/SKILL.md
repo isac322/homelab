@@ -284,6 +284,24 @@ For **Terraform Cloud** users: the user must run `terraform init -upgrade` local
 2. Phased migration plan
 3. Consider whether to upgrade in stages through intermediate versions
 
+### After Each Upgrade: Verify + Retain (automatic)
+
+This runs automatically after every upgrade. It is not optional.
+
+**Verify**: The user runs `terraform plan` after `init -upgrade`. If plan shows unexpected changes or errors:
+1. Diagnose the issue
+2. Fix .tf code
+3. Re-run plan until clean
+
+**Retain to Hindsight** (automatic after every upgrade):
+```
+# On success:
+retain(bank_id="homelab-version-mgmt", content="Upgraded <provider> from <old> to <new> in <roots>. terraform plan clean, no unexpected changes.", context="upgrade-event", tags=["domain:terraform", "type:upgrade-event"], timestamp="<now>")
+
+# On failure + fix:
+retain(bank_id="homelab-version-mgmt", content="Upgraded <provider> from <old> to <new>. Plan FAILED: <error>. Root cause: <diagnosis>. Fixed by: <change>. Lesson: <what to check next time>.", context="upgrade-event", tags=["domain:terraform", "type:upgrade-event", "type:gotcha"], timestamp="<now>")
+```
+
 ### General Rules
 
 - Always update constraints in ALL files that declare the same provider (root + referenced modules)
@@ -300,37 +318,29 @@ For **Terraform Cloud** users: the user must run `terraform init -upgrade` local
 - Group providers by namespace (hashicorp providers often share release patterns)
 - For `~>` constraints, calculate the maximum allowed version before checking if an update exists within the constraint
 
-## Phase 3: Retain Findings to Memory
+## Automatic Memory (built into every phase)
 
-After generating the report, retain valuable findings to Hindsight. Store knowledge that accelerates future version checks — not raw data.
+Memory retention is NOT a separate phase — it happens automatically at the end of Phase 1 and after each upgrade in Phase 2. If you completed a phase without retaining, you did it wrong.
+
+### When to retain (automatic triggers)
+
+| Trigger | What to retain | Tags |
+|---------|---------------|------|
+| After Phase 1 report | Classification reasoning, new gotchas, constraint/lock mismatches, deployment context | `type:classification-reasoning`, `type:gotcha`, `type:structure` |
+| After each Phase 2 upgrade+verify | Upgrade outcome, plan failures and fixes | `type:upgrade-event`, `type:gotcha` (if failure) |
 
 ### What to retain
 
-**Safety classification reasoning** (tag: `type:classification-reasoning`):
-```
-retain(bank_id="homelab-version-mgmt", content="AWS provider v6.x classified L5 Breaking: removes OpsWorks and SimpleDB services, enforces boolean strictification for string-to-bool coercion, renames multiple attributes. This deployment doesn't use OpsWorks/SimpleDB but boolean strictification could affect any resource. Not recommended to upgrade at this time.", context="classification-reasoning", tags=["domain:terraform", "type:classification-reasoning"])
-```
-
-**Discovered gotchas** (tag: `type:gotcha`):
-```
-retain(bank_id="homelab-version-mgmt", content="prod-vultr lock file has stale constraints: aws says ~> 5.30 but .tf says ~> 5.100.0, tls says ~> 4.0 but .tf says ~> 4.1.0. Constraints were updated without terraform init -upgrade. Next provider upgrade should regenerate the lock file.", context="version-check", tags=["domain:terraform", "type:gotcha"])
-```
-
-**Dependency relationships** (tag: `type:dependency`):
-```
-retain(bank_id="homelab-version-mgmt", content="dns-secrets module is shared by backbone and prod-vultr. Upgrading cloudflare or tls provider constraints in this module requires simultaneous updates to both root environments.", context="architecture", tags=["domain:terraform", "type:dependency"])
-```
-
-**Deployment context** (tag: `type:structure`):
-```
-retain(bank_id="homelab-version-mgmt", content="vultr-cluster module only provisions plain VPS instances and VPC/firewall — does NOT use Vultr managed Kubernetes. Vultr provider features related to VKE (managed K8s) are irrelevant to this deployment.", context="workload-context", tags=["domain:terraform", "type:structure"])
-```
+- **Classification reasoning**: WHY a level was assigned (e.g., "AWS 6.x L5 because boolean strictification affects any resource")
+- **Deployment context**: What resources are actually used (e.g., "vultr-cluster uses plain VPS only, not VKE")
+- **Gotchas**: Lock mismatches, plan failures, constraint conflicts
+- **Upgrade outcomes**: Success or failure with details
 
 ### What NOT to retain
 
-- Full report text, raw Registry API responses, curl commands, current version numbers alone
-- Sub-agent verbose output — extract conclusions only
-- "All providers up to date, no issues" without specific learnings
+- Full report text, raw API responses, version numbers alone
+- "All providers up to date" without learnings
+- Sub-agent verbose output
 
 ---
 
