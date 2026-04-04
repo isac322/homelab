@@ -56,7 +56,7 @@ spec:
           - values.yaml
           - $homelab/values/immich/backbone.yaml
       repoURL: ghcr.io/immich-app/immich-charts
-      targetRevision: 0.11.0
+      targetRevision: 0.11.1
   syncPolicy:
     automated:
       prune: true

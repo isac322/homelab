@@ -20,7 +20,7 @@ spec:
           - values.yaml
           - $homelab/values/alloy/backbone.yaml
       repoURL: https://grafana.github.io/helm-charts
-      targetRevision: 1.6.2
+      targetRevision: 1.7.0
   syncPolicy:
     automated:
       prune: true

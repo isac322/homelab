@@ -19,7 +19,7 @@ spec:
           - values.yaml
           - $homelab/values/cloudnative-pg/operator.yaml
       repoURL: https://cloudnative-pg.github.io/charts/
-      targetRevision: 0.27.1
+      targetRevision: 0.28.0
   syncPolicy:
     automated:
       prune: true
