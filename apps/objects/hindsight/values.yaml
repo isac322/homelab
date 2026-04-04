@@ -26,7 +26,12 @@ api:
     HINDSIGHT_API_EMBEDDINGS_OPENAI_MODEL: "text-embedding-3-large"
     # Reranker — Vertex AI Ranking via LiteLLM SDK
     HINDSIGHT_API_RERANKER_PROVIDER: "litellm-sdk"
-    HINDSIGHT_API_RERANKER_LITELLM_SDK_MODEL: "vertex_ai/semantic-ranker-fast-004"
+    HINDSIGHT_API_RERANKER_LITELLM_SDK_MODEL: "vertex_ai/semantic-ranker-default-004"
+    HINDSIGHT_API_RERANKER_LITELLM_SDK_API_KEY: "gcp-sa"  # placeholder — actual auth via GOOGLE_APPLICATION_CREDENTIALS
+    # LiteLLM Vertex AI auth
+    GOOGLE_APPLICATION_CREDENTIALS: "/etc/gcp/sa-key.json"
+    VERTEXAI_PROJECT: "runbear"
+    VERTEXAI_LOCATION: "global"
   livenessProbe:
     httpGet:
       path: /health
