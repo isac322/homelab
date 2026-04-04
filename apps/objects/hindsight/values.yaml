@@ -2,18 +2,17 @@
 
 api:
   replicaCount: 1
+  image:
+    tag: "0.4.22-slim"
   resources:
     requests:
-      cpu: 500m
-      memory: 1Gi
+      cpu: 250m
+      memory: 512Mi
     limits:
-      cpu: 2000m
-      memory: 4Gi
+      cpu: 1000m
+      memory: 2Gi
   env:
     # LLM — Vertex AI (SA key via GOOGLE_APPLICATION_CREDENTIALS)
-    # SA key Secret (hindsight-gcp-sa-key) created by ExternalSecret.
-    # TODO: mount as volume + set HINDSIGHT_API_LLM_VERTEXAI_SERVICE_ACCOUNT_KEY
-    #       once chart supports extraVolumes (vectorize-io/hindsight#861)
     HINDSIGHT_API_LLM_PROVIDER: "vertexai"
     HINDSIGHT_API_LLM_MODEL: "gemini-3.1-pro-preview"
     HINDSIGHT_API_LLM_VERTEXAI_PROJECT_ID: "runbear"
@@ -25,15 +24,14 @@ api:
     # Embeddings — OpenAI
     HINDSIGHT_API_EMBEDDINGS_PROVIDER: "openai"
     HINDSIGHT_API_EMBEDDINGS_OPENAI_MODEL: "text-embedding-3-large"
-    # Reranker — local model
-    HINDSIGHT_API_RERANKER_LOCAL_MODEL: "BAAI/bge-reranker-v2-m3"
-    # Startup timeout — model download can take >5min on cold start
-    HINDSIGHT_API_STARTUP_WAIT_SECONDS: "600"
+    # Reranker — Vertex AI Ranking via LiteLLM SDK
+    HINDSIGHT_API_RERANKER_PROVIDER: "litellm-sdk"
+    HINDSIGHT_API_RERANKER_LITELLM_SDK_MODEL: "vertex_ai/semantic-ranker-fast-004"
   livenessProbe:
     httpGet:
       path: /health
       port: 8888
-    initialDelaySeconds: 300
+    initialDelaySeconds: 30
     periodSeconds: 10
     timeoutSeconds: 5
     failureThreshold: 6
@@ -41,7 +39,7 @@ api:
     httpGet:
       path: /health
       port: 8888
-    initialDelaySeconds: 60
+    initialDelaySeconds: 15
     periodSeconds: 5
     timeoutSeconds: 3
     failureThreshold: 6
