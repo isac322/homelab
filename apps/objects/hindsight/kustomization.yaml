@@ -18,7 +18,6 @@ resources:
   - bucket-claim.yaml
   - bucket.yaml
   - bucket-access.yaml
-  - model-cache-pvc.yaml
 
 patches:
   - target:
@@ -36,9 +35,6 @@ patches:
               - name: gcp-sa-key
                 secret:
                   secretName: hindsight-gcp-sa-key
-              - name: model-cache
-                persistentVolumeClaim:
-                  claimName: hindsight-model-cache
             containers:
               - name: api
                 env:
@@ -48,5 +44,3 @@ patches:
                   - name: gcp-sa-key
                     mountPath: /etc/gcp
                     readOnly: true
-                  - name: model-cache
-                    mountPath: /home/hindsight/.cache
