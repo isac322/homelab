@@ -18,13 +18,20 @@ Check if the `homelab-version-mgmt` bank exists. If not, create it:
 create_bank(bank_id="homelab-version-mgmt", name="Homelab Version Management", mission="Kubernetes GitOps and Terraform infrastructure version management knowledge")
 ```
 
-### 0b. Recall
+### 0b. Recall + Reflect (conditional hybrid)
 
-Query the bank for relevant prior knowledge. This saves re-discovering architecture patterns and avoids repeating past mistakes:
+Use `recall` for raw facts and `reflect` for synthesized analysis. They serve different purposes:
+- **recall**: fast lookup of specific facts ("what workloads exist?", "what version is X?")
+- **reflect**: synthesized reasoning across multiple memories ("what should I watch out for?", "how should I classify this?")
 
+**Architecture facts** — use `recall` (raw facts are sufficient):
 ```
 recall(bank_id="homelab-version-mgmt", query="K8s deployment architecture, workload types, image tag pinning patterns, dependency relationships", tags=["domain:k8s"], budget="mid")
-recall(bank_id="homelab-version-mgmt", query="known gotchas, pitfalls, and upgrade warnings for K8s workloads", tags=["domain:k8s", "type:gotcha"], budget="mid")
+```
+
+**Gotchas and warnings** — use `reflect` (synthesis connects dots across past experiences):
+```
+reflect(bank_id="homelab-version-mgmt", query="Based on all past upgrade experiences and known issues in this K8s cluster, what are the most critical gotchas and warnings I should watch out for? What patterns of failure have been seen?", tags=["domain:k8s"], budget="mid")
 ```
 
 If the user asked about specific workloads, also recall those:
@@ -32,9 +39,9 @@ If the user asked about specific workloads, also recall those:
 recall(bank_id="homelab-version-mgmt", query="<workload-name> upgrade history and context", tags=["workload:<name>"], budget="mid")
 ```
 
-Use recalled knowledge to:
+Use recalled/reflected knowledge to:
 - Understand deployment types without re-reading every YAML file (but verify against actual files if memory seems outdated)
-- Pre-load known gotchas to inform safety classification — if Hindsight says "Mimir 6.x requires Kafka", you don't need to rediscover this from release notes
+- Pre-load synthesized gotcha patterns to inform safety classification
 - Recall past safety classifications and their reasoning to maintain consistency
 
 If Hindsight is not available or the bank is empty, proceed normally with Step 1.
@@ -210,6 +217,12 @@ For each update, gather:
 ### Step 4: Classify Safety Level
 
 Assign each update a safety level based on the highest-risk change found across ALL intermediate versions.
+
+**Conditional reflect for complex upgrades**: After gathering changelog data, if the upgrade involves a major version jump, multiple breaking changes, or architecture changes (likely L3+), call reflect before classifying:
+```
+reflect(bank_id="homelab-version-mgmt", query="Given the deployment context and past experiences with <workload>, how should I classify upgrading from <old> to <new>? What specific risks does this deployment face?", tags=["workload:<name>", "domain:k8s"], budget="low")
+```
+For straightforward upgrades (patch/minor with no breaking changes, likely L1-L2), classify directly without reflect — the overhead isn't worth it.
 
 Read `references/safety-levels.md` for detailed classification criteria and examples.
 

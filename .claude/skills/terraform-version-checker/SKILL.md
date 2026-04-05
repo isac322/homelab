@@ -23,13 +23,17 @@ create_bank(bank_id="homelab-version-mgmt", name="Homelab Version Management", m
 Query the bank for relevant prior knowledge:
 ```
 recall(bank_id="homelab-version-mgmt", query="Terraform infrastructure roots, providers, module sharing, constraint patterns", tags=["domain:terraform"], budget="mid")
-recall(bank_id="homelab-version-mgmt", query="known gotchas and issues for Terraform provider upgrades, lock file problems", tags=["domain:terraform", "type:gotcha"], budget="mid")
 ```
 
-Use recalled knowledge to:
+**Gotchas and warnings** — use `reflect` (synthesis connects dots across past experiences):
+```
+reflect(bank_id="homelab-version-mgmt", query="Based on all past Terraform upgrade experiences and known issues, what are the most critical gotchas and warnings? What patterns of failure have been seen with providers, lock files, or shared modules?", tags=["domain:terraform"], budget="mid")
+```
+
+Use recalled/reflected knowledge to:
 - Know which roots exist and which modules are shared without re-scanning every `.tf` file
-- Pre-load known issues (e.g., "prod-vultr lock file has constraint mismatches") to verify if they're still present
-- Recall past provider upgrade experiences to inform safety classification
+- Pre-load synthesized gotcha patterns (e.g., constraint mismatches, shared module conflicts)
+- Apply past provider upgrade experiences to inform safety classification
 
 If Hindsight is not available or the bank is empty, proceed normally with Step 1.
 
@@ -166,6 +170,12 @@ For each update, gather:
    - New required provider configuration
 
 ### Step 4: Classify Safety Level
+
+**Conditional reflect for complex upgrades**: If a provider upgrade involves a major version jump or multiple breaking changes (likely L3+), call reflect before classifying:
+```
+reflect(bank_id="homelab-version-mgmt", query="Given the deployment context and past experiences, how should I classify upgrading <provider> from <old> to <new>? What specific risks does this deployment face?", tags=["domain:terraform"], budget="low")
+```
+For straightforward upgrades (patch/minor with no breaking changes, likely L1-L2), classify directly without reflect.
 
 Use the same 5-level system as the homelab-version-checker for consistency:
 
