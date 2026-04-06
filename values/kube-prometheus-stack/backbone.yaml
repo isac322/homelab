@@ -310,7 +310,7 @@ prometheus:
         cpu: 200m
         memory: 2048Mi
       limits:
-        cpu: 1000m
+        cpu: 2000m
         memory: 6Gi
 
     ## Prometheus StorageSpec for persistent data

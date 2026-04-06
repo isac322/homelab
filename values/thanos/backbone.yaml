@@ -29,7 +29,7 @@ query:
       cpu: 50m
       memory: 128Mi
     limits:
-      cpu: 500m
+      cpu: 1000m
       memory: 1Gi
 
 queryFrontend:
@@ -46,7 +46,7 @@ queryFrontend:
       cpu: 20m
       memory: 64Mi
     limits:
-      cpu: 200m
+      cpu: 500m
       memory: 512Mi
 
 storegateway:
