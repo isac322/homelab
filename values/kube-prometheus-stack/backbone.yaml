@@ -101,6 +101,7 @@ grafana:
       jsonData:
         httpMethod: POST
         timeInterval: 30s
+        timeout: 120
     - name: Loki
       uid: loki
       type: loki
