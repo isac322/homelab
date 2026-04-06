@@ -286,4 +286,4 @@ machine-learning:
       advancedMounts:
         sub:
           main:
-            - {}
+            - path: /cache
