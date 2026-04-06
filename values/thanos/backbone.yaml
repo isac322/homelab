@@ -24,6 +24,8 @@ query:
     - dnssrv+_grpc._tcp.prometheus-operated.prometheus.svc.cluster.local
   replicaLabels:
     - prometheus_replica
+  extraFlags:
+    - --query.auto-downsampling
   resources:
     requests:
       cpu: 50m
@@ -39,7 +41,10 @@ queryFrontend:
     - --query-range.split-interval=24h
     - --labels.split-interval=24h
     - --query-range.max-retries-per-request=3
-    - --query-range.response-cache-config={"type":"in-memory","config":{"max-size":"128MB","max-item-size":"10MB","validity":"6h"}}
+    - --query-range.request-downsampled
+    - --query-frontend.compress-responses
+    - --cache-compression-type=snappy
+    - --query-range.response-cache-config={"type":"in-memory","config":{"max-size":"256MB","max-item-size":"10MB","validity":"6h"}}
     - --labels.response-cache-config={"type":"in-memory","config":{"max-size":"32MB","max-item-size":"1MB","validity":"6h"}}
   resources:
     requests:
@@ -47,11 +52,13 @@ queryFrontend:
       memory: 64Mi
     limits:
       cpu: 500m
-      memory: 512Mi
+      memory: 768Mi
 
 storegateway:
   enabled: true
   replicaCount: 1
+  extraFlags:
+    - --index-cache-size=512MB
   resources:
     requests:
       cpu: 50m
