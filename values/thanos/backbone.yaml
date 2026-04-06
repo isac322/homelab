@@ -35,13 +35,19 @@ query:
 queryFrontend:
   enabled: true
   replicaCount: 1
+  extraFlags:
+    - --query-range.split-interval=24h
+    - --labels.split-interval=24h
+    - --query-range.max-retries-per-request=3
+    - --query-range.response-cache-config={"type":"in-memory","config":{"max-size":"128MB","max-item-size":"10MB","validity":"6h"}}
+    - --labels.response-cache-config={"type":"in-memory","config":{"max-size":"32MB","max-item-size":"1MB","validity":"6h"}}
   resources:
     requests:
       cpu: 20m
       memory: 64Mi
     limits:
       cpu: 200m
-      memory: 256Mi
+      memory: 512Mi
 
 storegateway:
   enabled: true
