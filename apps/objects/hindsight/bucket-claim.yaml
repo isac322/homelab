@@ -4,5 +4,6 @@ metadata:
   name: cnpg-hindsight-backup
 spec:
   bucketClassName: versitygw
+  existingBucketName: cnpg-hindsight-backup
   protocols:
     - S3
