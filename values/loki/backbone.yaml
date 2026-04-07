@@ -77,7 +77,9 @@ test:
 
 monitoring:
   dashboards:
-    enabled: true
+    # Disabled: all Loki dashboards use read/write microservice job patterns
+    # (e.g. loki-read, loki-write) which don't match SingleBinary mode (job=loki/loki)
+    enabled: false
   rules:
     enabled: false
   serviceMonitor:
