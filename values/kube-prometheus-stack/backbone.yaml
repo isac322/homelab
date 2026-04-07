@@ -141,6 +141,10 @@ grafana:
         gnetId: 20842
         revision: 3
         datasource: Prometheus
+      loki:
+        gnetId: 17781
+        revision: 1
+        datasource: Prometheus
 
 ## In K3s, apiserver /metrics exposes kubelet metrics (single binary).
 ## Drop only kubelet-specific metrics (already scraped via kubelet job).
