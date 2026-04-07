@@ -31,12 +31,12 @@ kubelet:
   namespace: kube-system
 
   serviceMonitor:
-    ## In K3s, kubelet /metrics exposes apiserver metrics too (single binary).
-    ## Keep kubelet-specific metrics + metrics used by the kubelet Grafana dashboard.
+    ## In K3s, kubelet /metrics exposes all control-plane metrics (single binary).
+    ## Drop non-kubelet metrics to avoid duplication with apiserver/scheduler/proxy scrapes.
     metricRelabelings:
       - sourceLabels: [__name__]
-        regex: kubelet_.*|rest_client_.*|storage_operation_.*|volume_manager_.*|process_.*|go_goroutines|scrape_.*|up
-        action: keep
+        regex: apiserver_.*|apiextensions_.*|aggregator_.*|authenticated_.*|authentication_.*|authorization_.*|etcd_.*|grpc_client_.*|scheduler_.*|kubeproxy_.*|kube_apiserver_.*|kube_router_.*|node_authorizer_.*|node_collector_.*|node_controller_.*|serviceaccount_.*|watch_cache_.*|field_validation_.*|force_cleaned_.*|pod_security_.*|session_server_.*|lasso_.*
+        action: drop
 
 ## K3s bundles all control plane components into a single binary.
 ## Their metrics are already collected via the apiserver job.
