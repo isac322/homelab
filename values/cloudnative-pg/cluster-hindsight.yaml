@@ -30,6 +30,10 @@ cluster:
       - CREATE EXTENSION IF NOT EXISTS vchord CASCADE;
   monitoring:
     enabled: true
+    podMonitor:
+      metricRelabelings:
+        - sourceLabels: [cluster]
+          targetLabel: cnpg_cluster
     prometheusRule:
       excludeRules:
         # chart 0.6.0 PromQL syntax bug

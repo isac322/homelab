@@ -24,6 +24,13 @@ cluster:
   postgresGID: 999
   monitoring:
     enabled: true
+    podMonitor:
+      metricRelabelings:
+        # Copy CNPG's "cluster" label to "cnpg_cluster" before Prometheus
+        # external label (cluster=backbone) overwrites it.
+        # See https://github.com/cloudnative-pg/cloudnative-pg/issues/2501
+        - sourceLabels: [cluster]
+          targetLabel: cnpg_cluster
     prometheusRule:
       excludeRules:
         # chart 0.6.0 PromQL syntax bug (ranges only allowed for vector selectors)
