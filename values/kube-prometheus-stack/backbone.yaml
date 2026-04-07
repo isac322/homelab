@@ -157,6 +157,18 @@ grafana:
         gnetId: 763
         revision: 6
         datasource: Prometheus
+      thanos-query-frontend:
+        url: https://raw.githubusercontent.com/thanos-io/thanos/main/examples/dashboards/query-frontend.json
+        datasource: Prometheus
+      thanos-sidecar:
+        url: https://raw.githubusercontent.com/thanos-io/thanos/main/examples/dashboards/sidecar.json
+        datasource: Prometheus
+      thanos-compact:
+        url: https://raw.githubusercontent.com/thanos-io/thanos/main/examples/dashboards/compact.json
+        datasource: Prometheus
+      thanos-store:
+        url: https://raw.githubusercontent.com/thanos-io/thanos/main/examples/dashboards/store.json
+        datasource: Prometheus
 
 ## In K3s, apiserver /metrics exposes kubelet metrics (single binary).
 ## Drop only kubelet-specific metrics (already scraped via kubelet job).
