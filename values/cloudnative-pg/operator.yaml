@@ -14,7 +14,9 @@ monitoring:
     release: shared
 
   grafanaDashboard:
-    create: true
+    # Disabled: using patched version in apps/objects/cnpg-dashboard/
+    # that reads cnpg_cluster label instead of cluster (external label conflict)
+    create: false
     # -- Allows overriding the namespace where the ConfigMap will be created, defaulting to the same one as the Release.
     namespace: ""
     # -- The name of the ConfigMap containing the dashboard.
