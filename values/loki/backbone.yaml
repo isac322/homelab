@@ -19,6 +19,7 @@ loki:
     retention_period: 8760h
     allow_structured_metadata: true
     volume_enabled: true
+    split_queries_by_interval: 1h
   chunk_store_config:
     chunk_cache_config:
       embedded_cache:
