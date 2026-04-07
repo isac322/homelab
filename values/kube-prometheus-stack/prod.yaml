@@ -31,7 +31,7 @@ kubeApiServer:
   serviceMonitor:
     metricRelabelings:
       - sourceLabels: [__name__]
-        regex: kubelet_.*|volume_manager_.*|volume_operation_.*|storage_operation_.*|csi_operations_.*|plugin_manager_.*|reconstruct_volume_.*|dra_operations_.*|dra_resource_.*|kubeproxy_.*|scheduler_.*|kube_router_.*|session_server_.*|lasso_.*
+        regex: kubelet_.*|volume_manager_.*|volume_operation_.*|storage_operation_.*|csi_operations_.*|plugin_manager_.*|reconstruct_volume_.*|dra_operations_.*|dra_resource_.*
         action: drop
 
 kubelet:
