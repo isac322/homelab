@@ -31,11 +31,11 @@ kubelet:
   namespace: kube-system
 
   serviceMonitor:
-    ## In K3s, kubelet /metrics exposes the same metrics as apiserver (port 6443)
-    ## because all components share a single binary. Keep only kubelet-specific metrics.
+    ## In K3s, kubelet /metrics exposes apiserver metrics too (single binary).
+    ## Keep kubelet-specific metrics + metrics used by the kubelet Grafana dashboard.
     metricRelabelings:
       - sourceLabels: [__name__]
-        regex: kubelet_.*|scrape_.*|up
+        regex: kubelet_.*|rest_client_.*|storage_operation_.*|volume_manager_.*|process_.*|go_goroutines|scrape_.*|up
         action: keep
 
 ## K3s bundles all control plane components into a single binary.
