@@ -20,7 +20,7 @@ spec:
           - $homelab/values/jay-stock-bot/backbone.yaml
         parameters:
           - name: image.tag
-            value: sha-841888e
+            value: sha-25522e4
       repoURL: ghcr.io/jayjeong8/charts
       targetRevision: 0.1.0
   syncPolicy:
