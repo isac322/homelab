@@ -19,6 +19,17 @@ loki:
     retention_period: 8760h
     allow_structured_metadata: true
     volume_enabled: true
+  chunk_store_config:
+    chunk_cache_config:
+      embedded_cache:
+        enabled: true
+        max_size_mb: 128
+  query_range:
+    results_cache:
+      cache:
+        embedded_cache:
+          enabled: true
+          max_size_mb: 64
   compactor:
     retention_enabled: true
     delete_request_store: filesystem
@@ -31,7 +42,7 @@ singleBinary:
       memory: 256Mi
     limits:
       cpu: 500m
-      memory: 512Mi
+      memory: 768Mi
   persistence:
     enabled: true
     storageClass: ssd-ha-xfs
