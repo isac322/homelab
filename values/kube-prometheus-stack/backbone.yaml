@@ -145,6 +145,18 @@ grafana:
         gnetId: 17781
         revision: 1
         datasource: Prometheus
+      immich:
+        gnetId: 22555
+        revision: 1
+        datasource: Prometheus
+      external-dns:
+        gnetId: 23969
+        revision: 1
+        datasource: Prometheus
+      valkey:
+        gnetId: 763
+        revision: 6
+        datasource: Prometheus
 
 ## In K3s, apiserver /metrics exposes kubelet metrics (single binary).
 ## Drop only kubelet-specific metrics (already scraped via kubelet job).
