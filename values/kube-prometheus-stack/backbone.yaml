@@ -142,6 +142,15 @@ grafana:
         revision: 3
         datasource: Prometheus
 
+## In K3s, apiserver /metrics exposes kubelet/scheduler/proxy metrics (single binary).
+## Drop non-apiserver metrics to avoid duplication with kubelet scrape.
+kubeApiServer:
+  serviceMonitor:
+    metricRelabelings:
+      - sourceLabels: [__name__]
+        regex: kubelet_.*|volume_manager_.*|volume_operation_.*|storage_operation_.*|csi_operations_.*|plugin_manager_.*|reconstruct_volume_.*|dra_operations_.*|dra_resource_.*|kubeproxy_.*|scheduler_.*|kube_router_.*|session_server_.*|lasso_.*
+        action: drop
+
 ## Component scraping the kubelet and kubelet-hosted cAdvisor
 ##
 kubelet:
