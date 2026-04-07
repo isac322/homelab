@@ -134,8 +134,8 @@ grafana:
         revision: 9
         datasource: Prometheus
       argocd:
-        gnetId: 14584
-        revision: 1
+        gnetId: 19993
+        revision: 7
         datasource: Prometheus
       cert-manager:
         gnetId: 20842
