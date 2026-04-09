@@ -1,4 +1,6 @@
 deschedulerPolicy:
+  metricsCollector:
+    enabled: true
   profiles:
     - name: default
       pluginConfig:
