@@ -22,7 +22,7 @@ spec:
           - name: image.tag
             value: sha-557d9fc
       repoURL: ghcr.io/jayjeong8/charts
-      targetRevision: 0.1.0
+      targetRevision: 0.1.1
   syncPolicy:
     automated:
       prune: true
