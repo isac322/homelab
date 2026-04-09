@@ -1,3 +1,11 @@
+resources:
+  requests:
+    cpu: 15m
+    memory: 96Mi
+  limits:
+    cpu: 100m
+    memory: 256Mi
+
 env:
   MAX_POSITIONS: "2"
   MOMENTUM_WEIGHTS: "0.7,0.2,0.1"
