@@ -8,6 +8,13 @@ nameOverride: hindsight
 cluster:
   instances: 1
   imageName: tensorchord/cloudnative-vectorchord:18.3-1.1.1
+  resources:
+    requests:
+      cpu: 50m
+      memory: 256Mi
+    limits:
+      cpu: 500m
+      memory: 1Gi
   storage:
     storageClass: ssd-ha-cnpg
     size: 10Gi
