@@ -28,12 +28,12 @@ deschedulerPolicy:
             metricsUtilization:
               source: KubernetesMetrics
             thresholds:
-              cpu: 10
+              cpu: 5
               memory: 10
-              pods: 15
+              pods: 5
             targetThresholds:
               cpu: 10
-              memory: 10
+              memory: 15
               pods: 15
       plugins:
         balance:
