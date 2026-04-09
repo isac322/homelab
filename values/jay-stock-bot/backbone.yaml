@@ -9,6 +9,6 @@ resources:
 imagePullSecrets:
   - name: ghcr-creds
 
-envFrom:
+extraEnvFrom:
   - secretRef:
       name: stock-credentials
