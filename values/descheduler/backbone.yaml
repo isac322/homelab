@@ -1,16 +1,17 @@
-schedule: "*/10 * * * *"
+schedule: "*/15 * * * *"
 
 deschedulerPolicy:
   metricsCollector:
     enabled: true
   maxNoOfPodsToEvictPerNode: 3
+  maxNoOfPodsToEvictTotal: 5
   profiles:
     - name: default
       pluginConfig:
         - name: DefaultEvictor
           args:
             nodeFit: true
-            minPodAge: 10m
+            minPodAge: 30m
             ignorePvcPods: true
             evictLocalStoragePods: true
         - name: RemoveDuplicates
@@ -30,13 +31,14 @@ deschedulerPolicy:
             useDeviationThresholds: true
             metricsUtilization:
               source: KubernetesMetrics
+            numberOfNodes: 2
             thresholds:
               cpu: 5
-              memory: 10
+              memory: 15
               pods: 5
             targetThresholds:
-              cpu: 10
-              memory: 15
+              cpu: 15
+              memory: 25
               pods: 15
       plugins:
         balance:
