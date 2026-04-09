@@ -109,6 +109,9 @@ grafana:
       url: http://loki-gateway.loki.svc.cluster.local
       isDefault: false
       editable: true
+      jsonData:
+        timeout: 120
+        maxLines: 5000
 
   dashboardProviders:
     dashboardproviders.yaml:
@@ -338,7 +341,8 @@ prometheus:
     ## Allow out-of-order/out-of-bounds samples ingested into Prometheus for a specified duration
     ## See https://prometheus.io/docs/prometheus/latest/configuration/configuration/#tsdb
     tsdb:
-      outOfOrderTimeWindow: 5m
+      ## Multi-cluster: prod remote-write can buffer during network partitions
+      outOfOrderTimeWindow: 1h
 
     ## Resource limits & requests
     ##

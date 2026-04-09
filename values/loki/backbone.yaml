@@ -20,6 +20,10 @@ loki:
     allow_structured_metadata: true
     volume_enabled: true
     split_queries_by_interval: 1h
+    ## Multi-cluster: generous window for delayed log ingestion from remote clusters
+    reject_old_samples: true
+    reject_old_samples_max_age: 336h # 14d
+    creation_grace_period: 10m # clock skew tolerance between clusters
   chunk_store_config:
     chunk_cache_config:
       embedded_cache:

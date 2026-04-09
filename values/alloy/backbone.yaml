@@ -2,11 +2,27 @@ serviceMonitor:
   enabled: true
 
 controller:
-  type: deployment
+  type: statefulset
   replicas: 1
+
+  volumeClaimTemplates:
+    - metadata:
+        name: alloy-data
+      spec:
+        accessModes: ["ReadWriteOnce"]
+        storageClassName: ssd-ha-xfs
+        resources:
+          requests:
+            storage: 1Gi
 
 alloy:
   stabilityLevel: generally-available
+  ## Persist WAL and positions across restarts to avoid re-sending old logs
+  storagePath: /var/lib/alloy
+  mounts:
+    extra:
+      - name: alloy-data
+        mountPath: /var/lib/alloy
   resources:
     requests:
       cpu: 50m
