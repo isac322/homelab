@@ -1,13 +1,16 @@
+schedule: "*/10 * * * *"
+
 deschedulerPolicy:
   metricsCollector:
     enabled: true
+  maxNoOfPodsToEvictPerNode: 3
   profiles:
     - name: default
       pluginConfig:
         - name: DefaultEvictor
           args:
             nodeFit: true
-            minPodAge: 5m
+            minPodAge: 10m
             ignorePvcPods: true
             evictLocalStoragePods: true
         - name: RemoveDuplicates
