@@ -1,0 +1,27 @@
+apiVersion: rbac.authorization.k8s.io/v1
+kind: ClusterRole
+metadata:
+  name: descheduler-metrics
+  labels:
+    app.kubernetes.io/name: descheduler
+    app.kubernetes.io/component: metrics
+rules:
+  - apiGroups: ["metrics.k8s.io"]
+    resources: ["nodes", "pods"]
+    verbs: ["get", "list"]
+---
+apiVersion: rbac.authorization.k8s.io/v1
+kind: ClusterRoleBinding
+metadata:
+  name: descheduler-metrics
+  labels:
+    app.kubernetes.io/name: descheduler
+    app.kubernetes.io/component: metrics
+roleRef:
+  apiGroup: rbac.authorization.k8s.io
+  kind: ClusterRole
+  name: descheduler-metrics
+subjects:
+  - kind: ServiceAccount
+    name: descheduler
+    namespace: kube-system
