@@ -3,7 +3,7 @@
 api:
   replicaCount: 1
   image:
-    tag: "0.4.22-slim"
+    tag: "0.5.0-slim"
   resources:
     requests:
       cpu: 250m
@@ -29,9 +29,18 @@ api:
     HINDSIGHT_API_RERANKER_LITELLM_SDK_MODEL: "vertex_ai/semantic-ranker-default-004"
     HINDSIGHT_API_RERANKER_LITELLM_SDK_API_KEY: "gcp-sa"  # placeholder — actual auth via GOOGLE_APPLICATION_CREDENTIALS
     # LiteLLM Vertex AI auth
+    HINDSIGHT_API_LLM_VERTEXAI_SERVICE_ACCOUNT_KEY: "/etc/gcp/sa-key.json"
     GOOGLE_APPLICATION_CREDENTIALS: "/etc/gcp/sa-key.json"
     VERTEXAI_PROJECT: "runbear"
     VERTEXAI_LOCATION: "global"
+  extraVolumes:
+    - name: gcp-sa-key
+      secret:
+        secretName: hindsight-gcp-sa-key
+  extraVolumeMounts:
+    - name: gcp-sa-key
+      mountPath: /etc/gcp
+      readOnly: true
   livenessProbe:
     httpGet:
       path: /health
