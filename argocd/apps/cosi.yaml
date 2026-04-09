@@ -15,6 +15,20 @@ spec:
     targetRevision: v0.2.2
     kustomize:
       namespace: object-storage
+      patches:
+        - target:
+            kind: Deployment
+            name: container-object-storage-controller
+          patch: |
+            - op: add
+              path: /spec/template/spec/containers/0/resources
+              value:
+                requests:
+                  cpu: 5m
+                  memory: 32Mi
+                limits:
+                  cpu: 50m
+                  memory: 64Mi
   syncPolicy:
     automated:
       prune: true

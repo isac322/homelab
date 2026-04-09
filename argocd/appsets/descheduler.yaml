@@ -18,14 +18,18 @@ spec:
         name: '{{cluster}}'
         namespace: kube-system
       project: cluster-management
-      source:
-        chart: descheduler
-        helm:
-          releaseName: descheduler
-          valueFiles:
-            - values.yaml
-        repoURL: https://kubernetes-sigs.github.io/descheduler
-        targetRevision: 0.35.1
+      sources:
+        - repoURL: https://github.com/isac322/homelab.git
+          targetRevision: HEAD
+          ref: homelab
+        - chart: descheduler
+          helm:
+            releaseName: descheduler
+            valueFiles:
+              - values.yaml
+              - '$homelab/values/descheduler/{{cluster}}.yaml'
+          repoURL: https://kubernetes-sigs.github.io/descheduler
+          targetRevision: 0.35.1
       syncPolicy:
         automated:
           prune: true
