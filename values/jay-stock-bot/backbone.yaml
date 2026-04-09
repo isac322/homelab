@@ -1,6 +1,14 @@
-secrets:
-  create: false
-  name: stock-credentials
+resources:
+  requests:
+    cpu: 10m
+    memory: 96Mi
+  limits:
+    cpu: 100m
+    memory: 256Mi
 
 imagePullSecrets:
   - name: ghcr-creds
+
+envFrom:
+  - secretRef:
+      name: stock-credentials
