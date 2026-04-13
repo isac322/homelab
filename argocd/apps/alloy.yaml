@@ -21,6 +21,12 @@ spec:
           - $homelab/values/alloy/backbone.yaml
       repoURL: https://grafana.github.io/helm-charts
       targetRevision: 1.7.0
+  ignoreDifferences:
+    - group: apps
+      kind: StatefulSet
+      name: alloy
+      managedFieldsManagers:
+        - k3s
   syncPolicy:
     automated:
       prune: true
