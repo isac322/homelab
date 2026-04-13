@@ -20,7 +20,7 @@ spec:
           - values.yaml
           - $homelab/values/jellyfin/backbone.yaml
       repoURL: https://jellyfin.github.io/jellyfin-helm
-      targetRevision: 3.0.0
+      targetRevision: 3.2.0
   syncPolicy:
     automated:
       prune: true
