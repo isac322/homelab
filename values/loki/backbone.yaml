@@ -71,10 +71,10 @@ sidecar:
   resources:
     requests:
       cpu: 5m
-      memory: 64Mi
+      memory: 96Mi
     limits:
-      cpu: 10m
-      memory: 128Mi
+      cpu: 50m
+      memory: 192Mi
 
 gateway:
   resources:
