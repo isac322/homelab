@@ -100,3 +100,11 @@ monitoring:
     enabled: false
   serviceMonitor:
     enabled: true
+
+# Chart 13.x defaults abort_if_cluster_join_fails=true for memberlist; combined
+# with a headless Service that filters NotReady endpoints, a single-replica
+# SingleBinary pod can't resolve itself on startup and crashloops. Publishing
+# NotReady addresses lets the pod discover itself during boot.
+memberlist:
+  service:
+    publishNotReadyAddresses: true
