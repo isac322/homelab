@@ -111,8 +111,19 @@
   when: iptables_use_dns
   vars:
     dns_recent_name: dns_bad
+    dns_recent_name_16: dns_bad_16
+    dns_recent_name_24: dns_bad_24
     dns_recent_seconds: 600
 
+    # /16 network rate limit (most permissive)
+    dns_udp53_limit_16: "200/second"
+    dns_udp53_burst_16: 400
+
+    # /24 network rate limit
+    dns_udp53_limit_24: "100/second"
+    dns_udp53_burst_24: 200
+
+    # Per-IP rate limit (most restrictive)
     dns_udp53_limit: "50/second"
     dns_udp53_burst: 100
 
@@ -190,6 +201,47 @@
     #  DNS_GUARD chain rules
     #  (recent module not supported by ansible.builtin.iptables)
     # =========================
+    # Drop bad /16 networks
+    - name: Check DNS_GUARD - drop bad /16 networks
+      ansible.builtin.command:
+        cmd: >-
+          iptables -t raw -C DNS_GUARD
+          -m recent --name {{ dns_recent_name_16 }} --update --seconds {{ dns_recent_seconds }} --rsource --mask 255.255.0.0
+          -j DROP
+      register: __check_dns_guard_drop_bad_16
+      changed_when: false
+      failed_when: __check_dns_guard_drop_bad_16.rc not in [0, 1]
+
+    - name: Add DNS_GUARD - drop bad /16 networks
+      ansible.builtin.command:
+        cmd: >-
+          iptables -t raw -A DNS_GUARD
+          -m recent --name {{ dns_recent_name_16 }} --update --seconds {{ dns_recent_seconds }} --rsource --mask 255.255.0.0
+          -j DROP
+      when: __check_dns_guard_drop_bad_16.rc == 1
+      changed_when: true
+
+    # Drop bad /24 networks
+    - name: Check DNS_GUARD - drop bad /24 networks
+      ansible.builtin.command:
+        cmd: >-
+          iptables -t raw -C DNS_GUARD
+          -m recent --name {{ dns_recent_name_24 }} --update --seconds {{ dns_recent_seconds }} --rsource --mask 255.255.255.0
+          -j DROP
+      register: __check_dns_guard_drop_bad_24
+      changed_when: false
+      failed_when: __check_dns_guard_drop_bad_24.rc not in [0, 1]
+
+    - name: Add DNS_GUARD - drop bad /24 networks
+      ansible.builtin.command:
+        cmd: >-
+          iptables -t raw -A DNS_GUARD
+          -m recent --name {{ dns_recent_name_24 }} --update --seconds {{ dns_recent_seconds }} --rsource --mask 255.255.255.0
+          -j DROP
+      when: __check_dns_guard_drop_bad_24.rc == 1
+      changed_when: true
+
+    # Drop bad individual IPs
     - name: Check DNS_GUARD - drop bad IPs
       ansible.builtin.command:
         cmd: >-
@@ -247,6 +299,59 @@
     #  DNS_GUARD_UDP chain rules
     #  (hashlimit/recent modules not supported by ansible.builtin.iptables)
     # =========================
+    # /16 network rate limit (most permissive - checked first)
+    - name: Check DNS_GUARD_UDP - hashlimit LOG /16
+      ansible.builtin.command:
+        cmd: >-
+          iptables -t raw -C DNS_GUARD_UDP
+          -i {{ ansible_default_ipv4.interface }} -p udp --dport 53
+          -m hashlimit --hashlimit-above {{ dns_udp53_limit_16 }} --hashlimit-burst {{ dns_udp53_burst_16 }}
+          --hashlimit-mode srcip --hashlimit-srcmask 16 --hashlimit-name dns53_udp_abuse_net_16
+          -m recent --set --name {{ dns_recent_name_16 }} --rsource --mask 255.255.0.0
+          -j LOG --log-prefix "DNS53_UDP_ABUSE_NET_16 " --log-level 4
+      register: __check_udp_log_16
+      changed_when: false
+      failed_when: __check_udp_log_16.rc not in [0, 1]
+
+    - name: Add DNS_GUARD_UDP - hashlimit LOG /16
+      ansible.builtin.command:
+        cmd: >-
+          iptables -t raw -A DNS_GUARD_UDP
+          -i {{ ansible_default_ipv4.interface }} -p udp --dport 53
+          -m hashlimit --hashlimit-above {{ dns_udp53_limit_16 }} --hashlimit-burst {{ dns_udp53_burst_16 }}
+          --hashlimit-mode srcip --hashlimit-srcmask 16 --hashlimit-name dns53_udp_abuse_net_16
+          -m recent --set --name {{ dns_recent_name_16 }} --rsource --mask 255.255.0.0
+          -j LOG --log-prefix "DNS53_UDP_ABUSE_NET_16 " --log-level 4
+      when: __check_udp_log_16.rc == 1
+      changed_when: true
+
+    # /24 network rate limit
+    - name: Check DNS_GUARD_UDP - hashlimit LOG /24
+      ansible.builtin.command:
+        cmd: >-
+          iptables -t raw -C DNS_GUARD_UDP
+          -i {{ ansible_default_ipv4.interface }} -p udp --dport 53
+          -m hashlimit --hashlimit-above {{ dns_udp53_limit_24 }} --hashlimit-burst {{ dns_udp53_burst_24 }}
+          --hashlimit-mode srcip --hashlimit-srcmask 24 --hashlimit-name dns53_udp_abuse_net_24
+          -m recent --set --name {{ dns_recent_name_24 }} --rsource --mask 255.255.255.0
+          -j LOG --log-prefix "DNS53_UDP_ABUSE_NET_24 " --log-level 4
+      register: __check_udp_log_24
+      changed_when: false
+      failed_when: __check_udp_log_24.rc not in [0, 1]
+
+    - name: Add DNS_GUARD_UDP - hashlimit LOG /24
+      ansible.builtin.command:
+        cmd: >-
+          iptables -t raw -A DNS_GUARD_UDP
+          -i {{ ansible_default_ipv4.interface }} -p udp --dport 53
+          -m hashlimit --hashlimit-above {{ dns_udp53_limit_24 }} --hashlimit-burst {{ dns_udp53_burst_24 }}
+          --hashlimit-mode srcip --hashlimit-srcmask 24 --hashlimit-name dns53_udp_abuse_net_24
+          -m recent --set --name {{ dns_recent_name_24 }} --rsource --mask 255.255.255.0
+          -j LOG --log-prefix "DNS53_UDP_ABUSE_NET_24 " --log-level 4
+      when: __check_udp_log_24.rc == 1
+      changed_when: true
+
+    # Per-IP rate limit (most restrictive - checked last)
     - name: Check DNS_GUARD_UDP - hashlimit LOG
       ansible.builtin.command:
         cmd: >-
@@ -714,7 +819,7 @@
   ansible.builtin.iptables:
     chain: TCP
     protocol: tcp
-    destination_port: 2379:2380
+    destination_port: 2379:2381
     jump: ACCEPT
     source: "{{ __register_k8s_internal_node_ip_cidr }}"
     comment: k3s etcd
