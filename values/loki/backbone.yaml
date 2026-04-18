@@ -68,13 +68,12 @@ resultsCache:
   enabled: false
 
 sidecar:
-  resources:
-    requests:
-      cpu: 5m
-      memory: 96Mi
-    limits:
-      cpu: 50m
-      memory: 192Mi
+  # No loki rule ConfigMaps are used in this deployment, so the rules
+  # sidecar is unnecessary. Disabling it prevents the kiwigrid/k8s-sidecar
+  # container from blocking Pod readiness (its HTTP server sometimes
+  # fails to bind before the readiness probe expires).
+  rules:
+    enabled: false
 
 gateway:
   resources:
