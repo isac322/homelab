@@ -10,6 +10,9 @@ crds:
   # (Certificates, Issuers, ...) will be removed too by the garbage collector.
   keep: false
 
+config:
+  enableGatewayAPI: true
+
 strategy:
   type: RollingUpdate
   rollingUpdate:
