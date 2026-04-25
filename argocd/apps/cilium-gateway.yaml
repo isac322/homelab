@@ -27,5 +27,4 @@ spec:
         maxDuration: 3m0s
       limit: -1
     syncOptions:
-      - CreateNamespace=false  # ingress-ctrl 이미 존재
       - ServerSideApply=true
