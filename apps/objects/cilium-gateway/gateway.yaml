@@ -17,7 +17,8 @@ spec:
       tls:
         mode: Terminate
         certificateRefs:
-          - kind: Secret
+          - group: ''
+            kind: Secret
             name: wildcard-bhyoo-com-tls
       allowedRoutes:
         namespaces:
