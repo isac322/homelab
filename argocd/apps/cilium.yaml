@@ -9,7 +9,7 @@ spec:
   destination:
     name: backbone
     namespace: kube-system
-  project: kube-system
+  project: networking
   sources:
     - repoURL: https://github.com/isac322/homelab.git
       targetRevision: HEAD

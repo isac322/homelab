@@ -1,0 +1,25 @@
+apiVersion: argoproj.io/v1alpha1
+kind: AppProject
+metadata:
+  name: networking
+spec:
+  description: Cluster networking foundation (CNI, KPR, Gateway API, Hubble)
+  sourceRepos:
+    - https://helm.cilium.io/
+    - https://github.com/isac322/homelab.git
+  destinations:
+    - namespace: kube-system
+      name: backbone
+    - namespace: kube-system
+      name: prod
+    - namespace: cilium-secrets
+      name: backbone
+    - namespace: cilium-secrets
+      name: prod
+    - namespace: cilium-gateway
+      name: backbone
+    - namespace: cilium-gateway
+      name: prod
+  clusterResourceWhitelist:
+    - group: '*'
+      kind: '*'
