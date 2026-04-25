@@ -12,6 +12,8 @@ spec:
       name: backbone
     - namespace: cilium-secrets
       name: backbone
+    - namespace: ingress-ctrl
+      name: backbone
   clusterResourceWhitelist:
     - group: '*'
       kind: '*'

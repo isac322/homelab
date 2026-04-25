@@ -1,0 +1,31 @@
+apiVersion: argoproj.io/v1alpha1
+kind: Application
+metadata:
+  name: backbone-cilium-gateway
+  namespace: argocd
+  finalizers:
+    - resources-finalizer.argocd.argoproj.io
+spec:
+  destination:
+    name: backbone
+    namespace: ingress-ctrl
+  project: networking
+  source:
+    repoURL: https://github.com/isac322/homelab.git
+    targetRevision: HEAD
+    path: apps/objects/cilium-gateway
+    directory:
+      recurse: true
+  syncPolicy:
+    automated:
+      prune: true
+      selfHeal: true
+    retry:
+      backoff:
+        duration: 5s
+        factor: 2
+        maxDuration: 3m0s
+      limit: -1
+    syncOptions:
+      - CreateNamespace=false  # ingress-ctrl 이미 존재
+      - ServerSideApply=true
