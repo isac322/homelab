@@ -1,0 +1,213 @@
+# Cilium v1.19 values for backbone cluster (v2)
+#
+# Cluster: k3s v1.34.6+k3s1, HA embedded etcd, 3 master + 2 worker
+# Nodes: all ARM64
+#   - rpi5    (192.168.219.5, wg0 10.222.0.3, kernel 6.12, macb NIC, 7.9G RAM)
+#   - rock5bp (192.168.219.6, wg0 10.222.0.4, kernel 6.1,  r8125 NIC, 31G RAM)
+#   - rpi4    (192.168.219.7, wg0 10.222.0.5, kernel 6.12, bcmgenet NIC, 3.7G RAM)
+#   - n2p1    (192.168.219.3, wg0 10.222.0.1, kernel 6.6,  st_gmac NIC, 3.5G RAM)
+#   - n2p2    (192.168.219.4, wg0 10.222.0.2, kernel 6.6,  st_gmac NIC, 3.5G RAM)
+# Network: same L2 (192.168.219.0/24), Pod CIDR 10.42.0.0/16, Svc CIDR 10.43.0.0/16
+# kubelet: --node-external-ip = {{ wireguard_ip }} (10.222.0.x) — Node IPAM LB가 이를 사용
+
+# ─── k3s API server (KPR 필수) ───
+k8sServiceHost: k8s.backbone.homelab.bhyoo.com
+k8sServicePort: 6443
+
+# ─── CNI: native routing ───
+# 같은 L2이므로 터널(VXLAN/Geneve) 불필요 → 오버헤드 제거
+routingMode: native
+autoDirectNodeRoutes: true
+ipv4NativeRoutingCIDR: 10.42.0.0/16
+
+# k3s가 노드별 Pod CIDR 할당 → Cilium은 이를 사용
+ipam:
+  mode: kubernetes
+
+# IPv6 사용 안 함
+ipv6:
+  enabled: false
+
+# ─── kube-proxy 완전 대체 ───
+kubeProxyReplacement: true
+
+# Socket-level LB (connect/sendmsg syscall 단계에서 서비스 해석)
+socketLB:
+  enabled: true
+
+# ─── Node IPAM LB (static-lb 대체, v1.16+ 기본 기능) ───
+# 각 노드의 status.addresses[ExternalIP]를 모든 LB 서비스의
+# .status.loadBalancer.ingress[].ip로 자동 매핑.
+# 현재 k3s가 node-external-ip를 wg0 IP로 설정했으므로 결과는
+# 모든 LB service의 ingress = [10.222.0.1..5] (master 3개 + worker 2개)
+nodeIPAM:
+  enabled: true
+
+# 모든 LB 서비스의 기본 할당기를 nodeipam으로. 개별 서비스에 loadBalancerClass 지정 불필요.
+defaultLBServiceIPAM: nodeipam
+
+# ─── Gateway API (Traefik 대체) ───
+gatewayAPI:
+  enabled: true
+  enableProxyProtocol: false
+  enableAppProtocol: true    # HTTP/2 cleartext 등 backend protocol 지정 가능
+  enableAlpn: true           # HTTP/2 auto-negotiation
+  # gatewayClassName: cilium (기본)
+
+# ─── eBPF 최적화 ───
+bpf:
+  # netkit은 커널 6.8+ 필요. rock5bp(6.1)/n2p1/n2p2(6.6) 미지원 → 전체 veth로 통일
+  datapathMode: veth
+  # iptables MASQUERADE → eBPF. KUBE-MARK-MASQ 체인 제거
+  masquerade: true
+  # hostLegacyRouting은 기본 false. eBPF host routing으로 iptables 우회
+  # CT/NAT 테이블 축소 (70 Pod / 56 Service 규모에 기본 524288은 과잉)
+  # 메모리 제약 있는 n2p1/n2p2/rpi4에 유의미
+  ctTcpMax: 65536
+  ctAnyMax: 32768
+  natMax: 65536
+  neighMax: 65536
+  lbMapMax: 4096
+  policyMapMax: 4096
+  # 모니터링 이벤트 집계 (CPU 부하 감소)
+  monitorAggregation: medium
+  monitorInterval: "5s"
+  # BPF clock probe (jiffies 대신 ktime, 더 정확한 CT 타임스탬프)
+  # 신규 설치에서만 안전
+bpfClockProbe: true
+
+# Pod 트래픽이 iptables conntrack을 거치지 않도록 우회 (native routing + full KPR + bpf.masquerade 전제)
+installNoConntrackIptablesRules: false
+
+# ─── Bandwidth Manager + BBR ───
+# BBR 혼잡 제어 (커널 5.18+, 전 노드 해당). CUBIC 대비 처리량↑, 지연↓
+bandwidthManager:
+  enabled: true
+  bbr: true
+
+# ─── Packetization-Layer PMTU Discovery (v1.19 신규) ───
+# TCP 기반 MTU 탐지. 혼합 NIC 환경에서 fragmentation 방지
+pmtuDiscovery:
+  enabled: true
+
+# ─── Hubble (네트워크 관측성) ───
+hubble:
+  enabled: true
+  metrics:
+    enabled:
+      - dns
+      - drop
+      - tcp
+      - flow
+      - httpV2:exemplars=true;labelsContext=source_ip,source_namespace,source_workload,destination_ip,destination_namespace,destination_workload,traffic_direction
+    serviceMonitor:
+      enabled: true
+  relay:
+    enabled: true
+    replicas: 1
+    resources:
+      requests:
+        cpu: 10m
+        memory: 64Mi
+      limits:
+        memory: 256Mi
+  ui:
+    enabled: false  # 리소스 절약. 필요 시 kubectl port-forward
+
+# ─── Operator ───
+operator:
+  replicas: 1    # 5 노드 규모에 2개는 낭비
+  resources:
+    requests:
+      cpu: 10m
+      memory: 64Mi
+    limits:
+      memory: 256Mi
+
+# ─── Agent 리소스 ───
+# 메모리 제약 있는 노드(rpi4 3.7G, n2p1/n2p2 3.5G) 고려
+resources:
+  requests:
+    cpu: 50m
+    memory: 128Mi
+  limits:
+    memory: 512Mi
+
+# ─── Envoy DaemonSet (Gateway API 용) ───
+envoy:
+  # enabled는 Gateway API 활성 시 자동 true
+  resources:
+    requests:
+      cpu: 10m
+      memory: 64Mi
+    limits:
+      memory: 512Mi
+  # rpi4 (Raspberry Pi 4) 제외:
+  # rpi-v8 커널은 CONFIG_ARM64_VA_BITS=39라 Envoy의 tcmalloc(48-bit VA 가정,
+  # 1GB-aligned mmap을 13TB 영역에서 시도)이 init 단계에서 mmap 실패 → CrashLoopBackOff.
+  # cilium-agent는 Go 기반이라 영향 없음. rpi4의 Pod L7 트래픽은 KPR이 다른 노드의 envoy로 라우팅.
+  affinity:
+    nodeAffinity:
+      requiredDuringSchedulingIgnoredDuringExecution:
+        nodeSelectorTerms:
+          - matchExpressions:
+              - key: cilium.io/no-schedule
+                operator: NotIn
+                values:
+                  - "true"
+              - key: kubernetes.io/hostname
+                operator: NotIn
+                values:
+                  - rpi4
+    podAntiAffinity:
+      requiredDuringSchedulingIgnoredDuringExecution:
+        - labelSelector:
+            matchLabels:
+              k8s-app: cilium-envoy
+          topologyKey: kubernetes.io/hostname
+    podAffinity:
+      requiredDuringSchedulingIgnoredDuringExecution:
+        - labelSelector:
+            matchLabels:
+              k8s-app: cilium
+          topologyKey: kubernetes.io/hostname
+
+# ─── Prometheus 연동 ───
+prometheus:
+  enabled: true
+  serviceMonitor:
+    enabled: true
+    trustCRDsExist: true    # ServiceMonitor CRD 사전 체크 우회 (이미 설치됨)
+
+# ─── 명시적 비활성 (기본값에 의존하지 않고 의도 명확화) ───
+
+# 암호화: WireGuard 메쉬가 별도로 구성되어 있으므로 Cilium 자체 암호화 불필요
+encryption:
+  enabled: false
+
+# BIG TCP: netkit 없이 veth에서는 효과 제한적이고 NIC 드라이버 의존성 있음
+enableIPv4BIGTCP: false
+
+# L2 announcement: Node IPAM이 자동으로 노드 IP를 할당하므로 불필요
+l2announcements:
+  enabled: false
+
+# XDP acceleration: 모든 노드의 NIC 드라이버(macb/r8125/bcmgenet/st_gmac)가
+# native XDP 미지원. best-effort는 generic XDP로 fallback 되어 이득 없음
+loadBalancer:
+  acceleration: disabled
+  algorithm: random   # 56 서비스 규모에 maglev는 과잉
+  mode: snat          # DSR은 비대칭 라우팅 / MTU 문제 가능, 홈랩에선 snat 안정적
+
+# Host firewall: 별도 ansible iptables role이 노드 방화벽 관리
+hostFirewall:
+  enabled: false
+
+# Cluster mesh 비활성
+clustermesh:
+  useAPIServer: false
+
+# ─── tolerations ───
+# master 노드(control-plane taint)에도 agent 배포 필요
+tolerations:
+  - operator: Exists
