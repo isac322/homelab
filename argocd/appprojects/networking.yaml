@@ -10,16 +10,6 @@ spec:
   destinations:
     - namespace: kube-system
       name: backbone
-    - namespace: kube-system
-      name: prod
-    - namespace: cilium-secrets
-      name: backbone
-    - namespace: cilium-secrets
-      name: prod
-    - namespace: cilium-gateway
-      name: backbone
-    - namespace: cilium-gateway
-      name: prod
   clusterResourceWhitelist:
     - group: '*'
       kind: '*'
