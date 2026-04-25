@@ -142,16 +142,16 @@ server:
       memory: 96Mi
 
   ingress:
-    enabled: true
-    annotations:
-      cert-manager.io/cluster-issuer: cluster-issuer-acme
-      cert-manager.io/private-key-algorithm: ECDSA
-      cert-manager.io/private-key-size: 384
-      traefik.ingress.kubernetes.io/router.entrypoints: websecure
+    enabled: false
 
-    secretName: argocd-server-tls
-    ingressClassName: traefik
-    tls: true
+  httproute:
+    enabled: true
+    parentRefs:
+      - name: bhyoo-gateway
+        namespace: ingress-ctrl
+        sectionName: https
+    hostnames:
+      - argocd.bhyoo.com
 
   metrics:
     enabled: true
