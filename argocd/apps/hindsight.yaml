@@ -56,7 +56,7 @@ spec:
           - values.yaml
           - $homelab/values/hindsight/backbone.yaml
       repoURL: ghcr.io/vectorize-io/charts
-      targetRevision: 0.5.3
+      targetRevision: 0.5.4
   syncPolicy:
     automated:
       prune: true
