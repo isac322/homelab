@@ -17,14 +17,13 @@ variable "use_democratic_csi" {
   default     = false
 }
 
-variable "hindsight_openai_api_key" {
-  description = "OpenAI API key for Hindsight embeddings (text-embedding-3-large)"
-  type        = string
-  sensitive   = true
-}
-
-variable "hindsight_gcp_sa_key" {
-  description = "GCP Service Account key JSON for Vertex AI access (Hindsight LLM)"
-  type        = string
-  sensitive   = true
+variable "hindsight" {
+  description = "Hindsight credentials. Pass null to skip provisioning Hindsight-related SSM parameters and IAM permissions."
+  type = object({
+    openai_api_key = string # embeddings
+    gcp_sa_key     = string # reranker (Vertex AI Semantic Ranker)
+    gemini_api_key = string # LLM (Google AI Studio)
+  })
+  sensitive = true
+  default   = null
 }

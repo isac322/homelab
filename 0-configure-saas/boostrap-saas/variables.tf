@@ -92,14 +92,13 @@ variable "tfe_email" {
   }
 }
 
-variable "hindsight_openai_api_key" {
-  description = "OpenAI API key for Hindsight embeddings"
-  type        = string
-  sensitive   = true
-}
-
-variable "hindsight_gcp_sa_key" {
-  description = "GCP Service Account key JSON for Vertex AI (Hindsight LLM)"
-  type        = string
-  sensitive   = true
+variable "hindsight" {
+  description = "Hindsight agent memory server credentials. Set to null to skip Hindsight provisioning."
+  type = object({
+    openai_api_key = string
+    gcp_sa_key     = string
+    gemini_api_key = string
+  })
+  sensitive = true
+  default   = null
 }

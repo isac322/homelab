@@ -12,11 +12,9 @@ api:
       cpu: 1000m
       memory: 2Gi
   env:
-    # LLM — Vertex AI (SA key via GOOGLE_APPLICATION_CREDENTIALS)
-    HINDSIGHT_API_LLM_PROVIDER: "vertexai"
-    HINDSIGHT_API_LLM_MODEL: "gemini-3.1-pro-preview"
-    HINDSIGHT_API_LLM_VERTEXAI_PROJECT_ID: "runbear"
-    HINDSIGHT_API_LLM_VERTEXAI_REGION: "global"
+    # LLM — Google Generative API (Gemini API key via existingSecret)
+    HINDSIGHT_API_LLM_PROVIDER: "gemini"
+    HINDSIGHT_API_LLM_MODEL: "gemini-3.1-flash-lite-preview"
     # Vector extension
     HINDSIGHT_API_VECTOR_EXTENSION: "vchord"
     # Retain
@@ -24,12 +22,10 @@ api:
     # Embeddings — OpenAI
     HINDSIGHT_API_EMBEDDINGS_PROVIDER: "openai"
     HINDSIGHT_API_EMBEDDINGS_OPENAI_MODEL: "text-embedding-3-large"
-    # Reranker — Vertex AI Ranking via LiteLLM SDK
+    # Reranker — Vertex AI Ranking via LiteLLM SDK (auth via GOOGLE_APPLICATION_CREDENTIALS)
     HINDSIGHT_API_RERANKER_PROVIDER: "litellm-sdk"
     HINDSIGHT_API_RERANKER_LITELLM_SDK_MODEL: "vertex_ai/semantic-ranker-default-004"
     HINDSIGHT_API_RERANKER_LITELLM_SDK_API_KEY: "gcp-sa"  # placeholder — actual auth via GOOGLE_APPLICATION_CREDENTIALS
-    # LiteLLM Vertex AI auth
-    HINDSIGHT_API_LLM_VERTEXAI_SERVICE_ACCOUNT_KEY: "/etc/gcp/sa-key.json"
     GOOGLE_APPLICATION_CREDENTIALS: "/etc/gcp/sa-key.json"
     VERTEXAI_PROJECT: "runbear"
     VERTEXAI_LOCATION: "global"

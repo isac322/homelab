@@ -42,17 +42,27 @@ resource "aws_ssm_parameter" "democratic_csi_ssh_private_key" {
 # --- Hindsight agent memory server ---
 
 resource "aws_ssm_parameter" "hindsight_openai_api_key" {
+  count       = var.hindsight == null ? 0 : 1
   name        = "/homelab/cluster/${var.k8s_cluster_name}/token/openai/hindsight-embeddings"
   description = "OpenAI API key for Hindsight embeddings (text-embedding-3-large)"
   type        = "SecureString"
-  value       = var.hindsight_openai_api_key
+  value       = var.hindsight.openai_api_key
 }
 
 resource "aws_ssm_parameter" "hindsight_gcp_sa_key" {
+  count       = var.hindsight == null ? 0 : 1
   name        = "/homelab/cluster/${var.k8s_cluster_name}/hindsight/gcp-vertex-ai-sa-key"
-  description = "GCP Service Account key JSON for Vertex AI access (Hindsight LLM)"
+  description = "GCP Service Account key JSON for Vertex AI access (Hindsight reranker)"
   type        = "SecureString"
-  value = var.hindsight_gcp_sa_key
+  value       = var.hindsight.gcp_sa_key
+}
+
+resource "aws_ssm_parameter" "hindsight_gemini_api_key" {
+  count       = var.hindsight == null ? 0 : 1
+  name        = "/homelab/cluster/${var.k8s_cluster_name}/token/google/hindsight-llm"
+  description = "Google AI Studio (Gemini) API key for Hindsight LLM"
+  type        = "SecureString"
+  value       = var.hindsight.gemini_api_key
 }
 
 # --- External Secrets IAM ---
@@ -76,10 +86,13 @@ data "aws_iam_policy_document" "secret_read" {
         aws_ssm_parameter.cf_api_token_for_external_dns.arn,
         aws_ssm_parameter.cf_api_token_for_cloudflared_gateway.arn,
         aws_ssm_parameter.cf_account_id.arn,
-        aws_ssm_parameter.hindsight_openai_api_key.arn,
-        aws_ssm_parameter.hindsight_gcp_sa_key.arn,
       ],
-      var.use_democratic_csi ? [aws_ssm_parameter.democratic_csi_ssh_private_key[0].arn] : []
+      var.use_democratic_csi ? [aws_ssm_parameter.democratic_csi_ssh_private_key[0].arn] : [],
+      var.hindsight == null ? [] : [
+        aws_ssm_parameter.hindsight_openai_api_key[0].arn,
+        aws_ssm_parameter.hindsight_gcp_sa_key[0].arn,
+        aws_ssm_parameter.hindsight_gemini_api_key[0].arn,
+      ]
     )
   }
 }

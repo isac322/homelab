@@ -42,8 +42,7 @@ module "saas" {
   cloudflare_global_api_key   = var.cloudflare_global_api_key
   cloudflare_origin_ca_key    = var.cloudflare_origin_ca_key
   vultr_personal_access_token = var.vultr_personal_access_token
-  hindsight_openai_api_key    = var.hindsight_openai_api_key
-  hindsight_gcp_sa_key        = var.hindsight_gcp_sa_key
+  hindsight                   = var.hindsight
 
   aws_admin_account_id  = 825808295984
   aws_admin_family_name = "Yoo"
