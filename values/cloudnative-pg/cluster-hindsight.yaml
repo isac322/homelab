@@ -13,8 +13,8 @@ cluster:
       cpu: 1
       memory: 2Gi
     limits:
-      cpu: 2
-      memory: 4Gi
+      cpu: 4
+      memory: 2Gi
   storage:
     storageClass: ssd-ha-cnpg
     size: 10Gi
