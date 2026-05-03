@@ -7,10 +7,10 @@ api:
   resources:
     requests:
       cpu: 250m
-      memory: 512Mi
+      memory: 2Gi
     limits:
       cpu: 1000m
-      memory: 2Gi
+      memory: 4Gi
   env:
     # LLM — Google Generative API (Gemini API key via existingSecret)
     HINDSIGHT_API_LLM_PROVIDER: "gemini"
@@ -60,10 +60,10 @@ controlPlane:
   resources:
     requests:
       cpu: 250m
-      memory: 512Mi
+      memory: 128Mi
     limits:
-      cpu: 1000m
-      memory: 2Gi
+      cpu: 200m
+      memory: 256Mi
 
 worker:
   enabled: false
