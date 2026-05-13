@@ -3,18 +3,18 @@
 api:
   replicaCount: 1
   image:
-    tag: "0.5.6-slim"
+    tag: "0.6.1-slim"
   resources:
     requests:
       cpu: 250m
-      memory: 2Gi
+      memory: 1Gi
     limits:
       cpu: 1000m
-      memory: 4Gi
+      memory: 2Gi
   env:
     # LLM — Google Generative API (Gemini API key via existingSecret)
     HINDSIGHT_API_LLM_PROVIDER: "gemini"
-    HINDSIGHT_API_LLM_MODEL: "gemini-3.1-flash-lite-preview"
+    HINDSIGHT_API_LLM_MODEL: "gemini-3.1-flash-lite"
     # Vector extension
     HINDSIGHT_API_VECTOR_EXTENSION: "vchord"
     # Retain
@@ -59,11 +59,11 @@ controlPlane:
   replicaCount: 1
   resources:
     requests:
+      cpu: 100m
+      memory: 64Mi
+    limits:
       cpu: 250m
       memory: 128Mi
-    limits:
-      cpu: 200m
-      memory: 256Mi
 
 worker:
   enabled: false
