@@ -9,3 +9,37 @@
     name: systemd-networkd
     enabled: yes
     state: started
+
+- name: Enable and start open-iscsi
+  ansible.builtin.systemd:
+    name: open-iscsi
+    enabled: yes
+    state: started
+
+- name: Reload sysctl
+  ansible.builtin.command: sysctl -p /etc/sysctl.d/99-memory.conf
+
+- name: Enable and start zram-swap
+  ansible.builtin.systemd:
+    daemon_reload: yes
+    name: zram-swap
+    enabled: yes
+    state: started
+
+- name: Enable and start ksm
+  ansible.builtin.systemd:
+    daemon_reload: yes
+    name: ksm
+    enabled: yes
+    state: started
+
+- name: Enable and start thp-madvise
+  ansible.builtin.systemd:
+    daemon_reload: yes
+    name: thp-madvise
+    enabled: yes
+    state: started
+
+- name: Reload kubernetes network sysctl
+  ansible.builtin.command: sysctl -p /etc/sysctl.d/99-kubernetes-network.conf
+

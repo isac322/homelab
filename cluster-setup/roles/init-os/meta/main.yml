@@ -32,3 +32,6 @@ galaxy_info:
   galaxy_tags:
   - homelab
   - initialization
+
+dependencies:
+  - role: GROG.authorized-key

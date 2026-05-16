@@ -21,7 +21,7 @@
   ansible.builtin.hostname:
     name: "{{ inventory_hostname }}"
 
-- name: Install systemd-resolved confg
+- name: Install systemd-resolved config
   ansible.builtin.copy:
     src: files/resolved.conf
     dest: /etc/systemd/resolved.conf
@@ -58,3 +58,261 @@
     autoremove: yes
     autoclean: yes
   when: ansible_facts['os_family'] == "Debian"
+
+- name: Install iSCSI dependencies for node
+  ansible.builtin.apt:
+    pkg:
+      - open-iscsi
+      - lsscsi
+      - sg3-utils
+      - scsitools
+    state: latest
+    install_recommends: no
+    update_cache: yes
+  when: is_iscsi_node and ansible_facts['os_family'] == "Debian"
+  notify:
+    - Enable and start open-iscsi
+
+- name: Install iSCSI dependencies for server
+  ansible.builtin.apt:
+    pkg:
+      - targetcli-fb
+    state: latest
+    install_recommends: no
+    update_cache: yes
+  when: is_iscsi_server and ansible_facts['os_family'] == "Debian"
+
+- name: Add democratic-csi user
+  ansible.builtin.user:
+    name: democratic-csi
+    comment: democratic-csi
+    shell: /bin/bash
+    password: "{{ admin_user_passwd | password_hash('sha512') }}"
+    update_password: on_create
+    state: present
+  when: is_iscsi_server
+
+- name: Remove democratic-csi user
+  ansible.builtin.user:
+    name: democratic-csi
+    state: absent
+    remove: yes
+  when: not is_iscsi_server
+
+- name: Ensure sudoers.d directory exists
+  ansible.builtin.file:
+    path: /etc/sudoers.d
+    state: directory
+    owner: root
+    group: root
+    mode: '0755'
+  when: is_iscsi_server
+
+- name: Configure sudoers for democratic-csi
+  ansible.builtin.copy:
+    content: "democratic-csi ALL=(ALL) NOPASSWD: ALL"
+    dest: /etc/sudoers.d/democratic-csi
+    owner: root
+    group: root
+    mode: '0440'
+    validate: 'visudo -cf %s'
+  when: is_iscsi_server
+
+- name: Remove sudoers configuration for democratic-csi
+  ansible.builtin.file:
+    path: /etc/sudoers.d/democratic-csi
+    state: absent
+  when: not is_iscsi_server
+
+- name: Configure SSH authorized keys for democratic-csi user
+  include_role:
+    name: GROG.authorized-key
+  vars:
+    authorized_key_list_group:
+      - name: democratic-csi
+        authorized_keys:
+          - key: "{{ lookup('cloud.terraform.tf_output', 'democratic_csi_ssh_public_key', project_path='../1-provision/env/backbone') | to_nice_yaml(indent=2) | from_yaml }}"
+  when: is_iscsi_server
+
+- name: Configure sysctl for zram-optimized memory management
+  ansible.builtin.copy:
+    content: |
+      # zram swap tuning
+      vm.swappiness=150
+      vm.page-cluster=0
+      vm.vfs_cache_pressure=200
+      vm.watermark_boost_factor=0
+      vm.watermark_scale_factor=125
+      # dirty page tuning
+      vm.dirty_background_ratio=1
+      vm.dirty_ratio=10
+      # memory reserves (~1.5% of RAM)
+      vm.min_free_kbytes={{ ansible_memtotal_mb * 16 }}
+    dest: /etc/sysctl.d/99-memory.conf
+    owner: root
+    group: root
+    mode: '0644'
+  when: zram_enabled
+  notify:
+    - Reload sysctl
+
+- name: Check kernel support for THP
+  ansible.builtin.stat:
+    path: /sys/kernel/mm/transparent_hugepage/defrag
+  register: thp_supported
+
+- name: Set THP defrag to madvise
+  ansible.builtin.copy:
+    content: |
+      [Unit]
+      Description=Set THP defrag to madvise
+
+      [Service]
+      Type=oneshot
+      RemainAfterExit=yes
+      ExecStart=/bin/bash -c "echo madvise > /sys/kernel/mm/transparent_hugepage/defrag"
+
+      [Install]
+      WantedBy=multi-user.target
+    dest: /etc/systemd/system/thp-madvise.service
+    owner: root
+    group: root
+    mode: '0644'
+  when: zram_enabled and thp_supported.stat.exists
+  notify:
+    - Enable and start thp-madvise
+
+- name: Check kernel support for KSM
+  ansible.builtin.stat:
+    path: /sys/kernel/mm/ksm/run
+  register: ksm_supported
+
+- name: Enable KSM (Kernel Same-page Merging)
+  ansible.builtin.copy:
+    content: |
+      [Unit]
+      Description=Enable KSM
+
+      [Service]
+      Type=oneshot
+      RemainAfterExit=yes
+      ExecStart=/bin/bash -c "echo 1 > /sys/kernel/mm/ksm/run && echo 100 > /sys/kernel/mm/ksm/sleep_millisecs && echo 200 > /sys/kernel/mm/ksm/pages_to_scan"
+      ExecStop=/bin/bash -c "echo 0 > /sys/kernel/mm/ksm/run"
+
+      [Install]
+      WantedBy=multi-user.target
+    dest: /etc/systemd/system/ksm.service
+    owner: root
+    group: root
+    mode: '0644'
+  when: zram_enabled and ksm_supported.stat.exists
+  notify:
+    - Enable and start ksm
+
+- name: Remove OS-provided zram packages (replaced by our systemd service)
+  ansible.builtin.apt:
+    pkg:
+      - systemd-zram-generator
+      - zram-tools
+    state: absent
+    purge: true
+  when: zram_enabled and ansible_facts['os_family'] == "Debian"
+  failed_when: false
+
+- name: Install zram-swap systemd service
+  ansible.builtin.copy:
+    content: |
+      [Unit]
+      Description=Configure zram swap
+      After=local-fs.target
+
+      [Service]
+      Type=oneshot
+      RemainAfterExit=yes
+      ExecStart=/bin/bash -c "modprobe zram && echo {{ zram_algorithm }} > /sys/block/zram0/comp_algorithm && echo {{ ansible_memtotal_mb // 2 }}M > /sys/block/zram0/disksize && mkswap /dev/zram0 && swapon -p 100 /dev/zram0"
+      ExecStop=/bin/bash -c "swapoff /dev/zram0 && echo 1 > /sys/block/zram0/reset"
+
+      [Install]
+      WantedBy=multi-user.target
+    dest: /etc/systemd/system/zram-swap.service
+    owner: root
+    group: root
+    mode: '0644'
+  when: zram_enabled
+  notify:
+    - Enable and start zram-swap
+
+- name: Disable zram-swap service
+  ansible.builtin.systemd:
+    name: zram-swap
+    enabled: no
+    state: stopped
+  when: not zram_enabled
+  failed_when: false
+
+# --- Kubernetes network tuning ---
+
+- name: Configure sysctl for Kubernetes networking
+  ansible.builtin.copy:
+    content: |
+      net.ipv4.neigh.default.gc_thresh1=4096
+      net.ipv4.neigh.default.gc_thresh2=8192
+      net.ipv4.neigh.default.gc_thresh3=16384
+    dest: /etc/sysctl.d/99-kubernetes-network.conf
+    owner: root
+    group: root
+    mode: '0644'
+  notify:
+    - Reload kubernetes network sysctl
+
+# --- Disable unnecessary services ---
+
+- name: Disable unnecessary services
+  ansible.builtin.systemd:
+    name: "{{ item }}"
+    enabled: no
+    state: stopped
+  loop: "{{ disable_services }}"
+  failed_when: false
+
+# --- tmpfs for /tmp and /var/tmp ---
+
+- name: Mount tmpfs on /tmp
+  ansible.posix.mount:
+    path: /tmp
+    src: tmpfs
+    fstype: tmpfs
+    opts: defaults,noatime,nosuid,nodev,mode=1777,size=256M
+    state: mounted
+
+- name: Mount tmpfs on /var/tmp
+  ansible.posix.mount:
+    path: /var/tmp
+    src: tmpfs
+    fstype: tmpfs
+    opts: defaults,noatime,nosuid,nodev,mode=1777,size=128M
+    state: mounted
+
+# --- eMMC I/O scheduler ---
+
+- name: Set I/O scheduler to none for eMMC
+  ansible.builtin.copy:
+    content: |
+      ACTION=="add|change", KERNEL=="mmcblk*", ATTR{queue/scheduler}="none"
+    dest: /etc/udev/rules.d/60-io-scheduler.rules
+    owner: root
+    group: root
+    mode: '0644'
+  when: emmc_io_scheduler
+
+# --- USB autosuspend ---
+
+- name: Disable USB autosuspend via modprobe
+  ansible.builtin.copy:
+    content: |
+      options usbcore autosuspend=-1
+    dest: /etc/modprobe.d/usb-autosuspend.conf
+    owner: root
+    group: root
+    mode: '0644'
+  when: usb_disable_autosuspend

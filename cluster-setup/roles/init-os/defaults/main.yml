@@ -1,3 +1,18 @@
 ---
 admin_user: admin
 admin_user_passwd: ''
+
+is_iscsi_node: false
+is_iscsi_server: false
+
+zram_enabled: false
+zram_algorithm: zstd
+
+# Services to disable on headless K3s nodes
+disable_services: []
+
+# Set I/O scheduler to none for eMMC (flash storage)
+emmc_io_scheduler: false
+
+# Disable USB autosuspend (for nodes with USB-attached storage)
+usb_disable_autosuspend: false
