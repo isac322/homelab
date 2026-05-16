@@ -10,7 +10,13 @@ k8s_node_labels:
 
 # iptables-firewall
 is_wireguard_gateway: true
-iptables_use_ftp: true
 
 # wireguard_mesh
 wireguard_ip: "10.222.0.3"
+
+zram_enabled: true
+
+disable_services:
+  - bluetooth.service
+  - triggerhappy.service
+  - wpa_supplicant.service

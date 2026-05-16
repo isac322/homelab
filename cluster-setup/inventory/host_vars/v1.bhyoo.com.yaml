@@ -1,6 +1,12 @@
 ansible_user: "ubuntu"
 
+iptables_use_dns: true
+
 is_k8s_master: true
 
 # wireguard
 wireguard_ip: "10.222.0.65"
+
+# zram swap + memory optimization
+zram_enabled: true
+zram_algorithm: lz4

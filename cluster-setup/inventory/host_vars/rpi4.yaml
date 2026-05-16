@@ -1,0 +1,15 @@
+ansible_host: 192.168.219.7
+ansible_user: bhyoo
+desired_ip: 192.168.219.7
+gateway_ip: 192.168.219.1
+
+# k8s
+is_k8s_master: true
+
+# wireguard_mesh
+wireguard_ip: "10.222.0.5"
+
+zram_enabled: true
+
+disable_services:
+  - wpa_supplicant.service

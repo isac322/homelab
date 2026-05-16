@@ -4,10 +4,15 @@ locale_timezone: Asia/Seoul
 
 # iptables-firewall
 iptables_use_mdns: true
-iptables_use_llmnr: true
+iptables_use_llmnr: false
+use_k8s_cilium: true
+use_k8s_cilium_hubble: true
 
 # wireguard_mesh
 wireguard_external_host: "backbone.bhyoo.com"
 
 # cluster
 k8s_registration_address: "k8s.backbone.homelab.bhyoo.com"
+
+# init-os
+is_iscsi_node: true

@@ -5,6 +5,21 @@ gateway_ip: 192.168.219.1
 
 # k8s
 is_k8s_master: true
+k8s_node_labels:
+  - "homelab.bhyoo.com/gpu=mali"
+  - "homelab.bhyoo.com/nn-sdk=rknn"
+  - "homelab.bhyoo.com/media-api=rkmpp"
+  - "homelab.bhyoo.com/zfs-node=true"
 
 # wireguard_mesh
 wireguard_ip: "10.222.0.4"
+
+is_iscsi_server: true
+
+zram_enabled: true
+emmc_io_scheduler: true
+usb_disable_autosuspend: true
+
+disable_services:
+  - bluetooth.service
+  - wpa_supplicant.service

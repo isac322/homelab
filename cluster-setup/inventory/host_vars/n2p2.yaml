@@ -4,15 +4,15 @@ ansible_password: odroid
 desired_ip: 192.168.219.4
 gateway_ip: 192.168.219.1
 
-iptables_use_nfs: true
-
-is_k8s_master: true
+is_k8s_master: false
 k8s_node_labels:
-  - "homelab.bhyoo.com/zfs-node=true"
-  - "homelab.bhyoo.com/zfs-pool-slow-hot-storage=true"
-
+  - "homelab.bhyoo.com/gpu=mali"
 
 wireguard_ip: "10.222.0.2"
 
-
 allow_ssh_root_login: true
+
+emmc_io_scheduler: true
+
+disable_services:
+  - ModemManager.service
