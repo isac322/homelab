@@ -11,11 +11,17 @@
     msg: invalid `k8s_pod_cidr`. (e.g. 10.0.0.0/8)
   when: k8s_role != ""
 
-- name: Define k8s_internal_node_ip_cidr
+- name: Define __register_local_net_cidr
+  ansible.builtin.set_fact:
+    __register_local_net_cidr: "{{
+        '%s/%s' | format(ansible_default_ipv4.network, ansible_default_ipv4.prefix)
+      }}"
+
+- name: Define __register_k8s_internal_node_ip_cidr
   ansible.builtin.set_fact:
     __register_k8s_internal_node_ip_cidr: "{{
         k8s_internal_node_ip_cidr
-        |default('%s/%s' | format(ansible_default_ipv4.network, ansible_default_ipv4.prefix), true)
+        |default(__register_k8s_internal_node_ip_cidr, true)
       }}"
   when: k8s_role != ""
 
@@ -25,6 +31,7 @@
     package:
       - iptables-persistent
     install_recommends: no
+  when: ansible_facts['os_family'] == "Debian"
 
 - name: Enable iptables service
   ansible.builtin.systemd:
@@ -911,7 +918,7 @@
     protocol: udp
     destination_port: 5353
     jump: ACCEPT
-    source: "{{ __register_k8s_internal_node_ip_cidr }}"
+    source: "{{ __register_local_net_cidr }}"
     comment: Multicast DNS (mDNS)
   when: iptables_use_mdns
 
@@ -921,7 +928,7 @@
     protocol: udp
     destination_port: 5355
     jump: ACCEPT
-    source: "{{ __register_k8s_internal_node_ip_cidr }}"
+    source: "{{ __register_local_net_cidr }}"
     comment: Link-Local Multicast Name Resolution (LLMNR)
   when: iptables_use_llmnr
 
