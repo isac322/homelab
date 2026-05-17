@@ -1,0 +1,10 @@
+default_iface: eth0
+locale_lang: ko_KR.UTF-8
+locale_timezone: Asia/Seoul
+
+# iptables-firewall
+iptables_use_mdns: true
+iptables_use_llmnr: false
+
+# wireguard_mesh
+wireguard_external_host: "backbone.bhyoo.com"

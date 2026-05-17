@@ -3,6 +3,7 @@ n2p2
 rpi4
 rpi5
 rock5bp
+latitude7490
 v1.bhyoo.com
 
 [nas]
@@ -14,6 +15,14 @@ n2p2
 rpi4
 rpi5
 rock5bp
+
+[homelab]
+n2p1
+n2p2
+rpi4
+rpi5
+rock5bp
+latitude7490
 
 [prod]
 v1.bhyoo.com
