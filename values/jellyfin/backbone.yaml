@@ -113,9 +113,11 @@ volumes:
       path: /dev/rga
     name: rk-rga
   - name: jellyfin-cache
-    emptyDir: {}
+    emptyDir:
+      sizeLimit: 2Gi
   - name: jellyfin-log
-    emptyDir: {}
+    emptyDir:
+      sizeLimit: 500Mi
 
 # -- Additional volume mounts for the Jellyfin container.
 volumeMounts:
@@ -185,6 +187,12 @@ persistence:
     type: hostPath
     # -- Path on the host node for media storage, only used if type is 'hostPath'.
     hostPath: "/mnt/data/media"
+  cache:
+    enabled: true
+    accessMode: ReadWriteOnce
+    size: 50Gi
+    annotations: {}
+    storageClass: hdd-ha-xfs
 
 # -- Configuration for metrics collection and monitoring
 metrics:
