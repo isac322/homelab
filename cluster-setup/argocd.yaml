@@ -1,5 +1,22 @@
 ---
-- hosts: prod
+- name: Group by k8s_master [prod]
+  hosts: prod
+  tasks:
+    - name: Group by k8s_master
+      ansible.builtin.group_by:
+        key: prod_k8s_masters
+      when:
+        - is_k8s_master
+- name: Group by k8s_master [backbone]
+  hosts: backbone
+  tasks:
+    - name: Group by k8s_master
+      ansible.builtin.group_by:
+        key: backbone_k8s_masters
+      when:
+        - is_k8s_master
+
+- hosts: prod_k8s_masters
   name: Install cluster secrets on prod
   tasks:
     - name: Create shared secrets
@@ -19,14 +36,13 @@
           type: Opaque
           stringData: "{{ lookup('cloud.terraform.tf_output', 'external_secrets_access_key', project_path='../1-provision/env/prod-vultr') | to_nice_yaml(indent=2) | from_yaml }}"
       no_log: '{{ ansible_verbosity < 3 }}'
-      when: is_k8s_master
 
-- hosts: backbone
+- hosts: backbone_k8s_masters
   name: Install cluster secrets on backbone
+  run_once: yes
   tasks:
     - name: Create shared secrets
       become: yes
-      run_once: yes
       kubernetes.core.k8s:
         state: present
         wait: yes
@@ -42,9 +58,8 @@
           type: Opaque
           stringData: "{{ lookup('cloud.terraform.tf_output', 'external_secrets_access_key', project_path='../1-provision/env/backbone') | to_nice_yaml(indent=2) | from_yaml }}"
       no_log: '{{ ansible_verbosity < 3 }}'
-      when: is_k8s_master
 
-- hosts: prod
+- hosts: prod_k8s_masters
   name: Create ServiceAccount for argocd in prod
   run_once: yes
   tasks:
@@ -153,14 +168,14 @@
       delegate_to: "{{ item }}"
       delegate_facts: yes
       when: hostvars[item].is_k8s_master
-      loop: "{{ groups.backbone }}"
+      loop: "{{ groups.backbone_k8s_masters }}"
 
-- hosts: backbone
+- hosts: backbone_k8s_masters
   name: Install argocd
+  run_once: yes
   tasks:
     - name: Create argocd namespace on backbone cluster
       become: yes
-      run_once: yes
       kubernetes.core.k8s:
         state: present
         wait: yes
@@ -168,11 +183,9 @@
         name: argocd
         api_version: v1
         kind: Namespace
-      when: is_k8s_master
 
     - name: Create Secret for prod cluster on backbone cluster
       become: yes
-      run_once: yes
       kubernetes.core.k8s:
         state: present
         wait: yes
@@ -188,29 +201,24 @@
             labels:
               argocd.argoproj.io/secret-type: cluster
             namespace: argocd
-          stringData:
-            name: prod
-            server: "{{ _register_prod_cluster_url }}"
-            config: "{{ _register_argocd_cluster_config | to_json }}"
-      when: is_k8s_master
+          data:
+            name: "{{ 'prod' | b64encode }}"
+            server: "{{ _register_prod_cluster_url | b64encode }}"
+            config: "{{ _register_argocd_cluster_config | to_json | b64encode }}"
 
     - name: install Helm
       ansible.builtin.import_role:
         name: gantsign.helm
       vars:
         helm_architecture: 'arm64'
-      when: is_k8s_master
 
     - name: Copy value file
-      run_once: yes
       ansible.builtin.copy:
         src: ../values/argo-cd/backbone.yaml
         dest: /tmp/argo-cd-values.yaml
-      when: is_k8s_master
 
     - name: Install argocd
       become: yes
-      run_once: yes
       kubernetes.core.helm:
         atomic: yes
         chart_ref: argo-cd
@@ -223,18 +231,14 @@
         values_files:
           - /tmp/argo-cd-values.yaml
         wait: yes
-      when: is_k8s_master
 
     - name: Copy value file
-      run_once: yes
       ansible.builtin.copy:
         src: ../values/argocd-apps/backbone.yaml
         dest: /tmp/argocd-apps-values.yaml
-      when: is_k8s_master
 
     - name: Install argocd-apps
       become: yes
-      run_once: yes
       kubernetes.core.helm:
         atomic: yes
         chart_ref: argocd-apps
@@ -247,4 +251,3 @@
         values_files:
           - /tmp/argocd-apps-values.yaml
         wait: yes
-      when: is_k8s_master
