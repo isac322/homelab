@@ -1,16 +1,22 @@
 ---
-- hosts: backbone
+- hosts: homelab
   become: yes
+  pre_tasks:
+    - name: Flag whether this host belongs to the backbone (k8s) group
+      ansible.builtin.set_fact:
+        is_backbone: "{{ inventory_hostname in groups['backbone'] }}"
   roles:
     - role: robertdebock.sysctl
       sysctl_items:
         - name: net.ipv4.ip_forward
           value: 1
+      when: is_backbone
+
     - role: iptables-firewall
       vars:
-        k8s_role: "{{ 'master' if is_k8s_master else 'worker' }}"
-        use_k3s_ha_embedded_etcd: true
-        iptables_use_iscsi: "{{ is_iscsi_node or is_iscsi_server }}"
+        k8s_role: "{{ ('master' if is_k8s_master else 'worker') if is_backbone else '' }}"
+        use_k3s_ha_embedded_etcd: "{{ is_backbone }}"
+        iptables_use_iscsi: "{{ (is_iscsi_node or is_iscsi_server) if is_backbone else false }}"
         iptables_reset_all: false
 
 - hosts: prod
