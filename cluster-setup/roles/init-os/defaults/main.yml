@@ -16,3 +16,5 @@ emmc_io_scheduler: false
 
 # Disable USB autosuspend (for nodes with USB-attached storage)
 usb_disable_autosuspend: false
+
+is_k8s_member: false

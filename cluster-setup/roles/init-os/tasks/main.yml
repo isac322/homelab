@@ -262,6 +262,7 @@
     owner: root
     group: root
     mode: '0644'
+  when: is_k8s_member
   notify:
     - Reload kubernetes network sysctl
 
@@ -284,6 +285,7 @@
     fstype: tmpfs
     opts: defaults,noatime,nosuid,nodev,mode=1777,size=256M
     state: mounted
+  when: is_k8s_member
 
 - name: Mount tmpfs on /var/tmp
   ansible.posix.mount:
@@ -292,6 +294,7 @@
     fstype: tmpfs
     opts: defaults,noatime,nosuid,nodev,mode=1777,size=128M
     state: mounted
+  when: is_k8s_member
 
 # --- eMMC I/O scheduler ---
 

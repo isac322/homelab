@@ -1,15 +1,15 @@
 ---
-- hosts: backbone
+- hosts: homelab
   tasks:
     - ansible.builtin.include_vars: "admin_user_info.yaml"
 
-- hosts: backbone
+- hosts: homelab
   become: yes
   gather_facts: yes
   roles:
     - role: robertdebock.locale
 
-- hosts: backbone
+- hosts: homelab
   vars:
     systemd_networkd_network:
       "{{ default_iface }}":
@@ -18,7 +18,7 @@
         - Network:
             - DHCP: "no"
             - MulticastDNS: "yes"
-            - LLMNR: "yes"
+            - LLMNR: "no"
             - Address: "{{ desired_ip }}/24"
         - Route:
             - Destination: "0.0.0.0/0"
@@ -27,7 +27,9 @@
   roles:
     - role: stackhpc.systemd_networkd
 
-- hosts: backbone
+- hosts: homelab
   become: yes
   roles:
     - role: init-os
+      vars:
+        is_k8s_member: "{{ inventory_hostname in groups['backbone'] }}"
