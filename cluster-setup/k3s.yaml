@@ -61,6 +61,11 @@
     - name: Install k3s
       block:
         - ansible.builtin.set_fact:
+            k3s_service_env_vars:
+              GOMEMLIMIT: "2GiB"
+          when: is_k8s_master
+
+        - ansible.builtin.set_fact:
             k3s_release_version: stable
             k3s_become: yes
             k3s_state: installed
@@ -71,7 +76,9 @@
             k3s_registration_address: "{{ k8s_registration_address }}"
             k3s_server:
               etcd-expose-metrics: true
-              flannel-backend: 'host-gw'  # This needs to be in quotes
+              flannel-backend: 'none'           # Cilium CNI 사용 (아래 bootstrap play에서 설치)
+              disable-network-policy: true      # k3s 내장 NP controller 비활성 (Cilium이 처리)
+              disable-kube-proxy: true          # Cilium kubeProxyReplacement 사용
               disable-helm-controller: true
               disable:
                 - traefik
@@ -81,6 +88,7 @@
               kubelet-arg:
                 - "image-gc-high-threshold=60"
                 - "image-gc-low-threshold=40"
+                - "feature-gates=ImageVolume=true"
                 - "feature-gates=NodeSwap=true"
               node-label: "{{ k8s_node_labels }}"
               secrets-encryption: true
@@ -93,6 +101,7 @@
               kubelet-arg:
                 - "image-gc-high-threshold=60"
                 - "image-gc-low-threshold=40"
+                - "feature-gates=ImageVolume=true"
                 - "feature-gates=NodeSwap=true"
               node-label: "{{ k8s_node_labels }}"
         - ansible.builtin.import_role:
@@ -119,3 +128,76 @@
             apply:
               become: yes
           when: is_k8s_master
+
+# ─── Cilium CNI bootstrap (backbone) ─────────────────────────────────────
+# k3s가 --flannel-backend=none + --disable-kube-proxy로 부팅되었으므로
+# CNI 없음 상태. 이 play가 Cilium을 helm install하여 CNI 설치 + kubeProxyReplacement 가동.
+# 이후 ArgoCD가 설치되면 backbone-cilium App이 이 Helm release를 adopt하여 GitOps로 관리 이관.
+- name: Group by k8s_master [backbone cilium]
+  hosts: backbone
+  gather_facts: no
+  tasks:
+    - name: Group by k8s_master
+      ansible.builtin.group_by:
+        key: backbone_k8s_masters_for_cilium
+      when: is_k8s_master
+
+- hosts: backbone_k8s_masters_for_cilium
+  name: Bootstrap Cilium CNI
+  run_once: yes
+  tasks:
+    - name: Install Helm
+      ansible.builtin.import_role:
+        name: gantsign.helm
+      vars:
+        helm_architecture: 'arm64'
+
+    - name: Copy Cilium values file
+      ansible.builtin.copy:
+        src: ../values/cilium/backbone.yaml
+        dest: /tmp/cilium-values.yaml
+        mode: '0644'
+
+    - name: Bootstrap Cilium (helm install)
+      become: yes
+      kubernetes.core.helm:
+        atomic: yes
+        chart_ref: cilium
+        chart_repo_url: https://helm.cilium.io/
+        chart_version: 1.19.3
+        kubeconfig: /etc/rancher/k3s/k3s.yaml
+        release_name: cilium
+        release_namespace: kube-system
+        values_files:
+          - /tmp/cilium-values.yaml
+        wait: yes
+        wait_timeout: 10m
+
+    - name: Wait for Cilium DaemonSet Ready
+      become: yes
+      ansible.builtin.command:
+        cmd: >-
+          kubectl --kubeconfig=/etc/rancher/k3s/k3s.yaml
+          -n kube-system rollout status ds/cilium --timeout=5m
+      changed_when: false
+
+    - name: Wait for Cilium Envoy DaemonSet Ready
+      become: yes
+      ansible.builtin.command:
+        cmd: >-
+          kubectl --kubeconfig=/etc/rancher/k3s/k3s.yaml
+          -n kube-system rollout status ds/cilium-envoy --timeout=5m
+      changed_when: false
+
+    - name: Wait for Cilium Operator Ready
+      become: yes
+      ansible.builtin.command:
+        cmd: >-
+          kubectl --kubeconfig=/etc/rancher/k3s/k3s.yaml
+          -n kube-system rollout status deploy/cilium-operator --timeout=5m
+      changed_when: false
+
+    - name: Cleanup temporary values file
+      ansible.builtin.file:
+        path: /tmp/cilium-values.yaml
+        state: absent
