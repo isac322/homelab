@@ -1,12 +1,12 @@
 collections:
   - name: devsec.hardening
-    version: 10.4.0
+    version: 10.5.2
   - name: kubernetes.core
-    version: 6.2.0
+    version: 6.3.0
   - name: cloud.terraform
     version: 4.0.0
   - name: ansible.utils
-    version: 6.0.0
+    version: 6.0.2
 roles:
   - name: GROG.authorized-key
     version: v1.1.5
