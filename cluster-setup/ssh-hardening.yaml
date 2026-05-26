@@ -6,16 +6,15 @@
         - name: "{{ ansible_user }}"
           authorized_keys:
             - key: "{{ lookup('file', './ssh_pub_keys/desktop.pub') }}"
-            - key: "{{ lookup('file', './ssh_pub_keys/laptop.pub') }}"
             - key: "{{ lookup('file', './ssh_pub_keys/mobile.pub') }}"
             - key: "{{ lookup('file', './ssh_pub_keys/tablet.pub') }}"
             - key: "{{ lookup('file', './ssh_pub_keys/office.pub') }}"
 
-- hosts: backbone
+- hosts: homelab
   tasks:
     - ansible.builtin.include_vars: "admin_user_info.yaml"
 
-- hosts: backbone
+- hosts: homelab
   become: yes
   roles:
     - role: GROG.authorized-key
@@ -23,24 +22,20 @@
         - name: root
           authorized_keys:
             - key: "{{ lookup('file', './ssh_pub_keys/desktop.pub') }}"
-            - key: "{{ lookup('file', './ssh_pub_keys/laptop.pub') }}"
             - key: "{{ lookup('file', './ssh_pub_keys/mobile.pub') }}"
             - key: "{{ lookup('file', './ssh_pub_keys/tablet.pub') }}"
             - key: "{{ lookup('file', './ssh_pub_keys/office.pub') }}"
         - name: "{{ admin_user }}"
           authorized_keys:
             - key: "{{ lookup('file', './ssh_pub_keys/desktop.pub') }}"
-            - key: "{{ lookup('file', './ssh_pub_keys/laptop.pub') }}"
             - key: "{{ lookup('file', './ssh_pub_keys/mobile.pub') }}"
             - key: "{{ lookup('file', './ssh_pub_keys/tablet.pub') }}"
             - key: "{{ lookup('file', './ssh_pub_keys/office.pub') }}"
 
 - hosts: all
   become: yes
-  collections:
-    - devsec.hardening
   roles:
-    - role: ssh_hardening
+    - role: devsec.hardening.ssh_hardening
       vars:
         ssh_print_last_log: true
         ssh_permit_root_login: "{{ 'prohibit-password' if allow_ssh_root_login|default(false) else 'no' }}"
