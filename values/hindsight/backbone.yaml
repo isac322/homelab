@@ -3,7 +3,7 @@
 api:
   replicaCount: 1
   image:
-    tag: "0.6.1-slim"
+    tag: "0.7.1-slim"
   resources:
     requests:
       cpu: 250m
@@ -63,7 +63,7 @@ controlPlane:
       memory: 64Mi
     limits:
       cpu: 250m
-      memory: 128Mi
+      memory: 512Mi
 
 worker:
   enabled: false
