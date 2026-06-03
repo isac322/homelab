@@ -100,7 +100,9 @@ ports:
     # -- See [upstream documentation](https://doc.traefik.io/traefik/routing/entrypoints/#transport)
     transport:
       respondingTimeouts:
-        readTimeout: 900s
+        # immich가 resumable upload 미지원 (immich-app/immich#22385): 1회 timeout 시 전체 재전송.
+        # 대용량 파일/저속 회선 대비 6h.
+        readTimeout: 21600s
 
 rollingUpdate:
   maxUnavailable: 0
