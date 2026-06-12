@@ -233,6 +233,7 @@ machine-learning:
                 failureThreshold: 60
     sub:
       type: deployment
+      replicas: 0
       strategy: RollingUpdate
       pod:
         nodeSelector:
