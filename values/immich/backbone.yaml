@@ -194,7 +194,7 @@ machine-learning:
           image:
             tag: v2.7.5-rknn
           env:
-            MACHINE_LEARNING_RKNN_THREADS: 1
+            MACHINE_LEARNING_RKNN_THREADS: 2
           securityContext:
             appArmorProfile:
               type: Unconfined
