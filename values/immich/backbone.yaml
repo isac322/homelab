@@ -175,6 +175,11 @@ server:
       type: hostPath
       hostPath: /usr/lib/aarch64-linux-gnu/libmali-hook.so.1
       readOnly: true
+    libxcb-dri2:
+      enabled: true
+      type: hostPath
+      hostPath: /usr/lib/aarch64-linux-gnu/libxcb-dri2.so.0
+      readOnly: true
 
 machine-learning:
   enabled: true
