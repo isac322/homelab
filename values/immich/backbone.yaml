@@ -207,6 +207,30 @@ machine-learning:
               cpu: "1"
               memory: 12Gi
               rock-chips.com/rknpu: 1
+          probes:
+            liveness: &machineLearningProbes
+              enabled: true
+              custom: true
+              spec:
+                httpGet:
+                  path: /ping
+                  port: http
+                initialDelaySeconds: 0
+                periodSeconds: 10
+                timeoutSeconds: 10
+                failureThreshold: 12
+            readiness: *machineLearningProbes
+            startup:
+              enabled: true
+              custom: true
+              spec:
+                httpGet:
+                  path: /ping
+                  port: http
+                initialDelaySeconds: 0
+                periodSeconds: 10
+                timeoutSeconds: 10
+                failureThreshold: 60
     sub:
       type: deployment
       strategy: RollingUpdate
@@ -232,7 +256,7 @@ machine-learning:
               containerPort: 3003
               protocol: TCP
           probes:
-            liveness: &probes
+            liveness: &subMachineLearningProbes
               enabled: true
               custom: true
               spec:
@@ -241,9 +265,9 @@ machine-learning:
                   port: http
                 initialDelaySeconds: 0
                 periodSeconds: 10
-                timeoutSeconds: 1
-                failureThreshold: 3
-            readiness: *probes
+                timeoutSeconds: 10
+                failureThreshold: 12
+            readiness: *subMachineLearningProbes
             startup:
               enabled: true
               custom: true
@@ -253,7 +277,7 @@ machine-learning:
                   port: http
                 initialDelaySeconds: 0
                 periodSeconds: 10
-                timeoutSeconds: 1
+                timeoutSeconds: 10
                 failureThreshold: 60
   persistence:
     cache:
