@@ -189,6 +189,29 @@ machine-learning:
       pod:
         nodeSelector:
           homelab.bhyoo.com/npu: rknn
+      initContainers:
+        install-patched-rknn:
+          image:
+            repository: ghcr.io/isac322/immich-patched-models
+            tag: v2.7.5-rknn
+            pullPolicy: IfNotPresent
+          command: ["sh", "-c"]
+          args:
+            - |
+              set -e
+              DEST=/cache/clip/nllb-clip-large-siglip__mrl/textual/rknpu/rk3588/model.rknn
+              EXPECTED_SHA=2ab31b11ab9be37783d25118527b1f144f9f509157d7bb73ec9d81027ae354b2
+              mkdir -p "$(dirname "$DEST")"
+              CURRENT_SHA=""
+              [ -f "$DEST" ] && CURRENT_SHA=$(sha256sum "$DEST" | awk '{print $1}')
+              if [ "$CURRENT_SHA" != "$EXPECTED_SHA" ]; then
+                echo "Installing patched RKNN (cur=${CURRENT_SHA:-none} exp=$EXPECTED_SHA)"
+                cp /model.rknn "$DEST"
+                sync
+                sha256sum "$DEST"
+              else
+                echo "Patched RKNN already in place ($EXPECTED_SHA)"
+              fi
       containers:
         main:
           image:
@@ -290,6 +313,8 @@ machine-learning:
       advancedMounts:
         main:
           main:
+            - {}
+          install-patched-rknn:
             - {}
     rk-drivers:
       enabled: true
