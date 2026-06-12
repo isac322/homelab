@@ -97,6 +97,14 @@ server:
           image:
             repository: ghcr.io/immich-app/immich-server
             pullPolicy: IfNotPresent
+          env:
+            # Mali OpenCL shim (libMaliOpenCL.so.1) lives in /usr/lib/aarch64-linux-gnu/mali/
+            # on Debian's libmali-valhall-* package layout. The container image has no
+            # ldconfig and the host's /etc/ld.so.conf.d/00-aarch64-mali.conf is not mounted,
+            # so the dynamic linker cannot find libMaliOpenCL.so.1 referenced by mali.icd
+            # without an explicit LD_LIBRARY_PATH. Required for HDR->SDR tonemapping via
+            # ffmpeg hwmap -> tonemap_opencl on RK3588.
+            LD_LIBRARY_PATH: /usr/lib/aarch64-linux-gnu/mali
           resources:
             requests:
               cpu: 100m
@@ -156,6 +164,11 @@ server:
       enabled: true
       type: hostPath
       hostPath: /usr/lib/aarch64-linux-gnu/libmali.so.1
+      readOnly: true
+    mali-libs:
+      enabled: true
+      type: hostPath
+      hostPath: /usr/lib/aarch64-linux-gnu/mali
       readOnly: true
 
 machine-learning:
