@@ -170,6 +170,11 @@ server:
       type: hostPath
       hostPath: /usr/lib/aarch64-linux-gnu/mali
       readOnly: true
+    libmali-hook:
+      enabled: true
+      type: hostPath
+      hostPath: /usr/lib/aarch64-linux-gnu/libmali-hook.so.1
+      readOnly: true
 
 machine-learning:
   enabled: true
