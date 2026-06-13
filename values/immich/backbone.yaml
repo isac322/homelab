@@ -10,9 +10,8 @@ controllers:
       main:
         image:
           tag: v2.7.5
-        env: &envs
+        env:
           REDIS_HOSTNAME: '{{ printf "%s-valkey" .Release.Name }}'
-          IMMICH_MACHINE_LEARNING_URL: '{{ printf "http://%s-machine-learning-heterogeneous:3003" .Release.Name }}'
           # Add the env vars to connect to your database here.
           DB_HOSTNAME:
             valueFrom:
@@ -233,55 +232,6 @@ machine-learning:
                 periodSeconds: 10
                 timeoutSeconds: 10
                 failureThreshold: 60
-    sub:
-      type: deployment
-      replicas: 0
-      strategy: RollingUpdate
-      pod:
-        nodeSelector:
-          homelab.bhyoo.com/gpu: mali
-      containers:
-        main:
-          env: *envs
-          image:
-            repository: ghcr.io/immich-app/immich-machine-learning
-            tag: v2.7.5-armnn
-            pullPolicy: IfNotPresent
-          resources:
-            requests:
-              cpu: 50m
-              memory: 512Mi
-            limits:
-              cpu: 500m
-              memory: 4Gi
-          ports:
-            - name: http
-              containerPort: 3003
-              protocol: TCP
-          probes:
-            liveness: &subMachineLearningProbes
-              enabled: true
-              custom: true
-              spec:
-                httpGet:
-                  path: /ping
-                  port: http
-                initialDelaySeconds: 0
-                periodSeconds: 10
-                timeoutSeconds: 10
-                failureThreshold: 12
-            readiness: *subMachineLearningProbes
-            startup:
-              enabled: true
-              custom: true
-              spec:
-                httpGet:
-                  path: /ping
-                  port: http
-                initialDelaySeconds: 0
-                periodSeconds: 10
-                timeoutSeconds: 10
-                failureThreshold: 60
   persistence:
     cache:
       enabled: true
@@ -318,39 +268,3 @@ machine-learning:
         main:
           main:
             - {}
-    mali-device:
-      enabled: true
-      type: hostPath
-      hostPath: /dev/mali0
-      advancedMounts:
-        sub:
-          main:
-            - {}
-    mali-library:
-      enabled: true
-      type: hostPath
-      hostPath: /usr/lib/aarch64-linux-gnu/libmali.so.0.51.0
-      advancedMounts:
-        sub:
-          main:
-            - path: /usr/lib/libmali.so
-              readOnly: true
-    mali-firmware:
-      enabled: true
-      type: hostPath
-      hostPath: /home/bhyoo/mali_csffw.bin
-      advancedMounts:
-        sub:
-          main:
-            - path: /lib/firmware/mali_csffw.bin
-              readOnly: true
-    sub-cache:
-      enabled: true
-      size: 32Gi
-      type: persistentVolumeClaim
-      accessMode: ReadWriteOnce
-      storageClass: local-path
-      advancedMounts:
-        sub:
-          main:
-            - path: /cache
