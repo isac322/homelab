@@ -215,7 +215,6 @@ machine-learning:
       containers:
         main:
           image:
-            repository: ghcr.io/isac322/immich-machine-learning
             tag: v2.7.5-rknn
           env:
             MACHINE_LEARNING_RKNN_THREADS: 1
