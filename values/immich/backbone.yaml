@@ -200,7 +200,7 @@ machine-learning:
             - |
               set -e
               DEST=/cache/clip/nllb-clip-large-siglip__mrl/textual/rknpu/rk3588/model.rknn
-              EXPECTED_SHA=2ab31b11ab9be37783d25118527b1f144f9f509157d7bb73ec9d81027ae354b2
+              EXPECTED_SHA=ed0b8b566d6ffe3c9b84236105dc95a4e270dab806d57799dcf009c6418ca95c
               mkdir -p "$(dirname "$DEST")"
               CURRENT_SHA=""
               [ -f "$DEST" ] && CURRENT_SHA=$(sha256sum "$DEST" | awk '{print $1}')
@@ -215,6 +215,7 @@ machine-learning:
       containers:
         main:
           image:
+            repository: ghcr.io/isac322/immich-machine-learning
             tag: v2.7.5-rknn
           env:
             MACHINE_LEARNING_RKNN_THREADS: 1
