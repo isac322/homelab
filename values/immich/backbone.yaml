@@ -302,11 +302,11 @@ machine-learning:
       advancedMounts:
         main:
           main:
-            - path: /cache/clip/nllb-clip-large-siglip__mrl/textual/rknpu/rk3588/model.rknn
-              subPath: clip/nllb-clip-large-siglip__mrl/textual/rknpu/rk3588/model.rknn
+            - path: /cache/clip/nllb-clip-large-siglip__mrl/textual/rknpu
+              subPath: clip/nllb-clip-large-siglip__mrl/textual/rknpu
               readOnly: true
-            - path: /cache/clip/nllb-clip-large-siglip__mrl/visual/rknpu/rk3588/model.rknn
-              subPath: clip/nllb-clip-large-siglip__mrl/visual/rknpu/rk3588/model.rknn
+            - path: /cache/clip/nllb-clip-large-siglip__mrl/visual/rknpu
+              subPath: clip/nllb-clip-large-siglip__mrl/visual/rknpu
               readOnly: true
     rk-drivers:
       enabled: true
