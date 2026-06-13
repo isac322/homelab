@@ -193,7 +193,8 @@ machine-learning:
         main:
           image:
             repository: ghcr.io/isac322/immich-machine-learning
-            tag: &rknnTag v2.7.5-rknn
+            # Keep in sync with persistence.patched-models.volumeSpec.image.reference
+            tag: v2.7.5-rknn
           env:
             MACHINE_LEARNING_RKNN_THREADS: 3
           securityContext:
@@ -297,6 +298,7 @@ machine-learning:
       type: custom
       volumeSpec:
         image:
+          # Keep tag in sync with controllers.main.containers.main.image.tag above
           reference: ghcr.io/isac322/immich-patched-models:v2.7.5-rknn
           pullPolicy: IfNotPresent
       advancedMounts:
