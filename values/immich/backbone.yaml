@@ -216,7 +216,7 @@ machine-learning:
         main:
           image:
             repository: ghcr.io/isac322/immich-machine-learning
-            tag: v2.7.5-rknn@sha256:786ba5aae6aed21a03a066e51fb02c185eff4032f4cb95e7bb0842ac36d262ac
+            tag: v2.7.5-rknn
           env:
             MACHINE_LEARNING_RKNN_THREADS: 1
           securityContext:
