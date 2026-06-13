@@ -218,7 +218,7 @@ machine-learning:
             repository: ghcr.io/isac322/immich-machine-learning
             tag: v2.7.5-rknn
           env:
-            MACHINE_LEARNING_RKNN_THREADS: 2
+            MACHINE_LEARNING_RKNN_THREADS: 3
           securityContext:
             appArmorProfile:
               type: Unconfined
