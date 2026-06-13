@@ -189,34 +189,11 @@ machine-learning:
       pod:
         nodeSelector:
           homelab.bhyoo.com/npu: rknn
-      initContainers:
-        install-patched-rknn:
-          image:
-            repository: ghcr.io/isac322/immich-patched-models
-            tag: v2.7.5-rknn
-            pullPolicy: IfNotPresent
-          command: ["sh", "-c"]
-          args:
-            - |
-              set -e
-              DEST=/cache/clip/nllb-clip-large-siglip__mrl/textual/rknpu/rk3588/model.rknn
-              EXPECTED_SHA=ed0b8b566d6ffe3c9b84236105dc95a4e270dab806d57799dcf009c6418ca95c
-              mkdir -p "$(dirname "$DEST")"
-              CURRENT_SHA=""
-              [ -f "$DEST" ] && CURRENT_SHA=$(sha256sum "$DEST" | awk '{print $1}')
-              if [ "$CURRENT_SHA" != "$EXPECTED_SHA" ]; then
-                echo "Installing patched RKNN (cur=${CURRENT_SHA:-none} exp=$EXPECTED_SHA)"
-                cp /model.rknn "$DEST"
-                sync
-                sha256sum "$DEST"
-              else
-                echo "Patched RKNN already in place ($EXPECTED_SHA)"
-              fi
       containers:
         main:
           image:
             repository: ghcr.io/isac322/immich-machine-learning
-            tag: v2.7.5-rknn
+            tag: &rknnTag v2.7.5-rknn
           env:
             MACHINE_LEARNING_RKNN_THREADS: 3
           securityContext:
@@ -315,8 +292,22 @@ machine-learning:
         main:
           main:
             - {}
-          install-patched-rknn:
-            - {}
+    patched-models:
+      enabled: true
+      type: custom
+      volumeSpec:
+        image:
+          reference: ghcr.io/isac322/immich-patched-models:v2.7.5-rknn
+          pullPolicy: IfNotPresent
+      advancedMounts:
+        main:
+          main:
+            - path: /cache/clip/nllb-clip-large-siglip__mrl/textual/rknpu/rk3588/model.rknn
+              subPath: clip/nllb-clip-large-siglip__mrl/textual/rknpu/rk3588/model.rknn
+              readOnly: true
+            - path: /cache/clip/nllb-clip-large-siglip__mrl/visual/rknpu/rk3588/model.rknn
+              subPath: clip/nllb-clip-large-siglip__mrl/visual/rknpu/rk3588/model.rknn
+              readOnly: true
     rk-drivers:
       enabled: true
       type: hostPath
