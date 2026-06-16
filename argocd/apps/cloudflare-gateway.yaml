@@ -41,7 +41,7 @@ spec:
   source:
     repoURL: https://github.com/pl4nty/cloudflare-kubernetes-gateway.git
     path: config/default
-    targetRevision: v0.8.2
+    targetRevision: v0.9.0
   syncPolicy:
     automated:
       prune: true
