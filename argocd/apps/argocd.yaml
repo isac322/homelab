@@ -17,7 +17,7 @@ spec:
           - values.yaml
           - $homelab/values/argo-cd/backbone.yaml
       repoURL: https://argoproj.github.io/argo-helm
-      targetRevision: 9.5.2
+      targetRevision: 9.5.21
   syncPolicy:
     automated:
       prune: true
@@ -50,7 +50,7 @@ spec:
           - values.yaml
           - $homelab/values/argocd-apps/backbone.yaml
       repoURL: https://argoproj.github.io/argo-helm
-      targetRevision: 2.0.4
+      targetRevision: 2.0.5
   syncPolicy:
     automated:
       prune: true
