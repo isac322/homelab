@@ -117,7 +117,7 @@ server:
             privileged: true
   ingress:
     main:
-      enabled: true
+      enabled: false
       annotations:
         cert-manager.io/cluster-issuer: cluster-issuer-acme
         cert-manager.io/private-key-algorithm: ECDSA
@@ -133,6 +133,23 @@ server:
         - hosts:
             - immich.bhyoo.com
           secretName: immich-bhyoo-com
+  route:
+    main:
+      enabled: true
+      parentRefs:
+        - name: bhyoo-gateway
+          namespace: ingress-ctrl
+          sectionName: https
+      hostnames:
+        - immich.bhyoo.com
+      rules:
+        - matches:
+            - path:
+                type: PathPrefix
+                value: /
+          backendRefs:
+            - identifier: main
+              port: http
   persistence:
     rk-drivers:
       enabled: true

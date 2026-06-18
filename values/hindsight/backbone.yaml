@@ -79,7 +79,7 @@ postgresql:
 existingSecret: hindsight-secrets
 
 ingress:
-  enabled: true
+  enabled: false
   className: traefik
   annotations:
     cert-manager.io/cluster-issuer: cluster-issuer-acme

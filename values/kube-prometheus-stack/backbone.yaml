@@ -31,7 +31,7 @@ grafana:
   defaultDashboardsTimezone: Asia/Seoul
 
   ingress:
-    enabled: true
+    enabled: false
     ingressClassName: traefik
 
     annotations:
@@ -51,6 +51,16 @@ grafana:
       - secretName: grafana-general-tls
         hosts:
           - grafana.bhyoo.com
+
+  route:
+    main:
+      enabled: true
+      hostnames:
+        - grafana.bhyoo.com
+      parentRefs:
+        - name: bhyoo-gateway
+          namespace: ingress-ctrl
+          sectionName: https
 
   resources:
     requests:
@@ -278,7 +288,7 @@ prometheusOperator:
 ##
 prometheus:
   ingress:
-    enabled: true
+    enabled: false
     ingressClassName: traefik
 
     annotations:
@@ -294,6 +304,16 @@ prometheus:
       - secretName: prometheus-general-tls
         hosts:
           - prometheus.bhyoo.com
+
+  route:
+    main:
+      enabled: true
+      hostnames:
+        - prometheus.bhyoo.com
+      parentRefs:
+        - name: bhyoo-gateway
+          namespace: ingress-ctrl
+          sectionName: https
 
   prometheusSpec:
     podMonitorSelectorNilUsesHelmValues: false

@@ -4,8 +4,25 @@ gateway:
     type: posix
     args: "/mnt/data"
 
+httpRoute:
+  enabled: true
+  parentRefs:
+    - name: bhyoo-gateway
+      namespace: ingress-ctrl
+      sectionName: https
+  hostnames:
+    - s3.bhyoo.com
+
 admin:
   enabled: true
+  httpRoute:
+    enabled: true
+    parentRefs:
+      - name: bhyoo-gateway
+        namespace: ingress-ctrl
+        sectionName: https
+    hostnames:
+      - admin-s3.bhyoo.com
 
 webui:
   enabled: true
@@ -13,6 +30,14 @@ webui:
     - "https://s3.bhyoo.com"
   adminGateways:
     - "https://admin-s3.bhyoo.com"
+  httpRoute:
+    enabled: true
+    parentRefs:
+      - name: bhyoo-gateway
+        namespace: ingress-ctrl
+        sectionName: https
+    hostnames:
+      - versitygw.bhyoo.com
 
 iam:
   enabled: true
@@ -26,7 +51,7 @@ persistence:
   claimName: versitygw-data
 
 ingress:
-  enabled: true
+  enabled: false
   className: traefik
   annotations:
     external-dns.alpha.kubernetes.io/cloudflare-proxied: "false"
