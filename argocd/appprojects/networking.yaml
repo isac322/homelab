@@ -14,6 +14,14 @@ spec:
       name: backbone
     - namespace: ingress-ctrl
       name: backbone
+    - namespace: hindsight
+      name: backbone
+    - namespace: immich
+      name: backbone
+    - namespace: object-storage
+      name: backbone
+    - namespace: prometheus
+      name: backbone
   clusterResourceWhitelist:
     - group: '*'
       kind: '*'
