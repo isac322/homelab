@@ -18,6 +18,12 @@ spec:
           - $homelab/values/argo-cd/backbone.yaml
       repoURL: https://argoproj.github.io/argo-helm
       targetRevision: 9.5.21
+  ignoreDifferences:
+    - group: gateway.networking.k8s.io
+      kind: HTTPRoute
+      jqPathExpressions:
+        - .spec.parentRefs[].group
+        - .spec.parentRefs[].kind
   syncPolicy:
     automated:
       prune: true
