@@ -19,6 +19,7 @@ resources:
 sources:
   - node
   - service
+  - gateway-httproute
   - ingress
 
 policy: sync
@@ -34,3 +35,5 @@ provider:
 
 extraArgs:
   - --service-type-filter=LoadBalancer
+  - --gateway-name=bhyoo-gateway
+  - --gateway-namespace=ingress-ctrl
