@@ -36,6 +36,7 @@ spec:
       limit: -1
     syncOptions:
       - ServerSideApply=true
+      - RespectIgnoreDifferences=true
 ---
 apiVersion: argoproj.io/v1alpha1
 kind: Application

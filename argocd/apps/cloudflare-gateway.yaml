@@ -13,6 +13,11 @@ spec:
     repoURL: https://github.com/kubernetes-sigs/gateway-api.git
     path: config/crd/standard
     targetRevision: v1.4.1
+  ignoreDifferences:
+    - group: apiextensions.k8s.io
+      kind: CustomResourceDefinition
+      jqPathExpressions:
+        - .status
   syncPolicy:
     automated:
       prune: true
@@ -26,6 +31,7 @@ spec:
     syncOptions:
       - CreateNamespace=true
       - ServerSideApply=true
+      - RespectIgnoreDifferences=true
 ---
 apiVersion: argoproj.io/v1alpha1
 kind: Application
@@ -70,6 +76,14 @@ spec:
     repoURL: https://github.com/isac322/homelab.git
     path: apps/objects/cloudflare-gateway
     targetRevision: HEAD
+  ignoreDifferences:
+    - group: external-secrets.io
+      kind: ExternalSecret
+      jqPathExpressions:
+        - .spec.data[].remoteRef.conversionStrategy
+        - .spec.data[].remoteRef.decodingStrategy
+        - .spec.data[].remoteRef.metadataPolicy
+        - .spec.data[].remoteRef.nullBytePolicy
   syncPolicy:
     automated:
       prune: true
@@ -83,3 +97,4 @@ spec:
     syncOptions:
       - CreateNamespace=true
       - ServerSideApply=true
+      - RespectIgnoreDifferences=true
