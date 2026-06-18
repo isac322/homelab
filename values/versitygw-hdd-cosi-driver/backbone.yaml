@@ -1,9 +1,5 @@
 driver:
   name: versitygw-hdd.cosi.dev
-  # Chart 0.3.7 ships Chart.AppVersion=0.3.7 but no image 0.3.7 was published;
-  # explicitly pin to the released app image (0.4.0).
-  image:
-    tag: "0.4.0"
   resources:
     requests:
       cpu: 10m
