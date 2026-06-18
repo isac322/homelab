@@ -20,7 +20,6 @@ sources:
   - node
   - service
   - gateway-httproute
-  - ingress
 
 policy: sync
 
