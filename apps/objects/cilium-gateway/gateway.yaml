@@ -9,6 +9,9 @@ metadata:
     cert-manager.io/private-key-size: "384"
 spec:
   gatewayClassName: cilium
+  infrastructure:
+    annotations:
+      io.cilium.nodeipam/match-node-labels: "homelab.bhyoo.com/cilium-envoy=true"
   listeners:
     - name: https
       port: 443

@@ -10,6 +10,7 @@ k8s_node_labels:
   - "homelab.bhyoo.com/nn-sdk=rknn"
   - "homelab.bhyoo.com/media-api=rkmpp"
   - "homelab.bhyoo.com/zfs-node=true"
+  - "homelab.bhyoo.com/cilium-envoy=true"
 
 # wireguard_mesh
 wireguard_ip: "10.222.0.4"

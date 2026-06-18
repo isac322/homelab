@@ -7,6 +7,7 @@ gateway_ip: 192.168.219.1
 is_k8s_master: true
 k8s_node_labels:
   - "homelab.bhyoo.com/vpn-gateway=true"
+  - "homelab.bhyoo.com/cilium-envoy=true"
 
 # iptables-firewall
 is_wireguard_gateway: true

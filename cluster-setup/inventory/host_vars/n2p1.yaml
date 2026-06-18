@@ -7,6 +7,7 @@ gateway_ip: 192.168.219.1
 is_k8s_master: false
 k8s_node_labels:
   - "homelab.bhyoo.com/gpu=mali"
+  - "homelab.bhyoo.com/cilium-envoy=true"
 
 wireguard_ip: "10.222.0.1"
 
