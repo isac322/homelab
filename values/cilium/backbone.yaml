@@ -142,10 +142,6 @@ envoy:
       memory: 64Mi
     limits:
       memory: 512Mi
-  # rpi4 (Raspberry Pi 4) 제외:
-  # rpi-v8 커널은 CONFIG_ARM64_VA_BITS=39라 Envoy의 tcmalloc(48-bit VA 가정,
-  # 1GB-aligned mmap을 13TB 영역에서 시도)이 init 단계에서 mmap 실패 → CrashLoopBackOff.
-  # cilium-agent는 Go 기반이라 영향 없음. rpi4의 Pod L7 트래픽은 KPR이 다른 노드의 envoy로 라우팅.
   affinity:
     nodeAffinity:
       requiredDuringSchedulingIgnoredDuringExecution:
@@ -155,10 +151,6 @@ envoy:
                 operator: NotIn
                 values:
                   - "true"
-              - key: kubernetes.io/hostname
-                operator: NotIn
-                values:
-                  - rpi4
     podAntiAffinity:
       requiredDuringSchedulingIgnoredDuringExecution:
         - labelSelector:
