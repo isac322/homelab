@@ -45,6 +45,10 @@ SOURCES_URL=https://archive.raspberrypi.com/debian/dists/trixie/main/source/Sour
 # tools / docs stuff we explicitly skip via DEB_BUILD_PROFILES below).
 APT_PACKAGES=(
   build-essential
+  # armhf toolchain - listed in the union Build-Depends-Arch even when we
+  # only build the v8 (arm64) flavour; dpkg-checkbuilddeps would otherwise
+  # reject the build with "gcc-arm-linux-gnueabihf" missing.
+  gcc-arm-linux-gnueabihf
   bc bison flex
   libssl-dev libelf-dev
   kmod cpio rsync gawk dwarves zstd xz-utils lz4
@@ -155,7 +159,11 @@ rm -f debian/control debian/control.md5sum
 make -f debian/rules debian/control 2>&1 | tail -3 || true
 
 echo "=== dpkg-buildpackage start $(date) ==="
-dpkg-buildpackage -b -uc -us \
+# -d skips dpkg-checkbuilddeps. RPi inherits Debian's union Build-Depends-Arch
+# which lists `gcc-14-for-host` - a sid-only virtual package not present in
+# trixie. The actual aarch64 toolchain (gcc-14 / build-essential) is installed,
+# so the check is a false positive on this distro.
+dpkg-buildpackage -b -uc -us -d \
   -Pnocheck,pkg.linux.mintools,pkg.linux.nokerneldoc,pkg.linux.nosource,pkg.linux.norust,nodoc
 echo "=== dpkg-buildpackage end $(date) ==="
 
