@@ -143,10 +143,7 @@ set -eu
 container_arch=$(dpkg --print-architecture)
 echo "container arch: $container_arch"
 
-# `pkg.linux.quick` skips linux-libc-dev-{arm64,armhf}-cross (whose
-# dh_install symlink-farm step is flaky in native arm64 builds). It does
-# NOT skip the metapackages we actually ship.
-common_profiles="nocheck pkg.linux.mintools pkg.linux.nokerneldoc pkg.linux.nosource pkg.linux.norust pkg.linux.quick nodoc"
+common_profiles="nocheck pkg.linux.mintools pkg.linux.nokerneldoc pkg.linux.nosource pkg.linux.norust nodoc"
 
 if [ "$container_arch" = "amd64" ]; then
     # Cross-build amd64 -> arm64.
@@ -157,10 +154,10 @@ if [ "$container_arch" = "amd64" ]; then
     arch_flag="-aarm64"
     dep_flag="-d"
 elif [ "$container_arch" = "arm64" ]; then
-    # Native arm64 build, no cross profile / no arch override needed.
+    # Native arm64. No cross profile and no arch override needed.
     profiles="$common_profiles"
     arch_flag=""
-    # Same `gcc-14-for-host` story applies in native too.
+    # Same `gcc-14-for-host` false positive as the cross path.
     dep_flag="-d"
 else
     echo "unsupported container arch: $container_arch" >&2
@@ -173,6 +170,25 @@ export DEB_BUILD_OPTIONS="parallel=$(nproc) nocheck"
 
 rm -f debian/control debian/control.md5sum
 make -f debian/rules debian/control 2>&1 | tail -3 || true
+
+# The cross libc-dev packages (linux-libc-dev-arm64-cross,
+# linux-libc-dev-armhf-cross) try to install symlink farms that are not
+# created during native arm64 builds. We do not ship them anyway, so drop
+# both blocks from debian/control before dpkg-buildpackage looks at it.
+python3 - <<PY
+import re
+from pathlib import Path
+p = Path("debian/control")
+text = p.read_text()
+for name in ("linux-libc-dev-arm64-cross", "linux-libc-dev-armhf-cross"):
+    text = re.sub(
+        r"Package: " + re.escape(name) + r"\n.*?(?=\nPackage: |\Z)",
+        "",
+        text,
+        flags=re.S,
+    )
+p.write_text(text)
+PY
 
 echo "=== dpkg-buildpackage start $(date) ==="
 dpkg-buildpackage -b $arch_flag -uc -us $dep_flag -P"$profiles_csv"
