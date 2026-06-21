@@ -133,18 +133,103 @@ jobs:
           set -ex
 
           NOTES_FILE=$(mktemp)
-          cat > "$NOTES_FILE" <<EOF
-          Custom RPi v8 kernel for rpi4 with \`CONFIG_ARM64_VA_BITS=48\`
+          cat > "$NOTES_FILE" <<'BODY_EOF'
+          Custom RPi v8 kernel for rpi4 with `CONFIG_ARM64_VA_BITS=48`
           (PGTABLE_LEVELS=4, 4K pages preserved).
 
-          Based on upstream raspberrypi/linux source version \`${LATEST}\`.
+          Based on upstream raspberrypi/linux source version `__LATEST__`.
           Package names are identical to the official RPi packages so
-          \`dpkg -i\` overwrites them in place. Version suffix
-          \`+isacva48.1\` ranks higher than \`+rpt1\`.
+          `dpkg -i` overwrites them in place. Version suffix
+          `+isacva48.1` ranks higher than `+rpt1`.
 
-          See [tools/rpi-kernel-va48/README.md](https://github.com/${{ github.repository }}/blob/master/tools/rpi-kernel-va48/README.md)
-          for install / recovery instructions and the underlying rationale.
-          EOF
+          See [tools/rpi-kernel-va48/README.md](https://github.com/__REPO__/blob/master/tools/rpi-kernel-va48/README.md)
+          for build details and the underlying rationale.
+
+          ## Install on rpi4
+
+          ### 1) Cache the stock build for offline downgrade
+
+          One-time, idempotent — needed for recovery if the new kernel panics.
+
+          ```bash
+          # FAT32 backup of the currently-running kernel — accessible from
+          # a rescue host even when rpi4 won't boot.
+          sudo cp -n /boot/firmware/kernel8.img  /boot/firmware/kernel8.img.stable-backup
+          sudo cp -n /boot/firmware/initramfs8   /boot/firmware/initramfs8.stable-backup
+
+          # Package-level backup, used to repair the rootfs after a rescue boot.
+          sudo mkdir -p /var/backups/rpi-stable
+          cd /var/backups/rpi-stable
+          sudo apt-get download \
+            linux-image-rpi-v8 linux-base-rpi-v8 linux-headers-rpi-v8 \
+            "linux-image-$(uname -r)" "linux-headers-$(uname -r)" "linux-base-$(uname -r)"
+          ```
+
+          ### 2) Install the custom build
+
+          ```bash
+          TAG="__TAG__"
+          WORK=$(mktemp -d) && cd "$WORK"
+
+          gh release download "$TAG" --repo __REPO__ --pattern '*.deb'
+          rm -f *-dbg_*.deb linux-libc-dev_*.deb
+
+          # Replace the metapackages.
+          sudo apt-mark unhold linux-image-rpi-v8 linux-base-rpi-v8 linux-headers-rpi-v8 2>/dev/null || true
+
+          sudo dpkg -i \
+            linux-kbuild-*+rpt_*_arm64.deb \
+            linux-headers-*+rpt-common-rpi_*_all.deb \
+            linux-base-*+rpt-rpi-v8_*_arm64.deb \
+            linux-headers-*+rpt-rpi-v8_*_arm64.deb \
+            linux-image-*+rpt-rpi-v8_*_arm64.deb \
+            linux-base-rpi-v8_*_arm64.deb \
+            linux-headers-rpi-v8_*_arm64.deb \
+            linux-image-rpi-v8_*_arm64.deb
+
+          # Re-hold so apt cannot silently roll back to +rpt1 when RPi cuts
+          # a new stable — the workflow publishes a fresh VA48 release on
+          # its next daily run instead.
+          sudo apt-mark hold linux-image-rpi-v8 linux-base-rpi-v8 linux-headers-rpi-v8
+
+          # Verify VA_BITS=48 baked in + firmware copy matches /boot/vmlinuz-*.
+          KVER=$(ls -1 /boot/config-*+rpt-rpi-v8 | sed 's,/boot/config-,,' | tail -1)
+          grep '^CONFIG_ARM64_VA_BITS=' "/boot/config-$KVER"   # → 48
+          md5sum /boot/firmware/kernel8.img "/boot/vmlinuz-$KVER"
+
+          sudo reboot
+          ```
+
+          After reboot `uname -r` is unchanged (`+rpt-rpi-v8`); only
+          `CONFIG_ARM64_VA_BITS=48` differs from the stock build.
+
+          ## Recovery from a boot failure
+
+          If the new kernel panics, RPi firmware has no automatic fallback.
+          Power off, pull the microSD, and mount it externally on a rescue
+          host.
+
+          ### 1) Restore the stock kernel on the FAT32 boot partition
+
+          ```bash
+          cp kernel8.img.stable-backup  kernel8.img
+          cp initramfs8.stable-backup   initramfs8
+          sync
+          ```
+
+          ### 2) Boot rpi4 and reinstall the stock packages
+
+          ```bash
+          sudo apt-mark unhold linux-image-rpi-v8 linux-base-rpi-v8 linux-headers-rpi-v8
+          sudo dpkg -i /var/backups/rpi-stable/*.deb
+          ```
+          BODY_EOF
+
+          sed -i \
+            -e "s|__LATEST__|${LATEST}|g" \
+            -e "s|__TAG__|${TAG}|g" \
+            -e "s|__REPO__|${GITHUB_REPOSITORY}|g" \
+            "$NOTES_FILE"
 
           gh release create "$TAG" \
             --repo "$GITHUB_REPOSITORY" \

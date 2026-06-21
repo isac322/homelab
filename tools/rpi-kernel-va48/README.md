@@ -71,47 +71,80 @@ than `+rpt1`, so dpkg accepts it without `--force-downgrade`.
 
 ## Install on rpi4
 
-```bash
-# Download the release assets to /tmp/, then:
-sudo dpkg -i /tmp/linux-kbuild-6.18.34+rpt_*.deb \
-             /tmp/linux-headers-6.18.34+rpt-common-rpi_*.deb \
-             /tmp/linux-base-6.18.34+rpt-rpi-v8_*.deb \
-             /tmp/linux-headers-6.18.34+rpt-rpi-v8_*.deb \
-             /tmp/linux-image-6.18.34+rpt-rpi-v8_*.deb \
-             /tmp/linux-base-rpi-v8_*.deb \
-             /tmp/linux-headers-rpi-v8_*.deb \
-             /tmp/linux-image-rpi-v8_*.deb
+### 1) Cache the stock build for offline downgrade
 
-# Pin the three metapackages so apt does not silently roll back when
-# RPi publishes a new stable — the workflow will build a fresh release
-# instead, which the user explicitly opts into.
+One-time, idempotent — needed for recovery if the new kernel panics.
+
+```bash
+# FAT32 backup of the currently-running kernel — accessible from
+# a rescue host even when rpi4 won't boot.
+sudo cp -n /boot/firmware/kernel8.img  /boot/firmware/kernel8.img.stable-backup
+sudo cp -n /boot/firmware/initramfs8   /boot/firmware/initramfs8.stable-backup
+
+# Package-level backup, used to repair the rootfs after a rescue boot.
+sudo mkdir -p /var/backups/rpi-stable
+cd /var/backups/rpi-stable
+sudo apt-get download \
+  linux-image-rpi-v8 linux-base-rpi-v8 linux-headers-rpi-v8 \
+  "linux-image-$(uname -r)" "linux-headers-$(uname -r)" "linux-base-$(uname -r)"
+```
+
+### 2) Install the custom build
+
+```bash
+# Resolve the latest VA48 release tag.
+TAG=$(gh release list --repo isac322/homelab --limit 50 \
+        --json tagName -q '[.[] | select(.tagName | startswith("rpi-kernel-va48-"))][0].tagName')
+WORK=$(mktemp -d) && cd "$WORK"
+
+gh release download "$TAG" --repo isac322/homelab --pattern '*.deb'
+rm -f *-dbg_*.deb linux-libc-dev_*.deb
+
+# Replace the metapackages.
+sudo apt-mark unhold linux-image-rpi-v8 linux-base-rpi-v8 linux-headers-rpi-v8 2>/dev/null || true
+
+sudo dpkg -i \
+  linux-kbuild-*+rpt_*_arm64.deb \
+  linux-headers-*+rpt-common-rpi_*_all.deb \
+  linux-base-*+rpt-rpi-v8_*_arm64.deb \
+  linux-headers-*+rpt-rpi-v8_*_arm64.deb \
+  linux-image-*+rpt-rpi-v8_*_arm64.deb \
+  linux-base-rpi-v8_*_arm64.deb \
+  linux-headers-rpi-v8_*_arm64.deb \
+  linux-image-rpi-v8_*_arm64.deb
+
+# Re-hold so apt cannot silently roll back to +rpt1 when RPi cuts
+# a new stable — the workflow publishes a fresh VA48 release on
+# its next daily run instead.
 sudo apt-mark hold linux-image-rpi-v8 linux-base-rpi-v8 linux-headers-rpi-v8
 
-# kernel8.img / initramfs8 / dtbs are updated automatically by the
-# raspi-firmware postinst hook. Verify:
-grep '^CONFIG_ARM64_VA_BITS=' /boot/config-6.18.34+rpt-rpi-v8   # → 48
-md5sum /boot/firmware/kernel8.img /boot/vmlinuz-6.18.34+rpt-rpi-v8  # equal
+# Verify VA_BITS=48 baked in + firmware copy matches /boot/vmlinuz-*.
+KVER=$(ls -1 /boot/config-*+rpt-rpi-v8 | sed 's,/boot/config-,,' | tail -1)
+grep '^CONFIG_ARM64_VA_BITS=' "/boot/config-$KVER"   # → 48
+md5sum /boot/firmware/kernel8.img "/boot/vmlinuz-$KVER"
 
 sudo reboot
 ```
 
-After reboot, `uname -r` reports the same name as before
-(`6.18.34+rpt-rpi-v8` — package name unchanged), and
-`grep CONFIG_ARM64_VA_BITS= /boot/config-$(uname -r)` reports `48`.
+After reboot `uname -r` is unchanged (`+rpt-rpi-v8`); only
+`CONFIG_ARM64_VA_BITS=48` differs from the stock build.
 
 ## Recovery from a boot failure
 
-If the new kernel panics, RPi firmware has no fallback. Recovery is
-done with the microSD card mounted externally over USB:
+If the new kernel panics, RPi firmware has no automatic fallback.
+Power off, pull the microSD, and mount it externally on a rescue host.
 
-1. Mount the FAT32 boot partition (first partition).
-2. Restore the stock kernel (kept on the partition by the workflow run
-   that installed the custom build):
-   ```bash
-   cp kernel8.img.stable-backup    kernel8.img
-   cp initramfs8.stable-backup     initramfs8
-   sync
-   ```
-3. Boot rpi4. After SSH is back, the cached `.deb` files at
-   `/var/backups/rpi-stable-6.18.34/` provide a fully-package-managed
-   downgrade path back to the official RPi build.
+### 1) Restore the stock kernel on the FAT32 boot partition
+
+```bash
+cp kernel8.img.stable-backup  kernel8.img
+cp initramfs8.stable-backup   initramfs8
+sync
+```
+
+### 2) Boot rpi4 and reinstall the stock packages
+
+```bash
+sudo apt-mark unhold linux-image-rpi-v8 linux-base-rpi-v8 linux-headers-rpi-v8
+sudo dpkg -i /var/backups/rpi-stable/*.deb
+```
