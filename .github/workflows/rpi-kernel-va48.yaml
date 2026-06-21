@@ -1,0 +1,164 @@
+name: RPi v8 kernel (VA_BITS=48)
+
+# Builds a custom linux-image-rpi-v8 package with CONFIG_ARM64_VA_BITS=48
+# whenever RPi publishes a new linux source version in their trixie archive.
+#
+# - daily schedule: checks the archive for a new source version
+# - if a GitHub release for that version already exists, the workflow exits
+#   without spending build minutes
+# - otherwise it cross-builds and publishes a release with the resulting .deb
+#   files attached as assets
+#
+# Manual trigger via workflow_dispatch always rebuilds against the current
+# archive head, regardless of existing releases (force=true input).
+
+on:
+  schedule:
+    # 00:00 UTC daily (≈ 09:00 KST)
+    - cron: '0 0 * * *'
+
+  workflow_dispatch:
+    inputs:
+      force:
+        description: 'Rebuild even if a release for the current archive version already exists'
+        type: boolean
+        default: false
+
+  push:
+    branches:
+      - master
+    paths:
+      - tools/rpi-kernel-va48/**
+      - .github/workflows/rpi-kernel-va48.yaml
+
+permissions:
+  contents: write
+
+jobs:
+  check:
+    name: Check for new RPi source version
+    runs-on: ubuntu-latest
+    outputs:
+      should_build: ${{ steps.check.outputs.should_build }}
+      latest_version: ${{ steps.check.outputs.latest_version }}
+      release_tag: ${{ steps.check.outputs.release_tag }}
+    steps:
+      - name: Fetch latest RPi linux source version and compare with existing releases
+        id: check
+        env:
+          GH_TOKEN: ${{ github.token }}
+          FORCE: ${{ github.event.inputs.force }}
+        # language=Bash
+        run: |
+          set -euo pipefail
+
+          curl -sfL -m 30 \
+            https://archive.raspberrypi.com/debian/dists/trixie/main/source/Sources.gz \
+            -o /tmp/Sources.gz
+          gunzip -c /tmp/Sources.gz > /tmp/Sources.txt
+          LATEST=$(awk '/^Package: linux$/{found=1; next} found && /^Version:/{print $2; exit} /^$/{found=0}' /tmp/Sources.txt)
+          [ -n "$LATEST" ] || { echo "FAIL: archive does not expose src:linux"; exit 1; }
+          echo "Latest RPi source version: $LATEST"
+
+          # Sanitize for use as a git tag: replace ':' and '+' (both legal in
+          # Debian versions, illegal/unsafe in tag refs / release asset URLs).
+          TAG_VER="${LATEST//:/-}"
+          TAG_VER="${TAG_VER//+/-}"
+          TAG="rpi-kernel-va48-${TAG_VER}"
+          echo "release_tag=$TAG" >> "$GITHUB_OUTPUT"
+          echo "latest_version=$LATEST" >> "$GITHUB_OUTPUT"
+          echo "Release tag: $TAG"
+
+          if [ "${FORCE:-false}" = "true" ]; then
+            echo "Force rebuild requested via workflow_dispatch"
+            echo "should_build=true" >> "$GITHUB_OUTPUT"
+            exit 0
+          fi
+
+          if gh release view "$TAG" --repo "$GITHUB_REPOSITORY" >/dev/null 2>&1; then
+            echo "Release $TAG already exists - skipping build"
+            echo "should_build=false" >> "$GITHUB_OUTPUT"
+          else
+            echo "Release $TAG does not exist - will build"
+            echo "should_build=true" >> "$GITHUB_OUTPUT"
+          fi
+
+  build:
+    name: Cross-build & publish release
+    needs: check
+    if: needs.check.outputs.should_build == 'true'
+    runs-on: ubuntu-latest
+    timeout-minutes: 45
+    env:
+      BUILD_DIR: ${{ github.workspace }}/build-work
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v6
+
+      - name: Build the builder image
+        # language=Bash
+        run: |
+          set -ex
+          docker build -t rpi-kernel-builder:trixie tools/rpi-kernel-va48/
+
+      - name: Build kernel packages
+        # language=Bash
+        run: |
+          set -ex
+          bash tools/rpi-kernel-va48/build.sh
+
+      - name: Reclaim ownership of build outputs
+        # docker run wrote files as root; bring them back under the runner.
+        # language=Bash
+        run: |
+          set -ex
+          sudo chown -R "$(id -u):$(id -g)" "$BUILD_DIR"
+
+      - name: List artifacts
+        # language=Bash
+        run: |
+          set -ex
+          ls -la "$BUILD_DIR/out/"
+
+      - name: Sanity check - VA_BITS=48 baked into the kernel config
+        # language=Bash
+        run: |
+          set -ex
+          IMAGE_DEB=$(ls "$BUILD_DIR"/out/linux-image-6.*+rpt-rpi-v8_*+isacva48.*_arm64.deb | head -1)
+          tmp=$(mktemp -d)
+          dpkg-deb -x "$IMAGE_DEB" "$tmp"
+          CFG=$(ls "$tmp"/boot/config-* | head -1)
+          grep -E '^CONFIG_ARM64_VA_BITS|^CONFIG_PGTABLE_LEVELS|^CONFIG_ARM64_4K_PAGES' "$CFG"
+          grep -q '^CONFIG_ARM64_VA_BITS=48$' "$CFG"
+          grep -q '^CONFIG_PGTABLE_LEVELS=4$' "$CFG"
+          grep -q '^CONFIG_ARM64_4K_PAGES=y$' "$CFG"
+          rm -rf "$tmp"
+
+      - name: Publish GitHub release
+        env:
+          GH_TOKEN: ${{ github.token }}
+          TAG: ${{ needs.check.outputs.release_tag }}
+          LATEST: ${{ needs.check.outputs.latest_version }}
+        # language=Bash
+        run: |
+          set -ex
+
+          NOTES_FILE=$(mktemp)
+          cat > "$NOTES_FILE" <<EOF
+          Custom RPi v8 kernel for rpi4 with \`CONFIG_ARM64_VA_BITS=48\`
+          (PGTABLE_LEVELS=4, 4K pages preserved).
+
+          Based on upstream raspberrypi/linux source version \`${LATEST}\`.
+          Package names are identical to the official RPi packages so
+          \`dpkg -i\` overwrites them in place. Version suffix
+          \`+isacva48.1\` ranks higher than \`+rpt1\`.
+
+          See [tools/rpi-kernel-va48/README.md](https://github.com/${{ github.repository }}/blob/master/tools/rpi-kernel-va48/README.md)
+          for install / recovery instructions and the underlying rationale.
+          EOF
+
+          gh release create "$TAG" \
+            --repo "$GITHUB_REPOSITORY" \
+            --title "RPi v8 kernel (VA_BITS=48) — ${LATEST}" \
+            --notes-file "$NOTES_FILE" \
+            "$BUILD_DIR"/out/*.deb
