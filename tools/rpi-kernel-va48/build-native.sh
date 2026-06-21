@@ -151,7 +151,12 @@ sed -i "/^linux (1:${ORIG_VER}-1+rpt1) trixie;/,/^ -- Serge Schneider/d" debian/
 head -10 debian/changelog
 
 echo "[7/7] native dpkg-buildpackage (v8 only)..."
-export DEB_BUILD_PROFILES="nocheck pkg.linux.mintools pkg.linux.nokerneldoc pkg.linux.nosource pkg.linux.norust nodoc"
+# pkg.linux.quick disables linux-libc-dev-{arm64,armhf}-cross packages
+# (whose `dh_install --sourcedir=debian/build/build_libc-dev/output` step
+# fails when the symlink farm did not get created — repro on ubuntu noble
+# arm64 runners). The metapackages we actually care about (image / headers
+# / base) are NOT gated by this profile, so they still get built.
+export DEB_BUILD_PROFILES="nocheck pkg.linux.mintools pkg.linux.nokerneldoc pkg.linux.nosource pkg.linux.norust pkg.linux.quick nodoc"
 export DEB_BUILD_OPTIONS="parallel=$(nproc) nocheck"
 
 # Regenerate debian/control from templates
