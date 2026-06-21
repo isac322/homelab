@@ -1,3 +1,9 @@
+# Cross-build environment for build-cross.sh
+#
+# Used when the host is amd64 (e.g. a developer workstation) and you want to
+# build the rpi4 kernel package without setting up multiarch on the host
+# itself. CI (which already runs on a `ubuntu-24.04-arm` runner) uses
+# build-native.sh instead and does NOT need this image.
 FROM debian:trixie
 ENV DEBIAN_FRONTEND=noninteractive
 RUN dpkg --add-architecture arm64 \

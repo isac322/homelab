@@ -84,10 +84,10 @@ jobs:
           fi
 
   build:
-    name: Cross-build & publish release
+    name: Native arm64 build & publish release
     needs: check
     if: needs.check.outputs.should_build == 'true'
-    runs-on: ubuntu-latest
+    runs-on: ubuntu-24.04-arm
     timeout-minutes: 45
     env:
       BUILD_DIR: ${{ github.workspace }}/build-work
@@ -95,24 +95,12 @@ jobs:
       - name: Checkout
         uses: actions/checkout@v6
 
-      - name: Build the builder image
-        # language=Bash
-        run: |
-          set -ex
-          docker build -t rpi-kernel-builder:trixie tools/rpi-kernel-va48/
-
       - name: Build kernel packages
+        # build-native.sh handles its own `apt-get install` of build-deps.
         # language=Bash
         run: |
           set -ex
-          bash tools/rpi-kernel-va48/build.sh
-
-      - name: Reclaim ownership of build outputs
-        # docker run wrote files as root; bring them back under the runner.
-        # language=Bash
-        run: |
-          set -ex
-          sudo chown -R "$(id -u):$(id -g)" "$BUILD_DIR"
+          bash tools/rpi-kernel-va48/build-native.sh
 
       - name: List artifacts
         # language=Bash

@@ -1,11 +1,17 @@
 #!/usr/bin/env bash
 # Build RPi v8 kernel package with CONFIG_ARM64_VA_BITS_48=y for rpi4.
 #
+# Native arm64 build — designed to run either on a Debian trixie arm64 host
+# (e.g. rpi5, an arm64 VM) or on a `ubuntu-24.04-arm` GitHub Actions runner.
+# Cross-compilation tooling is intentionally NOT used: cross builds need
+# multiarch apt and a different toolchain wrapper, neither of which is
+# necessary when the runner is already aarch64.
+#
 # Always picks up the LATEST source version currently published by RPi in the
 # trixie archive — no version pinning. The resulting .deb files use the same
-# package names as the official linux-image-rpi-v8 metapackage chain, with the
-# version suffix "+isacva48.1" so dpkg treats them as a higher version and
-# correctly overwrites the official files (including kernel8.img).
+# package names as the official `linux-image-rpi-v8` metapackage chain, with
+# the version suffix "+isacva48.1" so dpkg treats them as a higher version
+# and correctly overwrites the official files (including kernel8.img).
 #
 # Why this build exists:
 #   The official RPi kernel (linux-image-rpi-v8) is built with
@@ -13,36 +19,50 @@
 #   (hardcoded 48-bit VA assumption on aarch64) to abort during init.
 #   This rebuild changes only that one Kconfig knob to VA_BITS=48.
 #
-# Usage (local):
+# Usage:
 #   bash tools/rpi-kernel-va48/build.sh
-#   # → out/*.deb (or $BUILD_DIR/out/*.deb if BUILD_DIR is set)
+#   # → $BUILD_DIR/out/*.deb  (default BUILD_DIR is the current directory)
 #
 # Env vars (optional):
-#   BUILD_DIR   working directory (default: $PWD)
-#   DOCKER_HOST docker daemon endpoint (default: docker default)
+#   BUILD_DIR      working directory (default: $PWD)
+#   SKIP_APT_INSTALL  if "1", skip the apt-get install step (caller already
+#                    has all build-deps).
 #
 # Requirements:
-#   * docker (any modern version)
-#   * curl, sha256sum, sed, awk (standard host tools)
+#   * Debian trixie (or compatible) arm64 host
+#   * sudo (for apt-get install)
+#   * Internet access to archive.raspberrypi.com
 
 set -euo pipefail
 
 BUILD_DIR=${BUILD_DIR:-$(pwd)}
 SRC_DIR=$BUILD_DIR/src
 OUT_DIR=$BUILD_DIR/out
-SCRIPT_DIR=$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)
 RPI_POOL=https://archive.raspberrypi.com/debian/pool/main/l/linux
 SOURCES_URL=https://archive.raspberrypi.com/debian/dists/trixie/main/source/Sources.gz
-BUILDER_IMAGE=rpi-kernel-builder:trixie
+
+# Build-deps for the official Debian linux source package (minus the Rust /
+# tools / docs stuff we explicitly skip via DEB_BUILD_PROFILES below).
+APT_PACKAGES=(
+  build-essential
+  bc bison flex
+  libssl-dev libelf-dev
+  kmod cpio rsync gawk dwarves zstd xz-utils lz4
+  python3 python3-toml python3-jinja2 python3-debian python3-six python3-dacite python3-pyparsing
+  quilt patchutils
+  debhelper devscripts dh-exec dh-python
+  fakeroot pahole
+  ca-certificates curl
+  kernel-wedge
+)
 
 mkdir -p "$SRC_DIR" "$OUT_DIR"
 
-echo "[0/7] builder 이미지 준비 (없으면 build)..."
-if ! docker image inspect "$BUILDER_IMAGE" >/dev/null 2>&1; then
-  echo "   building $BUILDER_IMAGE from $SCRIPT_DIR/Dockerfile"
-  docker build -t "$BUILDER_IMAGE" "$SCRIPT_DIR"
-else
-  echo "   $BUILDER_IMAGE already exists - skipping"
+if [ "${SKIP_APT_INSTALL:-0}" != "1" ]; then
+  echo "[0/7] apt-get install build-deps..."
+  sudo apt-get update -q
+  sudo DEBIAN_FRONTEND=noninteractive apt-get install -y --no-install-recommends \
+    "${APT_PACKAGES[@]}"
 fi
 
 echo "[1/7] archive에서 latest linux source version 자동 조회..."
@@ -126,16 +146,8 @@ PY
 sed -i "/^linux (1:${ORIG_VER}-1+rpt1) trixie;/,/^ -- Serge Schneider/d" debian/changelog
 head -10 debian/changelog
 
-echo "[7/7] 컨테이너에서 cross-build (v8 only)..."
-cd "$BUILD_DIR"
-docker run --rm \
-  -v "$BUILD_DIR":/work \
-  -e HOME=/tmp \
-  -w "/work/src/linux-${ORIG_VER}" \
-  "$BUILDER_IMAGE" \
-  bash -c '
-set -eu
-export DEB_BUILD_PROFILES="cross nocheck pkg.linux.mintools pkg.linux.nokerneldoc pkg.linux.nosource pkg.linux.norust nodoc"
+echo "[7/7] native dpkg-buildpackage (v8 only)..."
+export DEB_BUILD_PROFILES="nocheck pkg.linux.mintools pkg.linux.nokerneldoc pkg.linux.nosource pkg.linux.norust nodoc"
 export DEB_BUILD_OPTIONS="parallel=$(nproc) nocheck"
 
 # Regenerate debian/control from templates
@@ -143,16 +155,11 @@ rm -f debian/control debian/control.md5sum
 make -f debian/rules debian/control 2>&1 | tail -3 || true
 
 echo "=== dpkg-buildpackage start $(date) ==="
-dpkg-buildpackage -b -aarm64 -uc -us -d \
-  -Pcross,nocheck,pkg.linux.mintools,pkg.linux.nokerneldoc,pkg.linux.nosource,pkg.linux.norust,nodoc \
-  2>&1
+dpkg-buildpackage -b -uc -us \
+  -Pnocheck,pkg.linux.mintools,pkg.linux.nokerneldoc,pkg.linux.nosource,pkg.linux.norust,nodoc
 echo "=== dpkg-buildpackage end $(date) ==="
 
-# Collect .deb output to /work/out (host visible).
-mkdir -p /work/out
-cp -v /work/src/*.deb /work/out/
-ls -la /work/out
-'
+cp -v "$SRC_DIR"/*.deb "$OUT_DIR/"
 
 echo
 echo "=== build 완료: $OUT_DIR ==="

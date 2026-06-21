@@ -20,8 +20,8 @@ device trees, overlays) is the unmodified upstream RPi v8 build.
 ## Automation
 
 The [`rpi-kernel-va48`](../../.github/workflows/rpi-kernel-va48.yaml)
-workflow runs daily, polls the RPi `trixie` archive for the latest
-`src:linux` source version, and:
+workflow runs daily on a `ubuntu-24.04-arm` runner, polls the RPi
+`trixie` archive for the latest `src:linux` source version, and:
 
 * **skips** if a release tagged for that exact version already exists,
 * **builds + publishes** a GitHub release otherwise, attaching all 8
@@ -31,15 +31,48 @@ So as soon as RPi cuts a new stable, this repo ships a `VA_BITS=48`
 counterpart on the next daily run. Releases are named
 `rpi-kernel-va48-<sanitized-version>` (e.g. `rpi-kernel-va48-1-6.18.34-1-rpt1`).
 
-## Manual build
+## Two build scripts
+
+This directory ships two complementary entry points. They produce the
+**same set of .deb files** — they only differ in how they reach an
+aarch64 build environment:
+
+| Script | Host arch | Container? | Used by |
+|---|---|---|---|
+| `build-native.sh` | arm64 (e.g. rpi5 / `ubuntu-24.04-arm`) | no | the daily workflow |
+| `build-cross.sh`  | amd64 workstation                     | yes (`Dockerfile`) | local developer builds |
+
+`build-cross.sh` carries the extra weight needed to cross-compile from
+x86_64 (multiarch arm64 apt, `crossbuild-essential-arm64`,
+`-aarm64`/`cross` build profile, `-d` to skip the cross-only
+`gcc-14-for-host` virtual dep). `build-native.sh` does none of that —
+it just installs build-deps and runs `dpkg-buildpackage -b` directly.
+
+### Manual native build (on an arm64 host)
 
 ```bash
 cd <homelab repo root>
-bash tools/rpi-kernel-va48/build.sh
+bash tools/rpi-kernel-va48/build-native.sh
 # → out/*.deb (always against the current RPi `trixie` archive head)
 ```
 
-Takes ~8-10 minutes on a 16-core amd64 host. Output:
+Requires a Debian trixie (or compatible) arm64 host with `sudo`. The
+script `apt-get install`s its own build-deps on first run; set
+`SKIP_APT_INSTALL=1` to suppress that step on repeated runs.
+
+### Manual cross build (on an amd64 host)
+
+```bash
+cd <homelab repo root>
+bash tools/rpi-kernel-va48/build-cross.sh
+# → out/*.deb (always against the current RPi `trixie` archive head)
+```
+
+Requires only `docker`. The first run builds the `rpi-kernel-builder:trixie`
+container image from this directory's `Dockerfile`; subsequent runs reuse it.
+
+Either path takes ~8–10 minutes on a 16-core host. Output is the same set
+of files:
 
 * `linux-image-6.18.34+rpt-rpi-v8_<ver>+isacva48.1_arm64.deb` — vmlinuz + modules + dtb
 * `linux-headers-6.18.34+rpt-rpi-v8_…_arm64.deb`
