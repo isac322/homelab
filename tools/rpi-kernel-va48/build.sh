@@ -1,9 +1,13 @@
 #!/usr/bin/env bash
 # Build RPi v8 kernel package with CONFIG_ARM64_VA_BITS_48=y for rpi4.
 #
-# Cross-build from an amd64 host (e.g. a developer workstation) using a
-# debian:trixie container with multiarch arm64 deps. CI does NOT use this
-# script — it runs build-native.sh directly on a `ubuntu-24.04-arm` runner.
+# Works on any host that has docker:
+#   * amd64 host (developer workstation)         → cross build into arm64
+#   * arm64 host (Pi5 / ubuntu-24.04-arm runner) → native build
+# The script lets `docker build --platform=linux/<arch>` resolve to the host
+# architecture, then dispatches to cross or native mode based on
+# `dpkg --print-architecture` inside the container. Same image, same flow,
+# same output .deb files — only the dpkg-buildpackage flags differ.
 #
 # Always picks up the LATEST source version currently published by RPi in the
 # trixie archive — no version pinning. The resulting .deb files use the same
@@ -18,16 +22,16 @@
 #   This rebuild changes only that one Kconfig knob to VA_BITS=48.
 #
 # Usage:
-#   bash tools/rpi-kernel-va48/build-cross.sh
+#   bash tools/rpi-kernel-va48/build.sh
 #   # → $BUILD_DIR/out/*.deb (default BUILD_DIR is the current directory)
 #
 # Env vars (optional):
-#   BUILD_DIR   working directory (default: $PWD)
-#   DOCKER_HOST docker daemon endpoint (default: docker default)
+#   BUILD_DIR    working directory (default: $PWD)
+#   DOCKER_HOST  docker daemon endpoint (default: docker default)
 #
 # Requirements:
 #   * docker
-#   * curl, sha256sum, sed, awk (standard host tools)
+#   * curl, sha256sum (only on the host, for source fetch + verification)
 
 set -euo pipefail
 
@@ -120,10 +124,14 @@ body = (
 )
 p.write_text(header + body + old)
 PY
+# Drop the official `1:<ORIG_VER>-1+rpt1` entry so the gencontrol ABINAME stays
+# as plain `+rpt` (matching the official package name), instead of `+rpt+1`
+# which would collide with z50-raspi-firmware's `sort -V` check on the next
+# install.
 sed -i "/^linux (1:${ORIG_VER}-1+rpt1) trixie;/,/^ -- Serge Schneider/d" debian/changelog
 head -10 debian/changelog
 
-echo "[7/7] 컨테이너에서 cross-build (v8 only)..."
+echo "[7/7] 컨테이너 안에서 build (host arch에 맞춰 cross/native 자동 분기)..."
 cd "$BUILD_DIR"
 docker run --rm \
   -v "$BUILD_DIR":/work \
@@ -132,16 +140,42 @@ docker run --rm \
   "$BUILDER_IMAGE" \
   bash -c '
 set -eu
-export DEB_BUILD_PROFILES="cross nocheck pkg.linux.mintools pkg.linux.nokerneldoc pkg.linux.nosource pkg.linux.norust nodoc"
+container_arch=$(dpkg --print-architecture)
+echo "container arch: $container_arch"
+
+# `pkg.linux.quick` skips linux-libc-dev-{arm64,armhf}-cross (whose
+# dh_install symlink-farm step is flaky in native arm64 builds). It does
+# NOT skip the metapackages we actually ship.
+common_profiles="nocheck pkg.linux.mintools pkg.linux.nokerneldoc pkg.linux.nosource pkg.linux.norust pkg.linux.quick nodoc"
+
+if [ "$container_arch" = "amd64" ]; then
+    # Cross-build amd64 -> arm64.
+    # `-d` skips dpkg-checkbuilddeps because the union Build-Depends-Arch
+    # references `gcc-14-for-host` (sid-only virtual package not in trixie).
+    # The real aarch64 toolchain (crossbuild-essential-arm64) IS installed.
+    profiles="cross $common_profiles"
+    arch_flag="-aarm64"
+    dep_flag="-d"
+elif [ "$container_arch" = "arm64" ]; then
+    # Native arm64 build, no cross profile / no arch override needed.
+    profiles="$common_profiles"
+    arch_flag=""
+    # Same `gcc-14-for-host` story applies in native too.
+    dep_flag="-d"
+else
+    echo "unsupported container arch: $container_arch" >&2
+    exit 1
+fi
+
+profiles_csv=$(echo "$profiles" | tr " " ",")
+export DEB_BUILD_PROFILES="$profiles"
 export DEB_BUILD_OPTIONS="parallel=$(nproc) nocheck"
 
 rm -f debian/control debian/control.md5sum
 make -f debian/rules debian/control 2>&1 | tail -3 || true
 
 echo "=== dpkg-buildpackage start $(date) ==="
-dpkg-buildpackage -b -aarm64 -uc -us -d \
-  -Pcross,nocheck,pkg.linux.mintools,pkg.linux.nokerneldoc,pkg.linux.nosource,pkg.linux.norust,nodoc \
-  2>&1
+dpkg-buildpackage -b $arch_flag -uc -us $dep_flag -P"$profiles_csv"
 echo "=== dpkg-buildpackage end $(date) ==="
 
 mkdir -p /work/out
@@ -149,15 +183,13 @@ cp -v /work/src/*.deb /work/out/
 ls -la /work/out
 '
 
-# Bring outputs back under the host user (docker writes them as root).
+# Bring outputs back under the host user when the container ran as root.
 if [ "$(id -u)" != "0" ]; then
-  USER_UID=$(id -u)
-  USER_GID=$(id -g)
   docker run --rm \
     -v "$BUILD_DIR":/work \
     --entrypoint /bin/sh \
     "$BUILDER_IMAGE" \
-    -c "chown -R $USER_UID:$USER_GID /work/out /work/src"
+    -c "chown -R $(id -u):$(id -g) /work/out /work/src"
 fi
 
 echo

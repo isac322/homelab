@@ -24,55 +24,38 @@ workflow runs daily on a `ubuntu-24.04-arm` runner, polls the RPi
 `trixie` archive for the latest `src:linux` source version, and:
 
 * **skips** if a release tagged for that exact version already exists,
-* **builds + publishes** a GitHub release otherwise, attaching all 8
+* **builds + publishes** a GitHub release otherwise, attaching all the
   `.deb` artifacts.
 
 So as soon as RPi cuts a new stable, this repo ships a `VA_BITS=48`
 counterpart on the next daily run. Releases are named
 `rpi-kernel-va48-<sanitized-version>` (e.g. `rpi-kernel-va48-1-6.18.34-1-rpt1`).
 
-## Two build scripts
+## How the build works
 
-This directory ships two complementary entry points. They produce the
-**same set of .deb files** — they only differ in how they reach an
-aarch64 build environment:
+A single `Dockerfile` + a single `build.sh` cover both build modes:
 
-| Script | Host arch | Container? | Used by |
-|---|---|---|---|
-| `build-native.sh` | arm64 (e.g. rpi5 / `ubuntu-24.04-arm`) | no | the daily workflow |
-| `build-cross.sh`  | amd64 workstation                     | yes (`Dockerfile`) | local developer builds |
+| Host arch | Container arch | Build mode |
+|---|---|---|
+| amd64 (workstation) | amd64 | cross-build (amd64 → arm64) |
+| arm64 (Pi5 / `ubuntu-24.04-arm`) | arm64 | native |
 
-`build-cross.sh` carries the extra weight needed to cross-compile from
-x86_64 (multiarch arm64 apt, `crossbuild-essential-arm64`,
-`-aarm64`/`cross` build profile, `-d` to skip the cross-only
-`gcc-14-for-host` virtual dep). `build-native.sh` does none of that —
-it just installs build-deps and runs `dpkg-buildpackage -b` directly.
+`docker build` resolves to the host architecture automatically; the
+container then inspects its own `dpkg --print-architecture` and toggles
+the cross-compile flags accordingly. Same image, same script, same set
+of output `.deb` files — only the `dpkg-buildpackage` invocation differs.
 
-### Manual native build (on an arm64 host)
+### Manual build
 
 ```bash
 cd <homelab repo root>
-bash tools/rpi-kernel-va48/build-native.sh
+bash tools/rpi-kernel-va48/build.sh
 # → out/*.deb (always against the current RPi `trixie` archive head)
 ```
 
-Requires a Debian trixie (or compatible) arm64 host with `sudo`. The
-script `apt-get install`s its own build-deps on first run; set
-`SKIP_APT_INSTALL=1` to suppress that step on repeated runs.
-
-### Manual cross build (on an amd64 host)
-
-```bash
-cd <homelab repo root>
-bash tools/rpi-kernel-va48/build-cross.sh
-# → out/*.deb (always against the current RPi `trixie` archive head)
-```
-
-Requires only `docker`. The first run builds the `rpi-kernel-builder:trixie`
-container image from this directory's `Dockerfile`; subsequent runs reuse it.
-
-Either path takes ~8–10 minutes on a 16-core host. Output is the same set
-of files:
+Requires only `docker`. The first run builds the
+`rpi-kernel-builder:trixie` image; subsequent runs reuse it. Takes
+~8–10 minutes on a 16-core host. Output:
 
 * `linux-image-6.18.34+rpt-rpi-v8_<ver>+isacva48.1_arm64.deb` — vmlinuz + modules + dtb
 * `linux-headers-6.18.34+rpt-rpi-v8_…_arm64.deb`
@@ -89,7 +72,7 @@ than `+rpt1`, so dpkg accepts it without `--force-downgrade`.
 ## Install on rpi4
 
 ```bash
-# Download the 8 release assets to /tmp/, then:
+# Download the release assets to /tmp/, then:
 sudo dpkg -i /tmp/linux-kbuild-6.18.34+rpt_*.deb \
              /tmp/linux-headers-6.18.34+rpt-common-rpi_*.deb \
              /tmp/linux-base-6.18.34+rpt-rpi-v8_*.deb \
