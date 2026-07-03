@@ -9,7 +9,7 @@ controllers:
     containers:
       main:
         image:
-          tag: v2.7.5
+          tag: v3.0.1
         env:
           REDIS_HOSTNAME: '{{ printf "%s-valkey" .Release.Name }}'
           # Add the env vars to connect to your database here.
@@ -210,7 +210,7 @@ machine-learning:
           image:
             repository: ghcr.io/isac322/immich-machine-learning
             # Keep in sync with persistence.patched-models.volumeSpec.image.reference
-            tag: v2.7.5-rknn
+            tag: v3.0.1-rknn
           env:
             MACHINE_LEARNING_RKNN_THREADS: 3
           securityContext:
@@ -263,7 +263,7 @@ machine-learning:
       volumeSpec:
         image:
           # Keep tag in sync with controllers.main.containers.main.image.tag above
-          reference: ghcr.io/isac322/immich-patched-models:v2.7.5-rknn
+          reference: ghcr.io/isac322/immich-patched-models:v3.0.1-rknn
           pullPolicy: IfNotPresent
       advancedMounts:
         main:
