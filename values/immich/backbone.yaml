@@ -68,10 +68,10 @@ valkey:
           resources:
             requests:
               cpu: 15m
-              memory: 24Mi
+              memory: 48Mi
             limits:
               cpu: 100m
-              memory: 64Mi
+              memory: 128Mi
   persistence:
     data:
       enabled: true
