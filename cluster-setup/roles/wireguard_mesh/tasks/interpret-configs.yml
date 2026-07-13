@@ -46,6 +46,12 @@
     }}"
   loop: "{{ mesh_group_config|dict2items }}"
 
+- name: Initialize edge map for every mesh group
+  run_once: yes
+  ansible.builtin.set_fact:
+    edges_of_group: "{{ edges_of_group | default({}) | combine({ item: [] }) }}"
+  loop: "{{ mesh_group_config.keys() | list }}"
+
 - name: Collect edge map
   run_once: yes
   ansible.builtin.set_fact:
