@@ -1,20 +1,21 @@
 ---
-# Adopt oracle4's existing (sh-installed) k3s control plane into Ansible/GitOps
-# management via xanmanning.k3s. The version is PINNED to the current release so
-# this is a no-behaviour-change adoption: k3s_server replicates oracle4's current
-# k3s.io/node-args exactly, and the SQLite datastore + CA + token under
-# /var/lib/rancher/k3s are preserved (k3s_state: installed, no etcd, no token
-# override). The version upgrade and the wg1 worker-join (bhyoo-desktop as agent)
-# are separate later steps — this playbook targets oracle4 only for now.
+# Manage oracle4's k3s control plane via Ansible/GitOps (xanmanning.k3s). Tracks
+# the `stable` channel like the other homelab clusters (k3s.yaml). oracle4 was
+# adopted from the original sh-install and brought current v1.28.5 -> v1.36.2
+# stepwise. NOTE: a re-run installs whatever `stable` is at that moment, so run it
+# regularly to stay within one minor — a long-neglected node would hit a risky
+# multi-minor jump. k3s_server replicates the node-args; SQLite datastore + CA +
+# token preserved (k3s_state: installed, no etcd). Targets oracle4 only; workers
+# join as self-managed wg1 edges.
 #
 #   preview: ansible-playbook -i inventory-oracle k3s-oracle.yaml --check --diff
 #   apply:   ansible-playbook -i inventory-oracle k3s-oracle.yaml
 - hosts: oracle4
   tasks:
-    - name: Adopt k3s control plane (pinned, no upgrade)
+    - name: Manage k3s control plane (latest stable)
       block:
         - ansible.builtin.set_fact:
-            k3s_release_version: "v1.28.5+k3s1"     # pin to current — adopt, do not upgrade
+            k3s_release_version: stable              # track stable channel (matches homelab k3s.yaml)
             k3s_use_experimental: true              # allow prefer-bundled-bin (xanmanning marks it experimental)
             k3s_become: yes
             k3s_state: installed
