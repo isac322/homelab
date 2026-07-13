@@ -228,3 +228,4 @@ Temporary Items
 
 /cluster-setup/_kubeconfig
 /cluster-setup/_wireguard
+/cluster-setup/_wireguard-oracle

@@ -1,16 +1,16 @@
 ---
 # Dedicated WireGuard underlay (wg1) for oracle4's k3s cluster — SEPARATE from the
-# 10.222.0.0/24 homelab mesh. oracle4 is a public cloud node kept in its own trust
-# domain; this mesh only carries oracle4 <-> its workers (the k3s cluster substrate).
+# 10.222.0.0/24 homelab mesh. oracle4 (the only Ansible-managed member) is the hub;
+# workers join as EDGES that are self-managed (their own systemd `wg-quick@wg1` +
+# `k3s agent`). So this playbook runs only against oracle4: it brings up oracle4's
+# wg1, adds each worker as a peer, and RENDERS each worker's wg1 .conf into
+# _wireguard-oracle/<name>.conf for the user to import. Pod CIDRs ride
+# wireguard_extra_allowed_ips (oracle4) / edge extra_allowed_ips (workers) so
+# flannel host-gw works over wg1.
 #
-# k3s runs over wg1: --node-ip=<wireguard_ip>, --flannel-iface=wg1, flannel host-gw.
-# wireguard_extra_allowed_ips carries each node's podCIDR so host-gw pod traffic
-# passes WireGuard cryptokey routing; NAT'd workers set wireguard_persistent_keepalive
-# so oracle4 (apiserver) can reach their kubelet.
-#
-#   ansible-playbook -i inventory-oracle wireguard-oracle.yaml --ask-become-pass
+#   ansible-playbook -i inventory-oracle wireguard-oracle.yaml
 - hosts: oracle_cluster
-  name: Setup oracle-cluster WireGuard underlay (wg1)
+  name: Setup oracle-cluster WireGuard underlay (wg1) + render worker edge configs
   become: yes
   roles:
     - role: wireguard_mesh
@@ -24,7 +24,13 @@
         wireguard_interface: wg1
         mesh_group_config:
           oracle:
-            cidr: "10.223.0.0/24"
+            cidr: 10.223.0.0/26          # group members (oracle4=.1); edges live in .128+
             ansible_groups: ['oracle_cluster']
             gateway_host: oracle4
-        edges: {}
+        edges:
+          # Self-managed workers (NOT Ansible hosts): the role renders their wg1
+          # .conf into _wireguard-oracle/<name>.conf to import as `wg-quick@wg1`.
+          bhyoo-desktop:
+            ip_address: 10.223.0.129              # edge range (outside the .0/26 group subnet)
+            allowed_groups: [oracle]
+            extra_allowed_ips: ['10.42.1.0/24']   # this worker's k3s podCIDR (host-gw over wg1)
