@@ -219,7 +219,7 @@
             {
               'peers': [{
                 'hostname': edge_peer,
-                'allowed_ips': [(_peer_cfg.ip_address | ansible.utils.ipsubnet)],
+                'allowed_ips': ([(_peer_cfg.ip_address | ansible.utils.ipsubnet)] + (_peer_cfg.extra_allowed_ips | default([]))),
                 'is_edge': true,
               }],
             },

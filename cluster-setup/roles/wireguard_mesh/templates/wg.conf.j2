@@ -8,9 +8,9 @@ PrivateKey = {{ __register_edge_private_keys[item.key] }}
 PublicKey = {{ hostvars[peer]._wireguard.public_key }}
 PresharedKey = {{ hostvars[peer].__register_preshared_keys[item.key] }}
 {% if hostvars[peer]._wireguard.is_site_gateway %}
-AllowedIPs = {{ hostvars[peer]._wireguard.group_cidr }}
+AllowedIPs = {{ ([hostvars[peer]._wireguard.group_cidr] + (hostvars[peer]._wireguard.extra_allowed_ips | default([]))) | join(',') }}
 {% else %}
-AllowedIPs = {{ hostvars[peer]._wireguard.ip_address | ansible.utils.ipsubnet }}
+AllowedIPs = {{ ([hostvars[peer]._wireguard.ip_address | ansible.utils.ipsubnet] + (hostvars[peer]._wireguard.extra_allowed_ips | default([]))) | join(',') }}
 {% endif %}
 Endpoint = {{ hostvars[peer].wireguard_host }}:{{ hostvars[peer].wireguard_port }}
 PersistentKeepalive = 25
