@@ -20,7 +20,9 @@ AllowedIPs={{ peer.allowed_ips | join(',') }}
 {% if peer.endpoint is defined %}
 Endpoint={{ peer.endpoint }}
 {% endif %}
-{% if not peer.is_edge and mesh_group_of_hosts[peer.hostname] != _wireguard.mesh_group %}
+{% if wireguard_persistent_keepalive | default(0) | int > 0 %}
+PersistentKeepalive={{ wireguard_persistent_keepalive | int }}
+{% elif not peer.is_edge and mesh_group_of_hosts[peer.hostname] != _wireguard.mesh_group %}
 PersistentKeepalive=25
 {% endif %}
 {% endfor %}

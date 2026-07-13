@@ -49,6 +49,12 @@ wireguard_ip_address: ""
 # Example: wireguard_extra_allowed_ips: ['10.42.0.0/24']
 wireguard_extra_allowed_ips: []
 
+# PersistentKeepalive (seconds) THIS host sends to all its peers. Set it on hosts
+# behind NAT so the mesh keeps their NAT mapping open and peers can reach back
+# (e.g. an apiserver reaching a kubelet on a NAT'd worker). 0 = disabled; the role
+# still applies keepalive to cross-group peers as before. Typical value: 25.
+wireguard_persistent_keepalive: 0
+
 # The default port WireGuard will listen if not specified otherwise.
 wireguard_port: '51820'
 wireguard_internal_port: '{{ wireguard_port }}'
