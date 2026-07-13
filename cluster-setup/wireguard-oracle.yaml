@@ -1,0 +1,30 @@
+---
+# Dedicated WireGuard underlay (wg1) for oracle4's k3s cluster — SEPARATE from the
+# 10.222.0.0/24 homelab mesh. oracle4 is a public cloud node kept in its own trust
+# domain; this mesh only carries oracle4 <-> its workers (the k3s cluster substrate).
+#
+# k3s runs over wg1: --node-ip=<wireguard_ip>, --flannel-iface=wg1, flannel host-gw.
+# wireguard_extra_allowed_ips carries each node's podCIDR so host-gw pod traffic
+# passes WireGuard cryptokey routing; NAT'd workers set wireguard_persistent_keepalive
+# so oracle4 (apiserver) can reach their kubelet.
+#
+#   ansible-playbook -i inventory-oracle wireguard-oracle.yaml --ask-become-pass
+- hosts: oracle_cluster
+  name: Setup oracle-cluster WireGuard underlay (wg1)
+  become: yes
+  roles:
+    - role: wireguard_mesh
+      vars:
+        cidr_block: "10.223.0.0/24"
+        local_directory: _wireguard-oracle
+        wireguard_port: 51903
+        wireguard_ip_address: "{{ wireguard_ip }}"
+        wireguard_host: "{{ wireguard_external_host | default(inventory_hostname) }}"
+        wireguard_internal_host: "{{ wireguard_external_host | default(inventory_hostname) }}"
+        wireguard_interface: wg1
+        mesh_group_config:
+          oracle:
+            cidr: "10.223.0.0/24"
+            ansible_groups: ['oracle_cluster']
+            gateway_host: oracle4
+        edges: {}

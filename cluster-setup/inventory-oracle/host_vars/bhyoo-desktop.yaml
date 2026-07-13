@@ -1,0 +1,11 @@
+# Home workstation joining oracle4's cluster as a worker over wg1 (behind home NAT).
+ansible_connection: local
+ansible_user: bhyoo
+
+is_k8s_master: false
+
+wireguard_ip: "10.223.0.2"
+# NAT'd worker: keep the mapping open so oracle4 (apiserver) can reach the kubelet.
+wireguard_persistent_keepalive: 25
+wireguard_extra_allowed_ips:
+  - "10.42.1.0/24"   # this node's podCIDR once it joins oracle4's cluster

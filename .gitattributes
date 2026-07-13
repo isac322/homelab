@@ -1,4 +1,5 @@
 terraform.tfstate filter=git-crypt diff=git-crypt
 terraform.tfvars filter=git-crypt diff=git-crypt
 admin_user_info.yaml filter=git-crypt diff=git-crypt
+cluster-setup/inventory-oracle/host_vars/oracle4.yaml filter=git-crypt diff=git-crypt
 .gitattributes !filter !diff
