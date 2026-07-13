@@ -108,6 +108,7 @@
           port: "{{ wireguard_internal_port }}"
           is_site_gateway: "{{ mesh_group_config[mesh_group].gateway_host|default('') == inventory_hostname }}"
           group_cidr: "{{ mesh_group_config[mesh_group].cidr }}"
+          extra_allowed_ips: "{{ wireguard_extra_allowed_ips }}"
       vars:
         mesh_group: "{{ mesh_group_of_hosts[inventory_hostname] }}"
       when: mesh_group_of_hosts[inventory_hostname] != None
@@ -135,9 +136,10 @@
                     |map(attribute='value.cidr')
                     + [_peer_wg_cfg.ip_address | ansible.utils.ipsubnet]
                     + _edge_cidr_blocks
+                    + (_peer_wg_cfg.extra_allowed_ips | default([]))
                   )
                   if _peer_wg_cfg.is_site_gateway else
-                  [_peer_wg_cfg.ip_address | ansible.utils.ipsubnet]
+                  ([_peer_wg_cfg.ip_address | ansible.utils.ipsubnet] + (_peer_wg_cfg.extra_allowed_ips | default([])))
                 ),
                 'endpoint': (
                   [_peer_vars.wireguard_internal_host, _peer_vars.wireguard_internal_port] | join(':')
@@ -173,12 +175,12 @@
             {
               'peers': [{
                 'hostname': peer_hostname,
-                'allowed_ips': [
+                'allowed_ips': ([
                   _peer_wg_cfg.group_cidr
                   if _is_different_group and _peer_wg_cfg.is_site_gateway
                   else
                   (_peer_wg_cfg.ip_address | ansible.utils.ipsubnet)
-                ],
+                ] + (_peer_wg_cfg.extra_allowed_ips | default([]))),
                 'endpoint': (
                   ([_peer_vars.wireguard_host, _peer_vars.wireguard_port] | join(':'))
                   if _is_different_group else

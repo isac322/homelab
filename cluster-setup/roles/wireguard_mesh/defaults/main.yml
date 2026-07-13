@@ -40,6 +40,15 @@ local_directory: "."
 
 wireguard_ip_address: ""
 
+# Extra CIDRs advertised to peers as AllowedIPs for THIS host (in addition to its
+# mesh IP). Each peer appends these to the AllowedIPs of its peer entry for this
+# host, so WireGuard routes/accepts those ranges to/from it. Use it to run a
+# non-encapsulating CNI (e.g. flannel host-gw) over the mesh: set it to the node's
+# pod CIDR so pod-IP traffic passes WireGuard cryptokey routing. CIDRs must not
+# overlap across hosts (each maps to exactly one peer).
+# Example: wireguard_extra_allowed_ips: ['10.42.0.0/24']
+wireguard_extra_allowed_ips: []
+
 # The default port WireGuard will listen if not specified otherwise.
 wireguard_port: '51820'
 wireguard_internal_port: '{{ wireguard_port }}'
