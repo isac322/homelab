@@ -1,0 +1,32 @@
+---
+# Adopt oracle4's existing (sh-installed) k3s control plane into Ansible/GitOps
+# management via xanmanning.k3s. The version is PINNED to the current release so
+# this is a no-behaviour-change adoption: k3s_server replicates oracle4's current
+# k3s.io/node-args exactly, and the SQLite datastore + CA + token under
+# /var/lib/rancher/k3s are preserved (k3s_state: installed, no etcd, no token
+# override). The version upgrade and the wg1 worker-join (bhyoo-desktop as agent)
+# are separate later steps — this playbook targets oracle4 only for now.
+#
+#   preview: ansible-playbook -i inventory-oracle k3s-oracle.yaml --check --diff
+#   apply:   ansible-playbook -i inventory-oracle k3s-oracle.yaml
+- hosts: oracle4
+  tasks:
+    - name: Adopt k3s control plane (pinned, no upgrade)
+      block:
+        - ansible.builtin.set_fact:
+            k3s_release_version: "v1.28.5+k3s1"     # pin to current — adopt, do not upgrade
+            k3s_use_experimental: true              # allow prefer-bundled-bin (xanmanning marks it experimental)
+            k3s_become: yes
+            k3s_state: installed
+            k3s_control_node: true
+            k3s_install_hard_links: true
+            k3s_server:
+              flannel-backend: 'host-gw'
+              disable-helm-controller: true
+              prefer-bundled-bin: true
+              node-external-ip:
+                - "{{ main_public_ip }}"
+              tls-san:
+                - oracle4.bhyoo.com
+        - ansible.builtin.import_role:
+            name: xanmanning.k3s
