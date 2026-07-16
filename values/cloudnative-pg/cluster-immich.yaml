@@ -10,10 +10,10 @@ cluster:
   imageName: ghcr.io/tensorchord/cloudnative-vectorchord:17.9-1.1.1
   resources:
     requests:
-      cpu: 50m
+      cpu: 100m
       memory: 1536Mi
     limits:
-      cpu: 500m
+      cpu: 1000m
       memory: 3Gi
   storage:
     storageClass: ssd-ha-cnpg

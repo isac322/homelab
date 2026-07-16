@@ -219,10 +219,10 @@ machine-learning:
             privileged: true
           resources:
             requests:
-              cpu: 50m
+              cpu: 100m
               memory: 2Gi
             limits:
-              cpu: "1"
+              cpu: "2"
               memory: 12Gi
               rock-chips.com/rknpu: 1
           probes:
