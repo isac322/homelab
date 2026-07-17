@@ -15,7 +15,7 @@ spec:
       ref: homelab
     - chart: versitygw
       repoURL: ghcr.io/versity/versitygw/charts
-      targetRevision: 0.3.2
+      targetRevision: 0.3.4
       helm:
         releaseName: versitygw-hdd
         valueFiles:

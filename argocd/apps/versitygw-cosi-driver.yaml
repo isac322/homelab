@@ -15,7 +15,7 @@ spec:
       ref: homelab
     - chart: versitygw-cosi-driver
       repoURL: ghcr.io/isac322/charts
-      targetRevision: 0.5.0
+      targetRevision: 0.5.3
       helm:
         releaseName: versitygw-cosi-driver
         valueFiles:
