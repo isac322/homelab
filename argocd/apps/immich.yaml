@@ -20,7 +20,7 @@ spec:
           - values.yaml
           - $homelab/values/cloudnative-pg/cluster-immich.yaml
       repoURL: https://cloudnative-pg.github.io/charts/
-      targetRevision: 0.6.1
+      targetRevision: 0.8.0
   syncPolicy:
     automated:
       prune: true
@@ -56,7 +56,7 @@ spec:
           - values.yaml
           - $homelab/values/immich/backbone.yaml
       repoURL: ghcr.io/immich-app/immich-charts
-      targetRevision: 0.12.1
+      targetRevision: 0.13.1
   syncPolicy:
     automated:
       prune: true
