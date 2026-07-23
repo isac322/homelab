@@ -1,36 +1,63 @@
 ---
-# Dedicated WireGuard underlay (wg1) for oracle4's k3s cluster — SEPARATE from the
-# 10.222.0.0/24 homelab mesh. oracle4 (the only Ansible-managed member) is the hub;
-# workers join as EDGES that are self-managed (their own systemd `wg-quick@wg1` +
-# `k3s agent`). So this playbook runs only against oracle4: it brings up oracle4's
-# wg1, adds each worker as a peer, and RENDERS each worker's wg1 .conf into
-# _wireguard-oracle/<name>.conf for the user to import. Pod CIDRs ride
-# wireguard_extra_allowed_ips (oracle4) / edge extra_allowed_ips (workers) so
-# flannel host-gw works over wg1.
+# Dedicated WireGuard mesh (wg1) for the oracle4 k3s cluster and the backbone
+# nodes that run Argo CD. This stays separate from the 10.222.0.0/24 homelab
+# mesh. oracle4 is the public gateway for its group; rpi5 routes the oracle
+# group for the other backbone nodes. Self-managed k3s workers remain edges.
 #
-#   ansible-playbook -i inventory-oracle wireguard-oracle.yaml
-- hosts: oracle_cluster
-  name: Setup oracle-cluster WireGuard underlay (wg1) + render worker edge configs
+#   ansible-playbook -i inventory -i inventory-oracle wireguard-oracle.yaml
+- hosts: oracle_cluster:backbone
+  name: Connect the backbone and oracle4 over WireGuard (wg1)
   become: yes
+  pre_tasks:
+    - name: Allow the oracle WireGuard port through the backbone firewall
+      ansible.builtin.iptables:
+        chain: UDP
+        protocol: udp
+        in_interface: "{{ ansible_default_ipv4.interface }}"
+        destination_port: 51903
+        jump: ACCEPT
+        action: insert
+        rule_num: 1
+        comment: Oracle WireGuard
+      when: inventory_hostname in groups['backbone']
   roles:
     - role: wireguard_mesh
       vars:
         cidr_block: "10.223.0.0/24"
         local_directory: _wireguard-oracle
         wireguard_port: 51903
-        wireguard_ip_address: "{{ wireguard_ip }}"
+        wireguard_ip_address: "{{ oracle_wireguard_ip_addresses[inventory_hostname] }}"
         wireguard_host: "{{ wireguard_external_host | default(inventory_hostname) }}"
-        wireguard_internal_host: "{{ wireguard_external_host | default(inventory_hostname) }}"
+        wireguard_internal_host: "{{ inventory_hostname }}"
         wireguard_interface: wg1
+        oracle_wireguard_ip_addresses:
+          oracle4: 10.223.0.1
+          n2p1: 10.223.0.65
+          n2p2: 10.223.0.66
+          rpi4: 10.223.0.67
+          rpi5: 10.223.0.68
+          rock5bp: 10.223.0.69
         mesh_group_config:
           oracle:
-            cidr: 10.223.0.0/26          # group members (oracle4=.1); edges live in .128+
+            cidr: 10.223.0.0/26
             ansible_groups: ['oracle_cluster']
             gateway_host: oracle4
+          backbone:
+            cidr: 10.223.0.64/26
+            ansible_groups: ['backbone']
+            gateway_host: rpi5
         edges:
-          # Self-managed workers (NOT Ansible hosts): the role renders their wg1
-          # .conf into _wireguard-oracle/<name>.conf to import as `wg-quick@wg1`.
           bhyoo-desktop:
-            ip_address: 10.223.0.129              # edge range (outside the .0/26 group subnet)
+            ip_address: 10.223.0.129
             allowed_groups: [oracle]
-            extra_allowed_ips: ['10.42.1.0/24']   # this worker's k3s podCIDR (host-gw over wg1)
+            extra_allowed_ips: ['10.42.1.0/24']
+          bhyoo-phone:
+            ip_address: 10.223.0.130
+            allowed_groups: [oracle]
+  post_tasks:
+    - name: Save the backbone firewall rules
+      community.general.iptables_state:
+        ip_version: ipv4
+        state: saved
+        path: /etc/iptables/rules.v4
+      when: inventory_hostname in groups['backbone']

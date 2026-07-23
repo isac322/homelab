@@ -27,3 +27,12 @@
         k8s_role: "{{ 'master' if is_k8s_master else 'worker' }}"
         k8s_internal_node_ip_cidr: 10.34.112.0/20
         iptables_reset_all: false
+
+- hosts: oracle_cluster
+  become: yes
+  roles:
+    - role: iptables-firewall
+      vars:
+        k8s_role: master
+        k8s_internal_node_ip_cidr: 10.223.0.0/24
+        iptables_reset_all: false
