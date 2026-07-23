@@ -11,6 +11,10 @@ spec:
   destinations:
     - namespace: cloudflare-gateway
       name: backbone
+    - namespace: cloudflare-operator
+      name: oracle4
+    - namespace: default
+      name: oracle4
   clusterResourceWhitelist:
     - group: '*'
       kind: '*'

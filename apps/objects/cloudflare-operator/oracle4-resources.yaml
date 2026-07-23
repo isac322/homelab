@@ -1,0 +1,105 @@
+---
+apiVersion: v1
+kind: Namespace
+metadata:
+  name: cloudflare-operator
+---
+apiVersion: v1
+kind: Service
+metadata:
+  labels:
+    run: test
+  name: test
+  namespace: default
+spec:
+  externalTrafficPolicy: Cluster
+  ports:
+  - nodePort: 30415
+    port: 80
+    protocol: TCP
+    targetPort: 80
+  selector:
+    run: test
+  type: NodePort
+---
+apiVersion: v1
+data:
+  default.conf: "server {\n        listen 80 default_server;\n        listen [::]:80\
+    \ default_server ipv6only=on;\n\n        listen 443 ssl;\n\n        root /usr/share/nginx/html;\n\
+    \        index index.html;\n\n        server_name localhost;\n        ssl_certificate\
+    \ /etc/nginx/ssl/tls.crt;\n        ssl_certificate_key /etc/nginx/ssl/tls.key;\n\
+    \n        location / {\n                try_files $uri $uri/ =404;\n        }\n\
+    }\n"
+kind: ConfigMap
+metadata:
+  name: nginxconfigmap
+  namespace: default
+---
+apiVersion: rbac.authorization.k8s.io/v1
+kind: Role
+metadata:
+  name: service-reader
+  namespace: default
+rules:
+- apiGroups:
+  - ''
+  resources:
+  - services
+  verbs:
+  - get
+  - list
+---
+apiVersion: rbac.authorization.k8s.io/v1
+kind: RoleBinding
+metadata:
+  name: service-read-access
+  namespace: default
+roleRef:
+  apiGroup: rbac.authorization.k8s.io
+  kind: Role
+  name: service-reader
+subjects:
+- kind: ServiceAccount
+  name: default
+  namespace: default
+---
+apiVersion: v1
+kind: Service
+metadata:
+  annotations:
+    cloudflared-operator.bhyoo.com/host-name: jh-test.juyeonj.com
+    cloudflared-operator.bhyoo.com/port-test: jh-test
+  labels:
+    run: test-nginx
+  name: test-nginx
+  namespace: cloudflare-operator
+spec:
+  externalTrafficPolicy: Cluster
+  ports:
+  - name: test
+    nodePort: 31441
+    port: 80
+    protocol: TCP
+    targetPort: 80
+  selector:
+    run: test-nginx
+  type: NodePort
+---
+apiVersion: cloudflared-operator.bhyoo.com/v1
+kind: Tunnel
+metadata:
+  name: jh-test
+  namespace: cloudflare-operator
+spec:
+  accountID: fc3dc494135a541eb966015a04bc66c6
+  apiTokenSecretRef:
+    key: token
+    name: cloudflare-api-token
+  daemonDeployment:
+    DeploymentStrategy: {}
+    daemonVersion: latest
+    kind: Deployment
+    resources: {}
+    updateStrategy: {}
+  name: jh-test
+  secretName: cloudflared-tunnel-credential

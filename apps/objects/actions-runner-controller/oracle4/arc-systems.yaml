@@ -1,0 +1,452 @@
+---
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  labels:
+    app: docker-registry-proxy
+  name: docker-registry-proxy
+  namespace: arc-systems
+spec:
+  progressDeadlineSeconds: 600
+  replicas: 1
+  revisionHistoryLimit: 10
+  selector:
+    matchLabels:
+      app: docker-registry-proxy
+  strategy:
+    type: Recreate
+  template:
+    metadata:
+      labels:
+        app: docker-registry-proxy
+    spec:
+      containers:
+      - env:
+        - name: REGISTRIES
+          value: docker.io ghcr.io quay.io gcr.io registry.k8s.io public.ecr.aws
+        - name: CACHE_MAX_SIZE
+          value: 50g
+        - name: ENABLE_MANIFEST_CACHE
+          value: 'true'
+        image: ghcr.io/rpardini/docker-registry-proxy:0.6.5
+        imagePullPolicy: IfNotPresent
+        name: proxy
+        ports:
+        - containerPort: 3128
+          protocol: TCP
+        readinessProbe:
+          failureThreshold: 3
+          initialDelaySeconds: 10
+          periodSeconds: 5
+          successThreshold: 1
+          tcpSocket:
+            port: 3128
+          timeoutSeconds: 1
+        resources: {}
+        terminationMessagePath: /dev/termination-log
+        terminationMessagePolicy: File
+        volumeMounts:
+        - mountPath: /docker_mirror_cache
+          name: data
+          subPath: cache
+        - mountPath: /ca
+          name: data
+          subPath: ca
+      dnsPolicy: ClusterFirst
+      restartPolicy: Always
+      schedulerName: default-scheduler
+      securityContext: {}
+      terminationGracePeriodSeconds: 30
+      volumes:
+      - name: data
+        persistentVolumeClaim:
+          claimName: docker-registry-proxy-data
+---
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: garage
+  namespace: arc-systems
+spec:
+  progressDeadlineSeconds: 600
+  replicas: 1
+  revisionHistoryLimit: 10
+  selector:
+    matchLabels:
+      app: garage
+  strategy:
+    type: Recreate
+  template:
+    metadata:
+      labels:
+        app: garage
+    spec:
+      containers:
+      - args:
+        - server
+        command:
+        - /garage
+        envFrom:
+        - secretRef:
+            name: garage-secrets
+        image: dxflrs/garage:v1.0.1
+        imagePullPolicy: IfNotPresent
+        name: garage
+        ports:
+        - containerPort: 3900
+          name: s3-api
+          protocol: TCP
+        - containerPort: 3901
+          name: rpc
+          protocol: TCP
+        - containerPort: 3903
+          name: admin
+          protocol: TCP
+        resources:
+          requests:
+            cpu: 50m
+            memory: 256Mi
+        terminationMessagePath: /dev/termination-log
+        terminationMessagePolicy: File
+        volumeMounts:
+        - mountPath: /etc/garage.toml
+          name: config
+          subPath: garage.toml
+        - mountPath: /var/lib/garage
+          name: data
+      dnsPolicy: ClusterFirst
+      restartPolicy: Always
+      schedulerName: default-scheduler
+      securityContext: {}
+      terminationGracePeriodSeconds: 30
+      volumes:
+      - configMap:
+          defaultMode: 420
+          name: garage-config
+        name: config
+      - name: data
+        persistentVolumeClaim:
+          claimName: garage-data
+---
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  labels:
+    app: gha-cache-server
+  name: gha-cache-server
+  namespace: arc-systems
+spec:
+  progressDeadlineSeconds: 600
+  replicas: 1
+  revisionHistoryLimit: 10
+  selector:
+    matchLabels:
+      app: gha-cache-server
+  strategy:
+    type: Recreate
+  template:
+    metadata:
+      labels:
+        app: gha-cache-server
+    spec:
+      containers:
+      - env:
+        - name: API_BASE_URL
+          value: http://gha-cache-server.arc-systems.svc.cluster.local:3000
+        - name: STORAGE_DRIVER
+          value: filesystem
+        - name: STORAGE_FILESYSTEM_PATH
+          value: /data/cache
+        - name: DB_DRIVER
+          value: sqlite
+        - name: DB_SQLITE_PATH
+          value: /data/cache-server.db
+        - name: CACHE_CLEANUP_OLDER_THAN_DAYS
+          value: '2'
+        image: ghcr.io/falcondev-oss/github-actions-cache-server:latest
+        imagePullPolicy: Always
+        name: cache-server
+        ports:
+        - containerPort: 3000
+          protocol: TCP
+        readinessProbe:
+          failureThreshold: 3
+          initialDelaySeconds: 5
+          periodSeconds: 5
+          successThreshold: 1
+          tcpSocket:
+            port: 3000
+          timeoutSeconds: 1
+        resources: {}
+        terminationMessagePath: /dev/termination-log
+        terminationMessagePolicy: File
+        volumeMounts:
+        - mountPath: /data
+          name: data
+      dnsPolicy: ClusterFirst
+      restartPolicy: Always
+      schedulerName: default-scheduler
+      securityContext: {}
+      terminationGracePeriodSeconds: 30
+      volumes:
+      - name: data
+        persistentVolumeClaim:
+          claimName: gha-cache-data
+---
+apiVersion: v1
+kind: Service
+metadata:
+  name: docker-registry-proxy
+  namespace: arc-systems
+spec:
+  ports:
+  - port: 3128
+    protocol: TCP
+    targetPort: 3128
+  selector:
+    app: docker-registry-proxy
+  type: ClusterIP
+---
+apiVersion: v1
+kind: Service
+metadata:
+  name: garage
+  namespace: arc-systems
+spec:
+  ports:
+  - name: s3-api
+    port: 3900
+    protocol: TCP
+    targetPort: 3900
+  - name: admin
+    port: 3903
+    protocol: TCP
+    targetPort: 3903
+  selector:
+    app: garage
+  type: ClusterIP
+---
+apiVersion: v1
+kind: Service
+metadata:
+  name: gha-cache-server
+  namespace: arc-systems
+spec:
+  ports:
+  - port: 3000
+    protocol: TCP
+    targetPort: 3000
+  selector:
+    app: gha-cache-server
+  type: ClusterIP
+---
+apiVersion: v1
+data:
+  garage.toml: 'metadata_dir = "/var/lib/garage/meta"
+
+    data_dir = "/var/lib/garage/data"
+
+    db_engine = "lmdb"
+
+    replication_factor = 1
+
+    rpc_bind_addr = "[::]:3901"
+
+    rpc_public_addr = "127.0.0.1:3901"
+
+
+    [s3_api]
+
+    s3_region = "garage"
+
+    api_bind_addr = "[::]:3900"
+
+    root_domain = ".s3.garage"
+
+
+    [admin]
+
+    api_bind_addr = "[::]:3903"
+
+    '
+kind: ConfigMap
+metadata:
+  name: garage-config
+  namespace: arc-systems
+---
+apiVersion: v1
+kind: PersistentVolumeClaim
+metadata:
+  name: docker-registry-proxy-data
+  namespace: arc-systems
+spec:
+  accessModes:
+  - ReadWriteOnce
+  resources:
+    requests:
+      storage: 60Gi
+  storageClassName: local-path
+  volumeMode: Filesystem
+---
+apiVersion: v1
+kind: PersistentVolumeClaim
+metadata:
+  name: garage-data
+  namespace: arc-systems
+spec:
+  accessModes:
+  - ReadWriteOnce
+  resources:
+    requests:
+      storage: 50Gi
+  storageClassName: local-path
+  volumeMode: Filesystem
+---
+apiVersion: v1
+kind: PersistentVolumeClaim
+metadata:
+  name: gha-cache-data
+  namespace: arc-systems
+spec:
+  accessModes:
+  - ReadWriteOnce
+  resources:
+    requests:
+      storage: 50Gi
+  storageClassName: local-path
+  volumeMode: Filesystem
+---
+apiVersion: batch/v1
+kind: CronJob
+metadata:
+  labels:
+    app: gha-cache-prune
+  name: gha-cache-prune
+  namespace: arc-systems
+spec:
+  concurrencyPolicy: Forbid
+  failedJobsHistoryLimit: 2
+  jobTemplate:
+    metadata: {}
+    spec:
+      activeDeadlineSeconds: 600
+      template:
+        metadata: {}
+        spec:
+          containers:
+          - args:
+            - "set -e\napk add --no-cache sqlite >/dev/null 2>&1\nDB=/data/cache-server.db;\
+              \ CACHE=/data/cache\nTARGET_KB=104857600   # GHA \uCE90\uC2DC \uD3F4\
+              \uB354 \uC790\uCCB4\uB97C 100GiB\uB85C \uC81C\uD55C (\uB178\uB4DC \uC804\
+              \uCCB4 \uB514\uC2A4\uD06C\uAC00 \uC544\uB2C8\uB77C!)\n[ -d \"$CACHE\"\
+              \ ] || { echo \"no cache dir\"; exit 0; }\nused() { du -s \"$CACHE\"\
+              \ 2>/dev/null | awk '{print $1}'; }\nu=$(used)\necho \"cache folder:\
+              \ $((u/1024/1024))GiB / target 100GiB\"\n[ \"$u\" -lt \"$TARGET_KB\"\
+              \ ] && { echo \"below target, skip\"; exit 0; }\nc=0\n# lastDownloadedAt\
+              \ \uC624\uB798\uB41C \uC21C(\uBBF8\uC0AC\uC6A9 NULL \uBA3C\uC800)\uC73C\
+              \uB85C \uBAA9\uD45C\uAE4C\uC9C0 \uC0AD\uC81C\nsqlite3 \"$DB\" \"SELECT\
+              \ folderName FROM storage_locations ORDER BY lastDownloadedAt IS NULL\
+              \ DESC, lastDownloadedAt ASC\" | while read f; do\n  [ \"$(used)\" -lt\
+              \ \"$TARGET_KB\" ] && break\n  [ -n \"$f\" ] && rm -rf \"$CACHE/$f\"\
+              \ && c=$((c+1))\ndone\necho \"done, deleted $c folders, now $(( $(used)/1024/1024\
+              \ ))GiB\"\n"
+            command:
+            - sh
+            - -c
+            image: alpine:3.20
+            imagePullPolicy: IfNotPresent
+            name: prune
+            resources: {}
+            terminationMessagePath: /dev/termination-log
+            terminationMessagePolicy: File
+            volumeMounts:
+            - mountPath: /data
+              name: data
+          dnsPolicy: ClusterFirst
+          nodeSelector:
+            kubernetes.io/hostname: oracle4
+          restartPolicy: OnFailure
+          schedulerName: default-scheduler
+          securityContext: {}
+          terminationGracePeriodSeconds: 30
+          volumes:
+          - hostPath:
+              path: /var/lib/rancher/k3s/storage/pvc-337886cc-d577-4965-9acd-ce8826b08539_arc-systems_gha-cache-data
+              type: Directory
+            name: data
+  schedule: '*/30 * * * *'
+  successfulJobsHistoryLimit: 2
+  suspend: true
+---
+apiVersion: batch/v1
+kind: CronJob
+metadata:
+  name: sccache-prune
+  namespace: arc-systems
+spec:
+  concurrencyPolicy: Forbid
+  failedJobsHistoryLimit: 3
+  jobTemplate:
+    metadata: {}
+    spec:
+      activeDeadlineSeconds: 900
+      backoffLimit: 1
+      template:
+        metadata: {}
+        spec:
+          containers:
+          - args:
+            - "set -e\npip install --quiet --disable-pip-version-check --root-user-action=ignore\
+              \ boto3\npython3 - <<'PY'\nimport boto3, os\nGIB = 1 << 30\nthr = int(os.environ[\"\
+              PRUNE_THRESHOLD_GIB\"]) * GIB\ntgt = int(os.environ[\"PRUNE_TARGET_GIB\"\
+              ]) * GIB\nbkt = os.environ[\"SCCACHE_BUCKET\"]\ns3 = boto3.client(\"\
+              s3\", endpoint_url=os.environ[\"SCCACHE_ENDPOINT\"],\n             \
+              \     region_name=\"garage\")\nobjs = []\nfor page in s3.get_paginator(\"\
+              list_objects_v2\").paginate(Bucket=bkt):\n    for o in page.get(\"Contents\"\
+              , []):\n        objs.append((o[\"LastModified\"], o[\"Size\"], o[\"\
+              Key\"]))\ntotal = sum(s for _, s, _ in objs)\nprint(f\"bucket={total/GIB:.2f}\
+              \ GiB, objects={len(objs)}, threshold={thr//GIB}G target={tgt//GIB}G\"\
+              )\nif total <= thr:\n    print(\"under threshold - no prune\"); raise\
+              \ SystemExit(0)\nobjs.sort(key=lambda x: x[0])   # oldest last-modified\
+              \ first\nbatch, freed, n = [], 0, 0\nfor _, sz, key in objs:\n    if\
+              \ total - freed <= tgt:\n        break\n    batch.append({\"Key\": key});\
+              \ freed += sz; n += 1\n    if len(batch) == 1000:\n        s3.delete_objects(Bucket=bkt,\
+              \ Delete={\"Objects\": batch}); batch = []\nif batch:\n    s3.delete_objects(Bucket=bkt,\
+              \ Delete={\"Objects\": batch})\nprint(f\"pruned {n} objects, freed {freed/GIB:.2f}\
+              \ GiB, now ~{(total-freed)/GIB:.2f} GiB\")\nPY\n"
+            command:
+            - sh
+            - -c
+            env:
+            - name: SCCACHE_ENDPOINT
+              value: http://garage.arc-systems.svc.cluster.local:3900
+            - name: SCCACHE_BUCKET
+              value: sccache
+            - name: PRUNE_THRESHOLD_GIB
+              value: '80'
+            - name: PRUNE_TARGET_GIB
+              value: '60'
+            - name: AWS_ACCESS_KEY_ID
+              valueFrom:
+                secretKeyRef:
+                  key: AWS_ACCESS_KEY_ID
+                  name: sccache-s3-creds
+            - name: AWS_SECRET_ACCESS_KEY
+              valueFrom:
+                secretKeyRef:
+                  key: AWS_SECRET_ACCESS_KEY
+                  name: sccache-s3-creds
+            image: python:3.12-slim
+            imagePullPolicy: IfNotPresent
+            name: prune
+            resources: {}
+            terminationMessagePath: /dev/termination-log
+            terminationMessagePolicy: File
+          dnsPolicy: ClusterFirst
+          restartPolicy: Never
+          schedulerName: default-scheduler
+          securityContext: {}
+          terminationGracePeriodSeconds: 30
+  schedule: 0 */6 * * *
+  successfulJobsHistoryLimit: 3
+  suspend: false

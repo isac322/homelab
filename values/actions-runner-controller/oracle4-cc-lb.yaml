@@ -1,0 +1,136 @@
+githubConfigSecret: pre-defined-secret
+githubConfigUrl: https://github.com/isac322/cc-lb
+maxRunners: 10
+minRunners: 0
+controllerServiceAccount:
+  name: arc-gha-rs-controller
+  namespace: arc-systems
+
+
+template:
+  spec:
+    containers:
+      - command:
+          - /home/runner/run.sh
+        env:
+          - name: RUNNER_TOOL_CACHE
+            value: /opt/hostedtoolcache
+          - name: RUSTUP_HOME
+            value: /opt/rustup
+          - name: DOCKER_HOST
+            value: unix:///var/run/docker.sock
+          - name: RUNNER_WAIT_FOR_DOCKER_IN_SECONDS
+            value: '120'
+          - name: CUSTOM_ACTIONS_RESULTS_URL
+            value: http://gha-cache-server.arc-systems.svc.cluster.local:3000/
+          - name: SCCACHE_BUCKET
+            value: sccache
+          - name: SCCACHE_ENDPOINT
+            value: http://garage.arc-systems.svc.cluster.local:3900
+          - name: SCCACHE_S3_USE_SSL
+            value: 'off'
+          - name: SCCACHE_REGION
+            value: garage
+          - name: AWS_ACCESS_KEY_ID
+            valueFrom:
+              secretKeyRef:
+                key: AWS_ACCESS_KEY_ID
+                name: sccache-s3-creds
+          - name: AWS_SECRET_ACCESS_KEY
+            valueFrom:
+              secretKeyRef:
+                key: AWS_SECRET_ACCESS_KEY
+                name: sccache-s3-creds
+          - name: CARGO_INCREMENTAL
+            value: '0'
+          - name: CARGO_PROFILE_DEV_DEBUG
+            value: line-tables-only
+          - name: CARGO_PROFILE_TEST_DEBUG
+            value: line-tables-only
+        image: ghcr.io/isac322/cc-lb-actions-runner:2.335.1-cclb-1
+        name: runner
+        resources:
+          requests:
+            cpu: '1'
+        volumeMounts:
+          - mountPath: /opt/hostedtoolcache
+            name: tool-cache
+          - mountPath: /opt/rustup
+            name: rustup-home
+          - mountPath: /home/runner/_work
+            name: work
+          - mountPath: /var/run
+            name: dind-sock
+      - args:
+          - |
+            cp /registry-proxy-ca/ca.crt /usr/local/share/ca-certificates/registry-proxy.crt
+            update-ca-certificates
+            exec dockerd --host=unix:///var/run/docker.sock --group="$DOCKER_GROUP_GID"
+        command:
+          - sh
+          - -c
+        env:
+          - name: DOCKER_GROUP_GID
+            value: '123'
+          - name: HTTP_PROXY
+            value: http://docker-registry-proxy.arc-systems.svc.cluster.local:3128/
+          - name: HTTPS_PROXY
+            value: http://docker-registry-proxy.arc-systems.svc.cluster.local:3128/
+          - name: NO_PROXY
+            value: localhost,127.0.0.1,10.42.0.0/16,10.43.0.0/16,.svc,.cluster.local,gcr.io,storage.googleapis.com,ghcr.io,pkg-containers.githubusercontent.com
+        image: docker:dind
+        name: dind
+        securityContext:
+          privileged: true
+        volumeMounts:
+          - mountPath: /home/runner/_work
+            name: work
+          - mountPath: /var/run
+            name: dind-sock
+          - mountPath: /home/runner/externals
+            name: dind-externals
+          - mountPath: /registry-proxy-ca
+            name: registry-proxy-ca
+    initContainers:
+      - args:
+          - -r
+          - /home/runner/externals/.
+          - /home/runner/tmpDir/
+        command:
+          - cp
+        image: ghcr.io/isac322/cc-lb-actions-runner:2.335.1-cclb-1
+        name: init-dind-externals
+        volumeMounts:
+          - mountPath: /home/runner/tmpDir
+            name: dind-externals
+      - command:
+          - sh
+          - -c
+          - mkdir -p /opt/hostedtoolcache /opt/rustup && chown 1001:1001 /opt/hostedtoolcache /opt/rustup
+        image: busybox:1.36
+        name: toolcache-perms
+        securityContext:
+          runAsUser: 0
+        volumeMounts:
+          - mountPath: /opt/hostedtoolcache
+            name: tool-cache
+          - mountPath: /opt/rustup
+            name: rustup-home
+    volumes:
+      - emptyDir: {}
+        name: dind-sock
+      - emptyDir: {}
+        name: dind-externals
+      - emptyDir: {}
+        name: work
+      - hostPath:
+          path: /opt/actions-tool-cache
+          type: DirectoryOrCreate
+        name: tool-cache
+      - hostPath:
+          path: /opt/actions-rustup
+          type: DirectoryOrCreate
+        name: rustup-home
+      - configMap:
+          name: registry-proxy-ca
+        name: registry-proxy-ca

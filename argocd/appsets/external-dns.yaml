@@ -4,7 +4,13 @@ metadata:
   name: external-dns
 spec:
   generators:
-    - clusters: {}
+    - clusters:
+        selector:
+          matchExpressions:
+            - key: gitops.bhyoo.com/profile
+              operator: NotIn
+              values:
+                - oracle4
   template:
     metadata:
       name: '{{name}}-external-dns'
@@ -46,7 +52,13 @@ metadata:
   name: external-dns-cf-api-token
 spec:
   generators:
-    - clusters: {}
+    - clusters:
+        selector:
+          matchExpressions:
+            - key: gitops.bhyoo.com/profile
+              operator: NotIn
+              values:
+                - oracle4
   template:
     metadata:
       name: '{{name}}-external-dns-cf-api-token'

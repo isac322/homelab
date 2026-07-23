@@ -1,0 +1,17 @@
+apiVersion: argoproj.io/v1alpha1
+kind: AppProject
+metadata:
+  name: github-actions-runner
+spec:
+  description: GitHub Actions runner infrastructure
+  sourceRepos:
+    - https://github.com/isac322/homelab.git
+    - ghcr.io/actions/actions-runner-controller-charts
+  destinations:
+    - namespace: arc-systems
+      name: oracle4
+    - namespace: arc-runners
+      name: oracle4
+  clusterResourceWhitelist:
+    - group: '*'
+      kind: '*'
