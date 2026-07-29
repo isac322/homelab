@@ -48,7 +48,7 @@ cluster:
 
 backups:
   enabled: true
-  endpointURL: "http://versitygw-hdd.object-storage.svc:7070"
+  endpointURL: "http://versitygw.object-storage.svc:7070"
   provider: s3
   data:
     compression: gzip
@@ -61,7 +61,7 @@ backups:
     create: false
     name: immich-s3-creds
   s3:
-    bucket: cnpg-immich-backup-hdd
+    bucket: cnpg-immich-backup
     region: ap-northeast-2
   scheduledBackups:
     - name: daily-backup # Weekly on Sunday at midnight
