@@ -1,0 +1,9 @@
+apiVersion: objectstorage.k8s.io/v1alpha1
+kind: BucketAccess
+metadata:
+  name: cnpg-immich-backup-hdd
+spec:
+  bucketClaimName: cnpg-immich-backup-hdd
+  bucketAccessClassName: versitygw-hdd-cosi-driver
+  credentialsSecretName: cnpg-immich-backup-hdd-creds
+  protocol: S3

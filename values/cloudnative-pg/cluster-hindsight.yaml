@@ -51,7 +51,7 @@ cluster:
 
 backups:
   enabled: true
-  endpointURL: "http://versitygw.object-storage.svc:7070"
+  endpointURL: "http://versitygw-hdd.object-storage.svc:7070"
   provider: s3
   data:
     compression: gzip
@@ -64,7 +64,7 @@ backups:
     create: false
     name: hindsight-s3-creds
   s3:
-    bucket: cnpg-hindsight-backup
+    bucket: cnpg-hindsight-backup-hdd
     region: ap-northeast-2
   scheduledBackups:
     - name: daily-backup
