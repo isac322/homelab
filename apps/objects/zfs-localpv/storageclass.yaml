@@ -20,6 +20,26 @@ allowedTopologies:
 apiVersion: storage.k8s.io/v1
 kind: StorageClass
 metadata:
+  name: ssd-ha-cnpg-thin
+allowVolumeExpansion: true
+parameters:
+  poolname: "hot-data/k8s"
+  fstype: "xfs"
+  volblocksize: "8K"
+  compression: "lz4"
+  dedup: "off"
+  thinProvision: "yes"
+provisioner: zfs.csi.openebs.io
+reclaimPolicy: Retain
+allowedTopologies:
+  - matchLabelExpressions:
+      - key: "kubernetes.io/hostname"
+        values:
+          - "rock5bp"
+---
+apiVersion: storage.k8s.io/v1
+kind: StorageClass
+metadata:
   name: hdd-ha-local
 allowVolumeExpansion: true
 parameters:
