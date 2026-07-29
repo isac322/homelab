@@ -26,10 +26,17 @@
               flannel-iface: wg1                    # cross-node host-gw over wg1: flannel public-ip = wg1 IP (10.223.0.1), not the VCN-private one
               disable-helm-controller: true
               prefer-bundled-bin: true
+              disable:
+                - traefik
+                - servicelb
               node-external-ip:
                 - "{{ main_public_ip }}"
+              advertise-address: "{{ wireguard_ip }}"
               tls-san:
-                - oracle4.bhyoo.com
                 - "{{ wireguard_ip }}"              # 10.223.0.1 — API validated over wg1 (worker join)
+              kubelet-arg:
+                - "image-gc-high-threshold=60"
+                - "image-gc-low-threshold=40"
+                - "feature-gates=ImageVolume=true"
         - ansible.builtin.import_role:
             name: xanmanning.k3s
