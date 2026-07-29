@@ -13,7 +13,6 @@ bucketClass:
 
 bucketAccessClass:
   name: versitygw-hdd-cosi-driver
-  authenticationType: Key
 
 versitygw:
   serviceName: "versitygw-hdd"
