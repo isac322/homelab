@@ -67,12 +67,7 @@ module "dns_secrets" {
 module "cluster" {
   source = "./vultr-cluster"
 
-  instance_map = {
-    v1 = {
-      plan   = "vc2-1c-2gb"
-      region = "icn"
-    }
-  }
+  instance_map = {}
   vpc_network = {
     network = "10.34.112.0"
     region  = "icn"

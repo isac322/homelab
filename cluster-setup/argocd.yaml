@@ -306,6 +306,7 @@
 
     - name: Create Secret for prod cluster on backbone cluster
       become: yes
+      when: _register_prod_cluster_url is defined
       kubernetes.core.k8s:
         state: present
         wait: yes
