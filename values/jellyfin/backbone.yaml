@@ -3,8 +3,6 @@ nameOverride: ""
 # -- Override the default full name of the chart.
 fullnameOverride: ""
 
-replicaCount: 0
-
 image:
   tag: 10.11.11
 
@@ -179,7 +177,7 @@ persistence:
     # -- If undefined (the default) or set to null, no storageClassName spec is set, choosing the default provisioner.
     storageClass: ssd-ha-cnpg
     ## -- Use an existing PVC for this mount
-    # existingClaim: ''
+    existingClaim: 'jellyfin-config-thin'
   media:
     # -- set to false to use emptyDir
     enabled: true
