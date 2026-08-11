@@ -51,6 +51,7 @@
     shell: /bin/bash
     password: "{{ admin_user_passwd | password_hash('sha512') }}"
     update_password: on_create
+  when: ansible_facts['os_family'] == "Debian"
 
 - name: Update dependencies
   ansible.builtin.apt:
