@@ -14,19 +14,19 @@ spec:
       auxiliary:
         vision:
           provider: main
-          model: gpt-5.6-terra
+          model: gpt-5.4-mini
         web_extract:
           provider: main
-          model: gpt-5.6-terra
+          model: gpt-5.4-mini
         title_generation:
           provider: main
-          model: gpt-5.6-terra
+          model: gpt-5.4-mini
         session_search:
           provider: main
-          model: gpt-5.6-terra
+          model: gpt-5.4-mini
         compression:
           provider: main
-          model: gpt-5.6-terra
+          model: gpt-5.4-mini
   env:
     - name: OPENAI_API_KEY
       valueFrom:
