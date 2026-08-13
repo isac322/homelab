@@ -213,9 +213,58 @@ spec:
 apiVersion: generators.external-secrets.io/v1alpha1
 kind: Webhook
 metadata:
-  name: agent-vault-invite-owner
+  name: agent-vault-create-bhyoo-vault
   annotations:
     argocd.argoproj.io/sync-wave: "3"
+spec:
+  method: POST
+  url: http://agent-vault.agent-vault.svc.cluster.local:14321/v1/vaults
+  timeout: 10s
+  headers:
+    Content-Type: application/json
+    Authorization: Bearer {{ .auth.token }}
+  body: |
+    {
+      "name": "bhyoo"
+    }
+  secrets:
+    - name: auth
+      secretRef:
+        name: agent-vault-owner-session
+  result:
+    jsonPath: "$"
+---
+apiVersion: external-secrets.io/v1
+kind: ExternalSecret
+metadata:
+  name: agent-vault-bhyoo-vault
+  annotations:
+    argocd.argoproj.io/sync-wave: "3"
+    argocd.argoproj.io/sync-options: Prune=false
+spec:
+  refreshPolicy: CreatedOnce
+  target:
+    name: agent-vault-bhyoo-vault
+    creationPolicy: Orphan
+    deletionPolicy: Retain
+    immutable: true
+    template:
+      engineVersion: v2
+      data:
+        name: '{{ .name }}'
+  dataFrom:
+    - sourceRef:
+        generatorRef:
+          apiVersion: generators.external-secrets.io/v1alpha1
+          kind: Webhook
+          name: agent-vault-create-bhyoo-vault
+---
+apiVersion: generators.external-secrets.io/v1alpha1
+kind: Webhook
+metadata:
+  name: agent-vault-invite-bhyoo
+  annotations:
+    argocd.argoproj.io/sync-wave: "4"
 spec:
   method: POST
   url: http://agent-vault.agent-vault.svc.cluster.local:14321/v1/users/invites
@@ -225,11 +274,11 @@ spec:
     Authorization: Bearer {{ .auth.token }}
   body: |
     {
-      "email": "bhyoo@agent-vault.local",
+      "email": "bhyoo@bhyoo.com",
       "role": "owner",
       "vaults": [
         {
-          "vault_name": "default",
+          "vault_name": "bhyoo",
           "vault_role": "admin"
         }
       ]
@@ -244,14 +293,14 @@ spec:
 apiVersion: external-secrets.io/v1
 kind: ExternalSecret
 metadata:
-  name: agent-vault-owner-invite
+  name: agent-vault-bhyoo-invite
   annotations:
-    argocd.argoproj.io/sync-wave: "3"
+    argocd.argoproj.io/sync-wave: "4"
     argocd.argoproj.io/sync-options: Prune=false
 spec:
   refreshPolicy: CreatedOnce
   target:
-    name: agent-vault-owner-invite
+    name: agent-vault-bhyoo-invite
     creationPolicy: Orphan
     deletionPolicy: Retain
     immutable: true
@@ -269,14 +318,14 @@ spec:
         generatorRef:
           apiVersion: generators.external-secrets.io/v1alpha1
           kind: Webhook
-          name: agent-vault-invite-owner
+          name: agent-vault-invite-bhyoo
 ---
 apiVersion: generators.external-secrets.io/v1alpha1
 kind: Webhook
 metadata:
-  name: agent-vault-create-isacmes
+  name: agent-vault-create-isacmes-bhyoo
   annotations:
-    argocd.argoproj.io/sync-wave: "3"
+    argocd.argoproj.io/sync-wave: "4"
 spec:
   method: POST
   url: http://agent-vault.agent-vault.svc.cluster.local:14321/v1/agents
@@ -286,11 +335,11 @@ spec:
     Authorization: Bearer {{ .auth.token }}
   body: |
     {
-      "name": "hermes-isacmes",
+      "name": "hermes-isacmes-bhyoo",
       "role": "no-access",
       "vaults": [
         {
-          "vault_name": "default",
+          "vault_name": "bhyoo",
           "vault_role": "proxy"
         }
       ]
@@ -305,14 +354,14 @@ spec:
 apiVersion: external-secrets.io/v1
 kind: ExternalSecret
 metadata:
-  name: agent-vault-isacmes-token
+  name: agent-vault-isacmes-bhyoo-token
   annotations:
-    argocd.argoproj.io/sync-wave: "3"
+    argocd.argoproj.io/sync-wave: "4"
     argocd.argoproj.io/sync-options: Prune=false
 spec:
   refreshPolicy: CreatedOnce
   target:
-    name: agent-vault-isacmes-token
+    name: agent-vault-isacmes-bhyoo-token
     creationPolicy: Orphan
     deletionPolicy: Retain
     immutable: true
@@ -325,14 +374,14 @@ spec:
         generatorRef:
           apiVersion: generators.external-secrets.io/v1alpha1
           kind: Webhook
-          name: agent-vault-create-isacmes
+          name: agent-vault-create-isacmes-bhyoo
 ---
 apiVersion: generators.external-secrets.io/v1alpha1
 kind: Webhook
 metadata:
-  name: agent-vault-notify-owner-invite
+  name: agent-vault-notify-bhyoo-invite
   annotations:
-    argocd.argoproj.io/sync-wave: "4"
+    argocd.argoproj.io/sync-wave: "5"
 spec:
   method: POST
   url: https://api.telegram.org/bot{{ .telegram.token }}/sendMessage
@@ -342,7 +391,7 @@ spec:
   body: |
     {
       "chat_id": "5286349319",
-      "text": "Agent Vault owner setup\n\nOpen this link within 48 hours and set your password:\n{{ .invite.inviteLink }}\n\nLogin email: {{ .invite.email }}",
+      "text": "Agent Vault personal vault setup\n\nOpen this link within 48 hours and set your password:\n{{ .invite.inviteLink }}\n\nLogin email: {{ .invite.email }}\nVault: bhyoo",
       "disable_web_page_preview": true
     }
   secrets:
@@ -351,21 +400,21 @@ spec:
         name: isacmes-credentials
     - name: invite
       secretRef:
-        name: agent-vault-owner-invite
+        name: agent-vault-bhyoo-invite
   result:
     jsonPath: "$"
 ---
 apiVersion: external-secrets.io/v1
 kind: ExternalSecret
 metadata:
-  name: agent-vault-owner-invite-notification
+  name: agent-vault-bhyoo-invite-notification
   annotations:
-    argocd.argoproj.io/sync-wave: "4"
+    argocd.argoproj.io/sync-wave: "5"
     argocd.argoproj.io/sync-options: Prune=false
 spec:
   refreshPolicy: CreatedOnce
   target:
-    name: agent-vault-owner-invite-notification
+    name: agent-vault-bhyoo-invite-notification
     creationPolicy: Orphan
     deletionPolicy: Retain
     immutable: true
@@ -378,4 +427,4 @@ spec:
         generatorRef:
           apiVersion: generators.external-secrets.io/v1alpha1
           kind: Webhook
-          name: agent-vault-notify-owner-invite
+          name: agent-vault-notify-bhyoo-invite

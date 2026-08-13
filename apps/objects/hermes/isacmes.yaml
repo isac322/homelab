@@ -216,6 +216,23 @@ spec:
           - disk-cleanup
       context:
         engine: lcm
+      terminal:
+        env_passthrough:
+          - AGENT_VAULT_ADDR
+          - AGENT_VAULT_TOKEN
+          - AGENT_VAULT_VAULT
+          - HTTPS_PROXY
+          - HTTP_PROXY
+          - NO_PROXY
+          - NODE_USE_ENV_PROXY
+          - SSL_CERT_FILE
+          - NODE_EXTRA_CA_CERTS
+          - REQUESTS_CA_BUNDLE
+          - CURL_CA_BUNDLE
+          - CURL_HOME
+          - GIT_SSL_CAINFO
+          - GIT_CONFIG_GLOBAL
+          - DENO_CERT
       memory:
         provider: hindsight
       auxiliary:
@@ -259,14 +276,14 @@ spec:
     - name: AGENT_VAULT_TOKEN
       valueFrom:
         secretKeyRef:
-          name: agent-vault-isacmes-token
+          name: agent-vault-isacmes-bhyoo-token
           key: token
     - name: AGENT_VAULT_VAULT
-      value: default
+      value: bhyoo
     - name: HTTPS_PROXY
-      value: https://$(AGENT_VAULT_TOKEN):default@agent-vault.agent-vault.svc.cluster.local:14322
+      value: https://$(AGENT_VAULT_TOKEN):bhyoo@agent-vault.agent-vault.svc.cluster.local:14322
     - name: HTTP_PROXY
-      value: https://$(AGENT_VAULT_TOKEN):default@agent-vault.agent-vault.svc.cluster.local:14322
+      value: https://$(AGENT_VAULT_TOKEN):bhyoo@agent-vault.agent-vault.svc.cluster.local:14322
     - name: NO_PROXY
       value: localhost,127.0.0.1,::1,.svc,.svc.cluster.local
     - name: NODE_USE_ENV_PROXY
