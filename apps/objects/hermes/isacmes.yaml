@@ -8,14 +8,50 @@ spec:
     tag: v0.16.0
   config:
     raw:
-      model: gpt-4o-mini
-      base_url: https://api.openai.com/v1
+      model:
+        default: gpt-5.6-terra
+        provider: openai-api
+      model_aliases:
+        gemini:
+          model: gemini-3.6-flash
+          provider: gemini
+      auxiliary:
+        vision:
+          provider: gemini
+          model: gemini-3.6-flash
+        web_extract:
+          provider: gemini
+          model: gemini-3.6-flash
+        title_generation:
+          provider: gemini
+          model: gemini-3.6-flash
+        session_search:
+          provider: gemini
+          model: gemini-3.6-flash
+        compression:
+          provider: gemini
+          model: gemini-3.6-flash
   env:
     - name: OPENAI_API_KEY
       valueFrom:
         secretKeyRef:
           name: isacmes-credentials
           key: apiKey
+    - name: OPENAI_BASE_URL
+      valueFrom:
+        secretKeyRef:
+          name: isacmes-credentials
+          key: baseUrl
+    - name: GEMINI_API_KEY
+      valueFrom:
+        secretKeyRef:
+          name: isacmes-credentials
+          key: apiKey
+    - name: GEMINI_BASE_URL
+      valueFrom:
+        secretKeyRef:
+          name: isacmes-credentials
+          key: geminiBaseUrl
   storage:
     persistence:
       enabled: true
