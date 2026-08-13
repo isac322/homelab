@@ -86,6 +86,9 @@ data "aws_iam_policy_document" "secret_read" {
         aws_ssm_parameter.cf_api_token_for_external_dns.arn,
         aws_ssm_parameter.cf_api_token_for_cloudflared_gateway.arn,
         aws_ssm_parameter.cf_account_id.arn,
+        "${trimsuffix(aws_ssm_parameter.cf_account_id.arn, "cloudflare/account-id")}token/telegram/isacmes",
+        "${trimsuffix(aws_ssm_parameter.cf_account_id.arn, "cloudflare/account-id")}token/openai/isacmes",
+        "${trimsuffix(aws_ssm_parameter.cf_account_id.arn, "cloudflare/account-id")}token/openai/isacmes-base-url",
       ],
       var.use_democratic_csi ? [aws_ssm_parameter.democratic_csi_ssh_private_key[0].arn] : [],
       var.hindsight == null ? [] : [
