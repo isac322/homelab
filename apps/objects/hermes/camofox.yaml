@@ -1,0 +1,129 @@
+apiVersion: generators.external-secrets.io/v1alpha1
+kind: Password
+metadata:
+  name: isacmes-camofox-api-key
+  annotations:
+    argocd.argoproj.io/sync-wave: "4"
+spec:
+  length: 64
+  digits: 16
+  symbols: 0
+  noUpper: false
+  allowRepeat: true
+---
+apiVersion: generators.external-secrets.io/v1alpha1
+kind: Password
+metadata:
+  name: isacmes-vnc-password
+  annotations:
+    argocd.argoproj.io/sync-wave: "4"
+spec:
+  length: 8
+  digits: 2
+  symbols: 0
+  noUpper: false
+  allowRepeat: true
+---
+apiVersion: external-secrets.io/v1
+kind: ExternalSecret
+metadata:
+  name: isacmes-camofox-credentials
+  annotations:
+    argocd.argoproj.io/sync-wave: "4"
+    argocd.argoproj.io/sync-options: Prune=false
+spec:
+  refreshPolicy: CreatedOnce
+  target:
+    name: isacmes-camofox-credentials
+    creationPolicy: Orphan
+    deletionPolicy: Retain
+    immutable: true
+    template:
+      engineVersion: v2
+      data:
+        camofoxApiKey: '{{ .camofoxApiKey }}'
+        vncPassword: '{{ .vncPassword }}'
+  dataFrom:
+    - sourceRef:
+        generatorRef:
+          apiVersion: generators.external-secrets.io/v1alpha1
+          kind: Password
+          name: isacmes-camofox-api-key
+      rewrite:
+        - regexp:
+            source: password
+            target: camofoxApiKey
+    - sourceRef:
+        generatorRef:
+          apiVersion: generators.external-secrets.io/v1alpha1
+          kind: Password
+          name: isacmes-vnc-password
+      rewrite:
+        - regexp:
+            source: password
+            target: vncPassword
+---
+apiVersion: generators.external-secrets.io/v1alpha1
+kind: Password
+metadata:
+  name: isacmes-jay-camofox-api-key
+  annotations:
+    argocd.argoproj.io/sync-wave: "4"
+spec:
+  length: 64
+  digits: 16
+  symbols: 0
+  noUpper: false
+  allowRepeat: true
+---
+apiVersion: generators.external-secrets.io/v1alpha1
+kind: Password
+metadata:
+  name: isacmes-jay-vnc-password
+  annotations:
+    argocd.argoproj.io/sync-wave: "4"
+spec:
+  length: 8
+  digits: 2
+  symbols: 0
+  noUpper: false
+  allowRepeat: true
+---
+apiVersion: external-secrets.io/v1
+kind: ExternalSecret
+metadata:
+  name: isacmes-jay-camofox-credentials
+  annotations:
+    argocd.argoproj.io/sync-wave: "4"
+    argocd.argoproj.io/sync-options: Prune=false
+spec:
+  refreshPolicy: CreatedOnce
+  target:
+    name: isacmes-jay-camofox-credentials
+    creationPolicy: Orphan
+    deletionPolicy: Retain
+    immutable: true
+    template:
+      engineVersion: v2
+      data:
+        camofoxApiKey: '{{ .camofoxApiKey }}'
+        vncPassword: '{{ .vncPassword }}'
+  dataFrom:
+    - sourceRef:
+        generatorRef:
+          apiVersion: generators.external-secrets.io/v1alpha1
+          kind: Password
+          name: isacmes-jay-camofox-api-key
+      rewrite:
+        - regexp:
+            source: password
+            target: camofoxApiKey
+    - sourceRef:
+        generatorRef:
+          apiVersion: generators.external-secrets.io/v1alpha1
+          kind: Password
+          name: isacmes-jay-vnc-password
+      rewrite:
+        - regexp:
+            source: password
+            target: vncPassword
