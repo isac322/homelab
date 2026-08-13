@@ -49,7 +49,7 @@ spec:
         - name: agent-vault-ca
           mountPath: /ca
     - name: prepare-camofox-home
-      image: ghcr.io/isac322/camofox-browser@sha256:74a240dbbe404c6ae23cb5e3deb3d7236596491738a3985602ac18ebed4bd834
+      image: ghcr.io/jo-inc/camofox-browser:1.13.0
       command:
         - /bin/sh
         - -ec
@@ -107,13 +107,15 @@ spec:
       readOnly: true
   sidecars:
     - name: camofox
-      image: ghcr.io/isac322/camofox-browser@sha256:74a240dbbe404c6ae23cb5e3deb3d7236596491738a3985602ac18ebed4bd834
+      image: ghcr.io/jo-inc/camofox-browser:1.13.0
       imagePullPolicy: IfNotPresent
       env:
         - name: HOME
           value: /home/node
         - name: CAMOFOX_BIND_HOST
           value: 127.0.0.1
+        - name: BROWSER_IDLE_TIMEOUT_MS
+          value: "2147483647"
         - name: CAMOFOX_API_KEY
           valueFrom:
             secretKeyRef:
