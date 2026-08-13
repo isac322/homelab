@@ -31,11 +31,14 @@ spec:
         - -ec
       args:
         - |
-          until wget -q -O /ca/ca.pem \
+          until wget -q -O /ca/agent-vault-ca.pem \
             http://agent-vault.agent-vault.svc.cluster.local:14321/v1/mitm/ca.pem; do
             sleep 2
           done
-          test -s /ca/ca.pem
+          test -s /ca/agent-vault-ca.pem
+          test -s /etc/ssl/certs/ca-certificates.crt
+          cat /etc/ssl/certs/ca-certificates.crt /ca/agent-vault-ca.pem \
+            > /ca/ca.pem
       securityContext:
         allowPrivilegeEscalation: false
         capabilities:
