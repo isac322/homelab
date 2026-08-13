@@ -8,6 +8,7 @@ spec:
     tag: v0.16.0
   config:
     raw:
+      _config_version: 30
       model:
         default: gpt-5.6-terra
         provider: openai-api
@@ -46,6 +47,8 @@ spec:
   gateways:
     telegram:
       enabled: true
+      allowedUserIDs:
+        - 8501631874
       botTokenSecretRef:
         name: isacmes-credentials
         key: token
