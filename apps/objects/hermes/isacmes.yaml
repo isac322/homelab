@@ -11,6 +11,22 @@ spec:
       model:
         default: gpt-5.6-terra
         provider: openai-api
+      auxiliary:
+        vision:
+          provider: main
+          model: gpt-5.6-terra
+        web_extract:
+          provider: main
+          model: gpt-5.6-terra
+        title_generation:
+          provider: main
+          model: gpt-5.6-terra
+        session_search:
+          provider: main
+          model: gpt-5.6-terra
+        compression:
+          provider: main
+          model: gpt-5.6-terra
   env:
     - name: OPENAI_API_KEY
       valueFrom:
