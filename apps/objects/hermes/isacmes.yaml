@@ -29,6 +29,8 @@ spec:
           provider: main
           model: gpt-5.4-mini
   env:
+    - name: TELEGRAM_ALLOWED_USERS
+      value: "8501631874"
     - name: OPENAI_API_KEY
       valueFrom:
         secretKeyRef:
