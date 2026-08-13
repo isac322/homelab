@@ -1,0 +1,36 @@
+apiVersion: generators.external-secrets.io/v1alpha1
+kind: Password
+metadata:
+  name: agent-vault-master-password
+  annotations:
+    argocd.argoproj.io/sync-wave: "0"
+spec:
+  length: 64
+  digits: 16
+  symbols: 0
+  noUpper: false
+  allowRepeat: true
+---
+apiVersion: external-secrets.io/v1
+kind: ExternalSecret
+metadata:
+  name: agent-vault-master-password
+  annotations:
+    argocd.argoproj.io/sync-wave: "0"
+spec:
+  refreshPolicy: CreatedOnce
+  target:
+    name: agent-vault-master-password
+    creationPolicy: Orphan
+    deletionPolicy: Retain
+    immutable: true
+    template:
+      engineVersion: v2
+      data:
+        masterPassword: '{{ .password }}'
+  dataFrom:
+    - sourceRef:
+        generatorRef:
+          apiVersion: generators.external-secrets.io/v1alpha1
+          kind: Password
+          name: agent-vault-master-password

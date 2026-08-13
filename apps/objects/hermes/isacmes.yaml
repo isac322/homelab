@@ -2,6 +2,8 @@ apiVersion: hermes.agent/v1
 kind: HermesInstance
 metadata:
   name: isacmes
+  annotations:
+    argocd.argoproj.io/sync-wave: "5"
 spec:
   image:
     repository: nousresearch/hermes-agent
@@ -22,13 +24,48 @@ spec:
       volumeMounts:
         - name: hermes-lcm
           mountPath: /lcm
+    - name: fetch-agent-vault-ca
+      image: infisical/agent-vault:0.22.0
+      command:
+        - /bin/sh
+        - -ec
+      args:
+        - |
+          until wget -q -O /ca/ca.pem \
+            http://agent-vault.agent-vault.svc.cluster.local:14321/v1/mitm/ca.pem; do
+            sleep 2
+          done
+          test -s /ca/ca.pem
+      securityContext:
+        allowPrivilegeEscalation: false
+        capabilities:
+          drop:
+            - ALL
+        readOnlyRootFilesystem: true
+        runAsGroup: 65532
+        runAsNonRoot: true
+        runAsUser: 65532
+      volumeMounts:
+        - name: agent-vault-ca
+          mountPath: /ca
   extraVolumes:
     - name: hermes-lcm
       emptyDir: {}
+    - name: agent-vault-ca
+      emptyDir: {}
+    - name: agent-vault-skill
+      configMap:
+        name: agent-vault-skill
   extraVolumeMounts:
     - name: hermes-lcm
       mountPath: /opt/data/plugins/hermes-lcm
       subPath: plugin
+      readOnly: true
+    - name: agent-vault-ca
+      mountPath: /etc/agent-vault
+      readOnly: true
+    - name: agent-vault-skill
+      mountPath: /opt/data/skills/agent-vault
       readOnly: true
   config:
     raw:
@@ -74,6 +111,35 @@ spec:
         secretKeyRef:
           name: isacmes-credentials
           key: baseUrl
+    - name: AGENT_VAULT_ADDR
+      value: http://agent-vault.agent-vault.svc.cluster.local:14321
+    - name: AGENT_VAULT_TOKEN
+      valueFrom:
+        secretKeyRef:
+          name: agent-vault-isacmes-token
+          key: token
+    - name: AGENT_VAULT_VAULT
+      value: default
+    - name: HTTPS_PROXY
+      value: https://$(AGENT_VAULT_TOKEN):default@agent-vault.agent-vault.svc.cluster.local:14322
+    - name: HTTP_PROXY
+      value: https://$(AGENT_VAULT_TOKEN):default@agent-vault.agent-vault.svc.cluster.local:14322
+    - name: NO_PROXY
+      value: localhost,127.0.0.1,::1,.svc,.svc.cluster.local
+    - name: NODE_USE_ENV_PROXY
+      value: "1"
+    - name: SSL_CERT_FILE
+      value: /etc/agent-vault/ca.pem
+    - name: NODE_EXTRA_CA_CERTS
+      value: /etc/agent-vault/ca.pem
+    - name: REQUESTS_CA_BUNDLE
+      value: /etc/agent-vault/ca.pem
+    - name: CURL_CA_BUNDLE
+      value: /etc/agent-vault/ca.pem
+    - name: GIT_SSL_CAINFO
+      value: /etc/agent-vault/ca.pem
+    - name: DENO_CERT
+      value: /etc/agent-vault/ca.pem
     - name: HINDSIGHT_MODE
       value: local_external
     - name: HINDSIGHT_API_URL
