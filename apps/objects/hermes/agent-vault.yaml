@@ -1,0 +1,230 @@
+apiVersion: v1
+kind: ConfigMap
+metadata:
+  name: agent-vault-skill
+  annotations:
+    argocd.argoproj.io/sync-wave: "0"
+data:
+  SKILL.md: |
+    ---
+    name: agent-vault
+    description: Use Agent Vault for authenticated third-party API and CLI requests without exposing credentials.
+    ---
+
+    # Agent Vault
+
+    Before reporting that credentials are unavailable, call the Agent Vault
+    discovery endpoint using `AGENT_VAULT_ADDR`, `AGENT_VAULT_TOKEN`, and
+    `AGENT_VAULT_VAULT`.
+
+    ```bash
+    curl -fsS "$AGENT_VAULT_ADDR/discover" \
+      -H "Authorization: Bearer $AGENT_VAULT_TOKEN" \
+      -H "X-Vault: $AGENT_VAULT_VAULT"
+    ```
+
+    Calls to configured upstream hosts are already routed through the Agent
+    Vault proxy. Call the real upstream API without reading or printing its
+    credential. If access is missing, create a proposal through
+    `POST $AGENT_VAULT_ADDR/v1/proposals`, send the returned `approval_url` to
+    the user in Telegram, and wait for approval before retrying.
+
+    Never print, log, decode, or transmit `AGENT_VAULT_TOKEN`.
+---
+apiVersion: generators.external-secrets.io/v1alpha1
+kind: Password
+metadata:
+  name: agent-vault-owner-password
+  annotations:
+    argocd.argoproj.io/sync-wave: "0"
+spec:
+  length: 64
+  digits: 16
+  symbols: 0
+  noUpper: false
+  allowRepeat: true
+---
+apiVersion: external-secrets.io/v1
+kind: ExternalSecret
+metadata:
+  name: agent-vault-owner-credentials
+  annotations:
+    argocd.argoproj.io/sync-wave: "0"
+spec:
+  refreshPolicy: CreatedOnce
+  target:
+    name: agent-vault-owner-credentials
+    creationPolicy: Orphan
+    deletionPolicy: Retain
+    immutable: true
+    template:
+      engineVersion: v2
+      metadata:
+        labels:
+          external-secrets.io/type: webhook
+      data:
+        email: owner@agent-vault.local
+        password: '{{ .password }}'
+  dataFrom:
+    - sourceRef:
+        generatorRef:
+          apiVersion: generators.external-secrets.io/v1alpha1
+          kind: Password
+          name: agent-vault-owner-password
+---
+apiVersion: generators.external-secrets.io/v1alpha1
+kind: Webhook
+metadata:
+  name: agent-vault-register-owner
+  annotations:
+    argocd.argoproj.io/sync-wave: "1"
+spec:
+  method: POST
+  url: http://agent-vault.agent-vault.svc.cluster.local:14321/v1/auth/register
+  timeout: 10s
+  headers:
+    Content-Type: application/json
+  body: |
+    {
+      "email": "{{ .owner.email }}",
+      "password": "{{ .owner.password }}",
+      "device_label": "external-secrets-operator"
+    }
+  secrets:
+    - name: owner
+      secretRef:
+        name: agent-vault-owner-credentials
+  result:
+    jsonPath: "$"
+---
+apiVersion: external-secrets.io/v1
+kind: ExternalSecret
+metadata:
+  name: agent-vault-register-owner
+  annotations:
+    argocd.argoproj.io/sync-wave: "1"
+spec:
+  refreshPolicy: CreatedOnce
+  target:
+    name: agent-vault-register-owner
+    creationPolicy: Orphan
+    deletionPolicy: Retain
+    immutable: true
+    template:
+      engineVersion: v2
+      data:
+        status: complete
+  dataFrom:
+    - sourceRef:
+        generatorRef:
+          apiVersion: generators.external-secrets.io/v1alpha1
+          kind: Webhook
+          name: agent-vault-register-owner
+---
+apiVersion: generators.external-secrets.io/v1alpha1
+kind: Webhook
+metadata:
+  name: agent-vault-owner-login
+  annotations:
+    argocd.argoproj.io/sync-wave: "2"
+spec:
+  method: POST
+  url: http://agent-vault.agent-vault.svc.cluster.local:14321/v1/auth/login
+  timeout: 10s
+  headers:
+    Content-Type: application/json
+  body: |
+    {
+      "email": "{{ .owner.email }}",
+      "password": "{{ .owner.password }}",
+      "device_label": "external-secrets-operator"
+    }
+  secrets:
+    - name: owner
+      secretRef:
+        name: agent-vault-owner-credentials
+  result:
+    jsonPath: "$"
+---
+apiVersion: external-secrets.io/v1
+kind: ExternalSecret
+metadata:
+  name: agent-vault-owner-session
+  annotations:
+    argocd.argoproj.io/sync-wave: "2"
+spec:
+  refreshPolicy: CreatedOnce
+  target:
+    name: agent-vault-owner-session
+    creationPolicy: Orphan
+    deletionPolicy: Retain
+    immutable: true
+    template:
+      engineVersion: v2
+      metadata:
+        labels:
+          external-secrets.io/type: webhook
+      data:
+        token: '{{ .token }}'
+        expiresAt: '{{ .expires_at }}'
+  dataFrom:
+    - sourceRef:
+        generatorRef:
+          apiVersion: generators.external-secrets.io/v1alpha1
+          kind: Webhook
+          name: agent-vault-owner-login
+---
+apiVersion: generators.external-secrets.io/v1alpha1
+kind: Webhook
+metadata:
+  name: agent-vault-create-isacmes
+  annotations:
+    argocd.argoproj.io/sync-wave: "3"
+spec:
+  method: POST
+  url: http://agent-vault.agent-vault.svc.cluster.local:14321/v1/agents
+  timeout: 10s
+  headers:
+    Content-Type: application/json
+    Authorization: Bearer {{ .auth.token }}
+  body: |
+    {
+      "name": "isacmes",
+      "role": "no-access",
+      "vaults": [
+        {
+          "vault_name": "default",
+          "vault_role": "proxy"
+        }
+      ]
+    }
+  secrets:
+    - name: auth
+      secretRef:
+        name: agent-vault-owner-session
+  result:
+    jsonPath: "$"
+---
+apiVersion: external-secrets.io/v1
+kind: ExternalSecret
+metadata:
+  name: agent-vault-isacmes-token
+  annotations:
+    argocd.argoproj.io/sync-wave: "3"
+spec:
+  refreshPolicy: CreatedOnce
+  target:
+    name: agent-vault-isacmes-token
+    creationPolicy: Orphan
+    deletionPolicy: Retain
+    immutable: true
+    template:
+      engineVersion: v2
+      data:
+        token: '{{ .av_agent_token }}'
+  dataFrom:
+    - sourceRef:
+        generatorRef:
+          apiVersion: generators.external-secrets.io/v1alpha1
+          kind: Webhook
+          name: agent-vault-create-isacmes
