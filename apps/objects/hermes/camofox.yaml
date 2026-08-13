@@ -1,129 +1,121 @@
-apiVersion: generators.external-secrets.io/v1alpha1
-kind: Password
+apiVersion: v1
+kind: PersistentVolumeClaim
 metadata:
-  name: isacmes-camofox-api-key
-  annotations:
-    argocd.argoproj.io/sync-wave: "4"
+  name: isacmes-camofox-data
 spec:
-  length: 64
-  digits: 16
-  symbols: 0
-  noUpper: false
-  allowRepeat: true
+  accessModes:
+    - ReadWriteOnce
+  storageClassName: ssd-ha-xfs
+  resources:
+    requests:
+      storage: 5Gi
 ---
-apiVersion: generators.external-secrets.io/v1alpha1
-kind: Password
+apiVersion: v1
+kind: PersistentVolumeClaim
 metadata:
-  name: isacmes-vnc-password
-  annotations:
-    argocd.argoproj.io/sync-wave: "4"
+  name: isacmes-jay-camofox-data
 spec:
-  length: 8
-  digits: 2
-  symbols: 0
-  noUpper: false
-  allowRepeat: true
+  accessModes:
+    - ReadWriteOnce
+  storageClassName: ssd-ha-xfs
+  resources:
+    requests:
+      storage: 5Gi
 ---
-apiVersion: external-secrets.io/v1
-kind: ExternalSecret
+apiVersion: v1
+kind: Service
 metadata:
-  name: isacmes-camofox-credentials
-  annotations:
-    argocd.argoproj.io/sync-wave: "4"
-    argocd.argoproj.io/sync-options: Prune=false
+  name: isacmes-vnc
 spec:
-  refreshPolicy: CreatedOnce
-  target:
-    name: isacmes-camofox-credentials
-    creationPolicy: Orphan
-    deletionPolicy: Retain
-    immutable: true
-    template:
-      engineVersion: v2
-      data:
-        camofoxApiKey: '{{ .camofoxApiKey }}'
-        vncPassword: '{{ .vncPassword }}'
-  dataFrom:
-    - sourceRef:
-        generatorRef:
-          apiVersion: generators.external-secrets.io/v1alpha1
-          kind: Password
-          name: isacmes-camofox-api-key
-      rewrite:
-        - regexp:
-            source: password
-            target: camofoxApiKey
-    - sourceRef:
-        generatorRef:
-          apiVersion: generators.external-secrets.io/v1alpha1
-          kind: Password
-          name: isacmes-vnc-password
-      rewrite:
-        - regexp:
-            source: password
-            target: vncPassword
+  selector:
+    app.kubernetes.io/instance: isacmes
+    app.kubernetes.io/name: hermes-agent
+  ports:
+    - name: novnc
+      port: 6080
+      targetPort: novnc
 ---
-apiVersion: generators.external-secrets.io/v1alpha1
-kind: Password
+apiVersion: v1
+kind: Service
 metadata:
-  name: isacmes-jay-camofox-api-key
-  annotations:
-    argocd.argoproj.io/sync-wave: "4"
+  name: isacmes-jay-vnc
 spec:
-  length: 64
-  digits: 16
-  symbols: 0
-  noUpper: false
-  allowRepeat: true
+  selector:
+    app.kubernetes.io/instance: isacmes-jay
+    app.kubernetes.io/name: hermes-agent
+  ports:
+    - name: novnc
+      port: 6080
+      targetPort: novnc
 ---
-apiVersion: generators.external-secrets.io/v1alpha1
-kind: Password
+apiVersion: gateway.networking.k8s.io/v1
+kind: HTTPRoute
 metadata:
-  name: isacmes-jay-vnc-password
-  annotations:
-    argocd.argoproj.io/sync-wave: "4"
+  name: isacmes-vnc
 spec:
-  length: 8
-  digits: 2
-  symbols: 0
-  noUpper: false
-  allowRepeat: true
+  parentRefs:
+    - group: gateway.networking.k8s.io
+      kind: Gateway
+      name: bhyoo-gateway
+      namespace: ingress-ctrl
+  hostnames:
+    - isacmes-vnc.bhyoo.com
+  rules:
+    - matches:
+        - path:
+            type: PathPrefix
+            value: /
+      backendRefs:
+        - group: ""
+          kind: Service
+          name: isacmes-vnc
+          port: 6080
+          weight: 1
 ---
-apiVersion: external-secrets.io/v1
-kind: ExternalSecret
+apiVersion: gateway.networking.k8s.io/v1
+kind: HTTPRoute
 metadata:
-  name: isacmes-jay-camofox-credentials
-  annotations:
-    argocd.argoproj.io/sync-wave: "4"
-    argocd.argoproj.io/sync-options: Prune=false
+  name: isacmes-jay-vnc
 spec:
-  refreshPolicy: CreatedOnce
-  target:
-    name: isacmes-jay-camofox-credentials
-    creationPolicy: Orphan
-    deletionPolicy: Retain
-    immutable: true
-    template:
-      engineVersion: v2
-      data:
-        camofoxApiKey: '{{ .camofoxApiKey }}'
-        vncPassword: '{{ .vncPassword }}'
-  dataFrom:
-    - sourceRef:
-        generatorRef:
-          apiVersion: generators.external-secrets.io/v1alpha1
-          kind: Password
-          name: isacmes-jay-camofox-api-key
-      rewrite:
-        - regexp:
-            source: password
-            target: camofoxApiKey
-    - sourceRef:
-        generatorRef:
-          apiVersion: generators.external-secrets.io/v1alpha1
-          kind: Password
-          name: isacmes-jay-vnc-password
-      rewrite:
-        - regexp:
-            source: password
-            target: vncPassword
+  parentRefs:
+    - group: gateway.networking.k8s.io
+      kind: Gateway
+      name: bhyoo-gateway
+      namespace: ingress-ctrl
+  hostnames:
+    - isacmes-jay-vnc.bhyoo.com
+  rules:
+    - matches:
+        - path:
+            type: PathPrefix
+            value: /
+      backendRefs:
+        - group: ""
+          kind: Service
+          name: isacmes-jay-vnc
+          port: 6080
+          weight: 1
+---
+apiVersion: cilium.io/v2
+kind: CiliumNetworkPolicy
+metadata:
+  name: hermes-camofox-vnc
+spec:
+  endpointSelector:
+    matchExpressions:
+      - key: app.kubernetes.io/instance
+        operator: In
+        values:
+          - isacmes
+          - isacmes-jay
+      - key: app.kubernetes.io/name
+        operator: In
+        values:
+          - hermes-agent
+  ingress:
+    - fromEntities:
+        - ingress
+      toPorts:
+        - ports:
+            - port: "6080"
+              protocol: TCP
