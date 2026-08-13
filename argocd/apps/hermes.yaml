@@ -1,0 +1,68 @@
+apiVersion: argoproj.io/v1alpha1
+kind: Application
+metadata:
+  name: hermes-operator
+  finalizers:
+    - resources-finalizer.argocd.argoproj.io
+spec:
+  destination:
+    name: backbone
+    namespace: hermes-operator
+  project: hermes
+  sources:
+    - repoURL: https://github.com/isac322/homelab.git
+      targetRevision: HEAD
+      ref: homelab
+    - chart: hermes-operator
+      helm:
+        releaseName: hermes-operator
+        valueFiles:
+          - values.yaml
+          - $homelab/values/hermes-operator/backbone.yaml
+      repoURL: ghcr.io/paperclipinc/charts
+      targetRevision: 0.1.20
+  syncPolicy:
+    automated:
+      prune: true
+      selfHeal: true
+    retry:
+      backoff:
+        duration: 5s
+        factor: 2
+        maxDuration: 3m0s
+      limit: 100
+    syncOptions:
+      - CreateNamespace=true
+      - ServerSideApply=true
+---
+apiVersion: argoproj.io/v1alpha1
+kind: Application
+metadata:
+  name: hermes-isacmes
+  finalizers:
+    - resources-finalizer.argocd.argoproj.io
+spec:
+  destination:
+    name: backbone
+    namespace: hermes
+  project: hermes
+  source:
+    path: apps/objects/hermes
+    repoURL: https://github.com/isac322/homelab.git
+    targetRevision: HEAD
+  syncPolicy:
+    automated:
+      prune: true
+      selfHeal: true
+    retry:
+      backoff:
+        duration: 5s
+        factor: 2
+        maxDuration: 3m0s
+      limit: 100
+    syncOptions:
+      - CreateNamespace=true
+  ignoreDifferences:
+    - kind: Secret
+      jsonPointers:
+        - /data

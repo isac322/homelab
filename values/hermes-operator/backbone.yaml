@@ -1,0 +1,6 @@
+webhook:
+  enabled: true
+  certManager:
+    enabled: true
+    issuerKind: Issuer
+    issuerName: hermes-operator-selfsigned

@@ -1,0 +1,17 @@
+apiVersion: argoproj.io/v1alpha1
+kind: AppProject
+metadata:
+  name: hermes
+spec:
+  description: Hermes operator and Isacmes instance
+  sourceRepos:
+    - https://github.com/isac322/homelab.git
+    - ghcr.io/paperclipinc/charts
+  destinations:
+    - namespace: hermes-operator
+      name: backbone
+    - namespace: hermes
+      name: backbone
+  clusterResourceWhitelist:
+    - group: '*'
+      kind: '*'

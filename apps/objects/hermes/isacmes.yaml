@@ -1,0 +1,29 @@
+apiVersion: hermes.agent/v1
+kind: HermesInstance
+metadata:
+  name: isacmes
+spec:
+  image:
+    repository: ghcr.io/paperclipinc/hermes-agent
+    tag: v0.16.0
+  config:
+    raw:
+      model: gpt-4o-mini
+      base_url: https://api.openai.com/v1
+  env:
+    - name: OPENAI_API_KEY
+      valueFrom:
+        secretKeyRef:
+          name: isacmes-credentials
+          key: apiKey
+  storage:
+    persistence:
+      enabled: true
+      size: 10Gi
+      storageClassName: ssd-ha-xfs
+  gateways:
+    telegram:
+      enabled: true
+      botTokenSecretRef:
+        name: isacmes-credentials
+        key: token
