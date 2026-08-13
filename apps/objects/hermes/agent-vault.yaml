@@ -77,6 +77,7 @@ metadata:
   name: agent-vault-owner-credentials
   annotations:
     argocd.argoproj.io/sync-wave: "0"
+    argocd.argoproj.io/sync-options: Prune=false
 spec:
   refreshPolicy: CreatedOnce
   target:
@@ -130,6 +131,7 @@ metadata:
   name: agent-vault-register-owner
   annotations:
     argocd.argoproj.io/sync-wave: "1"
+    argocd.argoproj.io/sync-options: Prune=false
 spec:
   refreshPolicy: CreatedOnce
   target:
@@ -179,6 +181,7 @@ metadata:
   name: agent-vault-owner-session
   annotations:
     argocd.argoproj.io/sync-wave: "2"
+    argocd.argoproj.io/sync-options: Prune=false
 spec:
   refreshPolicy: CreatedOnce
   target:
@@ -238,6 +241,7 @@ metadata:
   name: agent-vault-owner-invite
   annotations:
     argocd.argoproj.io/sync-wave: "3"
+    argocd.argoproj.io/sync-options: Prune=false
 spec:
   refreshPolicy: CreatedOnce
   target:
@@ -276,7 +280,7 @@ spec:
     Authorization: Bearer {{ .auth.token }}
   body: |
     {
-      "name": "isacmes",
+      "name": "hermes-isacmes",
       "role": "no-access",
       "vaults": [
         {
@@ -298,6 +302,7 @@ metadata:
   name: agent-vault-isacmes-token
   annotations:
     argocd.argoproj.io/sync-wave: "3"
+    argocd.argoproj.io/sync-options: Prune=false
 spec:
   refreshPolicy: CreatedOnce
   target:
@@ -350,6 +355,7 @@ metadata:
   name: agent-vault-owner-invite-notification
   annotations:
     argocd.argoproj.io/sync-wave: "4"
+    argocd.argoproj.io/sync-options: Prune=false
 spec:
   refreshPolicy: CreatedOnce
   target:

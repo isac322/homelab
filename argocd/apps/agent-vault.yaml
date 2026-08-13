@@ -30,3 +30,11 @@ spec:
     - kind: Secret
       jsonPointers:
         - /data
+    - group: apps
+      kind: StatefulSet
+      name: agent-vault
+      jsonPointers:
+        - /spec/volumeClaimTemplates/0/apiVersion
+        - /spec/volumeClaimTemplates/0/kind
+        - /spec/volumeClaimTemplates/0/spec/volumeMode
+        - /spec/volumeClaimTemplates/0/status

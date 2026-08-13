@@ -17,6 +17,7 @@ metadata:
   name: agent-vault-master-password
   annotations:
     argocd.argoproj.io/sync-wave: "0"
+    argocd.argoproj.io/sync-options: Prune=false
 spec:
   refreshPolicy: CreatedOnce
   target:
