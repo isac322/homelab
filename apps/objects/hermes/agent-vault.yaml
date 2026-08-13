@@ -37,6 +37,80 @@ data:
 
     Never print, log, decode, or transmit `AGENT_VAULT_TOKEN`.
 ---
+apiVersion: v1
+kind: ConfigMap
+metadata:
+  name: agent-vault-camofox
+  annotations:
+    argocd.argoproj.io/sync-wave: "0"
+data:
+  camofox.config.json: |
+    {
+      "id": "camofox-browser",
+      "name": "Camofox Browser",
+      "version": "1.6.0",
+      "newPageTimeoutMs": 10000,
+      "plugins": {
+        "youtube": { "enabled": true },
+        "persistence": { "enabled": true },
+        "vnc": { "enabled": false, "resolution": "1920x1080" },
+        "agent-vault": { "enabled": true }
+      }
+    }
+  index.js: |
+    import fs from 'fs';
+    import net from 'net';
+    import tls from 'tls';
+
+    const LISTEN_HOST = '127.0.0.1';
+    const LISTEN_PORT = 14323;
+    const UPSTREAM_HOST = 'agent-vault.agent-vault.svc.cluster.local';
+    const UPSTREAM_PORT = 14322;
+    const CA_PATH = '/etc/agent-vault/ca.pem';
+
+    export default async function register(_app, ctx) {
+      const ca = fs.readFileSync(CA_PATH);
+      const bridge = net.createServer((client) => {
+        const upstream = tls.connect({
+          host: UPSTREAM_HOST,
+          port: UPSTREAM_PORT,
+          servername: UPSTREAM_HOST,
+          ca,
+          minVersion: 'TLSv1.2',
+          rejectUnauthorized: true,
+        });
+
+        client.on('error', () => upstream.destroy());
+        upstream.on('error', (error) => {
+          ctx.log('error', 'Agent Vault TLS bridge connection failed', {
+            error: error.message,
+          });
+          client.destroy();
+        });
+        client.pipe(upstream);
+        upstream.pipe(client);
+      });
+
+      await new Promise((resolve, reject) => {
+        bridge.once('error', reject);
+        bridge.listen(LISTEN_PORT, LISTEN_HOST, () => {
+          bridge.off('error', reject);
+          resolve();
+        });
+      });
+
+      // Agent Vault validates the real upstream certificate. The browser-facing
+      // certificate is minted by Agent Vault's private CA for TLS inspection.
+      ctx.events.on('session:creating', ({ contextOptions }) => {
+        contextOptions.ignoreHTTPSErrors = true;
+      });
+      ctx.events.on('server:shutdown', () => bridge.close());
+      ctx.log('info', 'Agent Vault TLS bridge listening', {
+        host: LISTEN_HOST,
+        port: LISTEN_PORT,
+      });
+    }
+---
 apiVersion: networking.k8s.io/v1
 kind: NetworkPolicy
 metadata:

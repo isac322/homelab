@@ -78,6 +78,9 @@ spec:
     - name: agent-vault-skill
       configMap:
         name: agent-vault-skill
+    - name: agent-vault-camofox
+      configMap:
+        name: agent-vault-camofox
     - name: camofox-home
       emptyDir: {}
     - name: camofox-tmp
@@ -136,6 +139,19 @@ spec:
           value: /data/cookies
         - name: CAMOFOX_TRACES_DIR
           value: /data/traces
+        - name: PROXY_STRATEGY
+          value: round_robin
+        - name: PROXY_HOST
+          value: 127.0.0.1
+        - name: PROXY_PORT
+          value: "14323"
+        - name: PROXY_USERNAME
+          valueFrom:
+            secretKeyRef:
+              name: agent-vault-isacmes-bhyoo-token
+              key: token
+        - name: PROXY_PASSWORD
+          value: bhyoo
         - name: ENABLE_VNC
           value: "1"
         - name: VNC_BIND
@@ -203,6 +219,17 @@ spec:
           mountPath: /dev/shm
         - name: camofox-data
           mountPath: /data
+        - name: agent-vault-ca
+          mountPath: /etc/agent-vault
+          readOnly: true
+        - name: agent-vault-camofox
+          mountPath: /app/camofox.config.json
+          subPath: camofox.config.json
+          readOnly: true
+        - name: agent-vault-camofox
+          mountPath: /app/plugins/agent-vault/index.js
+          subPath: index.js
+          readOnly: true
   config:
     raw:
       _config_version: 33
@@ -218,6 +245,23 @@ spec:
           - disk-cleanup
       context:
         engine: lcm
+      browser:
+        camofox:
+          managed_persistence: true
+          adopt_existing_tab: true
+      platform_hints:
+        telegram:
+          append: |
+            Never ask for or accept credential values in Telegram chat. Direct
+            the user to the Agent Vault approval page returned by a proposal;
+            the value must be submitted there without passing through Hermes.
+            If a credential is pasted into chat, do not repeat or use it and
+            advise the user to rotate it. Browser API authentication is
+            brokered transparently; do not retrieve or type credential values.
+            Interactive website logins instead reuse the persistent Camofox
+            profile, and when login is required ask the user to use the private
+            VNC session. Install user-requested CLI tools and libraries only in
+            the persistent user/XDG locations, never in system prefixes.
       terminal:
         env_passthrough:
           - AGENT_VAULT_ADDR
@@ -254,6 +298,62 @@ spec:
           provider: main
           model: gpt-5.4-mini
   env:
+    - name: HOME
+      value: /opt/data
+    - name: XDG_CONFIG_HOME
+      value: /opt/data/.config
+    - name: XDG_CACHE_HOME
+      value: /opt/data/.cache
+    - name: XDG_DATA_HOME
+      value: /opt/data/.local/share
+    - name: XDG_STATE_HOME
+      value: /opt/data/.local/state
+    - name: PATH
+      value: /command:/opt/hermes/bin:/opt/hermes/.venv/bin:/opt/data/.local/bin:/opt/data/.local/share/pnpm:/opt/data/.local/share/bun/bin:/opt/data/.local/share/cargo/bin:/opt/data/.local/share/gem/bin:/usr/local/sbin:/usr/local/bin:/usr/sbin:/usr/bin:/sbin:/bin
+    - name: NPM_CONFIG_PREFIX
+      value: /opt/data/.local
+    - name: NPM_CONFIG_CACHE
+      value: /opt/data/.cache/npm
+    - name: NPM_CONFIG_USERCONFIG
+      value: /opt/data/.config/npm/npmrc
+    - name: PNPM_HOME
+      value: /opt/data/.local/share/pnpm
+    - name: BUN_INSTALL
+      value: /opt/data/.local/share/bun
+    - name: BUN_INSTALL_CACHE_DIR
+      value: /opt/data/.cache/bun
+    - name: UV_TOOL_BIN_DIR
+      value: /opt/data/.local/bin
+    - name: UV_TOOL_DIR
+      value: /opt/data/.local/share/uv/tools
+    - name: UV_CACHE_DIR
+      value: /opt/data/.cache/uv
+    - name: PIPX_HOME
+      value: /opt/data/.local/share/pipx
+    - name: PIPX_BIN_DIR
+      value: /opt/data/.local/bin
+    - name: PIP_CACHE_DIR
+      value: /opt/data/.cache/pip
+    - name: PYTHONUSERBASE
+      value: /opt/data/.local
+    - name: CARGO_HOME
+      value: /opt/data/.local/share/cargo
+    - name: RUSTUP_HOME
+      value: /opt/data/.local/share/rustup
+    - name: GOPATH
+      value: /opt/data/.local/share/go
+    - name: GOBIN
+      value: /opt/data/.local/bin
+    - name: GOCACHE
+      value: /opt/data/.cache/go-build
+    - name: GEM_HOME
+      value: /opt/data/.local/share/gem
+    - name: GEM_SPEC_CACHE
+      value: /opt/data/.cache/gem
+    - name: DENO_DIR
+      value: /opt/data/.cache/deno
+    - name: DENO_INSTALL
+      value: /opt/data/.local
     - name: TELEGRAM_ALLOWED_USERS
       value: "5286349319"
     - name: OPENAI_API_KEY

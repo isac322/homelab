@@ -197,6 +197,62 @@ spec:
           provider: main
           model: gpt-5.4-mini
   env:
+    - name: HOME
+      value: /opt/data
+    - name: XDG_CONFIG_HOME
+      value: /opt/data/.config
+    - name: XDG_CACHE_HOME
+      value: /opt/data/.cache
+    - name: XDG_DATA_HOME
+      value: /opt/data/.local/share
+    - name: XDG_STATE_HOME
+      value: /opt/data/.local/state
+    - name: PATH
+      value: /command:/opt/hermes/bin:/opt/hermes/.venv/bin:/opt/data/.local/bin:/opt/data/.local/share/pnpm:/opt/data/.local/share/bun/bin:/opt/data/.local/share/cargo/bin:/opt/data/.local/share/gem/bin:/usr/local/sbin:/usr/local/bin:/usr/sbin:/usr/bin:/sbin:/bin
+    - name: NPM_CONFIG_PREFIX
+      value: /opt/data/.local
+    - name: NPM_CONFIG_CACHE
+      value: /opt/data/.cache/npm
+    - name: NPM_CONFIG_USERCONFIG
+      value: /opt/data/.config/npm/npmrc
+    - name: PNPM_HOME
+      value: /opt/data/.local/share/pnpm
+    - name: BUN_INSTALL
+      value: /opt/data/.local/share/bun
+    - name: BUN_INSTALL_CACHE_DIR
+      value: /opt/data/.cache/bun
+    - name: UV_TOOL_BIN_DIR
+      value: /opt/data/.local/bin
+    - name: UV_TOOL_DIR
+      value: /opt/data/.local/share/uv/tools
+    - name: UV_CACHE_DIR
+      value: /opt/data/.cache/uv
+    - name: PIPX_HOME
+      value: /opt/data/.local/share/pipx
+    - name: PIPX_BIN_DIR
+      value: /opt/data/.local/bin
+    - name: PIP_CACHE_DIR
+      value: /opt/data/.cache/pip
+    - name: PYTHONUSERBASE
+      value: /opt/data/.local
+    - name: CARGO_HOME
+      value: /opt/data/.local/share/cargo
+    - name: RUSTUP_HOME
+      value: /opt/data/.local/share/rustup
+    - name: GOPATH
+      value: /opt/data/.local/share/go
+    - name: GOBIN
+      value: /opt/data/.local/bin
+    - name: GOCACHE
+      value: /opt/data/.cache/go-build
+    - name: GEM_HOME
+      value: /opt/data/.local/share/gem
+    - name: GEM_SPEC_CACHE
+      value: /opt/data/.cache/gem
+    - name: DENO_DIR
+      value: /opt/data/.cache/deno
+    - name: DENO_INSTALL
+      value: /opt/data/.local
     - name: TELEGRAM_ALLOWED_USERS
       value: "8501631874"
     - name: OPENAI_API_KEY
