@@ -39,6 +39,8 @@ spec:
       plugins:
         enabled:
           - hermes-lcm
+          - security-guidance
+          - disk-cleanup
       context:
         engine: lcm
       memory:
