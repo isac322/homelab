@@ -1,7 +1,7 @@
 apiVersion: hermes.agent/v1
 kind: HermesInstance
 metadata:
-  name: isacmes
+  name: isacmes-jay
 spec:
   image:
     repository: nousresearch/hermes-agent
@@ -34,12 +34,12 @@ spec:
     - name: OPENAI_API_KEY
       valueFrom:
         secretKeyRef:
-          name: isacmes-credentials
+          name: isacmes-jay-credentials
           key: apiKey
     - name: OPENAI_BASE_URL
       valueFrom:
         secretKeyRef:
-          name: isacmes-credentials
+          name: isacmes-jay-credentials
           key: baseUrl
   storage:
     persistence:
@@ -52,5 +52,5 @@ spec:
       allowedUserIDs:
         - 5286349319
       botTokenSecretRef:
-        name: isacmes-credentials
+        name: isacmes-jay-credentials
         key: token

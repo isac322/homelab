@@ -89,6 +89,9 @@ data "aws_iam_policy_document" "secret_read" {
         "${trimsuffix(aws_ssm_parameter.cf_account_id.arn, "cloudflare/account-id")}token/telegram/isacmes",
         "${trimsuffix(aws_ssm_parameter.cf_account_id.arn, "cloudflare/account-id")}token/openai/isacmes",
         "${trimsuffix(aws_ssm_parameter.cf_account_id.arn, "cloudflare/account-id")}token/openai/isacmes-base-url",
+        "${trimsuffix(aws_ssm_parameter.cf_account_id.arn, "cloudflare/account-id")}token/telegram/isacmes-jay",
+        "${trimsuffix(aws_ssm_parameter.cf_account_id.arn, "cloudflare/account-id")}token/openai/isacmes-jay",
+        "${trimsuffix(aws_ssm_parameter.cf_account_id.arn, "cloudflare/account-id")}token/openai/isacmes-jay-base-url",
       ],
       var.use_democratic_csi ? [aws_ssm_parameter.democratic_csi_ssh_private_key[0].arn] : [],
       var.hindsight == null ? [] : [
