@@ -30,7 +30,7 @@ spec:
           model: gpt-5.4-mini
   env:
     - name: TELEGRAM_ALLOWED_USERS
-      value: "5286349319"
+      value: "8501631874"
     - name: OPENAI_API_KEY
       valueFrom:
         secretKeyRef:
@@ -50,7 +50,7 @@ spec:
     telegram:
       enabled: true
       allowedUserIDs:
-        - 5286349319
+        - 8501631874
       botTokenSecretRef:
         name: isacmes-jay-credentials
         key: token
