@@ -68,6 +68,19 @@ data:
     const UPSTREAM_PORT = 14322;
     const CA_PATH = '/etc/agent-vault/ca.pem';
 
+    function proxyOptions() {
+      const username = process.env.PROXY_USERNAME;
+      const password = process.env.PROXY_PASSWORD;
+      if (!username || !password) {
+        throw new Error('Agent Vault proxy credentials are not configured');
+      }
+      return {
+        server: `http://${LISTEN_HOST}:${LISTEN_PORT}`,
+        username,
+        password,
+      };
+    }
+
     export default async function register(_app, ctx) {
       const ca = fs.readFileSync(CA_PATH);
       const bridge = net.createServer((client) => {
@@ -99,9 +112,16 @@ data:
         });
       });
 
+      // Injecting the proxy here avoids Camofox's public-proxy GeoIP lookup,
+      // which is not applicable to the cluster-local Agent Vault proxy.
+      ctx.events.on('browser:launching', ({ options }) => {
+        options.proxy = proxyOptions();
+      });
+
       // Agent Vault validates the real upstream certificate. The browser-facing
       // certificate is minted by Agent Vault's private CA for TLS inspection.
       ctx.events.on('session:creating', ({ contextOptions }) => {
+        contextOptions.proxy = proxyOptions();
         contextOptions.ignoreHTTPSErrors = true;
       });
       ctx.events.on('server:shutdown', () => bridge.close());

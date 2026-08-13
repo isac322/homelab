@@ -139,12 +139,6 @@ spec:
           value: /data/cookies
         - name: CAMOFOX_TRACES_DIR
           value: /data/traces
-        - name: PROXY_STRATEGY
-          value: round_robin
-        - name: PROXY_HOST
-          value: 127.0.0.1
-        - name: PROXY_PORT
-          value: "14323"
         - name: PROXY_USERNAME
           valueFrom:
             secretKeyRef:
@@ -387,7 +381,7 @@ spec:
     - name: HTTP_PROXY
       value: https://$(AGENT_VAULT_TOKEN):bhyoo@agent-vault.agent-vault.svc.cluster.local:14322
     - name: NO_PROXY
-      value: localhost,127.0.0.1,::1,.svc,.svc.cluster.local
+      value: localhost,127.0.0.1,::1,.svc,.svc.cluster.local,api.telegram.org,cliproxyapi.runbear.io
     - name: NODE_USE_ENV_PROXY
       value: "1"
     - name: SSL_CERT_FILE
