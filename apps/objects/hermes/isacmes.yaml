@@ -67,6 +67,9 @@ spec:
     - name: agent-vault-skill
       mountPath: /opt/data/skills/agent-vault
       readOnly: true
+    - name: agent-vault-skill
+      mountPath: /etc/agent-vault-client
+      readOnly: true
   config:
     raw:
       _config_version: 33
@@ -136,8 +139,12 @@ spec:
       value: /etc/agent-vault/ca.pem
     - name: CURL_CA_BUNDLE
       value: /etc/agent-vault/ca.pem
+    - name: CURL_HOME
+      value: /etc/agent-vault-client
     - name: GIT_SSL_CAINFO
       value: /etc/agent-vault/ca.pem
+    - name: GIT_CONFIG_GLOBAL
+      value: /etc/agent-vault-client/.gitconfig
     - name: DENO_CERT
       value: /etc/agent-vault/ca.pem
     - name: HINDSIGHT_MODE

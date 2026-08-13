@@ -5,6 +5,12 @@ metadata:
   annotations:
     argocd.argoproj.io/sync-wave: "0"
 data:
+  .curlrc: |
+    proxy-cacert = "/etc/agent-vault/ca.pem"
+  .gitconfig: |
+    [http]
+      proxySSLCAInfo = /etc/agent-vault/ca.pem
+      sslCAInfo = /etc/agent-vault/ca.pem
   SKILL.md: |
     ---
     name: agent-vault
