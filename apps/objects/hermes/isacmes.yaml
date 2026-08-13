@@ -48,6 +48,28 @@ spec:
       volumeMounts:
         - name: agent-vault-ca
           mountPath: /ca
+    - name: prepare-camofox-home
+      image: ghcr.io/isac322/camofox-browser@sha256:74a240dbbe404c6ae23cb5e3deb3d7236596491738a3985602ac18ebed4bd834
+      command:
+        - /bin/sh
+        - -ec
+      args:
+        - |
+          mkdir -p /home/node/.cache
+          cp -a /root/.cache/camoufox /home/node/.cache/
+          chown -R 1000:1000 /home/node
+      securityContext:
+        allowPrivilegeEscalation: false
+        capabilities:
+          drop:
+            - ALL
+          add:
+            - CHOWN
+        readOnlyRootFilesystem: true
+        runAsUser: 0
+      volumeMounts:
+        - name: camofox-home
+          mountPath: /home/node
   extraVolumes:
     - name: hermes-lcm
       emptyDir: {}
@@ -56,6 +78,19 @@ spec:
     - name: agent-vault-skill
       configMap:
         name: agent-vault-skill
+    - name: camofox-home
+      emptyDir: {}
+    - name: camofox-tmp
+      emptyDir:
+        medium: Memory
+        sizeLimit: 512Mi
+    - name: camofox-shm
+      emptyDir:
+        medium: Memory
+        sizeLimit: 512Mi
+    - name: camofox-data
+      persistentVolumeClaim:
+        claimName: isacmes-camofox-data
   extraVolumeMounts:
     - name: hermes-lcm
       mountPath: /opt/data/plugins/hermes-lcm
@@ -70,9 +105,107 @@ spec:
     - name: agent-vault-skill
       mountPath: /etc/agent-vault-client
       readOnly: true
+  sidecars:
+    - name: camofox
+      image: ghcr.io/isac322/camofox-browser@sha256:74a240dbbe404c6ae23cb5e3deb3d7236596491738a3985602ac18ebed4bd834
+      imagePullPolicy: IfNotPresent
+      env:
+        - name: HOME
+          value: /home/node
+        - name: CAMOFOX_BIND_HOST
+          value: 127.0.0.1
+        - name: CAMOFOX_API_KEY
+          valueFrom:
+            secretKeyRef:
+              name: isacmes-camofox-credentials
+              key: camofoxApiKey
+        - name: CAMOFOX_ACCESS_KEY
+          valueFrom:
+            secretKeyRef:
+              name: isacmes-camofox-credentials
+              key: camofoxApiKey
+        - name: CAMOFOX_CRASH_REPORT_ENABLED
+          value: "false"
+        - name: CAMOFOX_DISABLE_DEFAULT_ADDONS
+          value: "true"
+        - name: CAMOFOX_PROFILE_DIR
+          value: /data/profiles
+        - name: CAMOFOX_COOKIES_DIR
+          value: /data/cookies
+        - name: CAMOFOX_TRACES_DIR
+          value: /data/traces
+        - name: ENABLE_VNC
+          value: "1"
+        - name: VNC_BIND
+          value: 0.0.0.0
+        - name: VNC_PASSWORD
+          valueFrom:
+            secretKeyRef:
+              name: isacmes-camofox-credentials
+              key: vncPassword
+        - name: VNC_RESOLUTION
+          value: 1920x1080
+        - name: VNC_PORT
+          value: "5900"
+        - name: NOVNC_PORT
+          value: "6080"
+      ports:
+        - name: browser-api
+          containerPort: 9377
+        - name: novnc
+          containerPort: 6080
+      startupProbe:
+        exec:
+          command:
+            - node
+            - -e
+            - fetch('http://127.0.0.1:9377/health').then(r=>process.exit(r.ok?0:1)).catch(()=>process.exit(1))
+        failureThreshold: 60
+        periodSeconds: 2
+      readinessProbe:
+        exec:
+          command:
+            - node
+            - -e
+            - fetch('http://127.0.0.1:9377/health').then(r=>process.exit(r.ok?0:1)).catch(()=>process.exit(1))
+        periodSeconds: 10
+      livenessProbe:
+        exec:
+          command:
+            - node
+            - -e
+            - fetch('http://127.0.0.1:9377/health').then(r=>process.exit(r.ok?0:1)).catch(()=>process.exit(1))
+        periodSeconds: 30
+      resources:
+        requests:
+          cpu: 200m
+          memory: 512Mi
+        limits:
+          cpu: "2"
+          memory: 2Gi
+      securityContext:
+        allowPrivilegeEscalation: false
+        capabilities:
+          drop:
+            - ALL
+        readOnlyRootFilesystem: true
+        runAsGroup: 1000
+        runAsNonRoot: true
+        runAsUser: 1000
+      volumeMounts:
+        - name: camofox-home
+          mountPath: /home/node
+        - name: camofox-tmp
+          mountPath: /tmp
+        - name: camofox-shm
+          mountPath: /dev/shm
+        - name: camofox-data
+          mountPath: /data
   config:
     raw:
       _config_version: 33
+      approvals:
+        mode: "off"
       model:
         default: gpt-5.6-terra
         provider: openai-api
@@ -114,6 +247,13 @@ spec:
         secretKeyRef:
           name: isacmes-credentials
           key: baseUrl
+    - name: CAMOFOX_URL
+      value: http://127.0.0.1:9377
+    - name: CAMOFOX_API_KEY
+      valueFrom:
+        secretKeyRef:
+          name: isacmes-camofox-credentials
+          key: camofoxApiKey
     - name: AGENT_VAULT_ADDR
       value: http://agent-vault.agent-vault.svc.cluster.local:14321
     - name: AGENT_VAULT_TOKEN
