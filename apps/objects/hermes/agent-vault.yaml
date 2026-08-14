@@ -54,8 +54,34 @@ data:
         "youtube": { "enabled": true },
         "persistence": { "enabled": true },
         "vnc": { "enabled": false, "resolution": "1920x1080" },
+        "interactive": { "enabled": true },
         "agent-vault": { "enabled": true }
       }
+    }
+  interactive.js: |
+    export default async function register(_app, ctx) {
+      const userId = process.env.CAMOFOX_INTERACTIVE_USER_ID;
+      if (!userId) {
+        ctx.log('warn', 'interactive browser disabled: user ID is not configured');
+        return;
+      }
+
+      ctx.events.on('server:started', () => {
+        void (async () => {
+          try {
+            await ctx.ensureBrowser();
+            const session = await ctx.getSession(userId);
+            if (session.context.pages().length === 0) {
+              await session.context.newPage();
+            }
+            ctx.log('info', 'interactive browser window ready', { userId });
+          } catch (error) {
+            ctx.log('error', 'interactive browser window failed', {
+              error: error.message,
+            });
+          }
+        })();
+      });
     }
   index.js: |
     import fs from 'fs';

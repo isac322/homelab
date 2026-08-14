@@ -142,6 +142,8 @@ spec:
           value: /data/cookies
         - name: CAMOFOX_TRACES_DIR
           value: /data/traces
+        - name: CAMOFOX_INTERACTIVE_USER_ID
+          value: isacmes
         - name: PROXY_USERNAME
           valueFrom:
             secretKeyRef:
@@ -227,6 +229,10 @@ spec:
           mountPath: /app/plugins/agent-vault/index.js
           subPath: index.js
           readOnly: true
+        - name: agent-vault-camofox
+          mountPath: /app/plugins/interactive/index.js
+          subPath: interactive.js
+          readOnly: true
   config:
     raw:
       _config_version: 33
@@ -246,6 +252,8 @@ spec:
         camofox:
           managed_persistence: true
           adopt_existing_tab: true
+          user_id: isacmes
+          session_key: interactive
       platforms:
         telegram:
           enabled: true
