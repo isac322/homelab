@@ -61,20 +61,35 @@ data:
   interactive.js: |
     export default async function register(_app, ctx) {
       const userId = process.env.CAMOFOX_INTERACTIVE_USER_ID;
-      if (!userId) {
-        ctx.log('warn', 'interactive browser disabled: user ID is not configured');
+      const accessKey = process.env.CAMOFOX_ACCESS_KEY || process.env.CAMOFOX_API_KEY;
+      if (!userId || !accessKey) {
+        ctx.log('warn', 'interactive browser disabled: identity or access key is not configured');
         return;
       }
 
       ctx.events.on('server:started', () => {
         void (async () => {
           try {
-            await ctx.ensureBrowser();
-            const session = await ctx.getSession(userId);
-            if (session.context.pages().length === 0) {
-              await session.context.newPage();
+            const response = await fetch(`http://127.0.0.1:${ctx.config.port}/tabs`, {
+              method: 'POST',
+              headers: {
+                Authorization: `Bearer ${accessKey}`,
+                'Content-Type': 'application/json',
+              },
+              body: JSON.stringify({
+                userId,
+                sessionKey: 'interactive',
+                url: 'about:blank',
+              }),
+            });
+            if (!response.ok) {
+              throw new Error(`Camofox returned HTTP ${response.status}`);
             }
-            ctx.log('info', 'interactive browser window ready', { userId });
+            const tab = await response.json();
+            ctx.log('info', 'interactive browser window ready', {
+              userId,
+              tabId: tab.tabId,
+            });
           } catch (error) {
             ctx.log('error', 'interactive browser window failed', {
               error: error.message,
