@@ -246,6 +246,14 @@ spec:
         camofox:
           managed_persistence: true
           adopt_existing_tab: true
+      platforms:
+        telegram:
+          enabled: true
+          home_channel:
+            platform: telegram
+            chat_id: "5286349319"
+            name: bhyoo
+            user_id: "5286349319"
       platform_hints:
         telegram:
           append: |

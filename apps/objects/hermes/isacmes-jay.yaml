@@ -178,6 +178,14 @@ spec:
           - disk-cleanup
       context:
         engine: lcm
+      platforms:
+        telegram:
+          enabled: true
+          home_channel:
+            platform: telegram
+            chat_id: "8501631874"
+            name: jay
+            user_id: "8501631874"
       memory:
         provider: hindsight
       auxiliary:
