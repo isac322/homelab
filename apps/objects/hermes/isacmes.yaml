@@ -31,6 +31,8 @@ spec:
         - /patch/patch.py
         - /opt/hermes/tools
         - /patched/tools
+        - /opt/hermes/gateway
+        - /patched/gateway
       securityContext:
         allowPrivilegeEscalation: false
         capabilities:
@@ -82,20 +84,6 @@ spec:
         - |
           mkdir -p /home/node/.cache
           cp -a /root/.cache/camoufox /home/node/.cache/
-          test -s /etc/agent-vault/agent-vault-ca.pem
-          python3 - <<'PY'
-          import json
-          from pathlib import Path
-
-          policy_path = Path("/home/node/.cache/camoufox/distribution/policies.json")
-          policy = json.loads(policy_path.read_text())
-          certificates = policy.setdefault("policies", {}).setdefault("Certificates", {})
-          install = certificates.setdefault("Install", [])
-          ca_path = "/etc/agent-vault/agent-vault-ca.pem"
-          if ca_path not in install:
-              install.append(ca_path)
-          policy_path.write_text(json.dumps(policy, indent=2) + "\n")
-          PY
           chown -R 1000:1000 /home/node
       securityContext:
         allowPrivilegeEscalation: false
@@ -109,9 +97,6 @@ spec:
       volumeMounts:
         - name: camofox-home
           mountPath: /home/node
-        - name: agent-vault-ca
-          mountPath: /etc/agent-vault
-          readOnly: true
   extraVolumes:
     - name: hermes-lcm
       emptyDir: {}
@@ -125,9 +110,9 @@ spec:
     - name: agent-vault-skill
       configMap:
         name: agent-vault-skill
-    - name: agent-vault-camofox
+    - name: camofox-runtime
       configMap:
-        name: agent-vault-camofox
+        name: camofox-runtime
     - name: camofox-home
       emptyDir: {}
     - name: camofox-tmp
@@ -149,6 +134,10 @@ spec:
     - name: hermes-tools-patched
       mountPath: /opt/hermes/tools
       subPath: tools
+      readOnly: true
+    - name: hermes-tools-patched
+      mountPath: /opt/hermes/gateway
+      subPath: gateway
       readOnly: true
     - name: agent-vault-ca
       mountPath: /etc/agent-vault
@@ -192,13 +181,6 @@ spec:
           value: /data/traces
         - name: CAMOFOX_INTERACTIVE_USER_ID
           value: interactive
-        - name: PROXY_USERNAME
-          valueFrom:
-            secretKeyRef:
-              name: agent-vault-isacmes-bhyoo-token
-              key: token
-        - name: PROXY_PASSWORD
-          value: bhyoo
         - name: ENABLE_VNC
           value: "1"
         - name: VNC_BIND
@@ -266,18 +248,11 @@ spec:
           mountPath: /dev/shm
         - name: camofox-data
           mountPath: /data
-        - name: agent-vault-ca
-          mountPath: /etc/agent-vault
-          readOnly: true
-        - name: agent-vault-camofox
+        - name: camofox-runtime
           mountPath: /app/camofox.config.json
           subPath: camofox.config.json
           readOnly: true
-        - name: agent-vault-camofox
-          mountPath: /app/plugins/agent-vault/index.js
-          subPath: index.js
-          readOnly: true
-        - name: agent-vault-camofox
+        - name: camofox-runtime
           mountPath: /app/plugins/interactive/index.js
           subPath: interactive.js
           readOnly: true
@@ -430,6 +405,8 @@ spec:
           key: baseUrl
     - name: CAMOFOX_URL
       value: http://127.0.0.1:9377
+    - name: CAMOFOX_PUBLIC_VNC_ORIGIN
+      value: https://isacmes-vnc.bhyoo.com
     - name: CAMOFOX_API_KEY
       valueFrom:
         secretKeyRef:

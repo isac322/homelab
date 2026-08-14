@@ -29,6 +29,8 @@ spec:
         - /patch/patch.py
         - /opt/hermes/tools
         - /patched/tools
+        - /opt/hermes/gateway
+        - /patched/gateway
       securityContext:
         allowPrivilegeEscalation: false
         capabilities:
@@ -89,7 +91,7 @@ spec:
         claimName: isacmes-jay-camofox-data
     - name: camofox-interactive
       configMap:
-        name: agent-vault-camofox
+        name: camofox-runtime
   extraVolumeMounts:
     - name: hermes-lcm
       mountPath: /opt/data/plugins/hermes-lcm
@@ -98,6 +100,10 @@ spec:
     - name: hermes-tools-patched
       mountPath: /opt/hermes/tools
       subPath: tools
+      readOnly: true
+    - name: hermes-tools-patched
+      mountPath: /opt/hermes/gateway
+      subPath: gateway
       readOnly: true
   sidecars:
     - name: camofox
@@ -326,6 +332,8 @@ spec:
           key: baseUrl
     - name: CAMOFOX_URL
       value: http://127.0.0.1:9377
+    - name: CAMOFOX_PUBLIC_VNC_ORIGIN
+      value: https://isacmes-jay-vnc.bhyoo.com
     - name: CAMOFOX_API_KEY
       valueFrom:
         secretKeyRef:

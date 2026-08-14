@@ -20,16 +20,23 @@ data:
         return source.replace(old, new, 1)
 
 
-    source_dir = Path(sys.argv[1])
-    target_dir = Path(sys.argv[2])
+    source_tools = Path(sys.argv[1])
+    target_tools = Path(sys.argv[2])
+    source_gateway = Path(sys.argv[3])
+    target_gateway = Path(sys.argv[4])
     replacement_state = Path("/patch/browser_camofox_state.py")
 
-    if target_dir.exists():
-        shutil.rmtree(target_dir)
-    shutil.copytree(source_dir, target_dir)
-    shutil.copyfile(replacement_state, target_dir / "browser_camofox_state.py")
+    for source_dir, target_dir in (
+        (source_tools, target_tools),
+        (source_gateway, target_gateway),
+    ):
+        if target_dir.exists():
+            shutil.rmtree(target_dir)
+        shutil.copytree(source_dir, target_dir)
 
-    browser_path = target_dir / "browser_camofox.py"
+    shutil.copyfile(replacement_state, target_tools / "browser_camofox_state.py")
+
+    browser_path = target_tools / "browser_camofox.py"
     browser = browser_path.read_text()
     browser = replace_once(
         browser,
@@ -39,8 +46,15 @@ data:
     )
     browser = replace_once(
         browser,
-        '''    task_id = task_id or "default"\n    with _sessions_lock:\n        if task_id in _sessions:\n            return _adopt_existing_tab(_sessions[task_id])''',
-        '''    task_id = task_id or "default"\n    cache_key = get_camofox_cache_key(task_id)\n    with _sessions_lock:\n        if cache_key in _sessions:\n            return _adopt_existing_tab(_sessions[cache_key])''',
+        '''    task_id = task_id or "default"
+        with _sessions_lock:
+            if task_id in _sessions:
+                return _adopt_existing_tab(_sessions[task_id])''',
+        '''    task_id = task_id or "default"
+        cache_key = get_camofox_cache_key(task_id)
+        with _sessions_lock:
+            if cache_key in _sessions:
+                return _adopt_existing_tab(_sessions[cache_key])''',
         "session lookup",
     )
     browser = replace_once(
@@ -51,16 +65,80 @@ data:
     )
     browser = replace_once(
         browser,
-        '''    task_id = task_id or "default"\n    with _sessions_lock:\n        return _sessions.pop(task_id, None)''',
-        '''    task_id = task_id or "default"\n    cache_key = get_camofox_cache_key(task_id)\n    with _sessions_lock:\n        return _sessions.pop(cache_key, None)''',
+        '''    task_id = task_id or "default"
+        with _sessions_lock:
+            return _sessions.pop(task_id, None)''',
+        '''    task_id = task_id or "default"
+        cache_key = get_camofox_cache_key(task_id)
+        with _sessions_lock:
+            return _sessions.pop(cache_key, None)''',
         "session removal",
+    )
+    browser = replace_once(
+        browser,
+        '''def get_vnc_url() -> Optional[str]:
+        """Return the VNC URL if the Camofox server exposes one, or None."""
+        if not _vnc_url_checked:
+            check_camofox_available()
+        return _vnc_url''',
+        '''def _user_facing_vnc_url(internal_url: str) -> str:
+        """Replace only the origin of a VNC URL before exposing it to a user."""
+        from urllib.parse import urlsplit, urlunsplit
+
+        public_origin = os.getenv("CAMOFOX_PUBLIC_VNC_ORIGIN", "").strip().rstrip("/")
+        public = urlsplit(public_origin)
+        if not public.scheme or not public.netloc:
+            logger.error("CAMOFOX_PUBLIC_VNC_ORIGIN is missing or invalid; refusing to expose an internal VNC URL")
+            raise RuntimeError("Public VNC origin is not configured")
+
+        internal = urlsplit(internal_url)
+        return urlunsplit(
+            (
+                public.scheme,
+                public.netloc,
+                internal.path or "/vnc.html",
+                internal.query,
+                internal.fragment,
+            )
+        )
+
+
+    def get_vnc_url() -> Optional[str]:
+        """Return the internal VNC URL for internal Camofox use, or None."""
+        if not _vnc_url_checked:
+            check_camofox_available()
+        return _vnc_url''',
+        "public VNC URL helper",
+    )
+    browser = replace_once(
+        browser,
+        '            result["vnc_url"] = vnc',
+        '            result["vnc_url"] = _user_facing_vnc_url(vnc)',
+        "user-facing VNC URL",
     )
     browser_path.write_text(browser)
 
-    for path in (target_dir / "browser_camofox_state.py", browser_path):
+    gateway_path = target_gateway / "run.py"
+    gateway = gateway_path.read_text()
+    gateway = replace_once(
+        gateway,
+        '''            session_key=context.session_key,
+                message_id=str(context.source.message_id) if context.source.message_id else "",''',
+        '''            session_key=context.session_key,
+                session_id=context.session_id,
+                message_id=str(context.source.message_id) if context.source.message_id else "",''',
+        "gateway session id propagation",
+    )
+    gateway_path.write_text(gateway)
+
+    for path in (
+        target_tools / "browser_camofox_state.py",
+        browser_path,
+        gateway_path,
+    ):
         compile(path.read_text(), str(path), "exec")
 
-    print("patched Camofox identity and cache scope by Hermes conversation")
+    print("patched Camofox conversation identity, gateway session propagation, and public VNC URL")
   browser_camofox_state.py: |
     """Hermes-managed Camofox state helpers.
 
@@ -70,12 +148,15 @@ data:
 
     from __future__ import annotations
 
+    import logging
     import uuid
     from pathlib import Path
     from typing import Dict, Optional
 
     from gateway.session_context import get_session_env
     from hermes_constants import get_hermes_home
+
+    logger = logging.getLogger(__name__)
 
     CAMOFOX_STATE_DIR_NAME = "browser_auth"
     CAMOFOX_STATE_SUBDIR = "camofox"
@@ -87,22 +168,22 @@ data:
 
 
     def _conversation_scope() -> str:
-        """Return the task-local Hermes conversation identity."""
+        """Return the required task-local Hermes conversation identity."""
         session_id = get_session_env("HERMES_SESSION_ID", "").strip()
         if session_id:
             return f"session:{session_id}"
 
-        session_key = get_session_env("HERMES_SESSION_KEY", "").strip()
-        if session_key:
-            return f"route:{session_key}"
-
         platform = get_session_env("HERMES_SESSION_PLATFORM", "").strip()
-        chat_id = get_session_env("HERMES_SESSION_CHAT_ID", "").strip()
-        thread_id = get_session_env("HERMES_SESSION_THREAD_ID", "").strip()
-        if platform or chat_id or thread_id:
-            return f"channel:{platform}:{chat_id}:{thread_id}"
-
-        return "local"
+        session_key = get_session_env("HERMES_SESSION_KEY", "").strip()
+        logger.error(
+            "Camofox session isolation unavailable: HERMES_SESSION_ID is empty "
+            "(platform=%s, session_key_present=%s); refusing shared fallback",
+            platform or "unknown",
+            bool(session_key),
+        )
+        raise RuntimeError(
+            "Camofox requires a bound Hermes conversation session ID"
+        )
 
 
     def get_camofox_cache_key(task_id: Optional[str] = None) -> str:
@@ -131,3 +212,64 @@ data:
             "user_id": f"hermes_{user_digest}",
             "session_key": f"task_{session_digest}",
         }
+---
+apiVersion: v1
+kind: ConfigMap
+metadata:
+  name: camofox-runtime
+  annotations:
+    argocd.argoproj.io/sync-wave: "0"
+data:
+  camofox.config.json: |
+    {
+      "id": "camofox-browser",
+      "name": "Camofox Browser",
+      "version": "1.6.0",
+      "newPageTimeoutMs": 10000,
+      "plugins": {
+        "youtube": { "enabled": true },
+        "persistence": { "enabled": true },
+        "vnc": { "enabled": false, "resolution": "1920x1080" },
+        "interactive": { "enabled": true }
+      }
+    }
+  interactive.js: |
+    export default async function register(_app, ctx) {
+      const userId = process.env.CAMOFOX_INTERACTIVE_USER_ID;
+      const accessKey = process.env.CAMOFOX_ACCESS_KEY || process.env.CAMOFOX_API_KEY;
+      if (!userId || !accessKey) {
+        ctx.log('warn', 'interactive browser disabled: identity or access key is not configured');
+        return;
+      }
+
+      ctx.events.on('server:started', () => {
+        void (async () => {
+          try {
+            const response = await fetch(`http://127.0.0.1:${ctx.config.port}/tabs`, {
+              method: 'POST',
+              headers: {
+                Authorization: `Bearer ${accessKey}`,
+                'Content-Type': 'application/json',
+              },
+              body: JSON.stringify({
+                userId,
+                sessionKey: 'interactive',
+                url: 'https://example.com/',
+              }),
+            });
+            if (!response.ok) {
+              throw new Error(`Camofox returned HTTP ${response.status}`);
+            }
+            const tab = await response.json();
+            ctx.log('info', 'interactive browser window ready', {
+              userId,
+              tabId: tab.tabId,
+            });
+          } catch (error) {
+            ctx.log('error', 'interactive browser window failed', {
+              error: error.message,
+            });
+          }
+        })();
+      });
+    }
