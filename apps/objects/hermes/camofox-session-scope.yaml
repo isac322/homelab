@@ -115,7 +115,7 @@ data:
             "            try:",
             "                vnc_resp = requests.get(",
             '                    f"{url}/vnc/status",',
-            "                    headers=_headers(),",
+            "                    headers=_auth_headers(),",
             "                    timeout=5,",
             "                )",
             "                if vnc_resp.status_code == 200:",
