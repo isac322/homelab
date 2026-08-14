@@ -100,7 +100,7 @@ spec:
         - name: CAMOFOX_TRACES_DIR
           value: /data/traces
         - name: CAMOFOX_INTERACTIVE_USER_ID
-          value: isacmes-jay
+          value: interactive
         - name: ENABLE_VNC
           value: "1"
         - name: VNC_BIND
@@ -195,7 +195,7 @@ spec:
         camofox:
           managed_persistence: true
           adopt_existing_tab: true
-          user_id: isacmes-jay
+          user_id: interactive
           session_key: interactive
       platforms:
         telegram:
