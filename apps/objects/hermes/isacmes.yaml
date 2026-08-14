@@ -82,6 +82,20 @@ spec:
         - |
           mkdir -p /home/node/.cache
           cp -a /root/.cache/camoufox /home/node/.cache/
+          test -s /etc/agent-vault/agent-vault-ca.pem
+          python3 - <<'PY'
+          import json
+          from pathlib import Path
+
+          policy_path = Path("/home/node/.cache/camoufox/distribution/policies.json")
+          policy = json.loads(policy_path.read_text())
+          certificates = policy.setdefault("policies", {}).setdefault("Certificates", {})
+          install = certificates.setdefault("Install", [])
+          ca_path = "/etc/agent-vault/agent-vault-ca.pem"
+          if ca_path not in install:
+              install.append(ca_path)
+          policy_path.write_text(json.dumps(policy, indent=2) + "\n")
+          PY
           chown -R 1000:1000 /home/node
       securityContext:
         allowPrivilegeEscalation: false
@@ -95,6 +109,9 @@ spec:
       volumeMounts:
         - name: camofox-home
           mountPath: /home/node
+        - name: agent-vault-ca
+          mountPath: /etc/agent-vault
+          readOnly: true
   extraVolumes:
     - name: hermes-lcm
       emptyDir: {}
