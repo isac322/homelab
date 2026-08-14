@@ -79,7 +79,7 @@ data:
               body: JSON.stringify({
                 userId,
                 sessionKey: 'interactive',
-                url: 'about:blank',
+                url: 'https://example.com/',
               }),
             });
             if (!response.ok) {
