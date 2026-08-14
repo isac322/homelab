@@ -1,0 +1,133 @@
+apiVersion: v1
+kind: ConfigMap
+metadata:
+  name: camofox-hermes-session-scope
+  annotations:
+    argocd.argoproj.io/sync-wave: "0"
+data:
+  patch.py: |
+    from __future__ import annotations
+
+    import shutil
+    import sys
+    from pathlib import Path
+
+
+    def replace_once(source: str, old: str, new: str, label: str) -> str:
+        count = source.count(old)
+        if count != 1:
+            raise RuntimeError(f"expected one {label} block, found {count}")
+        return source.replace(old, new, 1)
+
+
+    source_dir = Path(sys.argv[1])
+    target_dir = Path(sys.argv[2])
+    replacement_state = Path("/patch/browser_camofox_state.py")
+
+    if target_dir.exists():
+        shutil.rmtree(target_dir)
+    shutil.copytree(source_dir, target_dir)
+    shutil.copyfile(replacement_state, target_dir / "browser_camofox_state.py")
+
+    browser_path = target_dir / "browser_camofox.py"
+    browser = browser_path.read_text()
+    browser = replace_once(
+        browser,
+        "from tools.browser_camofox_state import get_camofox_identity",
+        "from tools.browser_camofox_state import get_camofox_cache_key, get_camofox_identity",
+        "identity import",
+    )
+    browser = replace_once(
+        browser,
+        '''    task_id = task_id or "default"\n    with _sessions_lock:\n        if task_id in _sessions:\n            return _adopt_existing_tab(_sessions[task_id])''',
+        '''    task_id = task_id or "default"\n    cache_key = get_camofox_cache_key(task_id)\n    with _sessions_lock:\n        if cache_key in _sessions:\n            return _adopt_existing_tab(_sessions[cache_key])''',
+        "session lookup",
+    )
+    browser = replace_once(
+        browser,
+        "        _sessions[task_id] = session",
+        "        _sessions[cache_key] = session",
+        "session store",
+    )
+    browser = replace_once(
+        browser,
+        '''    task_id = task_id or "default"\n    with _sessions_lock:\n        return _sessions.pop(task_id, None)''',
+        '''    task_id = task_id or "default"\n    cache_key = get_camofox_cache_key(task_id)\n    with _sessions_lock:\n        return _sessions.pop(cache_key, None)''',
+        "session removal",
+    )
+    browser_path.write_text(browser)
+
+    for path in (target_dir / "browser_camofox_state.py", browser_path):
+        compile(path.read_text(), str(path), "exec")
+
+    print("patched Camofox identity and cache scope by Hermes conversation")
+  browser_camofox_state.py: |
+    """Hermes-managed Camofox state helpers.
+
+    Camofox browser contexts are scoped to the active Hermes conversation.
+    Tabs within that context remain scoped to the logical browser task.
+    """
+
+    from __future__ import annotations
+
+    import uuid
+    from pathlib import Path
+    from typing import Dict, Optional
+
+    from gateway.session_context import get_session_env
+    from hermes_constants import get_hermes_home
+
+    CAMOFOX_STATE_DIR_NAME = "browser_auth"
+    CAMOFOX_STATE_SUBDIR = "camofox"
+
+
+    def get_camofox_state_dir() -> Path:
+        """Return the profile-scoped root directory for Camofox persistence."""
+        return get_hermes_home() / CAMOFOX_STATE_DIR_NAME / CAMOFOX_STATE_SUBDIR
+
+
+    def _conversation_scope() -> str:
+        """Return the task-local Hermes conversation identity."""
+        session_id = get_session_env("HERMES_SESSION_ID", "").strip()
+        if session_id:
+            return f"session:{session_id}"
+
+        session_key = get_session_env("HERMES_SESSION_KEY", "").strip()
+        if session_key:
+            return f"route:{session_key}"
+
+        platform = get_session_env("HERMES_SESSION_PLATFORM", "").strip()
+        chat_id = get_session_env("HERMES_SESSION_CHAT_ID", "").strip()
+        thread_id = get_session_env("HERMES_SESSION_THREAD_ID", "").strip()
+        if platform or chat_id or thread_id:
+            return f"channel:{platform}:{chat_id}:{thread_id}"
+
+        return "local"
+
+
+    def get_camofox_cache_key(task_id: Optional[str] = None) -> str:
+        """Return a process-local cache key isolated by conversation and task."""
+        logical_scope = task_id or "default"
+        return uuid.uuid5(
+            uuid.NAMESPACE_URL,
+            f"camofox-cache:{get_camofox_state_dir()}:{_conversation_scope()}:{logical_scope}",
+        ).hex
+
+
+    def get_camofox_identity(task_id: Optional[str] = None) -> Dict[str, str]:
+        """Return stable Camofox identities for the current Hermes conversation."""
+        scope_root = str(get_camofox_state_dir())
+        conversation_scope = _conversation_scope()
+        logical_scope = task_id or "default"
+        user_digest = uuid.uuid5(
+            uuid.NAMESPACE_URL,
+            f"camofox-user:{scope_root}:{conversation_scope}",
+        ).hex[:16]
+        session_digest = uuid.uuid5(
+            uuid.NAMESPACE_URL,
+            f"camofox-session:{scope_root}:{conversation_scope}:{logical_scope}",
+        ).hex[:16]
+        return {
+            "user_id": f"hermes_{user_digest}",
+            "session_key": f"task_{session_digest}",
+        }
