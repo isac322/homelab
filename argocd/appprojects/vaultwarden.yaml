@@ -1,0 +1,14 @@
+apiVersion: argoproj.io/v1alpha1
+kind: AppProject
+metadata:
+  name: vaultwarden
+spec:
+  description: Vaultwarden password manager
+  sourceRepos:
+    - https://github.com/isac322/homelab.git
+  destinations:
+    - namespace: vaultwarden
+      name: backbone
+  clusterResourceWhitelist:
+    - group: ""
+      kind: Namespace

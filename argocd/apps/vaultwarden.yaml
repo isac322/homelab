@@ -1,0 +1,41 @@
+apiVersion: argoproj.io/v1alpha1
+kind: Application
+metadata:
+  name: vaultwarden
+  finalizers:
+    - resources-finalizer.argocd.argoproj.io
+spec:
+  destination:
+    name: backbone
+    namespace: vaultwarden
+  project: vaultwarden
+  source:
+    path: apps/objects/vaultwarden
+    repoURL: https://github.com/isac322/homelab.git
+    targetRevision: HEAD
+  syncPolicy:
+    automated:
+      prune: true
+      selfHeal: true
+    retry:
+      backoff:
+        duration: 5s
+        factor: 2
+        maxDuration: 3m0s
+      limit: 100
+    syncOptions:
+      - CreateNamespace=true
+      - ServerSideApply=true
+  ignoreDifferences:
+    - kind: Secret
+      name: vaultwarden-admin-token
+      jsonPointers:
+        - /data
+    - group: apps
+      kind: StatefulSet
+      name: vaultwarden
+      jsonPointers:
+        - /spec/volumeClaimTemplates/0/apiVersion
+        - /spec/volumeClaimTemplates/0/kind
+        - /spec/volumeClaimTemplates/0/spec/volumeMode
+        - /spec/volumeClaimTemplates/0/status

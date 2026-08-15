@@ -1,0 +1,37 @@
+apiVersion: generators.external-secrets.io/v1alpha1
+kind: Password
+metadata:
+  name: vaultwarden-admin-token
+  annotations:
+    argocd.argoproj.io/sync-wave: "0"
+spec:
+  length: 64
+  digits: 16
+  symbols: 0
+  noUpper: false
+  allowRepeat: true
+---
+apiVersion: external-secrets.io/v1
+kind: ExternalSecret
+metadata:
+  name: vaultwarden-admin-token
+  annotations:
+    argocd.argoproj.io/sync-wave: "0"
+    argocd.argoproj.io/sync-options: Prune=false
+spec:
+  refreshPolicy: CreatedOnce
+  target:
+    name: vaultwarden-admin-token
+    creationPolicy: Orphan
+    deletionPolicy: Retain
+    immutable: true
+    template:
+      engineVersion: v2
+      data:
+        adminToken: "{{ .password }}"
+  dataFrom:
+    - sourceRef:
+        generatorRef:
+          apiVersion: generators.external-secrets.io/v1alpha1
+          kind: Password
+          name: vaultwarden-admin-token
