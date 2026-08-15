@@ -29,8 +29,6 @@ spec:
         - /patch/patch.py
         - /opt/hermes/tools
         - /patched/tools
-        - /opt/hermes/gateway
-        - /patched/gateway
         - /opt/hermes/agent/transports/codex.py
         - /patched/codex.py
       securityContext:
@@ -102,10 +100,6 @@ spec:
     - name: hermes-tools-patched
       mountPath: /opt/hermes/tools
       subPath: tools
-      readOnly: true
-    - name: hermes-tools-patched
-      mountPath: /opt/hermes/gateway
-      subPath: gateway
       readOnly: true
     - name: hermes-tools-patched
       mountPath: /opt/hermes/agent/transports/codex.py
@@ -241,6 +235,7 @@ spec:
         camofox:
           managed_persistence: true
           adopt_existing_tab: true
+          user_id: interactive
       platforms:
         telegram:
           enabled: true

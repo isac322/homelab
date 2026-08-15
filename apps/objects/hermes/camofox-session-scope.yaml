@@ -22,60 +22,15 @@ data:
 
     source_tools = Path(sys.argv[1])
     target_tools = Path(sys.argv[2])
-    source_gateway = Path(sys.argv[3])
-    target_gateway = Path(sys.argv[4])
-    source_codex = Path(sys.argv[5])
-    target_codex = Path(sys.argv[6])
-    replacement_state = Path("/patch/browser_camofox_state.py")
+    source_codex = Path(sys.argv[3])
+    target_codex = Path(sys.argv[4])
 
-    for source_dir, target_dir in (
-        (source_tools, target_tools),
-        (source_gateway, target_gateway),
-    ):
-        if target_dir.exists():
-            shutil.rmtree(target_dir)
-        shutil.copytree(source_dir, target_dir)
-
-    shutil.copyfile(replacement_state, target_tools / "browser_camofox_state.py")
+    if target_tools.exists():
+        shutil.rmtree(target_tools)
+    shutil.copytree(source_tools, target_tools)
 
     browser_path = target_tools / "browser_camofox.py"
     browser = browser_path.read_text()
-    browser = replace_once(
-        browser,
-        "from tools.browser_camofox_state import get_camofox_identity",
-        "from tools.browser_camofox_state import get_camofox_cache_key, get_camofox_identity",
-        "identity import",
-    )
-    browser = replace_once(
-        browser,
-        '''    task_id = task_id or "default"
-        with _sessions_lock:
-            if task_id in _sessions:
-                return _adopt_existing_tab(_sessions[task_id])''',
-        '''    task_id = task_id or "default"
-        cache_key = get_camofox_cache_key(task_id)
-        with _sessions_lock:
-            if cache_key in _sessions:
-                return _adopt_existing_tab(_sessions[cache_key])''',
-        "session lookup",
-    )
-    browser = replace_once(
-        browser,
-        "        _sessions[task_id] = session",
-        "        _sessions[cache_key] = session",
-        "session store",
-    )
-    browser = replace_once(
-        browser,
-        '''    task_id = task_id or "default"
-        with _sessions_lock:
-            return _sessions.pop(task_id, None)''',
-        '''    task_id = task_id or "default"
-        cache_key = get_camofox_cache_key(task_id)
-        with _sessions_lock:
-            return _sessions.pop(cache_key, None)''',
-        "session removal",
-    )
     old_vnc_probe = "\n".join(
         (
             "def check_camofox_available() -> bool:",
@@ -193,19 +148,6 @@ data:
     )
     browser_path.write_text(browser)
 
-    gateway_path = target_gateway / "run.py"
-    gateway = gateway_path.read_text()
-    gateway = replace_once(
-        gateway,
-        '''            session_key=context.session_key,
-                message_id=str(context.source.message_id) if context.source.message_id else "",''',
-        '''            session_key=context.session_key,
-                session_id=context.session_id,
-                message_id=str(context.source.message_id) if context.source.message_id else "",''',
-        "gateway session id propagation",
-    )
-    gateway_path.write_text(gateway)
-
     shutil.copyfile(source_codex, target_codex)
     codex = target_codex.read_text()
     codex = replace_once(
@@ -257,87 +199,12 @@ data:
     target_codex.write_text(codex)
 
     for path in (
-        target_tools / "browser_camofox_state.py",
         browser_path,
-        gateway_path,
         target_codex,
     ):
         compile(path.read_text(), str(path), "exec")
 
-    print("patched Camofox isolation, public VNC URL, and OpenAI native web search")
-  browser_camofox_state.py: |
-    """Hermes-managed Camofox state helpers.
-
-    Camofox browser contexts are scoped to the active Hermes conversation.
-    Tabs within that context remain scoped to the logical browser task.
-    """
-
-    from __future__ import annotations
-
-    import logging
-    import uuid
-    from pathlib import Path
-    from typing import Dict, Optional
-
-    from gateway.session_context import get_session_env
-    from hermes_constants import get_hermes_home
-
-    logger = logging.getLogger(__name__)
-
-    CAMOFOX_STATE_DIR_NAME = "browser_auth"
-    CAMOFOX_STATE_SUBDIR = "camofox"
-
-
-    def get_camofox_state_dir() -> Path:
-        """Return the profile-scoped root directory for Camofox persistence."""
-        return get_hermes_home() / CAMOFOX_STATE_DIR_NAME / CAMOFOX_STATE_SUBDIR
-
-
-    def _conversation_scope() -> str:
-        """Return the required task-local Hermes conversation identity."""
-        session_id = get_session_env("HERMES_SESSION_ID", "").strip()
-        if session_id:
-            return f"session:{session_id}"
-
-        platform = get_session_env("HERMES_SESSION_PLATFORM", "").strip()
-        session_key = get_session_env("HERMES_SESSION_KEY", "").strip()
-        logger.error(
-            "Camofox session isolation unavailable: HERMES_SESSION_ID is empty "
-            "(platform=%s, session_key_present=%s); refusing shared fallback",
-            platform or "unknown",
-            bool(session_key),
-        )
-        raise RuntimeError(
-            "Camofox requires a bound Hermes conversation session ID"
-        )
-
-
-    def get_camofox_cache_key(task_id: Optional[str] = None) -> str:
-        """Return a process-local cache key isolated by conversation and task."""
-        logical_scope = task_id or "default"
-        return uuid.uuid5(
-            uuid.NAMESPACE_URL,
-            f"camofox-cache:{get_camofox_state_dir()}:{_conversation_scope()}:{logical_scope}",
-        ).hex
-
-
-    def get_camofox_identity(task_id: Optional[str] = None) -> Dict[str, str]:
-        """Return stable Camofox identities for the current Hermes conversation."""
-        scope_root = str(get_camofox_state_dir())
-        conversation_scope = _conversation_scope()
-        logical_scope = task_id or "default"
-        user_digest = uuid.uuid5(
-            uuid.NAMESPACE_URL,
-            f"camofox-user:{scope_root}:{conversation_scope}",
-        ).hex[:16]
-        session_digest = uuid.uuid5(
-            uuid.NAMESPACE_URL,
-            f"camofox-session:{scope_root}:{conversation_scope}:{logical_scope}",
-        ).hex[:16]
-        return {
-            "user_id": f"hermes_{user_digest}",
-            "session_key": f"task_{session_digest}",
-        }
+    print("patched public VNC URL and OpenAI native web search")
 ---
 apiVersion: v1
 kind: ConfigMap
