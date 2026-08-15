@@ -55,11 +55,10 @@ module "dns_secrets" {
   cloudflare_main_zone_id                     = var.cloudflare_main_zone_id
   aws_iam_group_name_cf_origin_ca_cert_issuer = var.aws_iam_group_name_cf_origin_ca_cert_issuer
   use_democratic_csi                          = true
-  hindsight_openai_embeddings_api_key         = var.hindsight_openai_embeddings_api_key
-  hindsight_gcp_vertex_ai_sa_key              = var.hindsight_gcp_vertex_ai_sa_key
-  hindsight_gemini_api_key                    = var.hindsight_gemini_api_key
-  hermes_openai_proxy                         = var.hermes_openai_proxy
-  hermes_gemini_api_key                       = var.hermes_gemini_api_key
+  openai_api_key                              = var.openai_api_key
+  openai_proxy                                = var.openai_proxy
+  gemini_api_key                              = var.gemini_api_key
+  gcp_vertex_ai_sa_key                        = var.gcp_vertex_ai_sa_key
   hermes_isacmes_telegram_token               = var.hermes_isacmes_telegram_token
   hermes_isacmes_jay_telegram_token           = var.hermes_isacmes_jay_telegram_token
 

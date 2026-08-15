@@ -38,18 +38,17 @@ provider "cloudflare" {
 module "saas" {
   source = "./boostrap-saas"
 
-  cloudflare_email                    = var.cloudflare_email
-  cloudflare_global_api_key           = var.cloudflare_global_api_key
-  cloudflare_origin_ca_key            = var.cloudflare_origin_ca_key
-  vultr_personal_access_token         = var.vultr_personal_access_token
-  postmark_account_token              = var.postmark_account_token
-  hindsight_openai_embeddings_api_key = var.hindsight_openai_embeddings_api_key
-  hindsight_gcp_vertex_ai_sa_key      = var.hindsight_gcp_vertex_ai_sa_key
-  hindsight_gemini_api_key            = var.hindsight_gemini_api_key
-  hermes_openai_proxy                 = var.hermes_openai_proxy
-  hermes_gemini_api_key               = var.hermes_gemini_api_key
-  hermes_isacmes_telegram_token       = var.hermes_isacmes_telegram_token
-  hermes_isacmes_jay_telegram_token   = var.hermes_isacmes_jay_telegram_token
+  cloudflare_email                  = var.cloudflare_email
+  cloudflare_global_api_key         = var.cloudflare_global_api_key
+  cloudflare_origin_ca_key          = var.cloudflare_origin_ca_key
+  vultr_personal_access_token       = var.vultr_personal_access_token
+  postmark_account_token            = var.postmark_account_token
+  openai_api_key                    = var.openai_api_key
+  openai_proxy                      = var.openai_proxy
+  gemini_api_key                    = var.gemini_api_key
+  gcp_vertex_ai_sa_key              = var.gcp_vertex_ai_sa_key
+  hermes_isacmes_telegram_token     = var.hermes_isacmes_telegram_token
+  hermes_isacmes_jay_telegram_token = var.hermes_isacmes_jay_telegram_token
 
   aws_admin_account_id  = 825808295984
   aws_admin_family_name = "Yoo"

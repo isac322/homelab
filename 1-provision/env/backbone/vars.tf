@@ -24,22 +24,12 @@ variable "aws_iam_group_name_cf_origin_ca_cert_issuer" {
   type = string
 }
 
-variable "hindsight_openai_embeddings_api_key" {
+variable "openai_api_key" {
   type      = string
   sensitive = true
 }
 
-variable "hindsight_gcp_vertex_ai_sa_key" {
-  type      = string
-  sensitive = true
-}
-
-variable "hindsight_gemini_api_key" {
-  type      = string
-  sensitive = true
-}
-
-variable "hermes_openai_proxy" {
+variable "openai_proxy" {
   type = object({
     api_key  = string
     base_url = string
@@ -47,7 +37,12 @@ variable "hermes_openai_proxy" {
   sensitive = true
 }
 
-variable "hermes_gemini_api_key" {
+variable "gemini_api_key" {
+  type      = string
+  sensitive = true
+}
+
+variable "gcp_vertex_ai_sa_key" {
   type      = string
   sensitive = true
 }

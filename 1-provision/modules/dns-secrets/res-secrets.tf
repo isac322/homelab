@@ -49,48 +49,48 @@ resource "aws_ssm_parameter" "democratic_csi_ssh_private_key" {
 # --- Hindsight agent memory server ---
 
 resource "aws_ssm_parameter" "hindsight_openai_api_key" {
-  count       = var.hindsight_openai_embeddings_api_key == null ? 0 : 1
+  count       = var.openai_api_key == null ? 0 : 1
   name        = "/homelab/cluster/${var.k8s_cluster_name}/token/openai/hindsight-embeddings"
   description = "OpenAI API key for Hindsight embeddings (text-embedding-3-large)"
   type        = "SecureString"
-  value       = var.hindsight_openai_embeddings_api_key
+  value       = var.openai_api_key
 }
 
 resource "aws_ssm_parameter" "hindsight_gcp_sa_key" {
-  count       = var.hindsight_gcp_vertex_ai_sa_key == null ? 0 : 1
+  count       = var.gcp_vertex_ai_sa_key == null ? 0 : 1
   name        = "/homelab/cluster/${var.k8s_cluster_name}/hindsight/gcp-vertex-ai-sa-key"
   description = "GCP Service Account key JSON for Vertex AI access (Hindsight reranker)"
   type        = "SecureString"
-  value       = var.hindsight_gcp_vertex_ai_sa_key
+  value       = var.gcp_vertex_ai_sa_key
 }
 
 resource "aws_ssm_parameter" "hindsight_gemini_api_key" {
-  count       = var.hindsight_gemini_api_key == null ? 0 : 1
+  count       = var.gemini_api_key == null ? 0 : 1
   name        = "/homelab/cluster/${var.k8s_cluster_name}/token/google/hindsight-llm"
   description = "Google AI Studio (Gemini) API key for Hindsight LLM"
   type        = "SecureString"
-  value       = var.hindsight_gemini_api_key
+  value       = var.gemini_api_key
 }
 
 # --- Hermes agents ---
 
 resource "aws_ssm_parameter" "hermes_openai_proxy" {
-  count       = var.hermes_openai_proxy == null ? 0 : 1
+  count       = var.openai_proxy == null ? 0 : 1
   name        = "/homelab/cluster/${var.k8s_cluster_name}/proxy/cliproxyapi/hermes"
   description = "Shared CLIProxyAPI credentials for Hermes agents"
   type        = "SecureString"
   value = jsonencode({
-    apiKey  = var.hermes_openai_proxy.api_key
-    baseUrl = var.hermes_openai_proxy.base_url
+    apiKey  = var.openai_proxy.api_key
+    baseUrl = var.openai_proxy.base_url
   })
 }
 
 resource "aws_ssm_parameter" "hermes_gemini_api_key" {
-  count       = var.hermes_gemini_api_key == null ? 0 : 1
+  count       = var.gemini_api_key == null ? 0 : 1
   name        = "/homelab/cluster/${var.k8s_cluster_name}/token/google/hermes"
   description = "Shared direct Gemini API key for Hermes agents"
   type        = "SecureString"
-  value       = var.hermes_gemini_api_key
+  value       = var.gemini_api_key
 }
 
 resource "aws_ssm_parameter" "hermes_isacmes_telegram_token" {
@@ -133,11 +133,11 @@ data "aws_iam_policy_document" "secret_read" {
         aws_ssm_parameter.cf_account_id.arn,
       ],
       var.use_democratic_csi ? [aws_ssm_parameter.democratic_csi_ssh_private_key[0].arn] : [],
-      var.hindsight_openai_embeddings_api_key == null ? [] : [aws_ssm_parameter.hindsight_openai_api_key[0].arn],
-      var.hindsight_gcp_vertex_ai_sa_key == null ? [] : [aws_ssm_parameter.hindsight_gcp_sa_key[0].arn],
-      var.hindsight_gemini_api_key == null ? [] : [aws_ssm_parameter.hindsight_gemini_api_key[0].arn],
-      var.hermes_openai_proxy == null ? [] : [aws_ssm_parameter.hermes_openai_proxy[0].arn],
-      var.hermes_gemini_api_key == null ? [] : [aws_ssm_parameter.hermes_gemini_api_key[0].arn],
+      var.openai_api_key == null ? [] : [aws_ssm_parameter.hindsight_openai_api_key[0].arn],
+      var.gcp_vertex_ai_sa_key == null ? [] : [aws_ssm_parameter.hindsight_gcp_sa_key[0].arn],
+      var.gemini_api_key == null ? [] : [aws_ssm_parameter.hindsight_gemini_api_key[0].arn],
+      var.openai_proxy == null ? [] : [aws_ssm_parameter.hermes_openai_proxy[0].arn],
+      var.gemini_api_key == null ? [] : [aws_ssm_parameter.hermes_gemini_api_key[0].arn],
       var.hermes_isacmes_telegram_token == null ? [] : [aws_ssm_parameter.hermes_isacmes_telegram_token[0].arn],
       var.hermes_isacmes_jay_telegram_token == null ? [] : [aws_ssm_parameter.hermes_isacmes_jay_telegram_token[0].arn],
     )

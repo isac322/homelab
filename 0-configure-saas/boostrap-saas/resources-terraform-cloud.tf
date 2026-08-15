@@ -150,45 +150,73 @@ resource "tfe_variable" "postmark_account_token" {
 
 ##
 
-resource "tfe_variable" "hindsight_openai_embeddings_api_key" {
-  key          = "hindsight_openai_embeddings_api_key"
-  value        = var.hindsight_openai_embeddings_api_key
+moved {
+  from = tfe_variable.hindsight_openai_embeddings_api_key
+  to   = tfe_variable.openai_api_key
+}
+
+moved {
+  from = tfe_variable.hermes_openai_proxy
+  to   = tfe_variable.openai_proxy
+}
+
+moved {
+  from = tfe_variable.hermes_gemini_api_key
+  to   = tfe_variable.gemini_api_key
+}
+
+moved {
+  from = tfe_variable.hindsight_gcp_vertex_ai_sa_key
+  to   = tfe_variable.gcp_vertex_ai_sa_key
+}
+
+resource "tfe_variable" "openai_api_key" {
+  key          = "openai_api_key"
+  value        = var.openai_api_key
   category     = "terraform"
   sensitive    = true
   workspace_id = tfe_workspace.backbone.id
+
+  lifecycle {
+    create_before_destroy = true
+  }
 }
 
-resource "tfe_variable" "hindsight_gcp_vertex_ai_sa_key" {
-  key          = "hindsight_gcp_vertex_ai_sa_key"
-  value        = var.hindsight_gcp_vertex_ai_sa_key
-  category     = "terraform"
-  sensitive    = true
-  workspace_id = tfe_workspace.backbone.id
-}
-
-resource "tfe_variable" "hindsight_gemini_api_key" {
-  key          = "hindsight_gemini_api_key"
-  value        = var.hindsight_gemini_api_key
-  category     = "terraform"
-  sensitive    = true
-  workspace_id = tfe_workspace.backbone.id
-}
-
-resource "tfe_variable" "hermes_openai_proxy" {
-  key          = "hermes_openai_proxy"
-  value        = jsonencode(var.hermes_openai_proxy)
+resource "tfe_variable" "openai_proxy" {
+  key          = "openai_proxy"
+  value        = jsonencode(var.openai_proxy)
   category     = "terraform"
   hcl          = true
   sensitive    = true
   workspace_id = tfe_workspace.backbone.id
+
+  lifecycle {
+    create_before_destroy = true
+  }
 }
 
-resource "tfe_variable" "hermes_gemini_api_key" {
-  key          = "hermes_gemini_api_key"
-  value        = var.hermes_gemini_api_key
+resource "tfe_variable" "gemini_api_key" {
+  key          = "gemini_api_key"
+  value        = var.gemini_api_key
   category     = "terraform"
   sensitive    = true
   workspace_id = tfe_workspace.backbone.id
+
+  lifecycle {
+    create_before_destroy = true
+  }
+}
+
+resource "tfe_variable" "gcp_vertex_ai_sa_key" {
+  key          = "gcp_vertex_ai_sa_key"
+  value        = var.gcp_vertex_ai_sa_key
+  category     = "terraform"
+  sensitive    = true
+  workspace_id = tfe_workspace.backbone.id
+
+  lifecycle {
+    create_before_destroy = true
+  }
 }
 
 resource "tfe_variable" "hermes_isacmes_telegram_token" {
