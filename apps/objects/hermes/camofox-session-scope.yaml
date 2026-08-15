@@ -24,6 +24,8 @@ data:
     target_tools = Path(sys.argv[2])
     source_gateway = Path(sys.argv[3])
     target_gateway = Path(sys.argv[4])
+    source_codex = Path(sys.argv[5])
+    target_codex = Path(sys.argv[6])
     replacement_state = Path("/patch/browser_camofox_state.py")
 
     for source_dir, target_dir in (
@@ -204,14 +206,65 @@ data:
     )
     gateway_path.write_text(gateway)
 
+    shutil.copyfile(source_codex, target_codex)
+    codex = target_codex.read_text()
+    codex = replace_once(
+        codex,
+        "import json\nimport re",
+        "import json\nimport os\nimport re",
+        "native web search os import",
+    )
+    native_web_search = "\n".join(
+        (
+            "        native_web_search_enabled = (",
+            '            os.getenv("HERMES_OPENAI_NATIVE_WEB_SEARCH", "").strip().lower()',
+            '            in {"1", "true", "yes", "on"}',
+            "        )",
+            '        provider_name = str(params.get("provider") or "").strip().lower()',
+            '        model_name = str(model or "").rsplit("/", 1)[-1].lower()',
+            '        model_match = re.match(r"^gpt-(\\d+)", model_name)',
+            "        if (",
+            "            native_web_search_enabled",
+            '            and provider_name == "openai-api"',
+            "            and model_match is not None",
+            "            and int(model_match.group(1)) >= 5",
+            "        ):",
+            "            response_tools = [",
+            "                tool",
+            "                for tool in list(response_tools or [])",
+            "                if not (",
+            "                    isinstance(tool, dict)",
+            '                    and tool.get("type") == "function"',
+            '                    and tool.get("name") == "web_search"',
+            "                )",
+            "            ]",
+            "            if not any(",
+            '                isinstance(tool, dict) and tool.get("type") == "web_search"',
+            "                for tool in response_tools",
+            "            ):",
+            '                response_tools.append({"type": "web_search"})',
+            "",
+            "",
+        )
+    )
+    codex = replace_once(
+        codex,
+        '''        # ``tools`` MUST be omitted entirely when there are no functions to''',
+        native_web_search
+        + '''        # ``tools`` MUST be omitted entirely when there are no functions to''',
+        "OpenAI native web search injection",
+    )
+    target_codex.write_text(codex)
+
     for path in (
         target_tools / "browser_camofox_state.py",
         browser_path,
         gateway_path,
+        target_codex,
     ):
         compile(path.read_text(), str(path), "exec")
 
-    print("patched Camofox conversation identity, gateway session propagation, and public VNC URL")
+    print("patched Camofox isolation, public VNC URL, and OpenAI native web search")
   browser_camofox_state.py: |
     """Hermes-managed Camofox state helpers.
 

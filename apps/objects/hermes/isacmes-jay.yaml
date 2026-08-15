@@ -5,10 +5,10 @@ metadata:
 spec:
   image:
     repository: nousresearch/hermes-agent
-    tag: v2026.8.3
+    tag: v2026.8.13
   initContainers:
     - name: install-hermes-lcm
-      image: nousresearch/hermes-agent:v2026.8.3
+      image: nousresearch/hermes-agent:v2026.8.13
       command:
         - /bin/sh
         - -ec
@@ -23,7 +23,7 @@ spec:
         - name: hermes-lcm
           mountPath: /lcm
     - name: patch-camofox-session-scope
-      image: nousresearch/hermes-agent:v2026.8.3
+      image: nousresearch/hermes-agent:v2026.8.13
       command:
         - /opt/hermes/.venv/bin/python
         - /patch/patch.py
@@ -31,6 +31,8 @@ spec:
         - /patched/tools
         - /opt/hermes/gateway
         - /patched/gateway
+        - /opt/hermes/agent/transports/codex.py
+        - /patched/codex.py
       securityContext:
         allowPrivilegeEscalation: false
         capabilities:
@@ -104,6 +106,10 @@ spec:
     - name: hermes-tools-patched
       mountPath: /opt/hermes/gateway
       subPath: gateway
+      readOnly: true
+    - name: hermes-tools-patched
+      mountPath: /opt/hermes/agent/transports/codex.py
+      subPath: codex.py
       readOnly: true
   sidecars:
     - name: camofox
@@ -215,7 +221,7 @@ spec:
           readOnly: true
   config:
     raw:
-      _config_version: 33
+      _config_version: 34
       approvals:
         mode: "off"
       agent:
@@ -330,6 +336,8 @@ spec:
         secretKeyRef:
           name: isacmes-jay-credentials
           key: baseUrl
+    - name: HERMES_OPENAI_NATIVE_WEB_SEARCH
+      value: "true"
     - name: CAMOFOX_URL
       value: http://127.0.0.1:9377
     - name: CAMOFOX_PUBLIC_VNC_ORIGIN
