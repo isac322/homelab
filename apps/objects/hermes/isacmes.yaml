@@ -485,7 +485,7 @@ spec:
     - name: HTTP_PROXY
       value: https://$(AGENT_VAULT_TOKEN):bhyoo@agent-vault.agent-vault.svc.cluster.local:14322
     - name: NO_PROXY
-      value: localhost,127.0.0.1,::1,.svc,.svc.cluster.local,api.telegram.org,cliproxyapi.runbear.io
+      value: localhost,127.0.0.1,::1,.svc,.svc.cluster.local,api.telegram.org,cliproxyapi.runbear.io,generativelanguage.googleapis.com
     - name: NODE_USE_ENV_PROXY
       value: "1"
     - name: SSL_CERT_FILE
