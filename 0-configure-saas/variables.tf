@@ -16,6 +16,11 @@ variable "vultr_personal_access_token" {
   sensitive = true
 }
 
+variable "postmark_account_token" {
+  type      = string
+  sensitive = true
+}
+
 variable "hindsight" {
   description = "Hindsight agent memory server credentials. Set to null to disable Hindsight provisioning entirely; otherwise all fields are required."
   type = object({

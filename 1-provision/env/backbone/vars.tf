@@ -9,6 +9,17 @@ variable "cloudflare_account_id" {
   description = "Cloudflare Account ID"
 }
 
+variable "cloudflare_main_zone_id" {
+  type        = string
+  description = "Cloudflare zone ID for bhyoo.com"
+}
+
+variable "postmark_account_token" {
+  type        = string
+  description = "Postmark Account API token"
+  sensitive   = true
+}
+
 variable "aws_iam_group_name_cf_origin_ca_cert_issuer" {
   type = string
 }

@@ -11,6 +11,11 @@ variable "cloudflare_account_id" {
   type        = string
 }
 
+variable "cloudflare_main_zone_id" {
+  description = "Cloudflare zone ID for bhyoo.com"
+  type        = string
+}
+
 variable "use_democratic_csi" {
   description = "Whether to create SSH key for Democratic CSI"
   type        = bool

@@ -51,6 +51,8 @@ spec:
               value: https://vault.bhyoo.com
             - name: SIGNUPS_ALLOWED
               value: "true"
+            - name: SIGNUPS_VERIFY
+              value: "true"
             - name: INVITATIONS_ALLOWED
               value: "true"
             - name: ORG_CREATION_USERS
@@ -65,6 +67,26 @@ spec:
               value: info
             - name: TZ
               value: Asia/Seoul
+            - name: SMTP_HOST
+              value: smtp.postmarkapp.com
+            - name: SMTP_PORT
+              value: "587"
+            - name: SMTP_SECURITY
+              value: starttls
+            - name: SMTP_FROM
+              value: bhyoo@bhyoo.com
+            - name: SMTP_FROM_NAME
+              value: Vaultwarden
+            - name: SMTP_USERNAME
+              valueFrom:
+                secretKeyRef:
+                  name: vaultwarden-smtp
+                  key: token
+            - name: SMTP_PASSWORD
+              valueFrom:
+                secretKeyRef:
+                  name: vaultwarden-smtp
+                  key: token
             - name: ADMIN_TOKEN
               valueFrom:
                 secretKeyRef:

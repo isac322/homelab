@@ -31,6 +31,15 @@ variable "vultr_personal_access_token" {
   }
 }
 
+variable "postmark_account_token" {
+  type      = string
+  sensitive = true
+  validation {
+    condition     = length(var.postmark_account_token) > 0
+    error_message = "requires non-zero postmark_account_token"
+  }
+}
+
 ###
 
 variable "aws_admin_account_id" {

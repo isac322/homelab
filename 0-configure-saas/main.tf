@@ -42,6 +42,7 @@ module "saas" {
   cloudflare_global_api_key   = var.cloudflare_global_api_key
   cloudflare_origin_ca_key    = var.cloudflare_origin_ca_key
   vultr_personal_access_token = var.vultr_personal_access_token
+  postmark_account_token      = var.postmark_account_token
   hindsight                   = var.hindsight
 
   aws_admin_account_id  = 825808295984

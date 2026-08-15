@@ -10,6 +10,10 @@ terraform {
       source  = "cloudflare/cloudflare"
       version = "~> 5.12.0"
     }
+    postmark = {
+      source  = "jcf/postmark"
+      version = "1.2.2"
+    }
     tls = {
       source  = "hashicorp/tls"
       version = "~> 4.1.0"
@@ -28,6 +32,9 @@ terraform {
 provider "cloudflare" {
   api_token = var.cloudflare_token_for_token_issuing
 }
+provider "postmark" {
+  account_token = var.postmark_account_token
+}
 provider "aws" {
   region = "ap-northeast-2"
 
@@ -45,6 +52,7 @@ module "dns_secrets" {
 
   k8s_cluster_name                            = "backbone"
   cloudflare_account_id                       = var.cloudflare_account_id
+  cloudflare_main_zone_id                     = var.cloudflare_main_zone_id
   aws_iam_group_name_cf_origin_ca_cert_issuer = var.aws_iam_group_name_cf_origin_ca_cert_issuer
   use_democratic_csi                          = true
   hindsight                                   = var.hindsight
@@ -52,6 +60,7 @@ module "dns_secrets" {
   providers = {
     aws        = aws
     cloudflare = cloudflare
+    postmark   = postmark
     tls        = tls
   }
 }

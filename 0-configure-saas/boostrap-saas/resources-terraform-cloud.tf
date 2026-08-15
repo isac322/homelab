@@ -10,6 +10,7 @@ resource "tfe_workspace" "backbone" {
   description         = "backbone cluster of homelab"
   organization        = tfe_organization.this.name
   speculative_enabled = false
+  terraform_version   = "1.15.8"
   project_id          = tfe_project.homelab.id
 }
 
@@ -135,6 +136,16 @@ resource "tfe_variable" "vultr_pat" {
   category        = "terraform"
   sensitive       = true
   variable_set_id = tfe_variable_set.vultr.id
+}
+
+##
+
+resource "tfe_variable" "postmark_account_token" {
+  key          = "postmark_account_token"
+  value        = var.postmark_account_token
+  category     = "terraform"
+  sensitive    = true
+  workspace_id = tfe_workspace.backbone.id
 }
 
 ##
