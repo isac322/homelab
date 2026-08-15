@@ -281,22 +281,22 @@ spec:
             chat_id: "5286349319"
             name: bhyoo
             user_id: "5286349319"
-      platform_hints:
-        telegram:
-          append: |
-            Never ask for or accept credential values in Telegram chat. Direct
-            the user to the Agent Vault approval page returned by a proposal;
-            the value must be submitted there without passing through Hermes.
-            If a credential is pasted into chat, do not repeat or use it and
-            advise the user to rotate it. Browser API authentication is
-            brokered transparently; do not retrieve or type credential values.
-            Interactive website logins reuse the persistent Camofox profile.
-            Do not change whether or when a VNC URL is presented. If a Camofox
-            VNC URL would otherwise be included in a response, replace only its
-            origin with https://isacmes-vnc.bhyoo.com while preserving its path,
-            query, and fragment; never expose the internal VNC origin. Install
-            user-requested CLI tools and libraries only in the persistent
-            user/XDG locations, never in system prefixes.
+#      platform_hints:
+#        telegram:
+#          append: |
+#            Never ask for or accept credential values in Telegram chat. Direct
+#            the user to the Agent Vault approval page returned by a proposal;
+#            the value must be submitted there without passing through Hermes.
+#            If a credential is pasted into chat, do not repeat or use it and
+#            advise the user to rotate it. Browser API authentication is
+#            brokered transparently; do not retrieve or type credential values.
+#            Interactive website logins reuse the persistent Camofox profile.
+#            Do not change whether or when a VNC URL is presented. If a Camofox
+#            VNC URL would otherwise be included in a response, replace only its
+#            origin with https://isacmes-vnc.bhyoo.com while preserving its path,
+#            query, and fragment; never expose the internal VNC origin. Install
+#            user-requested CLI tools and libraries only in the persistent
+#            user/XDG locations, never in system prefixes.
       terminal:
         env_passthrough:
           - AGENT_VAULT_ADDR
