@@ -20,15 +20,6 @@ resource "cloudflare_dns_record" "postmark_return_path" {
   proxied = false
 }
 
-resource "postmark_server" "vaultwarden" {
-  name               = "homelab-vaultwarden"
-  color              = "blue"
-  delivery_type      = "Live"
-  smtp_api_activated = true
-  track_links        = "None"
-  track_opens        = false
-}
-
 resource "postmark_server" "immich" {
   name               = "homelab-immich"
   color              = "green"
