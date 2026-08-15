@@ -249,20 +249,76 @@ spec:
         provider: hindsight
       auxiliary:
         vision:
-          provider: main
-          model: gpt-5.4-mini
+          provider: gemini
+          model: gemini-3.7-flash
         web_extract:
-          provider: main
-          model: gpt-5.4-mini
-        title_generation:
-          provider: main
-          model: gpt-5.4-mini
-        session_search:
-          provider: main
-          model: gpt-5.4-mini
+          provider: gemini
+          model: gemini-3.5-flash-lite
         compression:
           provider: main
+          model: gpt-5.6-sol
+          reasoning_effort: low
+        title_generation:
+          provider: gemini
+          model: gemini-3.5-flash-lite
+        approval:
+          provider: main
           model: gpt-5.4-mini
+          reasoning_effort: low
+        background_review:
+          provider: main
+          model: gpt-5.6-terra
+          reasoning_effort: low
+        curator:
+          provider: main
+          model: gpt-5.6-sol
+          reasoning_effort: medium
+        goal_judge:
+          provider: main
+          model: gpt-5.6-sol
+          reasoning_effort: high
+        kanban_decomposer:
+          provider: main
+          model: gpt-5.6-sol
+          reasoning_effort: medium
+        triage_specifier:
+          provider: main
+          model: gpt-5.6-terra
+          reasoning_effort: low
+        profile_describer:
+          provider: gemini
+          model: gemini-3.5-flash-lite
+        memory_query_rewrite:
+          provider: gemini
+          model: gemini-3.5-flash-lite
+        monitor:
+          provider: gemini
+          model: gemini-3.5-flash-lite
+        mcp:
+          provider: main
+          model: gpt-5.4-mini
+          reasoning_effort: low
+        skills_hub:
+          provider: main
+          model: gpt-5.6-terra
+          reasoning_effort: low
+        tts_audio_tags:
+          provider: gemini
+          model: gemini-3.5-flash-lite
+        moa_reference:
+          provider: gemini
+          model: gemini-3.7-flash
+        moa_aggregator:
+          provider: main
+          model: gpt-5.6-sol
+          reasoning_effort: high
+        assertion_extraction:
+          provider: gemini
+          model: gemini-3.7-flash
+        selective_evidence_selector:
+          provider: main
+          model: gpt-5.4-mini
+          reasoning_effort: low
   env:
     - name: HOME
       value: /opt/data
@@ -332,6 +388,11 @@ spec:
         secretKeyRef:
           name: isacmes-jay-credentials
           key: baseUrl
+    - name: GEMINI_API_KEY
+      valueFrom:
+        secretKeyRef:
+          name: isacmes-jay-credentials
+          key: geminiApiKey
     - name: HERMES_OPENAI_NATIVE_WEB_SEARCH
       value: "true"
     - name: CAMOFOX_URL
