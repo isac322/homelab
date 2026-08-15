@@ -24,13 +24,11 @@ spec:
       volumeMounts:
         - name: hermes-lcm
           mountPath: /lcm
-    - name: patch-camofox-session-scope
+    - name: patch-openai-native-web-search
       image: nousresearch/hermes-agent:v2026.8.13
       command:
         - /opt/hermes/.venv/bin/python
         - /patch/patch.py
-        - /opt/hermes/tools
-        - /patched/tools
         - /opt/hermes/agent/transports/codex.py
         - /patched/codex.py
       securityContext:
@@ -43,10 +41,10 @@ spec:
         runAsNonRoot: true
         runAsUser: 1000
       volumeMounts:
-        - name: camofox-hermes-session-scope
+        - name: hermes-native-web-search-patch
           mountPath: /patch
           readOnly: true
-        - name: hermes-tools-patched
+        - name: hermes-patched-files
           mountPath: /patched
     - name: fetch-agent-vault-ca
       image: infisical/agent-vault:0.22.0
@@ -100,11 +98,11 @@ spec:
   extraVolumes:
     - name: hermes-lcm
       emptyDir: {}
-    - name: hermes-tools-patched
+    - name: hermes-patched-files
       emptyDir: {}
-    - name: camofox-hermes-session-scope
+    - name: hermes-native-web-search-patch
       configMap:
-        name: camofox-hermes-session-scope
+        name: hermes-native-web-search-patch
     - name: agent-vault-ca
       emptyDir: {}
     - name: agent-vault-skill
@@ -131,11 +129,7 @@ spec:
       mountPath: /opt/data/plugins/hermes-lcm
       subPath: plugin
       readOnly: true
-    - name: hermes-tools-patched
-      mountPath: /opt/hermes/tools
-      subPath: tools
-      readOnly: true
-    - name: hermes-tools-patched
+    - name: hermes-patched-files
       mountPath: /opt/hermes/agent/transports/codex.py
       subPath: codex.py
       readOnly: true
@@ -296,10 +290,13 @@ spec:
             If a credential is pasted into chat, do not repeat or use it and
             advise the user to rotate it. Browser API authentication is
             brokered transparently; do not retrieve or type credential values.
-            Interactive website logins instead reuse the persistent Camofox
-            profile, and when login is required ask the user to use the private
-            VNC session. Install user-requested CLI tools and libraries only in
-            the persistent user/XDG locations, never in system prefixes.
+            Interactive website logins reuse the persistent Camofox profile.
+            Do not change whether or when a VNC URL is presented. If a Camofox
+            VNC URL would otherwise be included in a response, replace only its
+            origin with https://isacmes-vnc.bhyoo.com while preserving its path,
+            query, and fragment; never expose the internal VNC origin. Install
+            user-requested CLI tools and libraries only in the persistent
+            user/XDG locations, never in system prefixes.
       terminal:
         env_passthrough:
           - AGENT_VAULT_ADDR
@@ -408,8 +405,6 @@ spec:
       value: "true"
     - name: CAMOFOX_URL
       value: http://127.0.0.1:9377
-    - name: CAMOFOX_PUBLIC_VNC_ORIGIN
-      value: https://isacmes-vnc.bhyoo.com
     - name: CAMOFOX_API_KEY
       valueFrom:
         secretKeyRef:
