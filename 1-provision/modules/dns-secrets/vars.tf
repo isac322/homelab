@@ -22,13 +22,47 @@ variable "use_democratic_csi" {
   default     = false
 }
 
-variable "hindsight" {
-  description = "Hindsight credentials. Pass null to skip provisioning Hindsight-related SSM parameters and IAM permissions."
+variable "hindsight_openai_embeddings_api_key" {
+  type      = string
+  sensitive = true
+  default   = null
+}
+
+variable "hindsight_gcp_vertex_ai_sa_key" {
+  type      = string
+  sensitive = true
+  default   = null
+}
+
+variable "hindsight_gemini_api_key" {
+  type      = string
+  sensitive = true
+  default   = null
+}
+
+variable "hermes_openai_proxy" {
   type = object({
-    openai_api_key = string # embeddings
-    gcp_sa_key     = string # reranker (Vertex AI Semantic Ranker)
-    gemini_api_key = string # LLM (Google AI Studio)
+    api_key  = string
+    base_url = string
   })
+  sensitive = true
+  default   = null
+}
+
+variable "hermes_gemini_api_key" {
+  type      = string
+  sensitive = true
+  default   = null
+}
+
+variable "hermes_isacmes_telegram_token" {
+  type      = string
+  sensitive = true
+  default   = null
+}
+
+variable "hermes_isacmes_jay_telegram_token" {
+  type      = string
   sensitive = true
   default   = null
 }

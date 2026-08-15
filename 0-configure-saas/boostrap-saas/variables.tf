@@ -101,13 +101,40 @@ variable "tfe_email" {
   }
 }
 
-variable "hindsight" {
-  description = "Hindsight agent memory server credentials. Set to null to skip Hindsight provisioning."
+variable "hindsight_openai_embeddings_api_key" {
+  type      = string
+  sensitive = true
+}
+
+variable "hindsight_gcp_vertex_ai_sa_key" {
+  type      = string
+  sensitive = true
+}
+
+variable "hindsight_gemini_api_key" {
+  type      = string
+  sensitive = true
+}
+
+variable "hermes_openai_proxy" {
   type = object({
-    openai_api_key = string
-    gcp_sa_key     = string
-    gemini_api_key = string
+    api_key  = string
+    base_url = string
   })
   sensitive = true
-  default   = null
+}
+
+variable "hermes_gemini_api_key" {
+  type      = string
+  sensitive = true
+}
+
+variable "hermes_isacmes_telegram_token" {
+  type      = string
+  sensitive = true
+}
+
+variable "hermes_isacmes_jay_telegram_token" {
+  type      = string
+  sensitive = true
 }

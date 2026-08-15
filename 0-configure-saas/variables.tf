@@ -21,13 +21,40 @@ variable "postmark_account_token" {
   sensitive = true
 }
 
-variable "hindsight" {
-  description = "Hindsight agent memory server credentials. Set to null to disable Hindsight provisioning entirely; otherwise all fields are required."
+variable "hindsight_openai_embeddings_api_key" {
+  type      = string
+  sensitive = true
+}
+
+variable "hindsight_gcp_vertex_ai_sa_key" {
+  type      = string
+  sensitive = true
+}
+
+variable "hindsight_gemini_api_key" {
+  type      = string
+  sensitive = true
+}
+
+variable "hermes_openai_proxy" {
   type = object({
-    openai_api_key = string # embeddings (text-embedding-3-large)
-    gcp_sa_key     = string # reranker auth (Vertex AI Semantic Ranker via LiteLLM SDK)
-    gemini_api_key = string # LLM (Google AI Studio Gemini API)
+    api_key  = string
+    base_url = string
   })
   sensitive = true
-  default   = null
+}
+
+variable "hermes_gemini_api_key" {
+  type      = string
+  sensitive = true
+}
+
+variable "hermes_isacmes_telegram_token" {
+  type      = string
+  sensitive = true
+}
+
+variable "hermes_isacmes_jay_telegram_token" {
+  type      = string
+  sensitive = true
 }

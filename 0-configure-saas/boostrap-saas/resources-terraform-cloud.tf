@@ -150,23 +150,59 @@ resource "tfe_variable" "postmark_account_token" {
 
 ##
 
-resource "tfe_variable_set" "hindsight" {
-  count        = var.hindsight == null ? 0 : 1
-  name         = "hindsight-credentials"
-  description  = "Hindsight agent memory server credentials"
-  organization = tfe_organization.this.name
+resource "tfe_variable" "hindsight_openai_embeddings_api_key" {
+  key          = "hindsight_openai_embeddings_api_key"
+  value        = var.hindsight_openai_embeddings_api_key
+  category     = "terraform"
+  sensitive    = true
+  workspace_id = tfe_workspace.backbone.id
 }
-resource "tfe_workspace_variable_set" "hindsight_to_backbone" {
-  count           = var.hindsight == null ? 0 : 1
-  variable_set_id = tfe_variable_set.hindsight[0].id
-  workspace_id    = tfe_workspace.backbone.id
+
+resource "tfe_variable" "hindsight_gcp_vertex_ai_sa_key" {
+  key          = "hindsight_gcp_vertex_ai_sa_key"
+  value        = var.hindsight_gcp_vertex_ai_sa_key
+  category     = "terraform"
+  sensitive    = true
+  workspace_id = tfe_workspace.backbone.id
 }
-resource "tfe_variable" "hindsight" {
-  count           = var.hindsight == null ? 0 : 1
-  key             = "hindsight"
-  value           = jsonencode(var.hindsight)
-  category        = "terraform"
-  hcl             = true
-  sensitive       = true
-  variable_set_id = tfe_variable_set.hindsight[0].id
+
+resource "tfe_variable" "hindsight_gemini_api_key" {
+  key          = "hindsight_gemini_api_key"
+  value        = var.hindsight_gemini_api_key
+  category     = "terraform"
+  sensitive    = true
+  workspace_id = tfe_workspace.backbone.id
+}
+
+resource "tfe_variable" "hermes_openai_proxy" {
+  key          = "hermes_openai_proxy"
+  value        = jsonencode(var.hermes_openai_proxy)
+  category     = "terraform"
+  hcl          = true
+  sensitive    = true
+  workspace_id = tfe_workspace.backbone.id
+}
+
+resource "tfe_variable" "hermes_gemini_api_key" {
+  key          = "hermes_gemini_api_key"
+  value        = var.hermes_gemini_api_key
+  category     = "terraform"
+  sensitive    = true
+  workspace_id = tfe_workspace.backbone.id
+}
+
+resource "tfe_variable" "hermes_isacmes_telegram_token" {
+  key          = "hermes_isacmes_telegram_token"
+  value        = var.hermes_isacmes_telegram_token
+  category     = "terraform"
+  sensitive    = true
+  workspace_id = tfe_workspace.backbone.id
+}
+
+resource "tfe_variable" "hermes_isacmes_jay_telegram_token" {
+  key          = "hermes_isacmes_jay_telegram_token"
+  value        = var.hermes_isacmes_jay_telegram_token
+  category     = "terraform"
+  sensitive    = true
+  workspace_id = tfe_workspace.backbone.id
 }

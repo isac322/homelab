@@ -49,27 +49,64 @@ resource "aws_ssm_parameter" "democratic_csi_ssh_private_key" {
 # --- Hindsight agent memory server ---
 
 resource "aws_ssm_parameter" "hindsight_openai_api_key" {
-  count       = var.hindsight == null ? 0 : 1
+  count       = var.hindsight_openai_embeddings_api_key == null ? 0 : 1
   name        = "/homelab/cluster/${var.k8s_cluster_name}/token/openai/hindsight-embeddings"
   description = "OpenAI API key for Hindsight embeddings (text-embedding-3-large)"
   type        = "SecureString"
-  value       = var.hindsight.openai_api_key
+  value       = var.hindsight_openai_embeddings_api_key
 }
 
 resource "aws_ssm_parameter" "hindsight_gcp_sa_key" {
-  count       = var.hindsight == null ? 0 : 1
+  count       = var.hindsight_gcp_vertex_ai_sa_key == null ? 0 : 1
   name        = "/homelab/cluster/${var.k8s_cluster_name}/hindsight/gcp-vertex-ai-sa-key"
   description = "GCP Service Account key JSON for Vertex AI access (Hindsight reranker)"
   type        = "SecureString"
-  value       = var.hindsight.gcp_sa_key
+  value       = var.hindsight_gcp_vertex_ai_sa_key
 }
 
 resource "aws_ssm_parameter" "hindsight_gemini_api_key" {
-  count       = var.hindsight == null ? 0 : 1
+  count       = var.hindsight_gemini_api_key == null ? 0 : 1
   name        = "/homelab/cluster/${var.k8s_cluster_name}/token/google/hindsight-llm"
   description = "Google AI Studio (Gemini) API key for Hindsight LLM"
   type        = "SecureString"
-  value       = var.hindsight.gemini_api_key
+  value       = var.hindsight_gemini_api_key
+}
+
+# --- Hermes agents ---
+
+resource "aws_ssm_parameter" "hermes_openai_proxy" {
+  count       = var.hermes_openai_proxy == null ? 0 : 1
+  name        = "/homelab/cluster/${var.k8s_cluster_name}/proxy/cliproxyapi/hermes"
+  description = "Shared CLIProxyAPI credentials for Hermes agents"
+  type        = "SecureString"
+  value = jsonencode({
+    apiKey  = var.hermes_openai_proxy.api_key
+    baseUrl = var.hermes_openai_proxy.base_url
+  })
+}
+
+resource "aws_ssm_parameter" "hermes_gemini_api_key" {
+  count       = var.hermes_gemini_api_key == null ? 0 : 1
+  name        = "/homelab/cluster/${var.k8s_cluster_name}/token/google/hermes"
+  description = "Shared direct Gemini API key for Hermes agents"
+  type        = "SecureString"
+  value       = var.hermes_gemini_api_key
+}
+
+resource "aws_ssm_parameter" "hermes_isacmes_telegram_token" {
+  count       = var.hermes_isacmes_telegram_token == null ? 0 : 1
+  name        = "/homelab/cluster/${var.k8s_cluster_name}/token/telegram/isacmes"
+  description = "Telegram bot token for the Isacmes Hermes instance"
+  type        = "SecureString"
+  value       = var.hermes_isacmes_telegram_token
+}
+
+resource "aws_ssm_parameter" "hermes_isacmes_jay_telegram_token" {
+  count       = var.hermes_isacmes_jay_telegram_token == null ? 0 : 1
+  name        = "/homelab/cluster/${var.k8s_cluster_name}/token/telegram/isacmes-jay"
+  description = "Telegram bot token for the Isacmes Jay Hermes instance"
+  type        = "SecureString"
+  value       = var.hermes_isacmes_jay_telegram_token
 }
 
 # --- External Secrets IAM ---
@@ -94,19 +131,15 @@ data "aws_iam_policy_document" "secret_read" {
         aws_ssm_parameter.cf_api_token_for_cloudflared_gateway.arn,
         aws_ssm_parameter.postmark_smtp_token_for_immich.arn,
         aws_ssm_parameter.cf_account_id.arn,
-        "${trimsuffix(aws_ssm_parameter.cf_account_id.arn, "cloudflare/account-id")}token/telegram/isacmes",
-        "${trimsuffix(aws_ssm_parameter.cf_account_id.arn, "cloudflare/account-id")}token/openai/isacmes",
-        "${trimsuffix(aws_ssm_parameter.cf_account_id.arn, "cloudflare/account-id")}token/openai/isacmes-base-url",
-        "${trimsuffix(aws_ssm_parameter.cf_account_id.arn, "cloudflare/account-id")}token/telegram/isacmes-jay",
-        "${trimsuffix(aws_ssm_parameter.cf_account_id.arn, "cloudflare/account-id")}token/openai/isacmes-jay",
-        "${trimsuffix(aws_ssm_parameter.cf_account_id.arn, "cloudflare/account-id")}token/openai/isacmes-jay-base-url",
       ],
       var.use_democratic_csi ? [aws_ssm_parameter.democratic_csi_ssh_private_key[0].arn] : [],
-      var.hindsight == null ? [] : [
-        aws_ssm_parameter.hindsight_openai_api_key[0].arn,
-        aws_ssm_parameter.hindsight_gcp_sa_key[0].arn,
-        aws_ssm_parameter.hindsight_gemini_api_key[0].arn,
-      ]
+      var.hindsight_openai_embeddings_api_key == null ? [] : [aws_ssm_parameter.hindsight_openai_api_key[0].arn],
+      var.hindsight_gcp_vertex_ai_sa_key == null ? [] : [aws_ssm_parameter.hindsight_gcp_sa_key[0].arn],
+      var.hindsight_gemini_api_key == null ? [] : [aws_ssm_parameter.hindsight_gemini_api_key[0].arn],
+      var.hermes_openai_proxy == null ? [] : [aws_ssm_parameter.hermes_openai_proxy[0].arn],
+      var.hermes_gemini_api_key == null ? [] : [aws_ssm_parameter.hermes_gemini_api_key[0].arn],
+      var.hermes_isacmes_telegram_token == null ? [] : [aws_ssm_parameter.hermes_isacmes_telegram_token[0].arn],
+      var.hermes_isacmes_jay_telegram_token == null ? [] : [aws_ssm_parameter.hermes_isacmes_jay_telegram_token[0].arn],
     )
   }
 }
