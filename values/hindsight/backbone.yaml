@@ -3,7 +3,7 @@
 api:
   replicaCount: 1
   image:
-    tag: "0.8.4-slim"
+    tag: "0.9.1-slim"
   resources:
     requests:
       cpu: 250m
@@ -24,8 +24,15 @@ api:
     HINDSIGHT_API_EMBEDDINGS_OPENAI_MODEL: "text-embedding-3-large"
     # Reranker — Vertex AI Ranking via LiteLLM SDK (auth via GOOGLE_APPLICATION_CREDENTIALS)
     HINDSIGHT_API_RERANKER_PROVIDER: "litellm-sdk"
-    HINDSIGHT_API_RERANKER_LITELLM_SDK_MODEL: "vertex_ai/semantic-ranker-default-004"
+    HINDSIGHT_API_RERANKER_LITELLM_SDK_MODEL: "vertex_ai/semantic-ranker-fast@latest"
     HINDSIGHT_API_RERANKER_LITELLM_SDK_API_KEY: "gcp-sa"  # placeholder — actual auth via GOOGLE_APPLICATION_CREDENTIALS
+    # Recall performance — keep everyday searches bounded while preserving high-budget depth
+    HINDSIGHT_API_QUERY_ANALYZER_LANGUAGES: "ko,en"
+    HINDSIGHT_API_RERANKER_MAX_CANDIDATES_LOW: "75"
+    HINDSIGHT_API_RERANKER_MAX_CANDIDATES_MID: "150"
+    HINDSIGHT_API_RERANKER_MAX_CANDIDATES_HIGH: "300"
+    # Keep recall available with RRF ordering when the Vertex AI reranker is unavailable
+    HINDSIGHT_API_RERANKER_1_PROVIDER: "rrf"
     GOOGLE_APPLICATION_CREDENTIALS: "/etc/gcp/sa-key.json"
     VERTEXAI_PROJECT: "runbear"
     VERTEXAI_LOCATION: "global"
@@ -39,7 +46,7 @@ api:
       readOnly: true
   livenessProbe:
     httpGet:
-      path: /health
+      path: /health/live
       port: 8888
     initialDelaySeconds: 30
     periodSeconds: 10
