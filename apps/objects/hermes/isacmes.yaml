@@ -261,6 +261,14 @@ spec:
       model:
         default: gpt-5.6-terra
         provider: openai-api
+      mcp_servers:
+        linear:
+          url: https://mcp.linear.app/mcp
+          auth: oauth
+          trust: untrusted
+          tools:
+            resources: false
+            prompts: false
       plugins:
         enabled:
           - hermes-lcm
