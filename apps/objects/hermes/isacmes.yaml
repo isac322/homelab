@@ -265,6 +265,10 @@ spec:
         linear:
           url: https://mcp.linear.app/mcp
           auth: oauth
+          oauth:
+            # Force paste-back auth from the colocated Camofox browser. Pointing
+            # at the live callback listener can race Hermes' reconnect flow.
+            redirect_uri: http://127.0.0.1:65535/callback
           trust: untrusted
           tools:
             resources: false
