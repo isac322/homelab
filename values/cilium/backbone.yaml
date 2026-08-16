@@ -62,10 +62,15 @@ gatewayAPI:
 bpf:
   # netkit은 커널 6.8+ 필요. rock5bp(6.1)/n2p1/n2p2(6.6) 미지원 → 전체 veth로 통일
   datapathMode: veth
-  # Cilium 1.20 global SNAT BPF subprograms require kernel BTF. Every backbone
-  # node currently lacks /sys/kernel/btf/vmlinux and hits cilium/cilium#47718.
-  # Use the supported iptables masquerade path until kernels provide BTF or
-  # Cilium ships a no-BTF fallback.
+  # Cilium 1.20 global SNAT BPF subprograms require vmlinux BTF; all backbone
+  # nodes currently lack /sys/kernel/btf/vmlinux and fail reserved:host regeneration.
+  # Recovery is deliberately manual: set this back to true only when every node
+  # exposes readable vmlinux BTF (CONFIG_DEBUG_INFO_BTF=y), or a released Cilium
+  # version ships a verified no-BTF fallback. Canary every kernel family first.
+  # Issue: https://github.com/cilium/cilium/issues/47718
+  # Triggering change: https://github.com/cilium/cilium/pull/46504
+  # Closed fallback attempt (not shipped): https://github.com/cilium/cilium/pull/45626
+  # Until then, use the supported iptables masquerade path.
   masquerade: false
   # This also leaves host routing in legacy mode. KPR, socket LB, and the
   # veth endpoint datapath remain eBPF-backed.
