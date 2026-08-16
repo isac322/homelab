@@ -67,7 +67,8 @@ bpf:
   # Use the supported iptables masquerade path until kernels provide BTF or
   # Cilium ships a no-BTF fallback.
   masquerade: false
-  # hostLegacyRouting은 기본 false. eBPF host routing으로 iptables 우회
+  # This also leaves host routing in legacy mode. KPR, socket LB, and the
+  # veth endpoint datapath remain eBPF-backed.
   # CT/NAT 테이블 축소 (70 Pod / 56 Service 규모에 기본 524288은 과잉)
   # 메모리 제약 있는 n2p1/n2p2/rpi4에 유의미
   ctTcpMax: 65536
