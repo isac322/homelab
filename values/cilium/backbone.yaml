@@ -64,6 +64,8 @@ bpf:
   datapathMode: veth
   # Cilium 1.20 global SNAT BPF subprograms require vmlinux BTF; all backbone
   # nodes currently lack /sys/kernel/btf/vmlinux and fail reserved:host regeneration.
+  # Cilium 1.19 inlined this helper and worked without vmlinux BTF. PR #46504
+  # made it a global BPF subprogram, whose context validation needs kernel BTF.
   # Recovery is deliberately manual: set this back to true only when every node
   # exposes readable vmlinux BTF (CONFIG_DEBUG_INFO_BTF=y), or a released Cilium
   # version ships a verified no-BTF fallback. Canary every kernel family first.
