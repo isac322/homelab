@@ -42,9 +42,6 @@ kubeProxyReplacement: true
 # Socket-level LB (connect/sendmsg syscall 단계에서 서비스 해석)
 socketLB:
   enabled: true
-  # Backbone kernels lack CONFIG_INET_DIAG_DESTROY/CONFIG_INET_UDP_DIAG.
-  # The feature cannot work on these nodes and otherwise emits startup errors.
-  terminatePodConnections: false
 
 # ─── Node IPAM LB (static-lb 대체, v1.16+ 기본 기능) ───
 # 각 노드의 status.addresses[ExternalIP]를 모든 LB 서비스의
