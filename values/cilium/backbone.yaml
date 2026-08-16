@@ -4,9 +4,9 @@
 # Nodes: all ARM64
 #   - rpi5    (192.168.219.5, wg0 10.222.0.3, kernel 6.12, macb NIC, 7.9G RAM)
 #   - rock5bp (192.168.219.6, wg0 10.222.0.4, kernel 6.1,  r8125 NIC, 31G RAM)
-#   - rpi4    (192.168.219.7, wg0 10.222.0.5, kernel 6.12, bcmgenet NIC, 3.7G RAM)
-#   - n2p1    (192.168.219.3, wg0 10.222.0.1, kernel 6.6,  st_gmac NIC, 3.5G RAM)
-#   - n2p2    (192.168.219.4, wg0 10.222.0.2, kernel 6.6,  st_gmac NIC, 3.5G RAM)
+#   - rpi4    (192.168.219.7, wg0 10.222.0.5, kernel 6.18, bcmgenet NIC, 3.7G RAM)
+#   - n2p1    (192.168.219.3, wg0 10.222.0.1, kernel 6.12, st_gmac NIC, 3.5G RAM)
+#   - n2p2    (192.168.219.4, wg0 10.222.0.2, kernel 6.12, st_gmac NIC, 3.5G RAM)
 # Network: same L2 (192.168.219.0/24), Pod CIDR 10.42.0.0/16, Svc CIDR 10.43.0.0/16
 # kubelet: --node-external-ip = {{ wireguard_ip }} (10.222.0.x) — Node IPAM LB가 이를 사용
 
@@ -60,7 +60,7 @@ gatewayAPI:
 
 # ─── eBPF 최적화 ───
 bpf:
-  # netkit은 커널 6.8+ 필요. rock5bp(6.1)/n2p1/n2p2(6.6) 미지원 → 전체 veth로 통일
+  # netkit은 커널 6.8+ 필요. rock5bp(6.1)만 미지원하므로 일관된 datapath를 위해 전체 veth 사용
   datapathMode: veth
   # Cilium 1.20 global SNAT BPF subprograms require vmlinux BTF; all backbone
   # nodes currently lack /sys/kernel/btf/vmlinux and fail reserved:host regeneration.
