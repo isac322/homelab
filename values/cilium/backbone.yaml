@@ -63,8 +63,11 @@ gatewayAPI:
 bpf:
   # netkit은 커널 6.8+ 필요. rock5bp(6.1)/n2p1/n2p2(6.6) 미지원 → 전체 veth로 통일
   datapathMode: veth
-  # iptables MASQUERADE → eBPF. KUBE-MARK-MASQ 체인 제거
-  masquerade: true
+  # Cilium 1.20 global SNAT BPF subprograms require kernel BTF. Every backbone
+  # node currently lacks /sys/kernel/btf/vmlinux and hits cilium/cilium#47718.
+  # Use the supported iptables masquerade path until kernels provide BTF or
+  # Cilium ships a no-BTF fallback.
+  masquerade: false
   # hostLegacyRouting은 기본 false. eBPF host routing으로 iptables 우회
   # CT/NAT 테이블 축소 (70 Pod / 56 Service 규모에 기본 524288은 과잉)
   # 메모리 제약 있는 n2p1/n2p2/rpi4에 유의미
