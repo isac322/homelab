@@ -218,6 +218,18 @@ spec:
       model:
         default: gpt-5.6-terra
         provider: openai-api
+      mcp_servers:
+        linear:
+          url: https://mcp.linear.app/mcp
+          auth: oauth
+          oauth:
+            # Force paste-back auth from the colocated Camofox browser. Pointing
+            # at the live callback listener can race Hermes' reconnect flow.
+            redirect_uri: http://127.0.0.1:65535/callback
+          trust: full
+          tools:
+            resources: false
+            prompts: false
       plugins:
         enabled:
           - hermes-lcm
