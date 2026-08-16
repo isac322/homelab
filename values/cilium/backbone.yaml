@@ -14,6 +14,9 @@
 # TODO(cilium-1.20-rollout): Remove after every Cilium component is on 1.20.0
 # and Gateway/connectivity verification passes; greenfield bootstrap must use 1.20 defaults.
 upgradeCompatibility: "1.19"
+# Restart agents when GitOps changes cilium-config; otherwise ConfigMap-only
+# compatibility fixes do not affect the running agent process.
+rollOutCiliumPods: true
 
 # ─── k3s API server (KPR 필수) ───
 k8sServiceHost: k8s.backbone.homelab.bhyoo.com
