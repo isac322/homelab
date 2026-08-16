@@ -10,9 +10,9 @@
 # Network: same L2 (192.168.219.0/24), Pod CIDR 10.42.0.0/16, Svc CIDR 10.43.0.0/16
 # kubelet: --node-external-ip = {{ wireguard_ip }} (10.222.0.x) — Node IPAM LB가 이를 사용
 
-# Intentionally retain 1.19 defaults on Cilium 1.20. Removing this also changes
-# LB algorithm annotations, Gateway source-address handling, and Envoy logging;
-# migrate those defaults separately instead of coupling them to the binary upgrade.
+# Intentionally retain the legacy split Envoy xDS mode during the Cilium 1.20
+# binary rollout. Removing this makes the 1.20 chart set envoy-xds-mode=ads;
+# migrate xDS separately after validating Gateway and L7 policy reconciliation.
 upgradeCompatibility: "1.19"
 # Restart agents when GitOps changes cilium-config; otherwise ConfigMap-only
 # compatibility fixes do not affect the running agent process.
