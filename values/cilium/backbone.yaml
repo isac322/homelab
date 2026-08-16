@@ -1,4 +1,4 @@
-# Cilium v1.19 values for backbone cluster (v2)
+# Cilium v1.20 values for backbone cluster (v2)
 #
 # Cluster: k3s v1.34.6+k3s1, HA embedded etcd, 3 master + 2 worker
 # Nodes: all ARM64
@@ -9,6 +9,11 @@
 #   - n2p2    (192.168.219.4, wg0 10.222.0.2, kernel 6.6,  st_gmac NIC, 3.5G RAM)
 # Network: same L2 (192.168.219.0/24), Pod CIDR 10.42.0.0/16, Svc CIDR 10.43.0.0/16
 # kubelet: --node-external-ip = {{ wireguard_ip }} (10.222.0.x) — Node IPAM LB가 이를 사용
+
+# Preserve 1.19 behavior while the existing cluster rolls to Cilium 1.20.
+# TODO(cilium-1.20-rollout): Remove after every Cilium component is on 1.20.0
+# and Gateway/connectivity verification passes; greenfield bootstrap must use 1.20 defaults.
+upgradeCompatibility: "1.19"
 
 # ─── k3s API server (KPR 필수) ───
 k8sServiceHost: k8s.backbone.homelab.bhyoo.com
