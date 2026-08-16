@@ -151,9 +151,15 @@ resources:
 # ─── Envoy DaemonSet (Gateway API 용) ───
 envoy:
   # enabled는 Gateway API 활성 시 자동 true
-  # Preserve the legacy xDS path independently of upgradeCompatibility.
-  # Migrate split -> ads or strict-ads only as a separately verified change.
-  xdsMode: split
+  # Restart standalone Envoy when its bootstrap ConfigMap changes.
+  rollOutPods: true
+  updateStrategy:
+    type: RollingUpdate
+    rollingUpdate:
+      maxUnavailable: 1
+  # Cilium 1.20 default. Judge xDS errors only after both agent and Envoy
+  # DaemonSets finish rolling; mixed split/ADS nodes are transiently expected.
+  xdsMode: ads
   resources:
     requests:
       cpu: 10m
