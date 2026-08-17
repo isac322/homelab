@@ -842,6 +842,24 @@
     comment: cilium health check
   when: k8s_role != "" and use_k8s_cilium
 
+- name: Allow k8s cilium agent metrics
+  block:
+    - ansible.builtin.iptables:
+        chain: TCP
+        protocol: tcp
+        destination_port: 9962
+        jump: ACCEPT
+        source: "{{ __register_k8s_internal_node_ip_cidr }}"
+        comment: cilium agent metrics
+    - ansible.builtin.iptables:
+        chain: TCP
+        protocol: tcp
+        destination_port: 9962
+        jump: ACCEPT
+        source: "{{ k8s_pod_cidr }}"
+        comment: cilium agent metrics
+  when: k8s_role != "" and use_k8s_cilium
+
 - name: Allow k8s cilium hubble
   block:
     - ansible.builtin.iptables:
@@ -858,6 +876,24 @@
         jump: ACCEPT
         source: "{{ k8s_pod_cidr }}"
         comment: cilium hubble
+  when: k8s_role != "" and use_k8s_cilium_hubble
+
+- name: Allow k8s cilium hubble metrics
+  block:
+    - ansible.builtin.iptables:
+        chain: TCP
+        protocol: tcp
+        destination_port: 9965
+        jump: ACCEPT
+        source: "{{ __register_k8s_internal_node_ip_cidr }}"
+        comment: cilium hubble metrics
+    - ansible.builtin.iptables:
+        chain: TCP
+        protocol: tcp
+        destination_port: 9965
+        jump: ACCEPT
+        source: "{{ k8s_pod_cidr }}"
+        comment: cilium hubble metrics
   when: k8s_role != "" and use_k8s_cilium_hubble
 
 - name: Allow k8s metallb L2 LB

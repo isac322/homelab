@@ -14,6 +14,11 @@
 # compatibility fixes do not affect the running agent process.
 rollOutCiliumPods: true
 
+# Agent metrics hostPorts already guarantee one Cilium pod per node, so let the
+# scheduler use its native hostPort conflict handling instead of pod anti-affinity.
+scheduling:
+  mode: kube-scheduler
+
 # ─── k3s API server (KPR 필수) ───
 k8sServiceHost: k8s.backbone.homelab.bhyoo.com
 k8sServicePort: 6443
@@ -87,15 +92,17 @@ bpf:
   # 모니터링 이벤트 집계 (CPU 부하 감소)
   monitorAggregation: medium
   monitorInterval: "5s"
-  # BPF clock probe (jiffies 대신 ktime, 더 정확한 CT 타임스탬프)
-  # 신규 설치에서만 안전
+  # Probe for the lower-overhead jiffies clock used by CT maps; kernels that do
+  # not support it automatically retain ktime (currently n2p1/n2p2).
 bpfClockProbe: true
 
 # Pod 트래픽이 iptables conntrack을 거치지 않도록 우회 (native routing + full KPR + bpf.masquerade 전제)
 installNoConntrackIptablesRules: false
 
 # ─── Bandwidth Manager + BBR ───
-# BBR 혼잡 제어 (커널 5.18+, 전 노드 해당). CUBIC 대비 처리량↑, 지연↓
+# EDT remains active, but BBR requires eBPF host routing for reliable pacing.
+# Current no-BTF masquerade fallback leaves Host Routing in Legacy mode; keep
+# this enabled so BBR becomes effective again when BPF host routing is restored.
 bandwidthManager:
   enabled: true
   bbr: true
