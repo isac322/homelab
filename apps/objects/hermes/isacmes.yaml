@@ -7,10 +7,10 @@ metadata:
 spec:
   image:
     repository: nousresearch/hermes-agent
-    tag: v2026.8.13
+    tag: v2026.8.16
   initContainers:
     - name: install-hermes-lcm
-      image: nousresearch/hermes-agent:v2026.8.13
+      image: nousresearch/hermes-agent:v2026.8.16
       command:
         - /bin/sh
         - -ec
@@ -25,7 +25,7 @@ spec:
         - name: hermes-lcm
           mountPath: /lcm
     - name: patch-openai-native-web-search
-      image: nousresearch/hermes-agent:v2026.8.13
+      image: nousresearch/hermes-agent:v2026.8.16
       command:
         - /opt/hermes/.venv/bin/python
         - /patch/patch.py
