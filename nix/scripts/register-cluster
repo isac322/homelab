@@ -1,0 +1,103 @@
+#!/usr/bin/env bash
+set -euo pipefail
+plaintext_workdir() {
+  local runtime=${XDG_RUNTIME_DIR:-/run/user/$(id -u)}
+  if [ ! -d "$runtime" ] || [ ! -w "$runtime" ]; then runtime=/dev/shm; fi
+  test -d "$runtime" && test -w "$runtime"
+  mktemp -d "$runtime/homelab-register-cluster.XXXXXX"
+}
+name=${1:?cluster name required}
+shift
+source_context=
+while [ "$#" -gt 0 ]; do
+  case "$1" in
+    --context)
+      source_context=${2:?context required}
+      shift 2
+      ;;
+    *)
+      echo "usage: register-cluster <prod> [--context <source-context>]" >&2
+      exit 2
+      ;;
+  esac
+done
+backbone_context=${BACKBONE_CONTEXT:-private-backbone}
+case "$name" in
+  prod)
+    source_context=${source_context:-${PROD_CONTEXT:-homelab-prod}}
+    server=${PROD_SERVER:?PROD_SERVER required}
+    profile=prod
+    ;;
+  *) echo "unsupported cluster: $name" >&2; exit 2 ;;
+esac
+
+namespace=argocd
+service_account=argocd-manager
+kubectl --context "$source_context" apply --server-side -f - <<EOF
+apiVersion: v1
+kind: ServiceAccount
+metadata:
+  name: $service_account
+  namespace: kube-system
+---
+apiVersion: rbac.authorization.k8s.io/v1
+kind: ClusterRole
+metadata:
+  name: argocd-manager-role
+rules:
+- apiGroups: ['*']
+  resources: ['*']
+  verbs: ['*']
+- nonResourceURLs: ['*']
+  verbs: ['*']
+---
+apiVersion: rbac.authorization.k8s.io/v1
+kind: ClusterRoleBinding
+metadata:
+  name: argocd-manager-role-binding
+roleRef:
+  apiGroup: rbac.authorization.k8s.io
+  kind: ClusterRole
+  name: argocd-manager-role
+subjects:
+- kind: ServiceAccount
+  name: $service_account
+  namespace: kube-system
+EOF
+
+work=$(plaintext_workdir)
+trap 'rm -rf "$work"' EXIT HUP INT TERM
+umask 077
+kubectl --context "$source_context" -n kube-system create token "$service_account" --duration=8760h > "$work/token"
+kubectl --context "$source_context" config view --raw --minify -o "jsonpath={.clusters[0].cluster.certificate-authority-data}" > "$work/ca"
+jq -cn --rawfile token "$work/token" --rawfile ca "$work/ca" '{
+  bearerToken: ($token | rtrimstr("\n")),
+  tlsClientConfig: {
+    insecure: false,
+    caData: ($ca | rtrimstr("\n"))
+  }
+}' > "$work/config.json"
+jq -n \
+  --arg name "$name" \
+  --arg server "$server" \
+  --arg profile "$profile" \
+  --rawfile config "$work/config.json" \
+  '{
+    apiVersion: "v1",
+    kind: "Secret",
+    metadata: {
+      name: ("cluster-" + $name),
+      namespace: "argocd",
+      labels: {
+        "argocd.argoproj.io/secret-type": "cluster",
+        "gitops.bhyoo.com/profile": $profile
+      }
+    },
+    stringData: {
+      name: $name,
+      server: $server,
+      config: ($config | rtrimstr("\n"))
+    },
+    type: "Opaque"
+  }' > "$work/secret.json"
+kubectl --context "$backbone_context" -n "$namespace" apply --server-side -f "$work/secret.json"

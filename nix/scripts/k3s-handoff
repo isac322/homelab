@@ -1,0 +1,80 @@
+#!/usr/bin/env bash
+set -euo pipefail
+root=${HOMELAB_REPO_ROOT:-$(git rev-parse --show-toplevel 2>/dev/null || pwd)}
+
+usage() {
+  cat <<'EOF'
+Usage: k3s-handoff <command> <host> [legacy-unit]
+  preflight <host> <legacy-unit>
+  arm <host> <legacy-unit>
+  accept <host>
+  restore <host> <legacy-unit>
+  status <host>
+EOF
+}
+
+host_field() { nix --extra-experimental-features 'nix-command flakes' eval --raw "$root#topology.nodes.$1.$2"; }
+remote() { local host=$1; shift; ssh -o BatchMode=yes -o StrictHostKeyChecking=accept-new "$(host_field "$host" sshTarget)" "$@"; }
+
+case "${1:-}" in
+  preflight)
+    host=${2:?host required}; legacy=${3:?legacy unit required}
+    remote "$host" "sudo -n sh -ceu '
+      test \"\$(systemctl is-active $legacy 2>/dev/null || true)\" = active
+      fragment=\$(systemctl show -p FragmentPath --value $legacy)
+      case \"\$fragment\" in /etc/systemd/system/*) ;; *) echo \"unexpected legacy unit path: \$fragment\" >&2; exit 1 ;; esac
+      test -x /usr/local/bin/k3s
+      test -d /var/lib/rancher/k3s
+      test -L /run/homelab-secrets/active
+      test -s /run/homelab-secrets/active/k3s/server-token
+      test \"\$(systemctl is-active homelab-k3s.service 2>/dev/null || true)\" != active
+    '"
+    ;;
+  arm)
+    host=${2:?host required}; legacy=${3:?legacy unit required}
+    remote "$host" "sudo -n sh -ceu '
+      cat > /run/homelab-k3s-handoff-rollback <<\"SCRIPT\"
+#!/bin/sh
+set -eu
+legacy=\$1
+systemctl disable --now homelab-k3s.service 2>/dev/null || true
+systemctl enable --now \"\$legacy\"
+SCRIPT
+      chmod 0700 /run/homelab-k3s-handoff-rollback
+      systemctl stop homelab-k3s-handoff-rollback.timer homelab-k3s-handoff-rollback.service 2>/dev/null || true
+      systemctl reset-failed homelab-k3s-handoff-rollback.service 2>/dev/null || true
+      systemd-run --quiet --unit=homelab-k3s-handoff-rollback --on-active=15m /run/homelab-k3s-handoff-rollback $legacy
+      if ! systemctl disable --now $legacy; then
+        systemctl stop homelab-k3s-handoff-rollback.timer homelab-k3s-handoff-rollback.service 2>/dev/null || true
+        systemctl reset-failed homelab-k3s-handoff-rollback.service 2>/dev/null || true
+        rm -f /run/homelab-k3s-handoff-rollback
+        systemctl enable --now $legacy
+        exit 1
+      fi
+    '"
+    ;;
+  accept)
+    host=${2:?host required}
+    remote "$host" "sudo -n sh -ceu '
+      test \"\$(systemctl is-active homelab-k3s.service 2>/dev/null || true)\" = active
+      systemctl stop homelab-k3s-handoff-rollback.timer homelab-k3s-handoff-rollback.service 2>/dev/null || true
+      systemctl reset-failed homelab-k3s-handoff-rollback.service 2>/dev/null || true
+      rm -f /run/homelab-k3s-handoff-rollback
+    '"
+    ;;
+  restore)
+    host=${2:?host required}; legacy=${3:?legacy unit required}
+    remote "$host" "sudo -n sh -ceu '
+      systemctl stop homelab-k3s-handoff-rollback.timer homelab-k3s-handoff-rollback.service 2>/dev/null || true
+      systemctl reset-failed homelab-k3s-handoff-rollback.service 2>/dev/null || true
+      systemctl disable --now homelab-k3s.service 2>/dev/null || true
+      systemctl enable --now $legacy
+      rm -f /run/homelab-k3s-handoff-rollback
+    '"
+    ;;
+  status)
+    host=${2:?host required}
+    remote "$host" "sudo -n systemctl show homelab-k3s-handoff-rollback.timer homelab-k3s.service k3s.service k3s-agent.service -p Id -p ActiveState -p UnitFileState 2>/dev/null || true"
+    ;;
+  *) usage; exit 2 ;;
+esac

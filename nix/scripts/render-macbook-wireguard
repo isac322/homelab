@@ -1,0 +1,26 @@
+#!/usr/bin/env bash
+set -euo pipefail
+root=${HOMELAB_REPO_ROOT:-$(git rev-parse --show-toplevel 2>/dev/null || pwd)}
+source=${MACBOOK_WIREGUARD_SOURCE:-"$root/.host-state/import/bhyoo-macbook-pro/wg0.conf"}
+base=${MACBOOK_WIREGUARD_TARGET:-"$root/.host-state/generated/bhyoo-macbook-pro"}
+generation=${MACBOOK_WIREGUARD_GENERATION:-$(date -u +%Y%m%dT%H%M%SZ)}
+out=${1:-"$base/generations/$generation/wg0.conf"}
+test -s "$source"
+mkdir -p "$(dirname "$out")"
+umask 077
+cp "$source" "$out"
+chmod 0600 "$out"
+expected_address=$(nix --extra-experimental-features 'nix-command flakes' eval --raw "$root#topology.wg0.nodes.bhyoo-macbook-pro.address")
+expected_public=$(nix --extra-experimental-features 'nix-command flakes' eval --raw "$root#topology.wg0.nodes.bhyoo-macbook-pro.publicKey")
+actual_address=$(sed -n 's/^Address[[:space:]]*=[[:space:]]*//p' "$out" | sed -n '1p')
+actual_public=$(sed -n 's/^PrivateKey[[:space:]]*=[[:space:]]*//p' "$out" | sed -n '1p' | wg pubkey)
+peer_count=$(grep -c '^\[Peer\]$' "$out")
+keepalive_count=$(grep -c '^PersistentKeepalive[[:space:]]*=[[:space:]]*25$' "$out")
+test "$actual_address" = "$expected_address"
+test "$actual_public" = "$expected_public"
+test "$peer_count" -eq 6
+test "$keepalive_count" -eq 6
+ln -sfn "generations/$generation" "$base/active.new"
+mv -Tf "$base/active.new" "$base/active"
+find "$base/generations" -mindepth 1 -maxdepth 1 -type d -printf '%T@ %p\n' | sort -nr | sed -n '3,$p' | cut -d' ' -f2- | xargs -r rm -rf
+printf '%s\n' "$out"
