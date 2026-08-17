@@ -252,7 +252,7 @@ spec:
           readOnly: true
   config:
     raw:
-      _config_version: 34
+      _config_version: 37
       approvals:
         mode: "off"
       agent:
