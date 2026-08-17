@@ -414,7 +414,6 @@ prometheus:
           - source_labels: [__name__]
             regex: etcd_.*
             action: keep
-
     securityContext:
       runAsGroup: 2000
       runAsNonRoot: true
