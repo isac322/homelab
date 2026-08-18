@@ -166,7 +166,7 @@ controller:
   driver:
     image:
       registry: docker.io/isac322/democratic-csi
-      tag: next
+      tag: "next@sha256:f9ebd3c6a5d732cf020f60157916582996b98c39ce7d88cee01187248b518cc7"
       pullPolicy: Always
     resources:
       requests:
@@ -202,7 +202,7 @@ node:
   driver:
     image:
       registry: docker.io/isac322/democratic-csi
-      tag: next
+      tag: "next@sha256:f9ebd3c6a5d732cf020f60157916582996b98c39ce7d88cee01187248b518cc7"
       pullPolicy: Always
     resources:
       requests:
