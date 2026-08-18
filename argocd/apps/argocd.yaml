@@ -17,7 +17,7 @@ spec:
           - values.yaml
           - $homelab/values/argo-cd/backbone.yaml
       repoURL: https://argoproj.github.io/argo-helm
-      targetRevision: 10.1.4
+      targetRevision: 10.3.3
   ignoreDifferences:
     - group: gateway.networking.k8s.io
       kind: HTTPRoute
