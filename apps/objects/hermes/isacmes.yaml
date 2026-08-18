@@ -105,8 +105,9 @@ spec:
         - -ec
       args:
         - |
+          rm -rf /home/node/.cache/camoufox
           mkdir -p /home/node/.cache/camoufox
-          cp -R --no-preserve=all /root/.cache/camoufox/. /home/node/.cache/camoufox/
+          cp -R /root/.cache/camoufox/. /home/node/.cache/camoufox/
           chown -R 1000:1000 /home/node
       securityContext:
         allowPrivilegeEscalation: false
