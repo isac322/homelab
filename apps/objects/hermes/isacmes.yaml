@@ -34,6 +34,22 @@ spec:
       env:
         - name: HOME
           value: /skills/home
+        - name: DO_NOT_TRACK
+          value: "1"
+        - name: CI
+          value: "true"
+        - name: NPM_CONFIG_CACHE
+          value: /skills/home/.npm
+        - name: NPM_CONFIG_UPDATE_NOTIFIER
+          value: "false"
+        - name: TMPDIR
+          value: /skills/home/tmp
+        - name: GITHUB_TOKEN
+          valueFrom:
+            secretKeyRef:
+              name: skillfish-github-token
+              key: token
+              optional: true
       securityContext:
         allowPrivilegeEscalation: false
         capabilities:

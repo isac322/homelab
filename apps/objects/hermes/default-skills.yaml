@@ -6,44 +6,74 @@ metadata:
     argocd.argoproj.io/sync-wave: "0"
 data:
   install.sh: |
-    install_skill() {
-      name="$1"
-      repository="$2"
-      commit="$3"
-      source_path="$4"
-      checkout="/skills/.checkout/$name"
+    set -eu
 
-      git init "$checkout"
-      git -C "$checkout" remote add origin "$repository"
-      git -C "$checkout" fetch --depth 1 origin "$commit"
-      git -C "$checkout" checkout --detach FETCH_HEAD
-      test "$(git -C "$checkout" rev-parse HEAD)" = "$commit"
+    install_root="$HOME/.claude/skills"
+    result_file="$HOME/skillfish-install.json"
 
-      mkdir -p "/skills/$name"
-      if [ -d "$checkout/$source_path" ]; then
-        cp -a "$checkout/$source_path/." "/skills/$name/"
-      else
-        cp "$checkout/$source_path" "/skills/$name/SKILL.md"
-      fi
+    rm -rf \
+      "$HOME/.claude" \
+      /skills/blader-humanizer \
+      /skills/writing-clearly-and-concisely \
+      /skills/comment-writer
+    mkdir -p "$HOME/.claude" "$TMPDIR"
+    cp /installer/skillfish.json "$HOME/skillfish.json"
+
+    if ! npm exec --yes --package=skillfish@1.0.31 -- \
+      skillfish install --global --yes --json > "$result_file"; then
+      cat "$result_file" >&2
+      exit 1
+    fi
+    node -e '
+      const result = require(process.argv[1]);
+      const allowedErrors = new Set([
+        "humanizer: Skipped symlink: SKILL.md",
+      ]);
+      const unexpectedErrors = result.errors.filter(
+        (error) => !allowedErrors.has(error),
+      );
+      const installed = new Set(result.installed.map(({ skill }) => skill));
+      const expected = [
+        "humanizer",
+        "writing-clearly-and-concisely",
+        "comment-writer",
+      ];
+      if (
+        result.exit_code !== 0 ||
+        unexpectedErrors.length !== 0 ||
+        expected.some((skill) => !installed.has(skill))
+      ) {
+        console.error(JSON.stringify(result));
+        process.exit(1);
+      }
+    ' "$result_file"
+
+    materialize_skill() {
+      source_name="$1"
+      target_name="$2"
+      test -r "$install_root/$source_name/SKILL.md"
+      cp -a "$install_root/$source_name" "/skills/$target_name"
     }
 
-    mkdir -p /skills/.checkout /skills/home
-    install_skill \
-      blader-humanizer \
-      https://github.com/blader/humanizer.git \
-      ebf637bdae86b62a7b006c447bb98cfa0ccc979d \
-      SKILL.md
+    materialize_skill humanizer blader-humanizer
+    materialize_skill \
+      writing-clearly-and-concisely \
+      writing-clearly-and-concisely
+    materialize_skill comment-writer comment-writer
+
     sed -i \
       's/^name: humanizer$/name: blader-humanizer/' \
       /skills/blader-humanizer/SKILL.md
-    install_skill \
-      writing-clearly-and-concisely \
-      https://github.com/softaworks/agent-toolkit.git \
-      3027f20f3181758385a1bb8c022d4041dfb4de84 \
-      skills/writing-clearly-and-concisely
-    install_skill \
-      comment-writer \
-      https://github.com/Gentleman-Programming/gentle-ai.git \
-      301fb2ad7f3f3bda71f516d6e2848ef3fa6fe9bb \
-      skills/comment-writer
-    rm -rf /skills/.checkout /skills/home
+    test "$(sed -n 's/^name: //p' \
+      /skills/blader-humanizer/SKILL.md | head -1)" = \
+      "blader-humanizer"
+    rm -rf "$HOME"
+  skillfish.json: |
+    {
+      "version": 1,
+      "skills": [
+        "blader/humanizer@ebf637bdae86b62a7b006c447bb98cfa0ccc979d",
+        "softaworks/agent-toolkit@3027f20f3181758385a1bb8c022d4041dfb4de84/skills/writing-clearly-and-concisely",
+        "Gentleman-Programming/gentle-ai@301fb2ad7f3f3bda71f516d6e2848ef3fa6fe9bb/skills/comment-writer"
+      ]
+    }
