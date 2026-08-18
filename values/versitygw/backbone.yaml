@@ -1,3 +1,6 @@
+image:
+  tag: v1.7.0
+
 gateway:
   corsAllowOrigin: "https://versitygw.bhyoo.com"
   backend:
