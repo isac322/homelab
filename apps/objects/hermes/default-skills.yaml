@@ -29,10 +29,13 @@ data:
 
     mkdir -p /skills/.checkout /skills/home
     install_skill \
-      humanizer \
+      blader-humanizer \
       https://github.com/blader/humanizer.git \
       ebf637bdae86b62a7b006c447bb98cfa0ccc979d \
       SKILL.md
+    sed -i \
+      's/^name: humanizer$/name: blader-humanizer/' \
+      /skills/blader-humanizer/SKILL.md
     install_skill \
       writing-clearly-and-concisely \
       https://github.com/softaworks/agent-toolkit.git \

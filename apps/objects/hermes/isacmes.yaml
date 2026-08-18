@@ -160,8 +160,8 @@ spec:
       subPath: plugin
       readOnly: true
     - name: hermes-default-skills
-      mountPath: /opt/data/skills/humanizer
-      subPath: humanizer
+      mountPath: /opt/data/skills/blader-humanizer
+      subPath: blader-humanizer
       readOnly: true
     - name: hermes-default-skills
       mountPath: /opt/data/skills/writing-clearly-and-concisely
