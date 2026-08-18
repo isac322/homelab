@@ -1,6 +1,9 @@
 image:
   tag: v1.7.0
 
+strategy:
+  type: Recreate
+
 gateway:
   corsAllowOrigin: "https://versitygw.bhyoo.com"
   backend:
