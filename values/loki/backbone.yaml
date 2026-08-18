@@ -1,4 +1,4 @@
-deploymentMode: SingleBinary
+deploymentMode: Monolithic
 
 loki:
   auth_enabled: false
@@ -96,6 +96,8 @@ monitoring:
     # (e.g. loki-read, loki-write) which don't match SingleBinary mode (job=loki/loki)
     enabled: false
   rules:
+    enabled: false
+  alerts:
     enabled: false
   serviceMonitor:
     enabled: true
