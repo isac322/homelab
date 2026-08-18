@@ -1,3 +1,9 @@
+image:
+  tag: v1.7.0
+
+strategy:
+  type: Recreate
+
 gateway:
   backend:
     type: posix
