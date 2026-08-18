@@ -1,0 +1,46 @@
+apiVersion: v1
+kind: ConfigMap
+metadata:
+  name: hermes-default-skills-installer
+  annotations:
+    argocd.argoproj.io/sync-wave: "0"
+data:
+  install.sh: |
+    install_skill() {
+      name="$1"
+      repository="$2"
+      commit="$3"
+      source_path="$4"
+      checkout="/skills/.checkout/$name"
+
+      git init "$checkout"
+      git -C "$checkout" remote add origin "$repository"
+      git -C "$checkout" fetch --depth 1 origin "$commit"
+      git -C "$checkout" checkout --detach FETCH_HEAD
+      test "$(git -C "$checkout" rev-parse HEAD)" = "$commit"
+
+      mkdir -p "/skills/$name"
+      if [ -d "$checkout/$source_path" ]; then
+        cp -a "$checkout/$source_path/." "/skills/$name/"
+      else
+        cp "$checkout/$source_path" "/skills/$name/SKILL.md"
+      fi
+    }
+
+    mkdir -p /skills/.checkout /skills/home
+    install_skill \
+      humanizer \
+      https://github.com/blader/humanizer.git \
+      ebf637bdae86b62a7b006c447bb98cfa0ccc979d \
+      SKILL.md
+    install_skill \
+      writing-clearly-and-concisely \
+      https://github.com/softaworks/agent-toolkit.git \
+      3027f20f3181758385a1bb8c022d4041dfb4de84 \
+      skills/writing-clearly-and-concisely
+    install_skill \
+      comment-writer \
+      https://github.com/Gentleman-Programming/gentle-ai.git \
+      301fb2ad7f3f3bda71f516d6e2848ef3fa6fe9bb \
+      skills/comment-writer
+    rm -rf /skills/.checkout /skills/home
