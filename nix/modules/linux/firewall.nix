@@ -1,7 +1,6 @@
 {
   config,
   lib,
-  pkgs,
   hostConfig,
   topology,
   ...
@@ -12,7 +11,16 @@ let
   server = hostConfig.k3sRole == "server";
   gateway = hostConfig.firewall.wireguardGateway or false;
   localNetwork = cfg.localNetwork;
-  wgPorts = map (_: topology.wg0.listenPort) hostConfig.wireguard;
+  nativeRulesPath =
+    if hostConfig.packageBackend == "pacman" then "iptables/iptables.rules" else "iptables/rules.v4";
+  firewallService =
+    if hostConfig.packageBackend == "pacman" then
+      "iptables.service"
+    else
+      "netfilter-persistent.service";
+  wgPorts = map (
+    interface: if interface == "wg0" then topology.wg0.listenPort else topology.wg1.listenPort
+  ) hostConfig.wireguard;
   body = ''
     :HOMELAB_INPUT - [0:0]
     :HOMELAB_FORWARD - [0:0]
@@ -43,14 +51,25 @@ let
     ) "-A HOMELAB_TCP -i wg0 -s ${topology.wg0.network} -p tcp --dport 6443 -j ACCEPT"}
     ${lib.optionalString k3s "-A HOMELAB_TCP -s ${localNetwork} -p tcp --dport 10250 -j ACCEPT\n-A HOMELAB_TCP -s 10.42.0.0/16 -p tcp --dport 10250 -j ACCEPT"}
     ${lib.optionalString k3s "-A HOMELAB_TCP -s ${localNetwork} -p tcp --dport 9100 -j ACCEPT\n-A HOMELAB_TCP -s 10.42.0.0/16 -p tcp --dport 9100 -j ACCEPT"}
-    ${lib.optionalString k3s "-A HOMELAB_TCP -s ${localNetwork} -p tcp --dport 4240 -j ACCEPT\n-A HOMELAB_TCP -s ${localNetwork} -p tcp --dport 4244:4245 -j ACCEPT\n-A HOMELAB_TCP -s 10.42.0.0/16 -p tcp --dport 4244:4245 -j ACCEPT"}
+    ${lib.optionalString (builtins.elem "wg1" hostConfig.wireguard) "-A HOMELAB_TCP -i wg1 -s ${topology.wg1.network} -p tcp --dport 6443 -j ACCEPT\n-A HOMELAB_TCP -i wg1 -s ${topology.wg1.network} -p tcp --dport 10250 -j ACCEPT"}
+    ${lib.optionalString k3s "-A HOMELAB_TCP -s ${localNetwork} -p tcp --dport 4240 -j ACCEPT\n-A HOMELAB_TCP -s ${localNetwork} -p tcp --dport 4244:4245 -j ACCEPT\n-A HOMELAB_TCP -s 10.42.0.0/16 -p tcp --dport 4244:4245 -j ACCEPT\n-A HOMELAB_TCP -s ${localNetwork} -p tcp --dport 9962 -j ACCEPT\n-A HOMELAB_TCP -s 10.42.0.0/16 -p tcp --dport 9962 -j ACCEPT\n-A HOMELAB_TCP -s ${localNetwork} -p tcp --dport 9965 -j ACCEPT\n-A HOMELAB_TCP -s 10.42.0.0/16 -p tcp --dport 9965 -j ACCEPT"}
     ${lib.optionalString server "-A HOMELAB_TCP -s ${localNetwork} -p tcp --dport 2379:2381 -j ACCEPT"}
     ${lib.optionalString hostConfig.iscsiServer "-A HOMELAB_TCP -s ${localNetwork} -p tcp --dport 3260 -j ACCEPT"}
-    ${lib.optionalString gateway "-A HOMELAB_FORWARD -i wg0 -o wg0 -s ${topology.wg0.trustedNetwork} -d ${topology.wg0.edgeNetwork} -j ACCEPT\n-A HOMELAB_FORWARD -i wg0 -o wg0 -s ${topology.wg0.edgeNetwork} -d ${topology.wg0.trustedNetwork} -j ACCEPT\n-A HOMELAB_FORWARD -i wg0 -o wg0 -s ${topology.wg0.edgeNetwork} -d ${topology.wg0.edgeNetwork} -j DROP"}
+    ${lib.optionalString gateway "-A HOMELAB_FORWARD -i wg0 -o wg0 -s ${topology.wg0.trustedNetwork} -d ${topology.wg0.edgeNetwork} -j ACCEPT\n-A HOMELAB_FORWARD -i wg0 -o wg0 -s ${topology.wg0.edgeNetwork} -d ${topology.wg0.trustedNetwork} -j ACCEPT\n-A HOMELAB_FORWARD -i wg0 -o wg0 -s 10.222.0.128/26 -d 10.222.0.128/26 -j DROP\n-A HOMELAB_FORWARD -i wg0 -o wg0 -s 10.222.0.192/27 -d 10.222.0.192/27 -j DROP\n-A HOMELAB_FORWARD -i wg0 -o wg0 -s 10.222.0.224/27 -d 10.222.0.224/27 -j DROP"}
   '';
-  rules = ''
+  liveRules = ''
     *filter
     ${body}
+    COMMIT
+  '';
+  bootRules = ''
+    *filter
+    :INPUT DROP [0:0]
+    :FORWARD DROP [0:0]
+    :OUTPUT ACCEPT [0:0]
+    ${body}
+    -A INPUT -j HOMELAB_INPUT
+    -A FORWARD -j HOMELAB_FORWARD
     COMMIT
   '';
 in
@@ -67,43 +86,17 @@ in
   };
   config = lib.mkIf cfg.enable {
     environment.etc."homelab/firewall.rules" = {
-      text = rules;
+      text = liveRules;
       mode = "0600";
     };
-    systemd.services.homelab-firewall = {
-      description = "Install idempotent homelab-owned iptables policy";
-      wantedBy = [ "system-manager.target" ];
-      wants = [ "network-pre.target" ];
-      before = [
-        "network-pre.target"
-        "systemd-networkd.service"
-        "homelab-k3s.service"
-      ];
-      path = [
-        pkgs.iptables
-        pkgs.coreutils
-        pkgs.gawk
-      ];
-      script = ''
-        set -eu
-        iptables-save > /run/homelab-firewall.previous
-        while iptables -C INPUT -j HOMELAB_INPUT 2>/dev/null; do iptables -D INPUT -j HOMELAB_INPUT; done
-        while iptables -C FORWARD -j HOMELAB_FORWARD 2>/dev/null; do iptables -D FORWARD -j HOMELAB_FORWARD; done
-        iptables-restore --noflush --wait < /etc/homelab/firewall.rules
-        iptables -P INPUT DROP
-        iptables -P FORWARD DROP
-        iptables -P OUTPUT ACCEPT
-        input_position=$(iptables -S INPUT | awk '/-j CILIUM_INPUT$/ || /-j KUBE-FIREWALL$/ { position = NR } END { print position ? position : 1 }')
-        forward_position=$(iptables -S FORWARD | awk '/-j CILIUM_FORWARD$/ { position = NR } END { print position ? position : 1 }')
-        iptables -I INPUT "$input_position" -j HOMELAB_INPUT
-        iptables -I FORWARD "$forward_position" -j HOMELAB_FORWARD
-      '';
-      preStop = "test ! -s /run/homelab-firewall.previous || iptables-restore --wait < /run/homelab-firewall.previous";
-      serviceConfig = {
-        Type = "oneshot";
-        RemainAfterExit = true;
-        DefaultDependencies = false;
-      };
+    environment.etc.${nativeRulesPath} = {
+      text = bootRules;
+      mode = "0600";
+      replaceExisting = true;
     };
+    environment.etc."systemd/system/${firewallService}.d/50-homelab-order.conf".text = ''
+      [Unit]
+      Before=homelab-k3s.service
+    '';
   };
 }

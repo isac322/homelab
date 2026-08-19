@@ -9,6 +9,11 @@
 }:
 let
   enabled = hostConfig.k3sRole != null;
+  firewallService =
+    if hostConfig.packageBackend == "pacman" then
+      "iptables.service"
+    else
+      "netfilter-persistent.service";
   server = hostConfig.k3sRole == "server";
   wg0Address = topology.wg0.nodes.${name}.address or null;
   strip = address: if address == null then null else builtins.head (lib.splitString "/" address);
@@ -61,8 +66,8 @@ in
 {
   options.homelab.k3s.tokenPath = lib.mkOption {
     type = lib.types.str;
-    default = "/run/homelab-secrets/active/k3s/server-token";
-    description = "SOPS-staged existing K3s token; never copied into the Nix store.";
+    default = "/run/credentials/homelab-k3s.service/k3s-token";
+    description = "Machine-encrypted K3s token loaded by systemd for the daemon.";
   };
 
   config = lib.mkIf enabled {
@@ -77,19 +82,26 @@ in
     };
     systemd.services.homelab-k3s = {
       description = "Run pinned K3s ${if server then "server" else "agent"}";
-      wantedBy = [ "system-manager.target" ];
+      wantedBy = [ "multi-user.target" ];
+      requires = [ firewallService ];
       after = [
         "network-online.target"
-        "homelab-distro-packages.service"
-        "homelab-wireguard.service"
-        "homelab-firewall.service"
-        "homelab-sysctl.service"
-        "homelab-zram.service"
-        "homelab-thp.service"
-        "homelab-k3s-legacy-cleanup.service"
-        "homelab-ksm.service"
+        "systemd-networkd.service"
+        firewallService
+      ]
+      ++ lib.optionals config.homelab.zram [ "dev-zram0.swap" ]
+      ++ lib.optionals hostConfig.iscsiClient [
+        "iscsid.service"
+        "open-iscsi.service"
       ];
-      wants = [ "network-online.target" ];
+      wants = [
+        "network-online.target"
+      ]
+      ++ lib.optionals config.homelab.zram [ "dev-zram0.swap" ]
+      ++ lib.optionals hostConfig.iscsiClient [
+        "iscsid.service"
+        "open-iscsi.service"
+      ];
       path = [
         pkgs.coreutils
         pkgs.systemd
@@ -129,37 +141,11 @@ in
         TimeoutStartSec = 0;
         RuntimeDirectory = "rancher/k3s-managed";
         RuntimeDirectoryMode = "0700";
+        LoadCredentialEncrypted = [
+          "k3s-token:/var/lib/homelab-secrets/active/k3s-token.cred"
+        ];
       };
       environment = lib.optionalAttrs server { GOMEMLIMIT = "2GiB"; };
-    };
-    systemd.services.homelab-k3s-legacy-cleanup = lib.mkIf config.homelab.allowDestructiveCommit {
-      description = "Remove superseded installer-owned K3s launch files";
-      wantedBy = [ "system-manager.target" ];
-      before = [ "homelab-k3s.service" ];
-      path = [
-        pkgs.coreutils
-        pkgs.systemd
-      ];
-      script = ''
-        set -eu
-        for unit in k3s.service k3s-agent.service; do
-          fragment=$(systemctl show -p FragmentPath --value "$unit" 2>/dev/null || true)
-          case "$fragment" in
-            /etc/systemd/system/*) rm -f "$fragment" ;;
-          esac
-          rm -f "/etc/systemd/system/multi-user.target.wants/$unit"
-        done
-        rm -f \
-          /usr/local/bin/k3s \
-          /usr/local/bin/k3s-killall.sh \
-          /usr/local/bin/k3s-uninstall.sh \
-          /usr/local/bin/k3s-agent-uninstall.sh
-        systemctl daemon-reload
-      '';
-      serviceConfig = {
-        Type = "oneshot";
-        RemainAfterExit = true;
-      };
     };
   };
 }

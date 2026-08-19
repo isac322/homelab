@@ -14,12 +14,19 @@ expected_address=$(nix --extra-experimental-features 'nix-command flakes' eval -
 expected_public=$(nix --extra-experimental-features 'nix-command flakes' eval --raw "$root#topology.wg0.nodes.bhyoo-macbook-pro.publicKey")
 actual_address=$(sed -n 's/^Address[[:space:]]*=[[:space:]]*//p' "$out" | sed -n '1p')
 actual_public=$(sed -n 's/^PrivateKey[[:space:]]*=[[:space:]]*//p' "$out" | sed -n '1p' | wg pubkey)
-peer_count=$(grep -c '^\[Peer\]$' "$out")
+runtime=${XDG_RUNTIME_DIR:-/tmp}
+expected_keys=$(mktemp "$runtime/homelab-macbook-expected.XXXXXX")
+actual_keys=$(mktemp "$runtime/homelab-macbook-actual.XXXXXX")
+trap 'rm -f "$expected_keys" "$actual_keys"' EXIT HUP INT TERM
+nix --extra-experimental-features 'nix-command flakes' eval --json "$root#topology.wg0.nodes" \
+  | jq -r 'to_entries[] | select(.key != "bhyoo-macbook-pro") | .value.publicKey' \
+  | sort > "$expected_keys"
+sed -n 's/^PublicKey[[:space:]]*=[[:space:]]*//p' "$out" | sort > "$actual_keys"
 keepalive_count=$(grep -c '^PersistentKeepalive[[:space:]]*=[[:space:]]*25$' "$out")
 test "$actual_address" = "$expected_address"
 test "$actual_public" = "$expected_public"
-test "$peer_count" -eq 6
-test "$keepalive_count" -eq 6
+cmp "$expected_keys" "$actual_keys"
+test "$keepalive_count" -eq "$(wc -l < "$expected_keys" | tr -d ' ')"
 ln -sfn "generations/$generation" "$base/active.new"
 mv -Tf "$base/active.new" "$base/active"
 find "$base/generations" -mindepth 1 -maxdepth 1 -type d -printf '%T@ %p\n' | sort -nr | sed -n '3,$p' | cut -d' ' -f2- | xargs -r rm -rf

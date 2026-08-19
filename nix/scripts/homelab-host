@@ -9,6 +9,7 @@ usage() {
   cat <<'EOF'
 Usage: homelab-host <command> [arguments]
   inventory
+  bootstrap-host <host>
   baseline <host>
   adopt-host <host>
   onboard-k3s-node <host> --token-source <existing-host>
@@ -18,13 +19,11 @@ Usage: homelab-host <command> [arguments]
   commit <host>
   deploy <host>                 Alias for prepare; activation remains explicit
   verify-host <host> [--baseline <file>]
-  rollback <host> <generation>
-  reconcile-distro-packages <host>
+  reconcile-distro-packages <host> [--purge]
   check-bootstrap
   bootstrap-k3s <backbone>
   bootstrap-argocd <backbone>
-  upgrade-k3s <cluster> --to <version>
-  register-clusters <prod>
+  upgrade-k3s <backbone> --to <version>
   issue-kubeconfig <identity>
 EOF
 }
@@ -34,7 +33,245 @@ system_manager() { nix --extra-experimental-features 'nix-command flakes' run "g
 host_field() { nix_eval --raw "$root#topology.nodes.$1.$2"; }
 remote() { local host=$1; shift; ssh -o BatchMode=yes -o StrictHostKeyChecking=accept-new "$(host_field "$host" sshTarget)" "$@"; }
 receipt() { printf '%s/receipts/%s.json' "$state" "$1"; }
-require_receipt_phase() { test "$(jq -r .phase "$(receipt "$1")" 2>/dev/null)" = "$2"; }
+current_revision() { git rev-parse HEAD 2>/dev/null || printf unknown; }
+assert_iptables_nft_backend() {
+  local host=$1
+  remote "$host" 'sudo -n sh -ceu '\''
+    for command in iptables iptables-save iptables-restore; do
+      path=$(command -v "$command") || {
+        echo "$command is required" >&2
+        exit 1
+      }
+      version=$("$path" --version)
+      case "$version" in
+        *"(nf_tables)") ;;
+        *)
+          echo "$command must use the nf_tables backend; found: $version" >&2
+          exit 1
+          ;;
+      esac
+    done
+  '\'''
+}
+reconcile_distro_packages() {
+  local host=$1 purge=${2:-no} backend present absent purge_enabled command
+  backend=$(host_field "$host" packageBackend)
+  present=$(nix_eval --json "$root#systemConfigs.$host.config.homelab.distroPackages.present" | jq -r 'join(" ")')
+  absent=$(nix_eval --json "$root#systemConfigs.$host.config.homelab.distroPackages.absent" | jq -r 'join(" ")')
+  purge_enabled=$(nix_eval --json "$root#systemConfigs.$host.config.homelab.distroPackages.purgeAbsent")
+  if [ "$purge" = yes ] && [ "$purge_enabled" != true ]; then purge=no; fi
+  printf -v command 'sudo -n env BACKEND=%q PURGE=%q PRESENT=%q ABSENT=%q sh -s' \
+    "$backend" "$purge" "$present" "$absent"
+  remote "$host" "$command" <<'REMOTE_PACKAGE_RECONCILE'
+set -eu
+case "$BACKEND" in
+  pacman)
+    missing=
+    for package in $PRESENT; do
+      /usr/bin/pacman -Q "$package" >/dev/null 2>&1 || missing="$missing $package"
+    done
+    if [ -n "$missing" ]; then /usr/bin/pacman --noconfirm --needed -S $missing; fi
+    if [ "$PURGE" = yes ]; then
+      installed=
+      for package in $ABSENT; do
+        /usr/bin/pacman -Q "$package" >/dev/null 2>&1 && installed="$installed $package" || true
+      done
+      if [ -n "$installed" ]; then /usr/bin/pacman --noconfirm -Rns $installed; fi
+    fi
+    ;;
+  apt)
+    export DEBIAN_FRONTEND=noninteractive
+    missing=
+    for package in $PRESENT; do
+      status=$(/usr/bin/dpkg-query -W -f='${Status}' "$package" 2>/dev/null || true)
+      [ "$status" = "install ok installed" ] || missing="$missing $package"
+    done
+    if [ -n "$missing" ]; then
+      policy=/usr/sbin/policy-rc.d
+      policy_backup=
+      restore_policy() {
+        rm -f "$policy"
+        if [ -n "$policy_backup" ]; then
+          mv "$policy_backup/policy-rc.d" "$policy"
+          rmdir "$policy_backup"
+        fi
+      }
+      if [ -e "$policy" ] || [ -L "$policy" ]; then
+        policy_backup=$(mktemp -d /run/homelab-policy-rc.d.XXXXXX)
+        cp -a "$policy" "$policy_backup/policy-rc.d"
+      fi
+      printf '#!/bin/sh\nexit 101\n' > "$policy"
+      chmod 0755 "$policy"
+      trap restore_policy EXIT HUP INT TERM
+      /usr/bin/apt-get update
+      /usr/bin/apt-get install -y --no-install-recommends $missing
+      restore_policy
+      trap - EXIT HUP INT TERM
+    fi
+    if [ "$PURGE" = yes ]; then
+      installed=
+      for package in $ABSENT; do
+        status=$(/usr/bin/dpkg-query -W -f='${Status}' "$package" 2>/dev/null || true)
+        [ "$status" != "install ok installed" ] || installed="$installed $package"
+      done
+      if [ -n "$installed" ]; then /usr/bin/apt-get purge -y $installed; fi
+    fi
+    ;;
+  *) echo "unsupported package backend: $BACKEND" >&2; exit 2 ;;
+esac
+REMOTE_PACKAGE_RECONCILE
+}
+apply_native_runtime() {
+  local host=$1 default_interface lan_address zram interfaces backend firewall_service ssh_service role command
+  assert_iptables_nft_backend "$host"
+  default_interface=$(host_field "$host" defaultInterface 2>/dev/null || true)
+  lan_address=$(host_field "$host" lanAddress 2>/dev/null || true)
+  zram=$(nix_eval --json "$root#systemConfigs.$host.config.homelab.zram")
+  interfaces=$(nix_eval --json "$root#topology.nodes.$host.wireguard" | jq -r 'join(" ")')
+  backend=$(host_field "$host" packageBackend)
+  role=$(host_field "$host" k3sRole 2>/dev/null || true)
+  if [ "$backend" = pacman ]; then
+    firewall_service=iptables.service
+    ssh_service=sshd.service
+  else
+    firewall_service=netfilter-persistent.service
+    ssh_service=ssh.service
+  fi
+  printf -v command \
+    'sudo -n env HOST_NAME=%q DEFAULT_INTERFACE=%q STATIC_LAN=%q ZRAM=%q WG_INTERFACES=%q FIREWALL_SERVICE=%q SSH_SERVICE=%q ROLE=%q sh -s' \
+    "$host" "$default_interface" "$([ -n "$lan_address" ] && [ "$lan_address" != null ] && printf true || printf false)" \
+    "$zram" "$interfaces" "$firewall_service" "$ssh_service" "$role"
+  remote "$host" "$command" <<'REMOTE_NATIVE_RUNTIME'
+set -eu
+systemctl daemon-reload
+systemctl enable systemd-networkd.service systemd-resolved.service "$FIREWALL_SERVICE"
+if test "$ROLE" = server || test "$ROLE" = agent; then
+  systemctl enable homelab-k3s.service
+fi
+hostnamectl set-hostname "$HOST_NAME"
+if command -v locale-gen >/dev/null 2>&1; then locale-gen; fi
+localectl set-locale LANG=ko_KR.UTF-8
+timedatectl set-timezone Asia/Seoul
+systemd-tmpfiles --create --prefix=/etc/resolv.conf
+systemctl restart systemd-resolved.service
+sshd -t
+systemctl reload "$SSH_SERVICE"
+sysctl --system
+if test -f /etc/tmpfiles.d/60-homelab-runtime-tuning.conf; then
+  systemd-tmpfiles --create /etc/tmpfiles.d/60-homelab-runtime-tuning.conf
+fi
+for unit in zram-swap.service ksm.service thp-madvise.service; do
+  systemctl disable --now "$unit" >/dev/null 2>&1 || true
+done
+if test "$ZRAM" = true; then
+  systemctl stop dev-zram0.swap systemd-zram-setup@zram0.service >/dev/null 2>&1 || true
+  systemctl daemon-reload
+  systemctl start dev-zram0.swap
+fi
+systemctl restart systemd-networkd.service
+networkctl reload
+if test "$STATIC_LAN" = true; then networkctl reconfigure "$DEFAULT_INTERFACE"; fi
+for interface in $WG_INTERFACES; do
+  networkctl reconfigure "$interface"
+  ip link show "$interface" >/dev/null
+done
+while iptables -C INPUT -j HOMELAB_INPUT 2>/dev/null; do iptables -D INPUT -j HOMELAB_INPUT; done
+while iptables -C FORWARD -j HOMELAB_FORWARD 2>/dev/null; do iptables -D FORWARD -j HOMELAB_FORWARD; done
+iptables-restore --noflush --wait < /etc/homelab/firewall.rules
+iptables -P INPUT DROP
+iptables -P FORWARD DROP
+iptables -P OUTPUT ACCEPT
+input_position=$(iptables -S INPUT | awk '/-j CILIUM_INPUT$/ || /-j KUBE-FIREWALL$/ { position = NR } END { print position ? position : 1 }')
+forward_position=$(iptables -S FORWARD | awk '/-j CILIUM_FORWARD$/ { position = NR } END { print position ? position : 1 }')
+iptables -I INPUT "$input_position" -j HOMELAB_INPUT
+iptables -I FORWARD "$forward_position" -j HOMELAB_FORWARD
+if test "$ROLE" = server || test "$ROLE" = agent; then
+  systemctl restart homelab-k3s.service
+fi
+REMOTE_NATIVE_RUNTIME
+}
+capture_runtime_firewall() {
+  local host=$1 recovery=$2
+  assert_iptables_nft_backend "$host"
+  remote "$host" 'sudo -n iptables-save' > "$recovery/firewall-runtime.rules"
+  chmod 0600 "$recovery/firewall-runtime.rules"
+}
+restore_runtime_firewall() {
+  local host=$1 recovery=$2
+  if test -s "$recovery/firewall-runtime.rules"; then
+    assert_iptables_nft_backend "$host"
+    remote "$host" 'sudo -n iptables-restore --wait' < "$recovery/firewall-runtime.rules"
+  fi
+}
+restore_previous_secrets() {
+  local host=$1
+  remote "$host" 'sudo -n sh -ceu '\''
+    base=/var/lib/homelab-secrets
+    test -L "$base/previous" || exit 0
+    abandoned=$(readlink "$base/active" 2>/dev/null || true)
+    restore=$(readlink "$base/previous")
+    name=${restore#generations/}
+    case "$name" in ""|.|..|*/*) exit 1 ;; esac
+    test "$restore" = "generations/$name"
+    test -d "$base/$restore"
+    rm -f "$base/active.new"
+    ln -s "$restore" "$base/active.new"
+    mv -Tf "$base/active.new" "$base/active"
+    if test -n "$abandoned" && test "$abandoned" != "$restore"; then
+      name=${abandoned#generations/}
+      case "$name" in ""|.|..|*/*) exit 1 ;; esac
+      test "$abandoned" = "generations/$name"
+      rm -rf -- "$base/$abandoned"
+    fi
+    rm -f "$base/previous"
+  '\'''
+}
+cleanup_legacy_files() {
+  local host=$1
+  remote "$host" 'sudo -n sh -ceu '\''
+    for unit in k3s.service k3s-agent.service zram-swap.service ksm.service thp-madvise.service; do
+      systemctl disable --now "$unit" >/dev/null 2>&1 || true
+      fragment=$(systemctl show -p FragmentPath --value "$unit" 2>/dev/null || true)
+      case "$fragment" in /etc/systemd/system/*) rm -f "$fragment" ;; esac
+      rm -f "/etc/systemd/system/multi-user.target.wants/$unit"
+    done
+    rm -f \
+      /usr/local/bin/k3s \
+      /usr/local/bin/k3s-killall.sh \
+      /usr/local/bin/k3s-uninstall.sh \
+      /usr/local/bin/k3s-agent-uninstall.sh
+    systemctl daemon-reload
+  '\'''
+}
+verify_legacy_cleanup() {
+  local host=$1
+  remote "$host" 'sudo -n sh -ceu '\''
+    test ! -e /usr/local/bin/k3s
+    test ! -e /usr/local/bin/k3s-killall.sh
+    test ! -e /usr/local/bin/k3s-uninstall.sh
+    test ! -e /usr/local/bin/k3s-agent-uninstall.sh
+    for unit in k3s.service k3s-agent.service zram-swap.service ksm.service thp-madvise.service; do
+      test -z "$(systemctl show -p FragmentPath --value "$unit" 2>/dev/null || true)"
+    done
+  '\'''
+}
+require_receipt_phase() {
+  local host=$1 phase=$2 file generation active
+  file=$(receipt "$host")
+  test "$(jq -r .phase "$file" 2>/dev/null)" = "$phase"
+  test "$(jq -r .revision "$file")" = "$(current_revision)" || {
+    echo "$host receipt belongs to a different Git revision; rerun prepare" >&2
+    exit 1
+  }
+  generation=$(jq -r '.secretGeneration // empty' "$file")
+  if [ -n "$generation" ]; then
+    active=$(remote "$host" 'sudo -n readlink /var/lib/homelab-secrets/active')
+    test "$active" = "generations/$generation" || {
+      echo "$host active secret generation changed after prepare" >&2
+      exit 1
+    }
+  fi
+}
 current_k3s() {
   remote "$1" 'sudo -n sh -ceu '\''
     if test -x /usr/local/bin/k3s; then
@@ -47,14 +284,59 @@ current_k3s() {
   '\''' | sed -n 's/^k3s version v\([^ ]*\).*/\1/p'
 }
 write_receipt() {
-  local host=$1 phase=$2 previous=${3:-null} legacy=${4:-} recovery=${5:-}
-  jq -n --arg host "$host" --arg phase "$phase" --arg revision "$(git rev-parse HEAD 2>/dev/null || printf unknown)" --arg previous "$previous" --arg legacy "$legacy" --arg recovery "$recovery" --arg time "$(date -u +%FT%TZ)" '{host:$host,phase:$phase,revision:$revision,previousGeneration:$previous,legacyK3sUnit:$legacy,recoveryDirectory:$recovery,time:$time}' > "$(receipt "$host").new"
+  local host=$1 phase=$2 previous=${3:-null} legacy=${4:-} recovery=${5:-} secret_generation=${6:-}
+  jq -n --arg host "$host" --arg phase "$phase" --arg revision "$(current_revision)" --arg previous "$previous" --arg legacy "$legacy" --arg recovery "$recovery" --arg secretGeneration "$secret_generation" --arg time "$(date -u +%FT%TZ)" '{host:$host,phase:$phase,revision:$revision,previousGeneration:$previous,legacyK3sUnit:$legacy,recoveryDirectory:$recovery,secretGeneration:$secretGeneration,time:$time}' > "$(receipt "$host").new"
   mv -f "$(receipt "$host").new" "$(receipt "$host")"
   chmod 0600 "$(receipt "$host")"
+}
+restore_recovery() {
+  local host=$1 recovery=$2
+  test -s "$recovery/etc-state.tar"
+  remote "$host" 'sudo -n tar -C / -xf - && sudo -n systemctl daemon-reload' < "$recovery/etc-state.tar"
+}
+deactivate_system_manager() {
+  local host=$1 target
+  target=$(host_field "$host" sshTarget)
+  system_manager deactivate --target-host "$target" --sudo
 }
 
 case "${1:-}" in
   inventory) nix_eval --json "$root#topology.nodes" | jq . ;;
+  bootstrap-host)
+    host=${2:?host required}; target=$(host_field "$host" sshTarget)
+    ssh -tt -o StrictHostKeyChecking=accept-new "$target" "sh -ceu '
+      if test \"\$(id -u)\" -eq 0; then
+        SUDO=
+      else
+        sudo -v
+        SUDO=sudo
+        user=\$(id -un)
+        printf \"%s ALL=(ALL) NOPASSWD: ALL\\n\" \"\$user\" | sudo tee /etc/sudoers.d/homelab-admin >/dev/null
+        sudo chmod 0440 /etc/sudoers.d/homelab-admin
+        sudo visudo -cf /etc/sudoers.d/homelab-admin
+      fi
+      . /etc/os-release
+      case \"\$ID\" in
+        arch)
+          \$SUDO pacman --noconfirm --needed -S age curl sudo xz
+          ;;
+        debian|ubuntu|raspbian)
+          \$SUDO apt-get update
+          \$SUDO env DEBIAN_FRONTEND=noninteractive apt-get install -y --no-install-recommends age ca-certificates curl sudo xz-utils
+          ;;
+        *)
+          echo \"unsupported bootstrap distribution: \$ID\" >&2
+          exit 1
+          ;;
+      esac
+      if ! command -v nix >/dev/null 2>&1 && ! test -x /nix/var/nix/profiles/default/bin/nix; then
+        curl --proto \"=https\" --tlsv1.2 -fsSL https://nixos.org/nix/install | sh -s -- --daemon --yes
+      fi
+      test -x /nix/var/nix/profiles/default/bin/nix || command -v nix >/dev/null
+      command -v age-keygen >/dev/null
+      sudo -n true
+    '"
+    ;;
   baseline)
     host=${2:?host required}; stamp=$(date -u +%Y%m%dT%H%M%SZ); file="$state/baselines/$host-$stamp.txt"
     remote "$host" '
@@ -65,6 +347,7 @@ case "${1:-}" in
       printf "networkd="; systemctl is-enabled systemd-networkd 2>/dev/null || true
       printf "wireguard="; sudo -n wg show interfaces 2>/dev/null || true
       printf "wireguard-public="; for i in $(sudo -n wg show interfaces 2>/dev/null); do printf "%s:%s " "$i" "$(sudo -n wg show "$i" public-key)"; done; echo
+      printf "iptables-backend="; sudo -n iptables --version 2>/dev/null || true
       printf "input-policy="; sudo -n iptables -S INPUT | sed -n "1p"
       printf "forward-policy="; sudo -n iptables -S FORWARD | sed -n "1p"
       printf "k3s="; systemctl is-active k3s k3s-agent homelab-k3s 2>/dev/null || true
@@ -78,7 +361,44 @@ case "${1:-}" in
     "$0" baseline "$host" > "$recovery/baseline-path"
     remote "$host" 'sudo -n sh -ceu '\''
       test -d /etc/systemd/system
-      tar -C /etc -cf - systemd/system systemd/network wireguard rancher/k3s 2>/dev/null || true
+      set --
+      for pattern in \
+        /etc/hostname \
+        /etc/hosts \
+        /etc/resolv.conf \
+        /etc/locale.conf \
+        /etc/locale.gen \
+        /etc/localtime \
+        /etc/timezone \
+        /etc/passwd \
+        /etc/group \
+        /etc/shadow \
+        /etc/gshadow \
+        /root/.ssh/authorized_keys \
+        /home/*/.ssh/authorized_keys \
+        /etc/systemd/resolved.conf \
+        /etc/systemd/system \
+        /etc/systemd/zram-generator.conf \
+        /etc/systemd/network \
+        /etc/wireguard \
+        /etc/iptables \
+        /etc/rancher/k3s \
+        /etc/sysctl.d \
+        /etc/udev/rules.d \
+        /etc/tmpfiles.d \
+        /etc/modprobe.d \
+        /etc/ssh/sshd_config.d \
+        /etc/sudoers.d \
+        /usr/local/bin/k3s \
+        /usr/local/bin/k3s-killall.sh \
+        /usr/local/bin/k3s-uninstall.sh \
+        /usr/local/bin/k3s-agent-uninstall.sh
+      do
+        test -e "$pattern" || test -L "$pattern" || continue
+        set -- "$@" "${pattern#/}"
+      done
+      test "$#" -gt 0
+      tar -C / -cf - "$@"
     '\''' > "$recovery/etc-state.tar"
     role=$(host_field "$host" k3sRole 2>/dev/null || true)
     if [ "$role" = server ] && remote "$host" 'sudo -n test -d /var/lib/rancher/k3s/server/db'; then
@@ -108,22 +428,28 @@ case "${1:-}" in
       fi
     fi
     recovery=$("$0" adopt-host "$host")
-    "$root/nix/scripts/wireguard-secrets" stage-secrets "$host" >/dev/null
+    reconcile_distro_packages "$host" no
+    assert_iptables_nft_backend "$host"
+    stage_result=$("$root/nix/scripts/wireguard-secrets" stage-secrets "$host")
+    secret_generation=${stage_result#* }
+    test -n "$secret_generation" && test "$secret_generation" != "$stage_result"
     target=$(host_field "$host" sshTarget)
     previous=$(remote "$host" 'sudo -n nix-env --profile /nix/var/nix/profiles/system-manager-profiles/system-manager --list-generations 2>/dev/null | awk "/\(current\)/ {print \$1}"')
     system_manager build --flake "$root#$host"
     system_manager register --target-host "$target" --flake "$root#$host" --sudo
     legacy_unit=$(remote "$host" 'for unit in k3s.service k3s-agent.service; do test "$(systemctl is-active "$unit" 2>/dev/null || true)" = active && { printf "%s" "$unit"; exit; }; done; true')
     if [ -n "$legacy_unit" ]; then "$root/nix/scripts/k3s-handoff" preflight "$host" "$legacy_unit"; fi
-    write_receipt "$host" prepared "$previous" "$legacy_unit" "$recovery"
+    write_receipt "$host" prepared "$previous" "$legacy_unit" "$recovery" "$secret_generation"
     printf 'prepared %s; run activate explicitly\n' "$host"
     ;;
   activate)
     host=${2:?host required}; require_receipt_phase "$host" prepared
+    assert_iptables_nft_backend "$host"
     target=$(host_field "$host" sshTarget)
     legacy=$(jq -r '.legacyK3sUnit // empty' "$(receipt "$host")")
     recovery=$(jq -r '.recoveryDirectory // empty' "$(receipt "$host")")
     previous=$(jq -r '.previousGeneration // empty' "$(receipt "$host")")
+    secret_generation=$(jq -r '.secretGeneration // empty' "$(receipt "$host")")
     role=$(host_field "$host" k3sRole 2>/dev/null || true)
     cold_backup=
     if [ -n "$legacy" ]; then
@@ -132,45 +458,86 @@ case "${1:-}" in
     fi
     if [ -n "$cold_backup" ]; then
       if ! remote "$host" 'sudo -n tar -C /var/lib/rancher/k3s -cf - server/db server/cred server/token 2>/dev/null' > "$recovery/k3s-cold-state.tar"; then
-        "$root/nix/scripts/k3s-handoff" restore "$host" "$legacy" || true
+        if [ -n "$legacy" ]; then "$root/nix/scripts/k3s-handoff" restore "$host" "$legacy" || true; fi
         exit 1
       fi
       chmod 0600 "$recovery/k3s-cold-state.tar"
     fi
-    if ! system_manager switch --target-host "$target" --flake "$root#$host" --sudo || ! "$0" verify-host "$host"; then
+    capture_runtime_firewall "$host" "$recovery"
+    if ! system_manager switch --target-host "$target" --flake "$root#$host" --sudo \
+      || ! apply_native_runtime "$host" \
+      || ! "$0" verify-host "$host"; then
       if [ -n "$legacy" ]; then
+        restore_previous_secrets "$host" || true
+        deactivate_system_manager "$host"
+        restore_recovery "$host" "$recovery" || true
+        restore_runtime_firewall "$host" "$recovery" || true
         "$root/nix/scripts/k3s-handoff" restore "$host" "$legacy" || true
       elif [ -n "$previous" ]; then
         "$0" rollback "$host" "$previous" || true
+      else
+        restore_previous_secrets "$host" || true
+        deactivate_system_manager "$host"
+        restore_recovery "$host" "$recovery" || true
+        restore_runtime_firewall "$host" "$recovery" || true
       fi
       exit 1
     fi
     if [ -n "$legacy" ] && ! "$root/nix/scripts/k3s-handoff" accept "$host"; then
+      restore_previous_secrets "$host" || true
+      deactivate_system_manager "$host"
+      restore_recovery "$host" "$recovery" || true
+      restore_runtime_firewall "$host" "$recovery" || true
       "$root/nix/scripts/k3s-handoff" restore "$host" "$legacy" || true
       exit 1
     fi
-    write_receipt "$host" activated "$previous" "$legacy" "$recovery"
+    write_receipt "$host" activated "$previous" "$legacy" "$recovery" "$secret_generation"
     ;;
   reboot-verify)
     host=${2:?host required}; require_receipt_phase "$host" activated
     "$0" verify-host "$host"
     legacy=$(jq -r '.legacyK3sUnit // empty' "$(receipt "$host")")
     recovery=$(jq -r '.recoveryDirectory // empty' "$(receipt "$host")")
-    write_receipt "$host" reboot-verified "$(jq -r .previousGeneration "$(receipt "$host")")" "$legacy" "$recovery"
+    secret_generation=$(jq -r '.secretGeneration // empty' "$(receipt "$host")")
+    write_receipt "$host" reboot-verified "$(jq -r .previousGeneration "$(receipt "$host")")" "$legacy" "$recovery" "$secret_generation"
     ;;
   commit)
     host=${2:?host required}; require_receipt_phase "$host" reboot-verified
     target=$(host_field "$host" sshTarget)
-    system_manager build --flake "$root#$host-commit"
-    system_manager register --target-host "$target" --flake "$root#$host-commit" --sudo
-    system_manager switch --target-host "$target" --flake "$root#$host-commit" --sudo
-    "$0" verify-host "$host"
-    legacy=$(jq -r '.legacyK3sUnit // empty' "$(receipt "$host")")
-    recovery=$(jq -r '.recoveryDirectory // empty' "$(receipt "$host")")
-    if [ -n "$legacy" ]; then
-      remote "$host" "test ! -e /usr/local/bin/k3s && test -z \"\$(systemctl show -p FragmentPath --value '$legacy' 2>/dev/null || true)\""
+    receipt_file=$(receipt "$host")
+    previous=$(jq -r '.previousGeneration // empty' "$receipt_file")
+    legacy=$(jq -r '.legacyK3sUnit // empty' "$receipt_file")
+    recovery=$(jq -r '.recoveryDirectory // empty' "$receipt_file")
+    secret_generation=$(jq -r '.secretGeneration // empty' "$receipt_file")
+    if ! system_manager build --flake "$root#$host-commit" \
+      || ! system_manager register --target-host "$target" --flake "$root#$host-commit" --sudo \
+      || ! system_manager switch --target-host "$target" --flake "$root#$host-commit" --sudo \
+      || ! apply_native_runtime "$host" \
+      || ! "$0" verify-host "$host"; then
+      if [ -n "$previous" ]; then
+        "$0" rollback "$host" "$previous" || true
+      else
+        restore_recovery "$host" "$recovery" || true
+        restore_runtime_firewall "$host" "$recovery" || true
+        [ -z "$legacy" ] || "$root/nix/scripts/k3s-handoff" restore "$host" "$legacy" || true
+      fi
+      exit 1
     fi
-    write_receipt "$host" committed "$(jq -r .previousGeneration "$(receipt "$host")")" "$legacy" "$recovery"
+    if ! reconcile_distro_packages "$host" yes \
+      || ! cleanup_legacy_files "$host" \
+      || ! apply_native_runtime "$host" \
+      || ! "$0" verify-host "$host" \
+      || ! verify_legacy_cleanup "$host"; then
+      if [ -n "$previous" ]; then
+        "$0" rollback "$host" "$previous" || true
+      else
+        restore_recovery "$host" "$recovery" || true
+        restore_runtime_firewall "$host" "$recovery" || true
+        [ -z "$legacy" ] || "$root/nix/scripts/k3s-handoff" restore "$host" "$legacy" || true
+      fi
+      exit 1
+    fi
+    write_receipt "$host" committed "$previous" "$legacy" "$recovery" "$secret_generation"
     ;;
   onboard-k3s-node)
     host=${2:?host required}; test "${3:-}" = --token-source; source_host=${4:?token source required}
@@ -181,77 +548,170 @@ case "${1:-}" in
     "$0" prepare "$host"
     ;;
   reconcile-distro-packages)
-    host=${2:?host required}; remote "$host" 'sudo -n systemctl start homelab-distro-packages.service'
+    case "${3:-}" in
+      "") purge=no ;;
+      --purge) purge=yes ;;
+      *) usage; exit 2 ;;
+    esac
+    reconcile_distro_packages "${2:?host required}" "$purge"
     ;;
   verify-host|verify)
-    host=${2:?host required}
-    remote "$host" '
-      set -eu
-      systemctl is-active systemd-networkd ssh
-      sudo -n wg show interfaces
-      test "$(sudo -n iptables -S INPUT | grep -c -- "-j HOMELAB_INPUT")" -eq 1
-      test "$(sudo -n iptables -S FORWARD | grep -c -- "-j HOMELAB_FORWARD")" -eq 1
-      test "$(sudo -n iptables -S INPUT | sed -n "1p")" = "-P INPUT DROP"
-      test "$(sudo -n iptables -S FORWARD | sed -n "1p")" = "-P FORWARD DROP"
-      test "$(sudo -n iptables -S OUTPUT | sed -n "1p")" = "-P OUTPUT ACCEPT"
-      if systemctl cat homelab-k3s.service >/dev/null 2>&1; then
-        systemctl is-active homelab-k3s.service
-      else
-        systemctl is-active k3s.service k3s-agent.service 2>/dev/null || test ! -x /usr/local/bin/k3s
-      fi
-    '
+    host=${2:?host required}; shift 2
+    baseline=
+    if [ "${1:-}" = --baseline ]; then baseline=${2:?baseline file required}; shift 2; fi
+    test "$#" -eq 0
+    assert_iptables_nft_backend "$host"
+    if [ -n "$baseline" ]; then
+      test -s "$baseline"
+      current_baseline=$("$0" baseline "$host")
+      for key in os arch wireguard-public; do
+        test "$(sed -n "s/^$key=//p" "$baseline")" = "$(sed -n "s/^$key=//p" "$current_baseline")" || {
+          echo "$host baseline changed: $key" >&2
+          rm -f "$current_baseline"
+          exit 1
+        }
+      done
+      rm -f "$current_baseline"
+    fi
+    role=$(host_field "$host" k3sRole 2>/dev/null || true)
+    iscsi_client=$(nix_eval --json "$root#topology.nodes.$host.iscsiClient")
+    iscsi_server=$(nix_eval --json "$root#topology.nodes.$host.iscsiServer")
+    zram=$(nix_eval --json "$root#systemConfigs.$host.config.homelab.zram")
+    lan_address=$(host_field "$host" lanAddress 2>/dev/null || true)
+    gateway_address=$(host_field "$host" gatewayAddress 2>/dev/null || true)
+    default_interface=$(host_field "$host" defaultInterface 2>/dev/null || true)
+    backend=$(host_field "$host" packageBackend)
+    if [ "$backend" = pacman ]; then
+      firewall_rules=/etc/iptables/iptables.rules
+      firewall_service=iptables.service
+      ssh_service=sshd.service
+    else
+      firewall_rules=/etc/iptables/rules.v4
+      firewall_service=netfilter-persistent.service
+      ssh_service=ssh.service
+    fi
+    democratic_csi_key_sha=
+    if [ "$iscsi_server" = true ]; then
+      democratic_csi_key_sha=$(sha256sum "$root/ssh_pub_keys/democratic-csi.pub" | awk '{print $1}')
+    fi
+    printf -v verify_command \
+      'env HOST_NAME=%q ROLE=%q ISCSI_CLIENT=%q ISCSI_SERVER=%q ZRAM=%q DEMOCRATIC_CSI_KEY_SHA=%q LAN_ADDRESS=%q GATEWAY_ADDRESS=%q DEFAULT_INTERFACE=%q FIREWALL_RULES=%q FIREWALL_SERVICE=%q SSH_SERVICE=%q sh -s' \
+      "$host" "$role" "$iscsi_client" "$iscsi_server" "$zram" "$democratic_csi_key_sha" \
+      "$lan_address" "$gateway_address" "$default_interface" "$firewall_rules" "$firewall_service" "$ssh_service"
+    remote "$host" "$verify_command" <<'REMOTE_VERIFY'
+set -eu
+test "$(hostname)" = "$HOST_NAME"
+systemctl is-active systemd-networkd systemd-resolved "$SSH_SERVICE"
+systemctl is-enabled systemd-networkd systemd-resolved "$FIREWALL_SERVICE"
+if test "$ROLE" = server || test "$ROLE" = agent; then
+  systemctl is-enabled homelab-k3s.service
+fi
+test "$(timedatectl show -p Timezone --value)" = Asia/Seoul
+grep -qx "LANG=ko_KR.UTF-8" /etc/locale.conf
+locale -a | grep -qi '^ko_KR\.utf8$'
+grep -qx "DNSSEC=yes" /etc/systemd/resolved.conf
+grep -qx "DNSOverTLS=yes" /etc/systemd/resolved.conf
+grep -qx "MulticastDNS=yes" /etc/systemd/resolved.conf
+grep -qx "LLMNR=no" /etc/systemd/resolved.conf
+test "$(readlink /etc/resolv.conf)" = /run/systemd/resolve/stub-resolv.conf
+test -s "$FIREWALL_RULES"
+for unit in homelab-host-settings.service homelab-wireguard.service homelab-firewall.service homelab-runtime-tuning.service homelab-k3s-legacy-cleanup.service homelab-legacy-tuning-cleanup.service; do
+  ! systemctl cat "$unit" >/dev/null 2>&1
+done
+if test -n "$LAN_ADDRESS" && test "$LAN_ADDRESS" != null; then
+  ip -o -4 address show dev "$DEFAULT_INTERFACE" | awk '{print $4}' | grep -Fx "$LAN_ADDRESS/24"
+  ip -4 route show default | grep -F "via $GATEWAY_ADDRESS dev $DEFAULT_INTERFACE"
+fi
+test "$(sudo -n iptables -S INPUT | grep -c -- "-j HOMELAB_INPUT")" -eq 1
+test "$(sudo -n iptables -S FORWARD | grep -c -- "-j HOMELAB_FORWARD")" -eq 1
+test "$(sudo -n iptables -S INPUT | sed -n "1p")" = "-P INPUT DROP"
+test "$(sudo -n iptables -S FORWARD | sed -n "1p")" = "-P FORWARD DROP"
+test "$(sudo -n iptables -S OUTPUT | sed -n "1p")" = "-P OUTPUT ACCEPT"
+if test "$ROLE" = server || test "$ROLE" = agent; then
+  test "$(sysctl -n net.ipv4.ip_forward)" = 1
+  systemctl is-active homelab-k3s.service
+  sudo -n test -s /run/credentials/homelab-k3s.service/k3s-token
+  sudo -n iptables -S INPUT | awk '
+    /-j CILIUM_INPUT$/ || /-j KUBE-FIREWALL$/ { native = NR }
+    /-j HOMELAB_INPUT$/ { homelab = NR }
+    END { exit !(native && homelab > native) }
+  '
+  sudo -n iptables -S FORWARD | awk '
+    /-j CILIUM_FORWARD$/ { native = NR }
+    /-j HOMELAB_FORWARD$/ { homelab = NR }
+    END { exit !(native && homelab > native) }
+  '
+else
+  test "$(sudo -n iptables -S INPUT | sed -n "2p")" = "-A INPUT -j HOMELAB_INPUT"
+  test "$(sudo -n iptables -S FORWARD | sed -n "2p")" = "-A FORWARD -j HOMELAB_FORWARD"
+fi
+if test "$ZRAM" = true; then
+  systemctl is-active dev-zram0.swap
+  swapon --show=NAME --noheadings | grep -qx /dev/zram0
+fi
+if test "$ISCSI_CLIENT" = true; then
+  systemctl is-active iscsid.service open-iscsi.service
+fi
+if test "$ISCSI_SERVER" = true; then
+  test "$(id -u democratic-csi)" -eq 1001
+  test "$(id -g democratic-csi)" -eq 1001
+  test "$(sha256sum /etc/ssh/authorized_keys.d/democratic-csi | awk '{print $1}')" = "$DEMOCRATIC_CSI_KEY_SHA"
+  sudo -n -u democratic-csi sudo -n true
+fi
+if test "$ROLE" = server; then
+  pid=$(systemctl show homelab-k3s.service -p MainPID --value)
+  test "$pid" -gt 1
+  binary=$(readlink "/proc/$pid/exe")
+  sudo -n "$binary" etcd-snapshot ls >/dev/null
+fi
+REMOTE_VERIFY
+    while IFS= read -r interface; do
+      expected_public=$(nix_eval --raw "$root#topology.$interface.nodes.$host.publicKey")
+      expected_address=$(nix_eval --raw "$root#topology.$interface.nodes.$host.address")
+      remote "$host" "sudo -n sh -ceu 'test -s \"/run/credentials/systemd-networkd.service/$interface-private\"; test \"\$(wg show \"$interface\" public-key)\" = \"$expected_public\"; ip -o -4 address show dev \"$interface\" | awk \"{print \\\$4}\" | grep -Fx \"$expected_address\"'"
+      while IFS= read -r peer; do
+        peer_public=$(nix_eval --raw "$root#topology.$interface.nodes.$peer.publicKey")
+        remote "$host" "sudo -n sh -ceu 'test \"\$(wg show \"$interface\" latest-handshakes | awk -v key=\"$peer_public\" \"\\\$1 == key { print \\\$2 }\")\" -gt 0'"
+      done < <(nix_eval --json "$root#topology.requiredLinks" | jq -r --arg host "$host" --arg interface "$interface" '.[] | select(.network == $interface and .managed and (.aName == $host or .bName == $host)) | if .aName == $host then .bName else .aName end')
+    done < <(nix_eval --json "$root#topology.nodes.$host.wireguard" | jq -r '.[]')
+    if [ "$role" = server ] || [ "$role" = agent ]; then
+      context=${BACKBONE_CONTEXT:-private-backbone}
+      test "$(kubectl --context "$context" get node "$host" -o jsonpath='{range .status.conditions[?(@.type=="Ready")]}{.status}{end}')" = True
+    fi
     ;;
   rollback)
     host=${2:?host required}; generation=${3:?generation required}
-    phase=$(jq -r '.phase // empty' "$(receipt "$host")" 2>/dev/null || true)
     legacy=$(jq -r '.legacyK3sUnit // empty' "$(receipt "$host")" 2>/dev/null || true)
+    recovery=$(jq -r '.recoveryDirectory // empty' "$(receipt "$host")" 2>/dev/null || true)
     remote "$host" "sudo -n sh -ceu '
       nix-env --profile /nix/var/nix/profiles/system-manager-profiles/system-manager --switch-generation \"$generation\"
       /nix/var/nix/profiles/system-manager-profiles/system-manager/bin/activate
-      base=/run/homelab-secrets
-      if test -L \"\$base/previous\"; then
-        abandoned=\$(readlink \"\$base/active\" 2>/dev/null || true)
-        restore=\$(readlink \"\$base/previous\")
-        name=\${restore#generations/}
-        case \"\$name\" in \"\"|.|..|*/*) exit 1 ;; esac
-        test \"\$restore\" = \"generations/\$name\"
-        test -d \"\$base/\$restore\"
-        rm -f \"\$base/active.new\"
-        ln -s \"\$restore\" \"\$base/active.new\"
-        mv -Tf \"\$base/active.new\" \"\$base/active\"
-        if test -n \"\$abandoned\" && test \"\$abandoned\" != \"\$restore\"; then
-          name=\${abandoned#generations/}
-          case \"\$name\" in \"\"|.|..|*/*) exit 1 ;; esac
-          test \"\$abandoned\" = \"generations/\$name\"
-          rm -rf -- \"\$base/\$abandoned\"
-        fi
-        rm -f \"\$base/previous\"
-      fi
-      systemctl restart homelab-wireguard.service homelab-firewall.service
     '"
-    if [ "$phase" = committed ]; then
-      remote "$host" 'sudo -n systemctl restart homelab-k3s.service'
-      "$0" verify-host "$host"
-    elif [ -n "$legacy" ]; then
+    restore_previous_secrets "$host"
+    if [ -n "$legacy" ]; then
+      deactivate_system_manager "$host"
+      restore_recovery "$host" "$recovery"
+      restore_runtime_firewall "$host" "$recovery"
       "$root/nix/scripts/k3s-handoff" restore "$host" "$legacy"
       remote "$host" "systemctl is-active '$legacy'"
     else
+      apply_native_runtime "$host"
       "$0" verify-host "$host"
     fi
     ;;
   check-bootstrap)
-    for context in "${BACKBONE_CONTEXT:-private-backbone}" "${PROD_CONTEXT:-homelab-prod}"; do kubectl --context "$context" get --raw=/readyz >/dev/null; done
+    kubectl --context "${BACKBONE_CONTEXT:-private-backbone}" get --raw=/readyz >/dev/null
     printf 'bootstrap: existing clusters are ready; no cluster creation required\n'
     ;;
   bootstrap-k3s)
-    cluster=${2:?cluster required}; context=${BOOTSTRAP_CONTEXT:-private-backbone}
-    case "$cluster" in backbone) values="$root/values/cilium/backbone.yaml" ;; *) exit 2 ;; esac
+    cluster=${2:?cluster required}; test "$cluster" = backbone
+    context=${BOOTSTRAP_CONTEXT:-private-backbone}; values="$root/values/cilium/backbone.yaml"
     if kubectl --context "$context" get --raw=/readyz >/dev/null 2>&1; then
-      helm --kube-context "$context" diff upgrade cilium cilium --repo https://helm.cilium.io --version 1.19.6 --namespace kube-system --values "$values" >/dev/null
+      helm --kube-context "$context" diff upgrade cilium cilium --repo https://helm.cilium.io --version 1.20.0 --namespace kube-system --values "$values" >/dev/null
       printf 'existing cluster: Cilium dry-run diff completed; release ownership unchanged\n'
     else
       test "${ALLOW_NEW_CLUSTER_BOOTSTRAP:-}" = yes
-      helm --kube-context "$context" upgrade --install cilium cilium --repo https://helm.cilium.io --version 1.19.6 --namespace kube-system --create-namespace --atomic --wait --values "$values"
+      helm --kube-context "$context" upgrade --install cilium cilium --repo https://helm.cilium.io --version 1.20.0 --namespace kube-system --create-namespace --atomic --wait --values "$values"
       kubectl --context "$context" -n kube-system rollout status ds/cilium --timeout=10m
       kubectl --context "$context" -n kube-system rollout status ds/cilium-envoy --timeout=10m
       kubectl --context "$context" -n kube-system rollout status deploy/cilium-operator --timeout=10m
@@ -267,7 +727,7 @@ case "${1:-}" in
     ;;
   upgrade-k3s)
     cluster=${2:?cluster required}; test "${3:-}" = --to; target=${4:?version required}
-    case "$cluster" in backbone) hosts=(rock5bp rpi4 rpi5 n2p1 n2p2) ;; *) exit 2 ;; esac
+    test "$cluster" = backbone; hosts=(rock5bp rpi4 rpi5 n2p1 n2p2)
     current=$(current_k3s "${hosts[0]}")
     python3 - "$current" "$target" <<'PY'
 import re,sys
@@ -279,12 +739,12 @@ if b<a or b[0]!=a[0] or b[1]-a[1]>1: raise SystemExit('K3s upgrade must be same 
 PY
     declared=$(host_field "${hosts[0]}" k3sVersion); test "$target" = "$declared" || { echo "update the dedicated K3s pin and hashes before orchestration" >&2; exit 1; }
     for host in "${hosts[@]}"; do
-      if [ "$cluster" = backbone ]; then kubectl --context "${BACKBONE_CONTEXT:-private-backbone}" drain "$host" --ignore-daemonsets --delete-emptydir-data; fi
+      kubectl --context "${BACKBONE_CONTEXT:-private-backbone}" drain "$host" --ignore-daemonsets --delete-emptydir-data
       ALLOW_K3S_PIN_CHANGE="$target" "$0" prepare "$host"; "$0" activate "$host"; "$0" verify-host "$host"
-      if [ "$cluster" = backbone ]; then kubectl --context "${BACKBONE_CONTEXT:-private-backbone}" wait node/"$host" --for=condition=Ready --timeout=10m; kubectl --context "${BACKBONE_CONTEXT:-private-backbone}" uncordon "$host"; fi
+      kubectl --context "${BACKBONE_CONTEXT:-private-backbone}" wait node/"$host" --for=condition=Ready --timeout=10m
+      kubectl --context "${BACKBONE_CONTEXT:-private-backbone}" uncordon "$host"
     done
     ;;
-  register-clusters) HOMELAB_REPO_ROOT="$root" "$root/nix/scripts/register-cluster" "${2:?cluster required}" ;;
   issue-kubeconfig) HOMELAB_REPO_ROOT="$root" "$root/nix/scripts/issue-kubeconfig" "${2:?identity required}" ;;
   *) usage; exit 2 ;;
 esac

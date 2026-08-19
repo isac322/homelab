@@ -8,18 +8,20 @@
 let
   cfg = config.homelab.distroPackages;
   aptPresent = [
+    "locales"
+    "systemd-resolved"
+    "iptables-persistent"
+    "systemd-zram-generator"
+  ];
+  archPresent = [ "zram-generator" ];
+  iscsiClientPresent = lib.optionals hostConfig.iscsiClient [
     "open-iscsi"
     "lsscsi"
     "sg3-utils"
     "scsitools"
-    "iptables"
-    "locales"
-  ]
-  ++ lib.optionals hostConfig.iscsiServer [
-    "targetcli-fb"
-    "acl"
   ];
-  pacmanPresent = [
+  iscsiServerPresent = lib.optionals hostConfig.iscsiServer [ "targetcli-fb" ];
+  pacmanAbsent = [
     "networkmanager"
     "networkd-dispatcher"
     "cronie"
@@ -32,10 +34,9 @@ let
     "wireguard-tools"
     "iptables"
   ];
-  k3sPresent = lib.optionals (hostConfig.k3sRole != null) [ "open-iscsi" ];
   defaultAbsent =
     if hostConfig.packageBackend == "pacman" then
-      pacmanPresent
+      pacmanAbsent
     else
       [
         "netplan.io"
@@ -52,10 +53,10 @@ in
     present = lib.mkOption {
       type = lib.types.listOf lib.types.str;
       default =
-        if hostConfig.packageBackend == "pacman" then
-          commonPresent
-        else
-          commonPresent ++ aptPresent ++ k3sPresent;
+        commonPresent
+        ++ (if hostConfig.packageBackend == "pacman" then archPresent else aptPresent)
+        ++ iscsiClientPresent
+        ++ iscsiServerPresent;
     };
     absent = lib.mkOption {
       type = lib.types.listOf lib.types.str;
@@ -63,7 +64,7 @@ in
     };
     purgeAbsent = lib.mkOption {
       type = lib.types.bool;
-      default = false;
+      default = true;
     };
   };
 
@@ -77,56 +78,33 @@ in
       sops
       age
     ];
-    systemd.services.homelab-distro-packages = {
-      description = "Install required distro packages without distro upgrades";
-      wantedBy = [ "system-manager.target" ];
-      after = [ "network-online.target" ];
-      wants = [ "network-online.target" ];
+    system-manager.preActivationAssertions.requiredDistroPackages = {
+      enable = true;
+      name = "requiredDistroPackages";
       script =
         if hostConfig.packageBackend == "pacman" then
           ''
-            set -eu
             missing=""
             for package in ${list cfg.present}; do
-              pacman -Q "$package" >/dev/null 2>&1 || missing="$missing $package"
+              /usr/bin/pacman -Q "$package" >/dev/null 2>&1 || missing="$missing $package"
             done
-            if [ -n "$missing" ]; then pacman --noconfirm --needed -S $missing; fi
-            if [ "${if cfg.purgeAbsent then "1" else "0"}" = 1 ] && [ "${
-              if config.homelab.allowDestructiveCommit then "1" else "0"
-            }" = 1 ]; then
-              installed=""
-              for package in ${list cfg.absent}; do
-                pacman -Q "$package" >/dev/null 2>&1 && installed="$installed $package" || true
-              done
-              if [ -n "$installed" ]; then pacman --noconfirm -Rns $installed; fi
-            fi
+            test -z "$missing" || {
+              echo "required distro packages are missing:$missing; run reconcile-distro-packages first" >&2
+              exit 1
+            }
           ''
         else
           ''
-            set -eu
-            export DEBIAN_FRONTEND=noninteractive
             missing=""
             for package in ${list cfg.present}; do
-              dpkg-query -W -f='${"$"}{Status}' "$package" 2>/dev/null | grep -qx 'install ok installed' || missing="$missing $package"
+              status=$(/usr/bin/dpkg-query -W -f='${"$"}{Status}' "$package" 2>/dev/null || true)
+              test "$status" = "install ok installed" || missing="$missing $package"
             done
-            if [ -n "$missing" ]; then
-              apt-get update
-              apt-get install -y --no-install-recommends $missing
-            fi
-            if [ "${if cfg.purgeAbsent then "1" else "0"}" = 1 ] && [ "${
-              if config.homelab.allowDestructiveCommit then "1" else "0"
-            }" = 1 ]; then
-              installed=""
-              for package in ${list cfg.absent}; do
-                dpkg-query -W -f='${"$"}{Status}' "$package" 2>/dev/null | grep -qx 'install ok installed' && installed="$installed $package" || true
-              done
-              if [ -n "$installed" ]; then apt-get purge -y $installed; fi
-            fi
+            test -z "$missing" || {
+              echo "required distro packages are missing:$missing; run reconcile-distro-packages first" >&2
+              exit 1
+            }
           '';
-      serviceConfig = {
-        Type = "oneshot";
-        RemainAfterExit = true;
-      };
     };
   };
 }

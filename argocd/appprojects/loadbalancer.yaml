@@ -10,8 +10,6 @@ spec:
   destinations:
     - namespace: loadbalancer
       name: backbone
-    - namespace: loadbalancer
-      name: prod
   clusterResourceWhitelist:
     - group: '*'
       kind: '*'

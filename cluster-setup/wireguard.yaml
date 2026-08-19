@@ -15,34 +15,26 @@
             cidr: 10.222.0.0/26
             ansible_groups: ['homelab']
             gateway_host: 'rpi5'
-#          prod:
-#            cidr: 10.222.0.64/26
-#            ansible_groups: ['prod']
         edges:
           bhyoo-phone:
             ip_address: 10.222.0.129
             allowed_groups:
-#              - prod
               - backbone
           bhyoo-desktop:
             ip_address: 10.222.0.130
             allowed_groups:
-#              - prod
               - backbone
           bhyoo-laptop:
             ip_address: 10.222.0.131
             allowed_groups:
-#              - prod
               - backbone
           bhyoo-tablet:
             ip_address: 10.222.0.132
             allowed_groups:
-#              - prod
               - backbone
           bhyoo-office:
             ip_address: 10.222.0.133
             allowed_groups:
-#              - prod
               - backbone
           jay-phone:
             ip_address: 10.222.0.193

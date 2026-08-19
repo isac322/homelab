@@ -25,8 +25,8 @@ case "${1:-}" in
       case \"\$fragment\" in /etc/systemd/system/*) ;; *) echo \"unexpected legacy unit path: \$fragment\" >&2; exit 1 ;; esac
       test -x /usr/local/bin/k3s
       test -d /var/lib/rancher/k3s
-      test -L /run/homelab-secrets/active
-      test -s /run/homelab-secrets/active/k3s/server-token
+      test -L /var/lib/homelab-secrets/active
+      test -s /var/lib/homelab-secrets/active/k3s-token.cred
       test \"\$(systemctl is-active homelab-k3s.service 2>/dev/null || true)\" != active
     '"
     ;;

@@ -11,15 +11,20 @@ let
     curl
     git
     gawk
+    findutils
     gnugrep
     gnused
+    gnutar
     jq
     kubectl
     kubernetes-helm
+    kubernetes-helmPlugins.helm-diff
     nix
     openssh
     openssl
+    python3
     sops
+    opentofu
     wireguard-tools
     yq-go
   ];
@@ -29,6 +34,7 @@ let
       inherit name runtimeInputs;
       text = ''
         export HOMELAB_REPO_ROOT="''${HOMELAB_REPO_ROOT:-$(git rev-parse --show-toplevel 2>/dev/null || pwd)}"
+        export HELM_PLUGINS=${pkgs.kubernetes-helmPlugins.helm-diff}
         exec ${script} ${prefix} "$@"
       '';
       meta = {
@@ -44,6 +50,9 @@ let
     mkApp name description ./scripts/wireguard-secrets command;
 in
 {
+  bootstrap-host =
+    hostApp "bootstrap-host" "Install host prerequisites and establish noninteractive sudo"
+      "bootstrap-host";
   homelab-host = hostApp "homelab-host" "Manage declarative homelab hosts" "";
   adopt-host = hostApp "adopt-host" "Capture and adopt an existing Linux host" "adopt-host";
   deploy = hostApp "deploy" "Prepare a Linux system-manager generation" "prepare";
@@ -81,13 +90,6 @@ in
   bootstrap-argocd =
     hostApp "bootstrap-argocd" "Bootstrap Argo CD only for an explicitly new cluster"
       "bootstrap-argocd";
-  register-clusters =
-    mkApp "register-clusters" "Register an existing Kubernetes cluster in Argo CD"
-      ./scripts/register-cluster
-      "";
-  register-cluster =
-    mkApp "register-cluster" "Compatibility command for register-clusters" ./scripts/register-cluster
-      "";
   issue-kubeconfig =
     mkApp "issue-kubeconfig" "Issue a Kubernetes client kubeconfig" ./scripts/issue-kubeconfig
       "";

@@ -1,15 +1,3 @@
-- hosts: prod
-  become: yes
-  roles:
-    - role: GROG.authorized-key
-      authorized_key_list_group:
-        - name: "{{ ansible_user }}"
-          authorized_keys:
-            - key: "{{ lookup('file', './ssh_pub_keys/desktop.pub') }}"
-            - key: "{{ lookup('file', './ssh_pub_keys/mobile.pub') }}"
-            - key: "{{ lookup('file', './ssh_pub_keys/tablet.pub') }}"
-            - key: "{{ lookup('file', './ssh_pub_keys/office.pub') }}"
-
 - hosts: homelab
   tasks:
     - ansible.builtin.include_vars: "admin_user_info.yaml"
