@@ -135,6 +135,42 @@
               rockResolved = rock.environment.etc."systemd/resolved.conf".text;
               rockSsh = rock.environment.etc."ssh/sshd_config".text;
               rockCommitSsh = self.systemConfigs."rock5bp-commit".config.environment.etc."ssh/sshd_config".text;
+              gracefulShutdownSourcePath = "homelab/kubelet/10-graceful-node-shutdown.conf";
+              logindShutdownPath = "systemd/logind.conf.d/zz-kubelet-graceful-shutdown.conf";
+              unattendedLogindPath = "systemd/logind.conf.d/unattended-upgrades-logind-maxdelay.conf";
+              gracefulShutdownConfigured = lib.all (
+                hostName:
+                let
+                  cfg = self.systemConfigs.${hostName}.config;
+                in
+                if linuxHosts.${hostName}.k3sRole == null then
+                  !(builtins.hasAttr gracefulShutdownSourcePath cfg.environment.etc)
+                  && !(lib.any (
+                    rule:
+                    lib.hasInfix "/var/lib/rancher/k3s/agent/etc/kubelet.conf.d/10-graceful-node-shutdown.conf" rule
+                  ) cfg.systemd.tmpfiles.rules)
+                  && !(builtins.hasAttr logindShutdownPath cfg.environment.etc)
+                else
+                  cfg.environment.etc.${gracefulShutdownSourcePath}.text == ''
+                    apiVersion: kubelet.config.k8s.io/v1beta1
+                    kind: KubeletConfiguration
+                    shutdownGracePeriodByPodPriority:
+                      - priority: 0
+                        shutdownGracePeriodSeconds: 60
+                      - priority: 900000000
+                        shutdownGracePeriodSeconds: 45
+                      - priority: 2000000000
+                        shutdownGracePeriodSeconds: 30
+                      - priority: 2000001000
+                        shutdownGracePeriodSeconds: 45
+                  ''
+                  && builtins.elem "L+ /var/lib/rancher/k3s/agent/etc/kubelet.conf.d/10-graceful-node-shutdown.conf - - - - /etc/homelab/kubelet/10-graceful-node-shutdown.conf" cfg.systemd.tmpfiles.rules
+                  &&
+                    cfg.environment.etc.${logindShutdownPath}.text == ''
+                      [Login]
+                      InhibitDelayMaxSec=195s
+                    ''
+              ) (builtins.attrNames linuxHosts);
               projectServices =
                 cfg:
                 lib.filter (service: lib.hasPrefix "homelab-" service) (builtins.attrNames cfg.systemd.services);
@@ -218,6 +254,9 @@
               rock.environment.etc;
             assert builtins.length topology.requiredLinks == 35;
             assert !(builtins.hasAttr "wg1" topology);
+            assert gracefulShutdownConfigured;
+            assert toString n2p1.environment.etc.${unattendedLogindPath}.source == "/dev/null";
+            assert !(builtins.hasAttr unattendedLogindPath rock.environment.etc);
             assert lib.hasInfix "Address=192.168.219.6/24"
               rock.environment.etc."systemd/network/10-homelab-lan.network".text;
             assert lib.hasInfix "Endpoint=192.168.219.3:51902" rockWg;
