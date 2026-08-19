@@ -107,6 +107,90 @@
           darwinChecks = lib.mapAttrs' (name: config: lib.nameValuePair "host-${name}" config.system) (
             lib.filterAttrs (_: host: host.system == system) self.darwinConfigurations
           );
+          renderedContracts =
+            let
+              rock = self.systemConfigs.rock5bp.config;
+              rpi5 = self.systemConfigs.rpi5.config;
+              n2p1 = self.systemConfigs.n2p1.config;
+              rockWg = rock.environment.etc."systemd/network/99-wg1.netdev".text;
+              rockNetworkdCredentials =
+                rock.environment.etc."systemd/system/systemd-networkd.service.d/50-homelab-wireguard-credentials.conf".text;
+              rockK3s = rock.environment.etc."rancher/k3s/config.yaml".text;
+              firewall = rpi5.environment.etc."iptables/rules.v4".text;
+              hosts = n2p1.environment.etc.hosts.text;
+              rockFirewall = rock.environment.etc."iptables/rules.v4".text;
+              rockLan = rock.environment.etc."systemd/network/10-homelab-lan.network".text;
+              rockResolved = rock.environment.etc."systemd/resolved.conf".text;
+              rockSsh = rock.environment.etc."ssh/sshd_config.d/90-homelab-hardening.conf".text;
+              projectServices =
+                cfg:
+                lib.filter (service: lib.hasPrefix "homelab-" service) (builtins.attrNames cfg.systemd.services);
+              projectServiceOwnershipIsMinimal = lib.all (
+                hostName:
+                let
+                  expected = lib.optional (linuxHosts.${hostName}.k3sRole != null) "homelab-k3s";
+                in
+                projectServices self.systemConfigs.${hostName}.config == expected
+                && projectServices self.systemConfigs."${hostName}-commit".config == expected
+              ) (builtins.attrNames linuxHosts);
+            in
+            assert projectServiceOwnershipIsMinimal;
+            assert lib.hasInfix "Address=192.168.219.6/24"
+              rock.environment.etc."systemd/network/10-homelab-lan.network".text;
+            assert lib.hasInfix "Endpoint=192.168.219.3:51903" rockWg;
+            assert lib.hasInfix "AllowedIPs=10.223.0.68/32" rockWg;
+            assert lib.hasInfix "PrivateKeyFile=/run/credentials/systemd-networkd.service/wg1-private" rockWg;
+            assert lib.hasInfix "PresharedKeyFile=/run/credentials/systemd-networkd.service/wg1-psk-n2p1"
+              rockWg;
+            assert lib.hasInfix
+              "LoadCredentialEncrypted=wg1-private:/var/lib/homelab-secrets/active/wg1-private.cred"
+              rockNetworkdCredentials;
+            assert lib.hasInfix "node-ip: 192.168.219.6" rockK3s;
+            assert lib.hasInfix "advertise-address: 192.168.219.6" rockK3s;
+            assert lib.hasInfix "--dport 9962" firewall && lib.hasInfix "--dport 9965" firewall;
+            assert lib.hasInfix "-s 192.168.219.139/32 -p tcp --dport 445 -j ACCEPT" rockFirewall;
+            assert lib.hasInfix "-s 192.168.219.0/24 -p udp --dport 137:138 -j ACCEPT" rockFirewall;
+            assert lib.hasInfix "MulticastDNS=yes" rockLan && lib.hasInfix "LLMNR=no" rockLan;
+            assert lib.hasInfix "DNSSEC=no" rockResolved;
+            assert lib.hasInfix "DNSOverTLS=opportunistic" rockResolved;
+            assert !(lib.hasInfix "diffie-hellman-group-exchange-sha256" rockSsh);
+            assert rock.users.users.root.shell == "/bin/bash";
+            assert rock.environment.etc."sudoers.d/homelab-admin".text == "bhyoo ALL=(ALL) NOPASSWD: ALL\n";
+            assert !(builtins.hasAttr "sudoers.d/homelab-admin" n2p1.environment.etc);
+            assert lib.hasInfix "exec /usr/local/bin/k3s server" rock.systemd.services.homelab-k3s.script;
+            assert
+              !(lib.hasInfix "${topology.wg0.edgeNetwork} -d ${topology.wg0.edgeNetwork} -j ACCEPT" firewall);
+            assert builtins.elem "open-iscsi" rock.homelab.distroPackages.present;
+            assert builtins.elem "targetcli-fb" rock.homelab.distroPackages.present;
+            assert !(builtins.elem "acl" rock.homelab.distroPackages.present);
+            assert
+              rock.environment.etc."ssh/authorized_keys.d/democratic-csi".text
+              == builtins.readFile ./ssh_pub_keys/democratic-csi.pub;
+            assert lib.hasInfix "AuthorizedKeysFile .ssh/authorized_keys /etc/ssh/authorized_keys.d/%u"
+              rock.environment.etc."ssh/sshd_config.d/90-homelab-hardening.conf".text;
+            assert !(builtins.hasAttr "homelab-host-settings" rock.systemd.services);
+            assert !(builtins.hasAttr "homelab-wireguard" rock.systemd.services);
+            assert !(builtins.hasAttr "homelab-firewall" rock.systemd.services);
+            assert !(builtins.hasAttr "homelab-runtime-tuning" rock.systemd.services);
+            assert !(builtins.hasAttr "homelab-k3s-legacy-cleanup" rock.systemd.services);
+            assert !(builtins.hasAttr "homelab-legacy-tuning-cleanup" rock.systemd.services);
+            assert builtins.hasAttr "systemd/zram-generator.conf" rock.environment.etc;
+            assert builtins.hasAttr "tmpfiles.d/60-homelab-runtime-tuning.conf" rock.environment.etc;
+            assert builtins.elem "systemd-networkd.service" rock.systemd.services.homelab-k3s.after;
+            assert builtins.elem "netfilter-persistent.service" rock.systemd.services.homelab-k3s.after;
+            assert builtins.elem "netfilter-persistent.service" rock.systemd.services.homelab-k3s.requires;
+            assert !(builtins.elem "netfilter-persistent.service" rock.systemd.services.homelab-k3s.wants);
+            assert builtins.elem "dev-zram0.swap" rock.systemd.services.homelab-k3s.after;
+            assert
+              rock.systemd.services.homelab-k3s.serviceConfig.LoadCredentialEncrypted
+              == [ "k3s-token:/var/lib/homelab-secrets/active/k3s-token.cred" ];
+            assert !(builtins.hasAttr "homelab-democratic-csi-access" rock.systemd.services);
+            assert builtins.elem "iscsid.service" rock.systemd.services.homelab-k3s.after;
+            assert builtins.elem "open-iscsi.service" rock.systemd.services.homelab-k3s.after;
+            assert
+              lib.count (line: lib.hasSuffix " k8s.backbone.homelab.bhyoo.com" line) (lib.splitString "\n" hosts)
+              == 3;
+            pkgs.runCommand "homelab-rendered-contracts" { } "touch $out";
         in
         hostChecks
         // darwinChecks
@@ -123,13 +207,27 @@
           migration-contracts =
             pkgs.runCommand "homelab-migration-contracts"
               {
-                nativeBuildInputs = [ pkgs.python3 ];
+                nativeBuildInputs = [
+                  pkgs.bash
+                  pkgs.python3
+                ];
               }
               ''
                 HOMELAB_SOURCE_ROOT=${self} python3 ${./nix/scripts/check-migration.py}
+                for script in \
+                  ${./nix/scripts/homelab-host} \
+                  ${./nix/scripts/issue-kubeconfig} \
+                  ${./nix/scripts/k3s-handoff} \
+                  ${./nix/scripts/render-macbook-wireguard} \
+                  ${./nix/scripts/sync-bootstrap-secret} \
+                  ${./nix/scripts/verify-cluster} \
+                  ${./nix/scripts/wireguard-secrets}; do
+                  bash -n "$script"
+                done
                 touch $out
               '';
         }
+        // lib.optionalAttrs (system == "aarch64-linux") { rendered-contracts = renderedContracts; }
       );
       formatter = forAllSystems (system: (import nixpkgs { inherit system; }).nixfmt-tree);
     };

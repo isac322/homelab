@@ -11,15 +11,20 @@ let
     curl
     git
     gawk
+    findutils
     gnugrep
     gnused
+    gnutar
     jq
     kubectl
     kubernetes-helm
+    kubernetes-helmPlugins.helm-diff
     nix
     openssh
     openssl
+    python3
     sops
+    opentofu
     wireguard-tools
     yq-go
   ];
@@ -29,6 +34,7 @@ let
       inherit name runtimeInputs;
       text = ''
         export HOMELAB_REPO_ROOT="''${HOMELAB_REPO_ROOT:-$(git rev-parse --show-toplevel 2>/dev/null || pwd)}"
+        export HELM_PLUGINS=${pkgs.kubernetes-helmPlugins.helm-diff}
         exec ${script} ${prefix} "$@"
       '';
       meta = {
@@ -44,6 +50,9 @@ let
     mkApp name description ./scripts/wireguard-secrets command;
 in
 {
+  bootstrap-host =
+    hostApp "bootstrap-host" "Install host prerequisites and establish noninteractive sudo"
+      "bootstrap-host";
   homelab-host = hostApp "homelab-host" "Manage declarative homelab hosts" "";
   adopt-host = hostApp "adopt-host" "Capture and adopt an existing Linux host" "adopt-host";
   deploy = hostApp "deploy" "Prepare a Linux system-manager generation" "prepare";
@@ -69,7 +78,8 @@ in
       "rekey-secrets";
   rotate-psk = secretApp "rotate-psk" "Rotate one managed WireGuard link PSK" "rotate-psk";
   k3s-handoff =
-    mkApp "k3s-handoff" "Run the guarded legacy-to-Nix K3s service handoff" ./scripts/k3s-handoff
+    mkApp "k3s-handoff" "Manage persistent full-host rollback across a Nix activation"
+      ./scripts/k3s-handoff
       "";
   onboard-k3s-node =
     hostApp "onboard-k3s-node" "Stage a cluster token and prepare a new declarative K3s node"
@@ -77,17 +87,9 @@ in
   bootstrap-k3s =
     hostApp "bootstrap-k3s" "Bootstrap Cilium only for an explicitly new K3s cluster"
       "bootstrap-k3s";
-  upgrade-k3s = hostApp "upgrade-k3s" "Perform ordered K3s minor upgrades" "upgrade-k3s";
   bootstrap-argocd =
     hostApp "bootstrap-argocd" "Bootstrap Argo CD only for an explicitly new cluster"
       "bootstrap-argocd";
-  register-clusters =
-    mkApp "register-clusters" "Register an existing Kubernetes cluster in Argo CD"
-      ./scripts/register-cluster
-      "";
-  register-cluster =
-    mkApp "register-cluster" "Compatibility command for register-clusters" ./scripts/register-cluster
-      "";
   issue-kubeconfig =
     mkApp "issue-kubeconfig" "Issue a Kubernetes client kubeconfig" ./scripts/issue-kubeconfig
       "";

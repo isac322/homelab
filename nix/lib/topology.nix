@@ -16,13 +16,13 @@ let
         ;
       wireguardEndpointHost = extra.wireguardEndpointHost or null;
       k3sRole = extra.k3sRole or null;
-      k3sVersion = extra.k3sVersion or null;
       k3sServer = extra.k3sServer or null;
       k3sLabels = extra.k3sLabels or [ ];
       wireguard = extra.wireguard or [ ];
       firewall = extra.firewall or { };
       tuning = extra.tuning or { };
       iscsiServer = extra.iscsiServer or false;
+      iscsiClient = extra.iscsiClient or false;
     };
 
   nodes = {
@@ -33,15 +33,18 @@ let
         4096
         {
           wireguardEndpointHost = "backbone.bhyoo.com";
-          wireguard = [ "wg0" ];
+          wireguard = [
+            "wg0"
+            "wg1"
+          ];
           k3sRole = "agent";
-          k3sVersion = "1.36.2+k3s1";
           k3sServer = "https://k8s.backbone.homelab.bhyoo.com:6443";
           k3sLabels = [
             "homelab.bhyoo.com/gpu=mali"
             "homelab.bhyoo.com/cilium-envoy=true"
           ];
           tuning.emmcIoScheduler = true;
+          iscsiClient = true;
         };
     n2p2 =
       mkNode "node-n2p2" "n2p2" "aarch64-linux" "debian" "apt" "root@192.168.219.4" "192.168.219.4"
@@ -50,31 +53,37 @@ let
         4096
         {
           wireguardEndpointHost = "backbone.bhyoo.com";
-          wireguard = [ "wg0" ];
+          wireguard = [
+            "wg0"
+            "wg1"
+          ];
           k3sRole = "agent";
-          k3sVersion = "1.36.2+k3s1";
           k3sServer = "https://k8s.backbone.homelab.bhyoo.com:6443";
           k3sLabels = [
             "homelab.bhyoo.com/gpu=mali"
             "homelab.bhyoo.com/cilium-envoy=true"
           ];
           tuning.emmcIoScheduler = true;
+          iscsiClient = true;
         };
     rpi4 =
       mkNode "node-rpi4" "rpi4" "aarch64-linux" "debian" "apt" "bhyoo@192.168.219.7" "192.168.219.7"
         "192.168.219.1"
         "eth0"
-        8192
+        4096
         {
           wireguardEndpointHost = "backbone.bhyoo.com";
-          wireguard = [ "wg0" ];
+          wireguard = [
+            "wg0"
+            "wg1"
+          ];
           k3sRole = "server";
-          k3sVersion = "1.36.2+k3s1";
           k3sServer = "https://k8s.backbone.homelab.bhyoo.com:6443";
           tuning = {
             zram = true;
             disabledServices = [ "wpa_supplicant.service" ];
           };
+          iscsiClient = true;
         };
     rpi5 =
       mkNode "node-rpi5" "rpi5" "aarch64-linux" "debian" "apt" "bhyoo@192.168.219.5" "192.168.219.5"
@@ -83,9 +92,11 @@ let
         8192
         {
           wireguardEndpointHost = "backbone.bhyoo.com";
-          wireguard = [ "wg0" ];
+          wireguard = [
+            "wg0"
+            "wg1"
+          ];
           k3sRole = "server";
-          k3sVersion = "1.36.2+k3s1";
           k3sServer = "https://k8s.backbone.homelab.bhyoo.com:6443";
           k3sLabels = [
             "homelab.bhyoo.com/vpn-gateway=true"
@@ -100,17 +111,20 @@ let
               "wpa_supplicant.service"
             ];
           };
+          iscsiClient = true;
         };
     rock5bp =
       mkNode "node-rock5bp" "rock5bp" "aarch64-linux" "debian" "apt" "bhyoo@192.168.219.6" "192.168.219.6"
         "192.168.219.1"
         "eth0"
-        16384
+        32768
         {
           wireguardEndpointHost = "backbone.bhyoo.com";
-          wireguard = [ "wg0" ];
+          wireguard = [
+            "wg0"
+            "wg1"
+          ];
           k3sRole = "server";
-          k3sVersion = "1.36.2+k3s1";
           k3sServer = "https://k8s.backbone.homelab.bhyoo.com:6443";
           k3sLabels = [
             "homelab.bhyoo.com/gpu=mali"
@@ -119,6 +133,10 @@ let
             "homelab.bhyoo.com/zfs-node=true"
             "homelab.bhyoo.com/cilium-envoy=true"
           ];
+          firewall = {
+            sambaClients = [ "192.168.219.139/32" ];
+            netbios = true;
+          };
           tuning = {
             zram = true;
             emmcIoScheduler = true;
@@ -129,6 +147,7 @@ let
             ];
           };
           iscsiServer = true;
+          iscsiClient = true;
         };
     macmini =
       mkNode "node-macmini" "macmini" "aarch64-linux" "arch" "pacman" "bhyoo@192.168.219.8"
@@ -238,6 +257,34 @@ let
       publicKey = "vRSVWjIMwGadIPmdPYEOheYLQQ0t7eIIHq3wCaW+aXc=";
     };
   };
+  wg1Nodes = {
+    n2p1 = {
+      address = "10.223.0.65/24";
+      publicKey = wg0Nodes.n2p1.publicKey;
+      group = "backbone";
+    };
+    n2p2 = {
+      address = "10.223.0.66/24";
+      publicKey = wg0Nodes.n2p2.publicKey;
+      group = "backbone";
+    };
+    rpi4 = {
+      address = "10.223.0.67/24";
+      publicKey = wg0Nodes.rpi4.publicKey;
+      group = "backbone";
+    };
+    rpi5 = {
+      address = "10.223.0.68/24";
+      publicKey = wg0Nodes.rpi5.publicKey;
+      group = "backbone";
+    };
+    rock5bp = {
+      address = "10.223.0.69/24";
+      publicKey = wg0Nodes.rock5bp.publicKey;
+      group = "backbone";
+    };
+  };
+  wg1Edges = { };
 
   combinations =
     values: lib.concatMap (a: map (b: { inherit a b; }) (lib.filter (b: b > a) values)) values;
@@ -250,7 +297,7 @@ let
       bName = pair.b;
       aNodeId = nodes.${pair.a}.nodeId;
       bNodeId = nodes.${pair.b}.nodeId;
-      managed = true;
+      managed = pair.a != "bhyoo-macbook-pro" && pair.b != "bhyoo-macbook-pro";
     }) (combinations names);
   wg0RequiredLinks =
     fullMeshLinks "wg0" (builtins.attrNames wg0Nodes)
@@ -263,19 +310,21 @@ let
       bNodeId = "edge-${edge}";
       managed = false;
     }) (builtins.attrNames wg0Edges);
+  wg1RequiredLinks = fullMeshLinks "wg1" (builtins.attrNames wg1Nodes);
 in
 {
-
   hosts = nodes;
   inherit
     nodes
     wg0Nodes
     wg0Edges
+    wg1Nodes
+    wg1Edges
     ;
   trustedNodes = {
     bhyoo-macbook-pro = wg0Nodes.bhyoo-macbook-pro;
   };
-  requiredLinks = wg0RequiredLinks;
+  requiredLinks = wg0RequiredLinks ++ wg1RequiredLinks;
   wg0 = {
     interface = "wg0";
     network = "10.222.0.0/24";
@@ -286,6 +335,17 @@ in
     endpoint = "backbone.bhyoo.com:51902";
     nodes = wg0Nodes;
     edges = wg0Edges;
+  };
+  wg1 = {
+    interface = "wg1";
+    network = "10.223.0.0/24";
+    listenPort = 51903;
+    groups.backbone = {
+      cidr = "10.223.0.64/26";
+      gateway = "rpi5";
+    };
+    nodes = wg1Nodes;
+    edges = wg1Edges;
   };
   secretRecipients = {
     recovery = "REPLACE_WITH_OFFLINE_OPERATOR_AGE_RECIPIENT";

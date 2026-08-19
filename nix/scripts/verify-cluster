@@ -2,8 +2,7 @@
 set -euo pipefail
 cluster=${1:?cluster or context required}
 case "$cluster" in
-  backbone) context=${BACKBONE_CONTEXT:-private-backbone} ;;
-  prod) context=${PROD_CONTEXT:-homelab-prod} ;;
+  backbone) context=${BACKBONE_CONTEXT:-homelab-backbone} ;;
   *) context=$cluster ;;
 esac
 kubectl --context "$context" get --raw=/readyz >/dev/null

@@ -21,6 +21,8 @@ for required in (
     'edgeNetwork = "10.222.0.128/25"',
     'gateway = "rpi5"',
     'listenPort = 51902',
+    'network = "10.223.0.0/24"',
+    'listenPort = 51903',
 ):
     if required not in text:
         raise SystemExit(f"missing topology contract: {required}")
@@ -30,16 +32,46 @@ if "10.222.0.134/32" in text:
     raise SystemExit("retired MacBook edge identity remains")
 wg0_nodes = re.search(r"wg0Nodes = \{(.*?)\n  \};\n  wg0Edges", text, re.S).group(1)
 node_count = len(re.findall(r"^    [a-z0-9-]+ = \{", wg0_nodes, re.M))
-wg0_edges = re.search(r"wg0Edges = \{(.*?)\n  \};\n\n  combinations", text, re.S).group(1)
+wg0_edges = re.search(r"wg0Edges = \{(.*?)\n  \};\n  wg1Nodes", text, re.S).group(1)
 edge_count = len(re.findall(r"^    [a-z0-9-]+ = \{", wg0_edges, re.M))
 expected_links = node_count * (node_count - 1) // 2 + edge_count
 if (node_count, edge_count, expected_links) != (7, 14, 35):
     raise SystemExit(f"wg0 required link count changed: nodes={node_count} edges={edge_count} links={expected_links}")
-for retired in ("oracle4", "wg1", "10.223.0."):
-    if retired in text:
-        raise SystemExit(f"retired topology remains: {retired}")
+for required in (
+    'address = "10.223.0.65/24"',
+    'address = "10.223.0.66/24"',
+    'address = "10.223.0.67/24"',
+    'address = "10.223.0.68/24"',
+    'address = "10.223.0.69/24"',
+    'groups.backbone = {',
+):
+    if required not in text:
+        raise SystemExit(f"wg1 backbone contract missing: {required}")
+wg1_nodes = re.search(r"wg1Nodes = \{(.*?)\n  \};\n  wg1Edges", text, re.S).group(1)
+wg1_node_count = len(re.findall(r"^    [a-z0-9-]+ = \{", wg1_nodes, re.M))
+wg1_links = wg1_node_count * (wg1_node_count - 1) // 2
+if (wg1_node_count, wg1_links) != (5, 10):
+    raise SystemExit(f"wg1 backbone link count changed: nodes={wg1_node_count} links={wg1_links}")
+if text.count('fullMeshLinks "wg1"') != 1:
+    raise SystemExit("wg1 backbone full-mesh construction changed")
 if "PrivateKey = " in text or "PresharedKey = " in text:
     raise SystemExit("topology contains plaintext secret")
 if "REPLACE_WITH_OFFLINE_OPERATOR_AGE_RECIPIENT" not in text:
     raise SystemExit("operator recovery recipient hard gate missing")
+if text.count("iscsiClient = true;") != 5:
+    raise SystemExit("live backbone iSCSI client scope must remain exactly five hosts")
+if not re.search(r'rpi4\s*=\s*mkNode.*?"eth0"\s+4096\s+\{', text, re.S):
+    raise SystemExit("rpi4 memory topology must match the live ~4 GiB host")
+if not re.search(r'rock5bp\s*=\s*mkNode.*?"eth0"\s+32768\s+\{', text, re.S):
+    raise SystemExit("rock5bp memory topology must match the live ~32 GiB host")
+if 'managed = pair.a != "bhyoo-macbook-pro" && pair.b != "bhyoo-macbook-pro";' not in text:
+    raise SystemExit("MacBook links must remain outside repository-owned PSK rotation")
+if "k3sVersion" in text:
+    raise SystemExit("Rancher system-upgrade-controller, not Nix topology, owns K3s versions")
+if not re.search(
+    r'rock5bp\s*=.*?firewall\s*=\s*\{\s*sambaClients\s*=\s*\[\s*"192\.168\.219\.139/32"\s*\];\s*netbios\s*=\s*true;',
+    text,
+    re.S,
+):
+    raise SystemExit("rock5bp Samba and NetBIOS firewall scope changed")
 print("topology: ok")

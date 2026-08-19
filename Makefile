@@ -1,4 +1,4 @@
-.PHONY: help bootstrap bootstrap-backbone register-cluster
+.PHONY: help bootstrap bootstrap-backbone
 
 ##@ General
 
@@ -21,19 +21,5 @@ help: ## Display this help.
 
 bootstrap: bootstrap-backbone ## Bootstrap the backbone Argo CD control plane through Nix apps.
 
-bootstrap-backbone: /tmp/backbone-cluster-secrets.yaml ## Install Argo CD through the Nix bootstrap app.
+bootstrap-backbone: ## Install Argo CD through the Nix bootstrap app.
 	nix run .#bootstrap-argocd -- backbone
-
-register-cluster: ## Register CLUSTER_NAME and KUBE_CONTEXT in backbone Argo CD.
-	@test -n "$(CLUSTER_NAME)" -a -n "$(KUBE_CONTEXT)" || (echo 'Specify CLUSTER_NAME and KUBE_CONTEXT'; exit 1)
-	nix run .#register-cluster -- "$(CLUSTER_NAME)" --context "$(KUBE_CONTEXT)"
-
-
-
-/tmp/%-cluster-secrets.yaml:
-	@test -r 'terraform/$*' || (echo 'Specify valid cluster name via CLUSTER_NAME'; exit 1)
-	make -C terraform/$* cluster-secrets DEST=$@
-
-
-/tmp/public_ip_map.yaml:
-	make -C terraform/prod public-ip-map DEST=$@

@@ -10,6 +10,7 @@
 let
   cfg = config.homelab;
   k8sMember = hostConfig.k3sRole != null;
+  sshUser = builtins.head (lib.splitString "@" hostConfig.sshTarget);
   tuning = hostConfig.tuning or { };
   zramEnabled = cfg.zram;
   emmcIoScheduler = cfg.emmcIoScheduler;
@@ -17,25 +18,28 @@ let
   disabledServices = cfg.disabledServices;
   minFreeKb = toString (hostConfig.memoryMiB * 16);
   zramSizeMiB = toString (builtins.div hostConfig.memoryMiB 2);
+  staticLan =
+    hostConfig.lanAddress != null
+    && hostConfig.gatewayAddress != null
+    && hostConfig.defaultInterface != null;
+  backboneApiHosts = lib.concatStringsSep "\n" (
+    lib.mapAttrsToList (
+      _: host:
+      lib.optionalString (
+        host.k3sRole == "server" && host.lanAddress != null
+      ) "${host.lanAddress} k8s.backbone.homelab.bhyoo.com"
+    ) topology.nodes
+  );
   adminKeys = map builtins.readFile [
     ../../../ssh_pub_keys/desktop.pub
     ../../../ssh_pub_keys/mobile.pub
     ../../../ssh_pub_keys/tablet.pub
     ../../../ssh_pub_keys/office.pub
   ];
-  tuningAfter = [
-    "homelab-distro-packages.service"
-    "homelab-wireguard.service"
-    "homelab-firewall.service"
-  ];
+  democraticCsiKey = builtins.readFile ../../../ssh_pub_keys/democratic-csi.pub;
 in
 {
   options.homelab = {
-    secretDirectory = lib.mkOption {
-      type = lib.types.str;
-      default = "/run/homelab-secrets/active";
-      description = "Atomic active generation populated by stage-secrets before activation.";
-    };
     allowDestructiveCommit = lib.mkOption {
       type = lib.types.bool;
       default = false;
@@ -91,21 +95,77 @@ in
               hostName: h: lib.optionalString (h.lanAddress != null) "${h.lanAddress} ${hostName}"
             ) topology.nodes
           )}
-          192.168.219.7 k8s.backbone.homelab.bhyoo.com
+          ${backboneApiHosts}
         '';
         replaceExisting = true;
       };
       "systemd/resolved.conf" = {
         text = ''
           [Resolve]
-          DNS=1.1.1.1
-          FallbackDNS=8.8.8.8
-          DNSSEC=allow-downgrade
+          DNS=1.1.1.1#cloudflare-dns.com
+          FallbackDNS=1.0.0.1#cloudflare-dns.com
+          DNSSEC=no
+          DNSOverTLS=opportunistic
+          MulticastDNS=yes
+          LLMNR=no
         '';
         replaceExisting = true;
       };
       "locale.conf".text = "LANG=ko_KR.UTF-8\n";
+      "locale.gen".text = "ko_KR.UTF-8 UTF-8\n";
       "timezone".text = "Asia/Seoul\n";
+      "localtime" = {
+        source = "${pkgs.tzdata}/share/zoneinfo/Asia/Seoul";
+        replaceExisting = true;
+      };
+      "tmpfiles.d/20-homelab-resolv.conf".text =
+        "L+ /etc/resolv.conf - - - - /run/systemd/resolve/stub-resolv.conf\n";
+      "systemd/zram-generator.conf" = lib.mkIf zramEnabled {
+        text = ''
+          [zram0]
+          zram-size = ${zramSizeMiB}M
+          compression-algorithm = zstd
+          swap-priority = 100
+        '';
+      };
+      "tmpfiles.d/60-homelab-runtime-tuning.conf" = lib.mkIf zramEnabled {
+        text = ''
+          w- /sys/kernel/mm/transparent_hugepage/enabled - - - - always
+          w- /sys/kernel/mm/transparent_hugepage/defrag - - - - madvise
+          w- /sys/kernel/mm/ksm/run - - - - 1
+          w- /sys/kernel/mm/ksm/sleep_millisecs - - - - 100
+          w- /sys/kernel/mm/ksm/pages_to_scan - - - - 200
+        '';
+      };
+      "systemd/network/10-homelab-lan.network" = lib.mkIf staticLan {
+        text = ''
+          [Match]
+          Name=${hostConfig.defaultInterface}
+
+          [Network]
+          Address=${hostConfig.lanAddress}/24
+          Gateway=${hostConfig.gatewayAddress}
+          DNS=1.1.1.1#cloudflare-dns.com
+          DNS=1.0.0.1#cloudflare-dns.com
+          DNSSEC=no
+          DNSOverTLS=opportunistic
+          MulticastDNS=yes
+          LLMNR=no
+          IPv6AcceptRA=yes
+
+          [Link]
+          RequiredForOnline=yes
+        '';
+        replaceExisting = true;
+      };
+      "sudoers.d/democratic-csi" = lib.mkIf hostConfig.iscsiServer {
+        text = "democratic-csi ALL=(ALL) NOPASSWD: ALL\n";
+        mode = "0440";
+      };
+      "sudoers.d/homelab-admin" = lib.mkIf (sshUser != "root") {
+        text = "${sshUser} ALL=(ALL) NOPASSWD: ALL\n";
+        mode = "0440";
+      };
       "ssh/sshd_config.d/90-homelab-hardening.conf" = {
         text = ''
           PrintLastLog yes
@@ -113,7 +173,8 @@ in
           Banner none
           PermitRootLogin ${if name == "n2p1" || name == "n2p2" then "prohibit-password" else "no"}
           PasswordAuthentication no
-          KexAlgorithms sntrup761x25519-sha512@openssh.com,curve25519-sha256,curve25519-sha256@libssh.org,diffie-hellman-group16-sha512,diffie-hellman-group18-sha512,diffie-hellman-group-exchange-sha256
+          AuthorizedKeysFile .ssh/authorized_keys /etc/ssh/authorized_keys.d/%u
+          KexAlgorithms sntrup761x25519-sha512@openssh.com,curve25519-sha256,curve25519-sha256@libssh.org,diffie-hellman-group16-sha512,diffie-hellman-group18-sha512
           Ciphers chacha20-poly1305@openssh.com,aes256-gcm@openssh.com,aes128-gcm@openssh.com,aes256-ctr,aes192-ctr,aes128-ctr
           MACs hmac-sha2-256-etm@openssh.com,hmac-sha2-512-etm@openssh.com,umac-128-etm@openssh.com
           HostKey /etc/ssh/ssh_host_rsa_key
@@ -121,8 +182,16 @@ in
           LogLevel INFO
         '';
       };
-      "ssh/authorized_keys.d/homelab-admins" = {
+      "ssh/authorized_keys.d/root" = {
         text = lib.concatStringsSep "" adminKeys;
+        mode = "0644";
+      };
+      "ssh/authorized_keys.d/bhyoo" = {
+        text = lib.concatStringsSep "" adminKeys;
+        mode = "0644";
+      };
+      "ssh/authorized_keys.d/democratic-csi" = lib.mkIf hostConfig.iscsiServer {
+        text = democraticCsiKey;
         mode = "0644";
       };
       "sysctl.d/99-kubernetes-network.conf" = lib.mkIf k8sMember {
@@ -144,7 +213,7 @@ in
           vm.min_free_kbytes=${minFreeKb}
         '';
       };
-      "sysctl.d/99-wireguard-forwarding.conf" = lib.mkIf (hostConfig.firewall.wireguardGateway or false) {
+      "sysctl.d/99-wireguard-forwarding.conf" = lib.mkIf k8sMember {
         text = "net.ipv4.ip_forward=1\n";
       };
       "udev/rules.d/60-io-scheduler.rules" = lib.mkIf emmcIoScheduler {
@@ -160,6 +229,9 @@ in
       (lib.mkIf hostConfig.iscsiServer { democratic-csi.gid = 1001; })
     ];
     users.users = lib.mkMerge [
+      {
+        root.shell = "/bin/bash";
+      }
       (lib.mkIf (name != "n2p1" && name != "n2p2") {
         bhyoo = {
           isNormalUser = true;
@@ -197,90 +269,5 @@ in
         wantedBy = [ "system-manager.target" ];
       }
     ];
-
-    systemd.services = {
-      homelab-authorized-keys = {
-        description = "Install homelab SSH authorized keys";
-        wantedBy = [ "system-manager.target" ];
-        before = [ "sshd.service" ];
-        path = [
-          pkgs.coreutils
-          pkgs.getent
-        ];
-        script = ''
-          set -eu
-          keys=/etc/ssh/authorized_keys.d/homelab-admins
-          for user in root bhyoo; do
-            if id "$user" >/dev/null 2>&1; then
-              home=$(getent passwd "$user" | cut -d: -f6)
-              install -d -m 0700 -o "$user" -g "$(id -gn "$user")" "$home/.ssh"
-              install -m 0600 -o "$user" -g "$(id -gn "$user")" "$keys" "$home/.ssh/authorized_keys"
-            fi
-          done
-        '';
-        serviceConfig.Type = "oneshot";
-      };
-      homelab-sysctl = {
-        description = "Apply homelab sysctl configuration";
-        wantedBy = [ "system-manager.target" ];
-        after = tuningAfter;
-        before = [ "homelab-k3s.service" ];
-        script = "${pkgs.procps}/bin/sysctl --system";
-        serviceConfig.Type = "oneshot";
-      };
-      homelab-thp = lib.mkIf zramEnabled {
-        description = "Set transparent hugepage defrag to madvise";
-        wantedBy = [ "system-manager.target" ];
-        after = tuningAfter;
-        before = [ "homelab-k3s.service" ];
-        script = "test ! -e /sys/kernel/mm/transparent_hugepage/defrag || echo madvise > /sys/kernel/mm/transparent_hugepage/defrag";
-        serviceConfig = {
-          Type = "oneshot";
-          RemainAfterExit = true;
-        };
-      };
-      homelab-ksm = lib.mkIf zramEnabled {
-        description = "Enable KSM";
-        wantedBy = [ "system-manager.target" ];
-        after = tuningAfter;
-        before = [ "homelab-k3s.service" ];
-        script = ''
-          test ! -e /sys/kernel/mm/ksm/run || {
-            echo 1 > /sys/kernel/mm/ksm/run
-            echo 100 > /sys/kernel/mm/ksm/sleep_millisecs
-            echo 200 > /sys/kernel/mm/ksm/pages_to_scan
-          }
-        '';
-        preStop = "test ! -e /sys/kernel/mm/ksm/run || echo 0 > /sys/kernel/mm/ksm/run";
-        serviceConfig = {
-          Type = "oneshot";
-          RemainAfterExit = true;
-        };
-      };
-      homelab-zram = lib.mkIf zramEnabled {
-        description = "Configure zram swap";
-        wantedBy = [ "system-manager.target" ];
-        after = tuningAfter ++ [ "local-fs.target" ];
-        before = [ "homelab-k3s.service" ];
-        path = [
-          pkgs.coreutils
-          pkgs.kmod
-          pkgs.util-linux
-        ];
-        script = ''
-          set -eu
-          modprobe zram
-          echo zstd > /sys/block/zram0/comp_algorithm
-          echo ${zramSizeMiB}M > /sys/block/zram0/disksize
-          mkswap /dev/zram0
-          swapon -p 100 /dev/zram0
-        '';
-        preStop = "swapoff /dev/zram0 || true; echo 1 > /sys/block/zram0/reset || true";
-        serviceConfig = {
-          Type = "oneshot";
-          RemainAfterExit = true;
-        };
-      };
-    };
   };
 }
