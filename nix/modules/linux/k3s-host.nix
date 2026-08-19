@@ -15,6 +15,34 @@ let
     else
       "netfilter-persistent.service";
   server = hostConfig.k3sRole == "server";
+  maskUnattendedUpgradesLogindDelay = builtins.elem name [
+    "n2p1"
+    "n2p2"
+  ];
+  shutdownPriorities = {
+    workloads = 0;
+    zfsCsi = 900000000;
+    systemClusterCritical = 2000000000;
+    systemNodeCritical = 2000001000;
+  };
+  shutdownGracePeriods = {
+    # Ordinary pods currently request at most 30s. CNPG and Prometheus use
+    # 600s/1800s and remain drain-only rather than imposing a 30-minute
+    # machine-wide inhibitor on every node.
+    workloads = 60;
+    # ZFS CSI and system-node-critical CSI pods request 30s and have preStop
+    # or volume-unmount work, so their phases retain a 15s cleanup margin.
+    zfsCsi = 45;
+    systemClusterCritical = 30;
+    systemNodeCritical = 45;
+  };
+  shutdownGracePeriodTotalSeconds =
+    shutdownGracePeriods.workloads
+    + shutdownGracePeriods.zfsCsi
+    + shutdownGracePeriods.systemClusterCritical
+    + shutdownGracePeriods.systemNodeCritical;
+  shutdownInhibitMarginSeconds = 15;
+  shutdownInhibitDelaySeconds = shutdownGracePeriodTotalSeconds + shutdownInhibitMarginSeconds;
   wg0Address = topology.wg0.nodes.${name}.address or null;
   strip = address: if address == null then null else builtins.head (lib.splitString "/" address);
   k3sPackage = import ../../k3s-package.nix {
@@ -71,14 +99,61 @@ in
   };
 
   config = lib.mkIf enabled {
-    environment.etc."rancher/k3s/config.yaml" = {
-      text =
-        serverConfig
-        + lib.optionalString (
-          hostConfig.k3sLabels != [ ]
-        ) "\nnode-label:\n${yamlList hostConfig.k3sLabels}\n";
-      replaceExisting = true;
-      mode = "0600";
+    environment.etc = {
+      "rancher/k3s/config.yaml" = {
+        text =
+          serverConfig
+          + lib.optionalString (
+            hostConfig.k3sLabels != [ ]
+          ) "\nnode-label:\n${yamlList hostConfig.k3sLabels}\n";
+        replaceExisting = true;
+        mode = "0600";
+      };
+      "homelab/kubelet/10-graceful-node-shutdown.conf" = {
+        text = ''
+          apiVersion: kubelet.config.k8s.io/v1beta1
+          kind: KubeletConfiguration
+          shutdownGracePeriodByPodPriority:
+            - priority: ${toString shutdownPriorities.workloads}
+              shutdownGracePeriodSeconds: ${toString shutdownGracePeriods.workloads}
+            - priority: ${toString shutdownPriorities.zfsCsi}
+              shutdownGracePeriodSeconds: ${toString shutdownGracePeriods.zfsCsi}
+            - priority: ${toString shutdownPriorities.systemClusterCritical}
+              shutdownGracePeriodSeconds: ${toString shutdownGracePeriods.systemClusterCritical}
+            - priority: ${toString shutdownPriorities.systemNodeCritical}
+              shutdownGracePeriodSeconds: ${toString shutdownGracePeriods.systemNodeCritical}
+        '';
+        replaceExisting = true;
+        mode = "0644";
+      };
+      "systemd/logind.conf.d/zz-kubelet-graceful-shutdown.conf" = {
+        text = ''
+          [Login]
+          InhibitDelayMaxSec=${toString shutdownInhibitDelaySeconds}s
+        '';
+        replaceExisting = true;
+        mode = "0644";
+      };
+    }
+    // lib.optionalAttrs maskUnattendedUpgradesLogindDelay {
+      "systemd/logind.conf.d/unattended-upgrades-logind-maxdelay.conf" = {
+        source = "/dev/null";
+        replaceExisting = true;
+      };
+    };
+    systemd.tmpfiles.rules = [
+      "d /var/lib/rancher/k3s/agent/etc/kubelet.conf.d 0755 root root -"
+      "L+ /var/lib/rancher/k3s/agent/etc/kubelet.conf.d/10-graceful-node-shutdown.conf - - - - /etc/homelab/kubelet/10-graceful-node-shutdown.conf"
+    ];
+    system-manager.preActivationAssertions.kubeletGracefulShutdownPath = {
+      enable = true;
+      script = ''
+        path=/var/lib/rancher/k3s/agent/etc/kubelet.conf.d/10-graceful-node-shutdown.conf
+        test ! -e "$path" && test ! -L "$path" && exit 0
+        test "$(readlink "$path" 2>/dev/null || true)" = /etc/homelab/kubelet/10-graceful-node-shutdown.conf && exit 0
+        echo "$path already exists and is not managed by system-manager" >&2
+        exit 1
+      '';
     };
     systemd.services.homelab-k3s = {
       description = "Run pinned K3s ${if server then "server" else "agent"}";
