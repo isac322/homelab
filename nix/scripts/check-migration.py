@@ -191,6 +191,41 @@ require(
     '"netfilter-persistent.service"',
     '"dev-zram0.swap"',
 )
+require(
+    "nix/modules/linux/k3s-host.nix",
+    "10-graceful-node-shutdown.conf",
+    "homelab/kubelet/10-graceful-node-shutdown.conf",
+    "shutdownGracePeriodByPodPriority:",
+    "zfsCsi = 900000000;",
+    "systemClusterCritical = 2000000000;",
+    "systemNodeCritical = 2000001000;",
+    "shutdownGracePeriodSeconds: ${toString shutdownGracePeriods.workloads}",
+    "shutdownGracePeriodSeconds: ${toString shutdownGracePeriods.zfsCsi}",
+    "shutdownGracePeriodSeconds: ${toString shutdownGracePeriods.systemNodeCritical}",
+    "workloads = 60;",
+    "zfsCsi = 45;",
+    "systemClusterCritical = 30;",
+    "systemNodeCritical = 45;",
+    "zz-kubelet-graceful-shutdown.conf",
+    "InhibitDelayMaxSec=${toString shutdownInhibitDelaySeconds}s",
+    "unattended-upgrades-logind-maxdelay.conf",
+    "L+ /var/lib/rancher/k3s/agent/etc/kubelet.conf.d/10-graceful-node-shutdown.conf",
+    "kubeletGracefulShutdownPath",
+    'source = "/dev/null"',
+)
+forbid(
+    "nix/modules/linux/k3s-host.nix",
+    "shutdownGracePeriod: 60s",
+    "shutdownGracePeriodCriticalPods: 20s",
+)
+require(
+    "nix/scripts/homelab-host",
+    "systemctl restart systemd-logind.service",
+    "systemd-analyze cat-config systemd/logind.conf",
+    "systemd-inhibit --list --no-pager",
+    "/api/v1/nodes/$host/proxy/configz",
+    "cleanup_unmanaged_kubelet_shutdown_link",
+)
 forbid("nix/modules/linux/k3s-host.nix", "homelab-k3s-legacy-cleanup =")
 require(
     "nix/scripts/k3s-handoff",

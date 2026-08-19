@@ -186,6 +186,9 @@ forward_position=$(iptables -S FORWARD | awk '/-j CILIUM_FORWARD$/ { position = 
 iptables -I INPUT "$input_position" -j HOMELAB_INPUT
 iptables -I FORWARD "$forward_position" -j HOMELAB_FORWARD
 if test "$ROLE" = server || test "$ROLE" = agent; then
+  systemctl restart systemd-logind.service
+fi
+if test "$ROLE" = server || test "$ROLE" = agent; then
   systemctl restart homelab-k3s.service
 fi
 REMOTE_NATIVE_RUNTIME
@@ -294,10 +297,19 @@ restore_recovery() {
   test -s "$recovery/etc-state.tar"
   remote "$host" 'sudo -n tar -C / -xf - && sudo -n systemctl daemon-reload' < "$recovery/etc-state.tar"
 }
+cleanup_unmanaged_kubelet_shutdown_link() {
+  local host=$1
+  remote "$host" 'sudo -n sh -ceu '\''
+    path=/var/lib/rancher/k3s/agent/etc/kubelet.conf.d/10-graceful-node-shutdown.conf
+    test "$(readlink "$path" 2>/dev/null || true)" = /etc/homelab/kubelet/10-graceful-node-shutdown.conf || exit 0
+    grep -Fq "$path" /etc/tmpfiles.d/00-system-manager.conf 2>/dev/null || rm -f "$path"
+  '\'''
+}
 deactivate_system_manager() {
   local host=$1 target
   target=$(host_field "$host" sshTarget)
   system_manager deactivate --target-host "$target" --sudo
+  cleanup_unmanaged_kubelet_shutdown_link "$host"
 }
 
 case "${1:-}" in
@@ -581,6 +593,8 @@ case "${1:-}" in
     gateway_address=$(host_field "$host" gatewayAddress 2>/dev/null || true)
     default_interface=$(host_field "$host" defaultInterface 2>/dev/null || true)
     backend=$(host_field "$host" packageBackend)
+    mask_unattended_logind_delay=false
+    case "$host" in n2p1|n2p2) mask_unattended_logind_delay=true ;; esac
     if [ "$backend" = pacman ]; then
       firewall_rules=/etc/iptables/iptables.rules
       firewall_service=iptables.service
@@ -595,9 +609,10 @@ case "${1:-}" in
       democratic_csi_key_sha=$(sha256sum "$root/ssh_pub_keys/democratic-csi.pub" | awk '{print $1}')
     fi
     printf -v verify_command \
-      'env HOST_NAME=%q ROLE=%q ISCSI_CLIENT=%q ISCSI_SERVER=%q ZRAM=%q DEMOCRATIC_CSI_KEY_SHA=%q LAN_ADDRESS=%q GATEWAY_ADDRESS=%q DEFAULT_INTERFACE=%q FIREWALL_RULES=%q FIREWALL_SERVICE=%q SSH_SERVICE=%q sh -s' \
+      'env HOST_NAME=%q ROLE=%q ISCSI_CLIENT=%q ISCSI_SERVER=%q ZRAM=%q DEMOCRATIC_CSI_KEY_SHA=%q LAN_ADDRESS=%q GATEWAY_ADDRESS=%q DEFAULT_INTERFACE=%q FIREWALL_RULES=%q FIREWALL_SERVICE=%q SSH_SERVICE=%q MASK_UNATTENDED_LOGIND_DELAY=%q sh -s' \
       "$host" "$role" "$iscsi_client" "$iscsi_server" "$zram" "$democratic_csi_key_sha" \
-      "$lan_address" "$gateway_address" "$default_interface" "$firewall_rules" "$firewall_service" "$ssh_service"
+      "$lan_address" "$gateway_address" "$default_interface" "$firewall_rules" "$firewall_service" "$ssh_service" \
+      "$mask_unattended_logind_delay"
     remote "$host" "$verify_command" <<'REMOTE_VERIFY'
 set -eu
 test "$(hostname)" = "$HOST_NAME"
@@ -613,6 +628,10 @@ grep -qx "DNSSEC=yes" /etc/systemd/resolved.conf
 grep -qx "DNSOverTLS=yes" /etc/systemd/resolved.conf
 grep -qx "MulticastDNS=yes" /etc/systemd/resolved.conf
 grep -qx "LLMNR=no" /etc/systemd/resolved.conf
+test "$(systemd-analyze cat-config systemd/logind.conf | sed -n 's/^[[:space:]]*InhibitDelayMaxSec=//p' | tail -n 1)" = 195s
+if test "$MASK_UNATTENDED_LOGIND_DELAY" = true; then
+  test "$(readlink -f /etc/systemd/logind.conf.d/unattended-upgrades-logind-maxdelay.conf)" = /dev/null
+fi
 test "$(readlink /etc/resolv.conf)" = /run/systemd/resolve/stub-resolv.conf
 test -s "$FIREWALL_RULES"
 for unit in homelab-host-settings.service homelab-wireguard.service homelab-firewall.service homelab-runtime-tuning.service homelab-k3s-legacy-cleanup.service homelab-legacy-tuning-cleanup.service; do
@@ -631,6 +650,12 @@ if test "$ROLE" = server || test "$ROLE" = agent; then
   test "$(sysctl -n net.ipv4.ip_forward)" = 1
   systemctl is-active homelab-k3s.service
   sudo -n test -s /run/credentials/homelab-k3s.service/k3s-token
+  shutdown_config=/var/lib/rancher/k3s/agent/etc/kubelet.conf.d/10-graceful-node-shutdown.conf
+  grep -qx "shutdownGracePeriodByPodPriority:" "$shutdown_config"
+  test "$(grep -c '^  - priority:' "$shutdown_config")" -eq 4
+  ! grep -q '^shutdownGracePeriod:' "$shutdown_config"
+  ! grep -q '^shutdownGracePeriodCriticalPods:' "$shutdown_config"
+  systemd-inhibit --list --no-pager | grep -qi kubelet
   sudo -n iptables -S INPUT | awk '
     /-j CILIUM_INPUT$/ || /-j KUBE-FIREWALL$/ { native = NR }
     /-j HOMELAB_INPUT$/ { homelab = NR }
@@ -677,6 +702,17 @@ REMOTE_VERIFY
     if [ "$role" = server ] || [ "$role" = agent ]; then
       context=${BACKBONE_CONTEXT:-private-backbone}
       test "$(kubectl --context "$context" get node "$host" -o jsonpath='{range .status.conditions[?(@.type=="Ready")]}{.status}{end}')" = True
+      kubectl --context "$context" get --raw "/api/v1/nodes/$host/proxy/configz" \
+        | jq -e '
+            .kubeletconfig.shutdownGracePeriod == "0s"
+            and .kubeletconfig.shutdownGracePeriodCriticalPods == "0s"
+            and .kubeletconfig.shutdownGracePeriodByPodPriority == [
+              {"priority": 0, "shutdownGracePeriodSeconds": 60},
+              {"priority": 900000000, "shutdownGracePeriodSeconds": 45},
+              {"priority": 2000000000, "shutdownGracePeriodSeconds": 30},
+              {"priority": 2000001000, "shutdownGracePeriodSeconds": 45}
+            ]
+          ' >/dev/null
     fi
     ;;
   rollback)
@@ -687,6 +723,7 @@ REMOTE_VERIFY
       nix-env --profile /nix/var/nix/profiles/system-manager-profiles/system-manager --switch-generation \"$generation\"
       /nix/var/nix/profiles/system-manager-profiles/system-manager/bin/activate
     '"
+    cleanup_unmanaged_kubelet_shutdown_link "$host"
     restore_previous_secrets "$host"
     if [ -n "$legacy" ]; then
       deactivate_system_manager "$host"
