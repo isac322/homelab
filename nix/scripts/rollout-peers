@@ -81,7 +81,7 @@ case "${1:-}" in
     lifecycle=$(host_field "$target" lifecycle)
     case "$lifecycle" in
       active|provisioning|decommissioning) ;;
-      *) echo "$target must have lifecycle=active, provisioning, or lifecycle=decommissioning" >&2; exit 1 ;;
+      *) echo "$target must have lifecycle=active, provisioning, or decommissioning" >&2; exit 1 ;;
     esac
     target_system=$(host_field "$target" system)
     case "$target_system" in *-linux) ;; *) echo "$target is not a Linux node" >&2; exit 1 ;; esac
