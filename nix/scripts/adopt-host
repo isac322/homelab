@@ -1,0 +1,109 @@
+#!/usr/bin/env bash
+set -euo pipefail
+
+root=${HOMELAB_REPO_ROOT:-$(git rev-parse --show-toplevel 2>/dev/null || pwd)}
+state=${HOMELAB_STATE_DIR:-"$root/.host-state"}
+mkdir -p "$state/baselines" "$state/recovery"
+chmod 0700 "$state" "$state/baselines" "$state/recovery"
+
+usage() {
+  cat <<'EOF'
+Usage: adopt-host <host>
+       adopt-host baseline <host>
+
+Capture the pre-Nix state of an existing host. This migration-only command is
+not used to provision or reconcile hosts already owned by Nix.
+EOF
+}
+
+nix_eval() { nix --extra-experimental-features 'nix-command flakes' eval "$@"; }
+host_field() { nix_eval --raw "$root#topology.nodes.$1.$2"; }
+remote() {
+  local host=$1
+  shift
+  ssh -o BatchMode=yes -o StrictHostKeyChecking=accept-new "$(host_field "$host" sshTarget)" "$@"
+}
+
+baseline() {
+  local host=$1 stamp file
+  stamp=$(date -u +%Y%m%dT%H%M%SZ)
+  file="$state/baselines/$host-$stamp.txt"
+  remote "$host" '
+    set -u
+    printf "os="; . /etc/os-release; printf "%s:%s\n" "$ID" "${VERSION_ID:-}"
+    printf "arch="; uname -m
+    printf "hostname="; hostname
+    printf "networkd="; systemctl is-enabled systemd-networkd 2>/dev/null || true
+    printf "wireguard="; sudo -n wg show interfaces 2>/dev/null || true
+    printf "wireguard-public="; for i in $(sudo -n wg show interfaces 2>/dev/null); do printf "%s:%s " "$i" "$(sudo -n wg show "$i" public-key)"; done; echo
+    printf "iptables-backend="; sudo -n iptables --version 2>/dev/null || true
+    printf "input-policy="; sudo -n iptables -S INPUT | sed -n "1p"
+    printf "forward-policy="; sudo -n iptables -S FORWARD | sed -n "1p"
+    printf "k3s="; systemctl is-active k3s k3s-agent homelab-k3s 2>/dev/null || true
+    printf "etcd="; sudo -n /usr/local/bin/k3s etcd-snapshot ls 2>/dev/null | sed -n "1p" || true
+    printf "system-manager-generation="; sudo -n nix-env --profile /nix/var/nix/profiles/system-manager-profiles/system-manager --list-generations 2>/dev/null | awk "END {print}" || true
+  ' > "$file"
+  chmod 0600 "$file"
+  printf '%s\n' "$file"
+}
+
+capture() {
+  local host=$1 recovery role snapshot
+  recovery="$state/recovery/$host-$(date -u +%Y%m%dT%H%M%SZ)"
+  mkdir -m 0700 "$recovery"
+  baseline "$host" > "$recovery/baseline-path"
+  remote "$host" 'sudo -n sh -ceu '\''
+    test -d /etc/systemd/system
+    set --
+    for pattern in \
+      /etc \
+      /root/.ssh \
+      /home/*/.ssh \
+      /var/spool/cron \
+      /usr/local/bin/k3s \
+      /usr/local/bin/kubectl \
+      /usr/local/bin/crictl \
+      /usr/local/bin/ctr \
+      /usr/local/bin/k3s-v* \
+      /usr/local/bin/k3s-killall.sh \
+      /usr/local/bin/k3s-uninstall.sh \
+      /usr/local/bin/k3s-agent-uninstall.sh
+    do
+      test -e "$pattern" || test -L "$pattern" || continue
+      set -- "$@" "${pattern#/}"
+    done
+    test "$#" -gt 0
+    tar -C / -cf - "$@"
+  '\''' > "$recovery/etc-state.tar"
+  role=$(host_field "$host" k3sRole 2>/dev/null || true)
+  if [ "$role" = server ] && remote "$host" 'sudo -n test -d /var/lib/rancher/k3s/server/db'; then
+    snapshot="pre-nix-$(date -u +%Y%m%dT%H%M%SZ)"
+    remote "$host" "sudo -n sh -ceu '
+      if test -x /usr/local/bin/k3s && test \"\$(systemctl is-active k3s.service 2>/dev/null || true)\" = active; then
+        exec /usr/local/bin/k3s etcd-snapshot save --name $snapshot
+      fi
+      test \"\$(systemctl is-active homelab-k3s.service 2>/dev/null || true)\" = active
+      pid=\$(systemctl show homelab-k3s.service -p MainPID --value)
+      test \"\$pid\" -gt 1
+      binary=\$(readlink \"/proc/\$pid/exe\")
+      exec \"\$binary\" etcd-snapshot save --name $snapshot
+    '" > "$recovery/etcd-snapshot.txt"
+    chmod 0600 "$recovery/etcd-snapshot.txt"
+  fi
+  chmod 0600 "$recovery/etc-state.tar"
+  printf '%s\n' "$recovery"
+}
+
+case "${1:-}" in
+  baseline)
+    test "$#" -eq 2 || { usage >&2; exit 2; }
+    baseline "$2"
+    ;;
+  -h|--help|'')
+    usage
+    ;;
+  *)
+    test "$#" -eq 1 || { usage >&2; exit 2; }
+    capture "$1"
+    ;;
+esac

@@ -100,12 +100,24 @@ ALLOW_NEW_CLUSTER_BOOTSTRAP=yes nix run .#bootstrap-argocd -- backbone
 nix run .#issue-kubeconfig -- <identity>
 ```
 
-새 node는 topology와 WireGuard ciphertext/PSK를 준비하고 K3s standard install layout의 `/usr/local/bin/k3s`를 설치하되 service는 시작하지 않은 상태에서, healthy server의 token을 복사하고 일반 migration 절차로 들어간다. `onboard-k3s-node`는 binary가 없거나 K3s state/service가 이미 존재하면 실패한다.
+새 node 추가는 먼저 `nix/lib/topology.nix`에 `lifecycle = "provisioning"`과 LAN/WireGuard/K3s desired state를 선언하고, `nix/identities/wireguard/<node>.pub` 및 host SOPS bundle을 같은 변경으로 준비한다. 그 뒤 healthy server의 live K3s version을 읽어 standard install layout만 설치하고 service는 시작하지 않은 채 bootstrap, age credential staging, token copy, 일반 migration 절차를 원자적으로 준비한다.
 
 ```bash
-nix run .#onboard-k3s-node -- <new-node> --token-source rock5bp
+nix run .#provision-host -- <new-node> --token-source rock5bp
 nix run .#homelab-host -- activate <new-node>
+nix run .#homelab-host -- reboot-verify <new-node>
+nix run .#homelab-host -- commit <new-node>
 ```
+
+`provision-host`는 topology와 ciphertext가 준비되지 않았으면 실패하며, K3s state가 이미 있거나 service가 실행 중인 대상에는 설치하지 않는다.
+
+노드 삭제는 먼저 topology의 lifecycle을 `decommissioning`으로 바꾼 별도 커밋에서 시작한다. 다음 명령은 active Linux peers만 새 generation으로 전환하고, K3s drain/delete와 물리 호스트 삭제는 자동화하지 않는다.
+
+```bash
+nix run .#decommission-host -- <old-node>
+```
+
+변경된 노드의 WireGuard peer만 갱신할 때는 `nix run .#rollout-peers -- <host>`를 사용한다. `onboard-k3s-node`는 이미 standard install layout이 있고 K3s state/service가 없는 대상에 대한 낮은 수준의 준비 명령으로 유지한다.
 
 K3s version과 순차 rollout은 기존 Rancher `system-upgrade-controller`가 단독 소유한다. Nix topology는 K3s version을 선언하거나 binary를 Nix store에 고정하지 않는다. `homelab-k3s.service`는 install-script layout의 `/usr/local/bin/k3s`를 `exec`하고 `Restart=always`로 실행하므로, Rancher `k3s-upgrade`가 binary를 교체하고 기존 process를 종료하면 systemd가 동일 unit을 새 binary로 다시 시작한다. 기존 `k3s.service`/`k3s-agent.service` unit은 cutover 후 제거하지만 `/usr/local/bin/k3s`와 install helper는 유지한다.
 
@@ -118,7 +130,7 @@ nix flake check --all-systems --no-build
 nix build .#checks.x86_64-linux.topology .#checks.x86_64-linux.migration-contracts --no-link
 python3 nix/scripts/check-topology.py
 python3 nix/scripts/check-migration.py
-bash -n nix/scripts/homelab-host nix/scripts/k3s-handoff nix/scripts/wireguard-secrets
+bash -n nix/scripts/adopt-host nix/scripts/decommission-host nix/scripts/homelab-host nix/scripts/k3s-handoff nix/scripts/provision-host nix/scripts/render-macbook-wireguard nix/scripts/rollout-peers nix/scripts/wireguard-secrets
 ```
 
 실호스트에서는 새 SSH session, effective sshd config, WireGuard public key/peer/AllowedIPs/handshake, firewall INPUT/FORWARD policy와 Cilium/Samba/NetBIOS rules, K3s version/Ready/etcd, iSCSI path, persistent rollback timer 상태를 확인한다. 기존 Ansible host-management 경로는 모든 node cutover와 reboot 검증이 끝날 때까지 rollback 기준으로 유지한다.

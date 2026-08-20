@@ -1,7 +1,17 @@
 { lib }:
 let
+  readPublicKey = path: lib.removeSuffix "\n" (builtins.readFile path);
   mkNode =
-    nodeId: displayName: system: osFamily: packageBackend: sshTarget: lanAddress: gatewayAddress: defaultInterface: memoryMiB: extra: {
+    nodeId: displayName: system: osFamily: packageBackend: sshTarget: lanAddress: gatewayAddress: defaultInterface: memoryMiB: extra:
+    let
+      lifecycle = extra.lifecycle or "active";
+    in
+    assert lib.elem lifecycle [
+      "provisioning"
+      "active"
+      "decommissioning"
+    ];
+    {
       inherit
         nodeId
         displayName
@@ -13,6 +23,7 @@ let
         gatewayAddress
         defaultInterface
         memoryMiB
+        lifecycle
         ;
       wireguardEndpointHost = extra.wireguardEndpointHost or null;
       k3sRole = extra.k3sRole or null;
@@ -172,31 +183,31 @@ let
   wg0Nodes = {
     n2p1 = {
       address = "10.222.0.1/24";
-      publicKey = "7ys4x4V0KNfISEAPEsYG+uvpIwkUMrZwaneIapyetgY=";
+      publicKey = readPublicKey ./../identities/wireguard/node-n2p1.pub;
     };
     n2p2 = {
       address = "10.222.0.2/24";
-      publicKey = "9ilHDfbWs5CofzLNqZklmV6vlXE2bWHrqMC1fvXOkx0=";
+      publicKey = readPublicKey ./../identities/wireguard/node-n2p2.pub;
     };
     rpi5 = {
       address = "10.222.0.3/24";
-      publicKey = "dLhJ6Fl4oDFc3LoiVyp06LyvcHfL2n3b8UTlJqYmoC0=";
+      publicKey = readPublicKey ./../identities/wireguard/node-rpi5.pub;
     };
     rock5bp = {
       address = "10.222.0.4/24";
-      publicKey = "8t3OloiWeccTCcbNXyJnSEKqj0pp/M58/DCYPrcEMFo=";
+      publicKey = readPublicKey ./../identities/wireguard/node-rock5bp.pub;
     };
     rpi4 = {
       address = "10.222.0.5/24";
-      publicKey = "CASG7ummfyZ+q4LAsCqesFj1D8i2q5DentfPW0NqJwg=";
+      publicKey = readPublicKey ./../identities/wireguard/node-rpi4.pub;
     };
     macmini = {
       address = "10.222.0.6/24";
-      publicKey = "VTRdAtTplJEtaYYQp1Q8RI6M7AdyTx5XT/dJpNoE8D4=";
+      publicKey = readPublicKey ./../identities/wireguard/node-macmini.pub;
     };
     bhyoo-macbook-pro = {
       address = "10.222.0.7/24";
-      publicKey = "5gchbvge1BmPYynDnRd2FMDRZTxorFFmCv9Ktl6amRI=";
+      publicKey = readPublicKey ./../identities/wireguard/node-bhyoo-macbook-pro.pub;
     };
   };
   wg0Edges = {
@@ -299,8 +310,14 @@ let
       bNodeId = nodes.${pair.b}.nodeId;
       managed = pair.a != "bhyoo-macbook-pro" && pair.b != "bhyoo-macbook-pro";
     }) (combinations names);
+  wg0PeerNodes = lib.filterAttrs (
+    name: _: (nodes.${name}.lifecycle or "active") != "decommissioning"
+  ) wg0Nodes;
+  wg1PeerNodes = lib.filterAttrs (
+    name: _: (nodes.${name}.lifecycle or "active") != "decommissioning"
+  ) wg1Nodes;
   wg0RequiredLinks =
-    fullMeshLinks "wg0" (builtins.attrNames wg0Nodes)
+    fullMeshLinks "wg0" (builtins.attrNames wg0PeerNodes)
     ++ map (edge: {
       linkId = "wg0-rpi5-${edge}";
       network = "wg0";
@@ -310,15 +327,25 @@ let
       bNodeId = "edge-${edge}";
       managed = false;
     }) (builtins.attrNames wg0Edges);
-  wg1RequiredLinks = fullMeshLinks "wg1" (builtins.attrNames wg1Nodes);
+  wg1RequiredLinks = fullMeshLinks "wg1" (builtins.attrNames wg1PeerNodes);
+  activeNodes = lib.filterAttrs (_: node: node.lifecycle == "active") nodes;
+  provisioningNodes = lib.filterAttrs (_: node: node.lifecycle == "provisioning") nodes;
+  decommissioningNodes = lib.filterAttrs (_: node: node.lifecycle == "decommissioning") nodes;
+  deployableNodes = lib.filterAttrs (_: node: node.lifecycle != "decommissioning") nodes;
 in
 {
   hosts = nodes;
   inherit
     nodes
+    activeNodes
+    provisioningNodes
+    decommissioningNodes
+    deployableNodes
     wg0Nodes
+    wg0PeerNodes
     wg0Edges
     wg1Nodes
+    wg1PeerNodes
     wg1Edges
     ;
   trustedNodes = {
@@ -334,6 +361,7 @@ in
     gateway = "rpi5";
     endpoint = "backbone.bhyoo.com:51902";
     nodes = wg0Nodes;
+    peerNodes = wg0PeerNodes;
     edges = wg0Edges;
   };
   wg1 = {
@@ -345,6 +373,7 @@ in
       gateway = "rpi5";
     };
     nodes = wg1Nodes;
+    peerNodes = wg1PeerNodes;
     edges = wg1Edges;
   };
   secretRecipients = {

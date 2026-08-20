@@ -54,7 +54,23 @@ in
     hostApp "bootstrap-host" "Install host prerequisites and establish noninteractive sudo"
       "bootstrap-host";
   homelab-host = hostApp "homelab-host" "Manage declarative homelab hosts" "";
-  adopt-host = hostApp "adopt-host" "Capture and adopt an existing Linux host" "adopt-host";
+  adopt-host =
+    mkApp "adopt-host" "Capture the pre-Nix state of an existing Linux host"
+      ./scripts/adopt-host
+      "";
+  reconcile-host =
+    hostApp "reconcile-host" "Idempotently converge an active Nix-owned Linux host"
+      "reconcile";
+  rollout-peers =
+    mkApp "rollout-peers" "Reconcile one node's WireGuard peers without a full host switch"
+      ./scripts/rollout-peers
+      "";
+  provision-host =
+    mkApp "provision-host" "Provision a Git-declared new Linux host" ./scripts/provision-host "";
+  decommission-host =
+    mkApp "decommission-host" "Remove a declared decommissioning host from active peers"
+      ./scripts/decommission-host
+      "";
   deploy = hostApp "deploy" "Prepare a Linux system-manager generation" "prepare";
   reconcile-distro-packages =
     hostApp "reconcile-distro-packages"

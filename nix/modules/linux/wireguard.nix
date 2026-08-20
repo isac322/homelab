@@ -19,7 +19,7 @@ let
 
   wg0Node = topology.wg0.nodes.${name} or null;
   wg0PeerNames = lib.optionals (wg0Node != null) (
-    lib.filter (peer: peer != name) (builtins.attrNames topology.wg0.nodes)
+    lib.filter (peer: peer != name) (builtins.attrNames topology.wg0.peerNodes)
   );
   wg0EdgeNames = builtins.attrNames topology.wg0.edges;
   wg0RequiredPeers =
@@ -58,7 +58,7 @@ let
 
   wg1Node = topology.wg1.nodes.${name} or null;
   wg1PeerNames = lib.optionals (wg1Node != null) (
-    lib.filter (peer: peer != name) (builtins.attrNames topology.wg1.nodes)
+    lib.filter (peer: peer != name) (builtins.attrNames topology.wg1.peerNodes)
   );
   wg1RequiredPeers = wg1PeerNames;
   wg1Peer =

@@ -10,9 +10,9 @@ usage() {
 Usage: homelab-host <command> [arguments]
   inventory
   bootstrap-host <host>
-  baseline <host>
-  adopt-host <host>
+  baseline <host>              Read-only alias for adopt-host baseline
   onboard-k3s-node <host> --token-source <existing-host>
+  reconcile <host>             Idempotently converge an active Nix-owned host
   prepare <host>
   activate <host>
   reboot-verify <host>
@@ -197,6 +197,14 @@ capture_runtime_firewall() {
   remote "$host" 'sudo -n iptables-save' > "$recovery/firewall-runtime.rules"
   chmod 0600 "$recovery/firewall-runtime.rules"
 }
+capture_managed_recovery() {
+  local host=$1 recovery
+  recovery="$state/recovery/$host-reconcile-$(date -u +%Y%m%dT%H%M%SZ)"
+  mkdir -m 0700 "$recovery"
+  remote "$host" 'sudo -n tar -C / -cf - etc' > "$recovery/etc-state.tar"
+  chmod 0600 "$recovery/etc-state.tar"
+  printf '%s\n' "$recovery"
+}
 restore_previous_secrets() {
   local host=$1
   remote "$host" 'sudo -n sh -ceu '\''
@@ -344,73 +352,55 @@ case "${1:-}" in
     '"
     ;;
   baseline)
-    host=${2:?host required}; stamp=$(date -u +%Y%m%dT%H%M%SZ); file="$state/baselines/$host-$stamp.txt"
-    remote "$host" '
-      set -u
-      printf "os="; . /etc/os-release; printf "%s:%s\n" "$ID" "${VERSION_ID:-}"
-      printf "arch="; uname -m
-      printf "hostname="; hostname
-      printf "networkd="; systemctl is-enabled systemd-networkd 2>/dev/null || true
-      printf "wireguard="; sudo -n wg show interfaces 2>/dev/null || true
-      printf "wireguard-public="; for i in $(sudo -n wg show interfaces 2>/dev/null); do printf "%s:%s " "$i" "$(sudo -n wg show "$i" public-key)"; done; echo
-      printf "iptables-backend="; sudo -n iptables --version 2>/dev/null || true
-      printf "input-policy="; sudo -n iptables -S INPUT | sed -n "1p"
-      printf "forward-policy="; sudo -n iptables -S FORWARD | sed -n "1p"
-      printf "k3s="; systemctl is-active k3s k3s-agent homelab-k3s 2>/dev/null || true
-      printf "etcd="; sudo -n /usr/local/bin/k3s etcd-snapshot ls 2>/dev/null | sed -n "1p" || true
-      printf "system-manager-generation="; sudo -n nix-env --profile /nix/var/nix/profiles/system-manager-profiles/system-manager --list-generations 2>/dev/null | awk "END {print}" || true
-    ' > "$file"
-    chmod 0600 "$file"; printf '%s\n' "$file"
+    test "$#" -eq 2 || { usage >&2; exit 2; }
+    "$root/nix/scripts/adopt-host" baseline "$2"
     ;;
-  adopt-host)
-    host=${2:?host required}; recovery="$state/recovery/$host-$(date -u +%Y%m%dT%H%M%SZ)"; mkdir -m 0700 "$recovery"
-    "$0" baseline "$host" > "$recovery/baseline-path"
-    remote "$host" 'sudo -n sh -ceu '\''
-      test -d /etc/systemd/system
-      set --
-      for pattern in \
-        /etc \
-        /root/.ssh \
-        /home/*/.ssh \
-        /var/spool/cron \
-        /usr/local/bin/k3s \
-        /usr/local/bin/kubectl \
-        /usr/local/bin/crictl \
-        /usr/local/bin/ctr \
-        /usr/local/bin/k3s-v* \
-        /usr/local/bin/k3s-killall.sh \
-        /usr/local/bin/k3s-uninstall.sh \
-        /usr/local/bin/k3s-agent-uninstall.sh
-      do
-        test -e "$pattern" || test -L "$pattern" || continue
-        set -- "$@" "${pattern#/}"
-      done
-      test "$#" -gt 0
-      tar -C / -cf - "$@"
-    '\''' > "$recovery/etc-state.tar"
-    role=$(host_field "$host" k3sRole 2>/dev/null || true)
-    if [ "$role" = server ] && remote "$host" 'sudo -n test -d /var/lib/rancher/k3s/server/db'; then
-      snapshot="pre-nix-$(date -u +%Y%m%dT%H%M%SZ)"
-      remote "$host" "sudo -n sh -ceu '
-        if test -x /usr/local/bin/k3s && test \"\$(systemctl is-active k3s.service 2>/dev/null || true)\" = active; then
-          exec /usr/local/bin/k3s etcd-snapshot save --name $snapshot
-        fi
-        test \"\$(systemctl is-active homelab-k3s.service 2>/dev/null || true)\" = active
-        pid=\$(systemctl show homelab-k3s.service -p MainPID --value)
-        test \"\$pid\" -gt 1
-        binary=\$(readlink \"/proc/\$pid/exe\")
-        exec \"\$binary\" etcd-snapshot save --name $snapshot
-      '" > "$recovery/etcd-snapshot.txt"
-      chmod 0600 "$recovery/etcd-snapshot.txt"
+  reconcile)
+    host=${2:?host required}
+    test "$(host_field "$host" lifecycle)" = active || {
+      echo "$host must have lifecycle=active before reconciliation" >&2
+      exit 1
+    }
+    legacy_unit=$(remote "$host" 'for unit in k3s.service k3s-agent.service; do test "$(systemctl is-active "$unit" 2>/dev/null || true)" = active && { printf "%s" "$unit"; exit; }; done; true')
+    test -z "$legacy_unit" || {
+      echo "$host still uses $legacy_unit; use the separate adopt-host migration workflow" >&2
+      exit 1
+    }
+    "$root/nix/scripts/k3s-handoff" preflight "$host" ""
+    recovery=$(capture_managed_recovery "$host")
+    reconcile_distro_packages "$host" no
+    assert_iptables_nft_backend "$host"
+    target=$(host_field "$host" sshTarget)
+    previous=$(remote "$host" 'sudo -n nix-env --profile /nix/var/nix/profiles/system-manager-profiles/system-manager --list-generations 2>/dev/null | awk "/\(current\)/ {print \$1}"')
+    test -n "$previous" || {
+      echo "$host has no active system-manager generation; use the provisioning or adoption workflow" >&2
+      exit 1
+    }
+    system_manager build --flake "$root#$host"
+    system_manager register --target-host "$target" --flake "$root#$host" --sudo
+    stage_result=$("$root/nix/scripts/wireguard-secrets" stage-secrets "$host")
+    secret_generation=${stage_result#* }
+    test -n "$secret_generation" && test "$secret_generation" != "$stage_result"
+    capture_runtime_firewall "$host" "$recovery"
+    "$root/nix/scripts/k3s-handoff" arm "$host" "$recovery" "$previous" ""
+    if ! system_manager switch --target-host "$target" --flake "$root#$host" --sudo \
+      || ! apply_native_runtime "$host" \
+      || ! "$0" verify-host "$host"; then
+      if rollback_armed_host "$host"; then
+        write_receipt "$host" rolled-back "$previous" "" "$recovery" "$secret_generation"
+      fi
+      exit 1
     fi
-    chmod 0600 "$recovery/etc-state.tar"
-    printf '%s\n' "$recovery"
+    "$root/nix/scripts/k3s-handoff" accept "$host"
+    write_receipt "$host" reconciled "$previous" "" "$recovery" "$secret_generation"
+    rm -rf "$recovery"
+    printf 'reconciled %s at %s\n' "$host" "$(current_revision)"
     ;;
   prepare|deploy)
     host=${2:?host required}
     legacy_unit=$(remote "$host" 'for unit in k3s.service k3s-agent.service; do test "$(systemctl is-active "$unit" 2>/dev/null || true)" = active && { printf "%s" "$unit"; exit; }; done; true')
     "$root/nix/scripts/k3s-handoff" preflight "$host" "$legacy_unit"
-    recovery=$("$0" adopt-host "$host")
+    recovery=$("$root/nix/scripts/adopt-host" "$host")
     reconcile_distro_packages "$host" no
     assert_iptables_nft_backend "$host"
     target=$(host_field "$host" sshTarget)
@@ -546,7 +536,7 @@ REMOTE_K3S_COLD_BACKUP
     assert_iptables_nft_backend "$host"
     if [ -n "$baseline" ]; then
       test -s "$baseline"
-      current_baseline=$("$0" baseline "$host")
+      current_baseline=$("$root/nix/scripts/adopt-host" baseline "$host")
       for key in os arch wireguard-public; do
         test "$(sed -n "s/^$key=//p" "$baseline")" = "$(sed -n "s/^$key=//p" "$current_baseline")" || {
           echo "$host baseline changed: $key" >&2

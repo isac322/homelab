@@ -24,8 +24,12 @@
     let
       lib = nixpkgs.lib;
       topology = import ./nix/lib/topology.nix { inherit lib; };
-      linuxHosts = lib.filterAttrs (_: host: lib.hasSuffix "-linux" host.system) topology.nodes;
-      darwinHosts = lib.filterAttrs (_: host: lib.hasSuffix "-darwin" host.system) topology.nodes;
+      linuxHosts = lib.filterAttrs (
+        _: host: lib.hasSuffix "-linux" host.system
+      ) topology.deployableNodes;
+      darwinHosts = lib.filterAttrs (
+        _: host: lib.hasSuffix "-darwin" host.system
+      ) topology.deployableNodes;
       forAllSystems = lib.genAttrs [
         "x86_64-linux"
         "aarch64-linux"
@@ -33,6 +37,9 @@
       ];
       mkLinuxHost =
         commit: name: host:
+        let
+          hostModule = ./nix/hosts + "/${name}.nix";
+        in
         system-manager.lib.makeSystemConfig {
           modules = [
             ({ ... }: {
@@ -44,8 +51,8 @@
             ./nix/modules/linux/firewall.nix
             ./nix/modules/linux/wireguard.nix
             ./nix/modules/linux/k3s-host.nix
-            ./nix/hosts/${name}.nix
-          ];
+          ]
+          ++ lib.optional (builtins.pathExists hostModule) hostModule;
           specialArgs = {
             inherit inputs name topology;
             hostConfig = host;
@@ -53,12 +60,15 @@
         };
       mkDarwinHost =
         name: host:
+        let
+          hostModule = ./nix/hosts + "/${name}.nix";
+        in
         nix-darwin.lib.darwinSystem {
           system = host.system;
           modules = [
             ./nix/modules/darwin/base.nix
-            ./nix/hosts/${name}.nix
-          ];
+          ]
+          ++ lib.optional (builtins.pathExists hostModule) hostModule;
           specialArgs = {
             inherit inputs name topology;
             hostConfig = host;
@@ -191,10 +201,37 @@
               lib.count (line: lib.hasSuffix " k8s.backbone.homelab.bhyoo.com" line) (lib.splitString "\n" hosts)
               == 3;
             pkgs.runCommand "homelab-rendered-contracts" { } "touch $out";
+          lifecycleFixtures =
+            let
+              baseNodes = {
+                existing = { lifecycle = "active"; };
+              };
+              addedNodes = baseNodes // {
+                new = { lifecycle = "provisioning"; };
+              };
+              changedNodes = baseNodes // {
+                existing = {
+                  lifecycle = "active";
+                  lanAddress = "192.0.2.10";
+                };
+              };
+              deletedNodes = baseNodes // {
+                existing = { lifecycle = "decommissioning"; };
+              };
+              select = lifecycle: nodes: lib.filterAttrs (_: node: node.lifecycle == lifecycle) nodes;
+              deployable = nodes: lib.filterAttrs (_: node: node.lifecycle != "decommissioning") nodes;
+            in
+            assert lib.attrNames (select "active" addedNodes) == [ "existing" ];
+            assert lib.attrNames (select "provisioning" addedNodes) == [ "new" ];
+            assert lib.attrNames (select "active" changedNodes) == [ "existing" ];
+            assert lib.attrNames (select "decommissioning" deletedNodes) == [ "existing" ];
+            assert lib.attrNames (deployable deletedNodes) == [ ];
+            pkgs.runCommand "homelab-lifecycle-fixtures" { } "touch $out";
         in
         hostChecks
         // darwinChecks
         // {
+          lifecycle-fixtures = lifecycleFixtures;
           topology =
             pkgs.runCommand "homelab-topology-check"
               {
@@ -215,10 +252,14 @@
               ''
                 HOMELAB_SOURCE_ROOT=${self} python3 ${./nix/scripts/check-migration.py}
                 for script in \
+                  ${./nix/scripts/adopt-host} \
+                  ${./nix/scripts/decommission-host} \
                   ${./nix/scripts/homelab-host} \
                   ${./nix/scripts/issue-kubeconfig} \
                   ${./nix/scripts/k3s-handoff} \
+                  ${./nix/scripts/provision-host} \
                   ${./nix/scripts/render-macbook-wireguard} \
+                  ${./nix/scripts/rollout-peers} \
                   ${./nix/scripts/sync-bootstrap-secret} \
                   ${./nix/scripts/verify-cluster} \
                   ${./nix/scripts/wireguard-secrets}; do

@@ -2,6 +2,7 @@
 from pathlib import Path
 import os
 import re
+import subprocess
 
 root = Path(os.environ.get("HOMELAB_SOURCE_ROOT", Path(__file__).resolve().parents[2]))
 
@@ -22,6 +23,52 @@ def forbid(relative: str, *needles: str) -> None:
     for needle in needles:
         if needle in text:
             raise SystemExit(f"{relative}: forbidden contract {needle!r}")
+
+
+def check_shell_syntax() -> None:
+    scripts = [
+        "nix/scripts/adopt-host",
+        "nix/scripts/decommission-host",
+        "nix/scripts/homelab-host",
+        "nix/scripts/k3s-handoff",
+        "nix/scripts/issue-kubeconfig",
+        "nix/scripts/provision-host",
+        "nix/scripts/render-macbook-wireguard",
+        "nix/scripts/rollout-peers",
+        "nix/scripts/sync-bootstrap-secret",
+        "nix/scripts/verify-cluster",
+        "nix/scripts/wireguard-secrets",
+    ]
+    for relative in scripts:
+        result = subprocess.run(
+            ["bash", "-n", str(root / relative)],
+            text=True,
+            capture_output=True,
+        )
+        if result.returncode:
+            raise SystemExit(
+                f"{relative}: bash -n failed\n{result.stderr.strip()}"
+            )
+
+        text = source(relative)
+        for marker, body in re.findall(
+            r"<<'([A-Za-z_][A-Za-z0-9_]*)'\n(.*?)\n\1",
+            text,
+            re.DOTALL,
+        ):
+            if marker == "EOF":
+                continue
+            result = subprocess.run(
+                ["sh", "-n"],
+                input=body,
+                text=True,
+                capture_output=True,
+            )
+            if result.returncode:
+                raise SystemExit(
+                    f"{relative}: embedded {marker} sh -n failed\n"
+                    f"{result.stderr.strip()}"
+                )
 
 
 require(
@@ -102,6 +149,19 @@ forbid(
     "/run/homelab-wireguard-",
 )
 require(
+    "nix/scripts/adopt-host",
+    "/root/.ssh",
+    "/home/*/.ssh",
+    "/var/spool/cron",
+    "/usr/local/bin/kubectl",
+    "/usr/local/bin/crictl",
+    "/usr/local/bin/ctr",
+    "/usr/local/bin/k3s-v*",
+    "etcd-snapshot save",
+    "pre-Nix state",
+    "iptables-backend=",
+)
+require(
     "nix/scripts/homelab-host",
     "bootstrap-host",
     "secretGeneration",
@@ -109,9 +169,6 @@ require(
     "--baseline",
     "restore-host",
     "rollback_armed_host",
-    "/root/.ssh",
-    "/home/*/.ssh",
-    "/var/spool/cron",
     "apply_native_runtime",
     "systemd-tmpfiles --create",
     "iptables-restore --noflush --wait",
@@ -124,14 +181,9 @@ require(
     "FIREWALL_SERVICE",
     "locale -a",
     "verify_legacy_cleanup",
-    "assert_iptables_nft_backend",
     '"(nf_tables)"',
-    "iptables-backend=",
-    "/usr/local/bin/kubectl",
-    "/usr/local/bin/crictl",
-    "/usr/local/bin/ctr",
-    "/usr/local/bin/k3s",
-    "/usr/local/bin/k3s-v*",
+    "reconcile)",
+    "lifecycle",
 )
 for relative in (
     "README.md",
@@ -312,4 +364,5 @@ forbid(
     "assert_no_k3s_upgrade_manager",
     "K3s upgrade must not downgrade",
 )
+check_shell_syntax()
 print("migration-contracts: ok")

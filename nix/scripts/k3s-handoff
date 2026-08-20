@@ -41,6 +41,7 @@ if test -n "$LEGACY_UNIT"; then
   case "$fragment" in /etc/systemd/system/*) ;; *) echo "unexpected legacy unit path: $fragment" >&2; exit 1 ;; esac
   test -x /usr/local/bin/k3s
   test -d /var/lib/rancher/k3s
+fi
 REMOTE_PREFLIGHT
     ;;
   arm)
