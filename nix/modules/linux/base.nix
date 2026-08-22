@@ -38,6 +38,11 @@ let
     ../../../ssh_pub_keys/office.pub
   ];
   democraticCsiKey = builtins.readFile ../../../ssh_pub_keys/democratic-csi.pub;
+  authorizedKeysFile =
+    if cfg.allowDestructiveCommit then
+      "/etc/ssh/authorized_keys.d/%u"
+    else
+      ".ssh/authorized_keys /etc/ssh/authorized_keys.d/%u";
 in
 {
   options.homelab = {
@@ -174,7 +179,7 @@ in
           Banner none
           PermitRootLogin ${if name == "n2p1" || name == "n2p2" then "prohibit-password" else "no"}
           PasswordAuthentication no
-          AuthorizedKeysFile .ssh/authorized_keys /etc/ssh/authorized_keys.d/%u
+          AuthorizedKeysFile ${authorizedKeysFile}
           KexAlgorithms sntrup761x25519-sha512@openssh.com,curve25519-sha256,curve25519-sha256@libssh.org,diffie-hellman-group16-sha512,diffie-hellman-group18-sha512
           Ciphers chacha20-poly1305@openssh.com,aes256-gcm@openssh.com,aes128-gcm@openssh.com,aes256-ctr,aes192-ctr,aes128-ctr
           MACs hmac-sha2-256-etm@openssh.com,hmac-sha2-512-etm@openssh.com,umac-128-etm@openssh.com

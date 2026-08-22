@@ -122,6 +122,7 @@
               rock = self.systemConfigs.rock5bp.config;
               rpi5 = self.systemConfigs.rpi5.config;
               n2p1 = self.systemConfigs.n2p1.config;
+              n2p1Commit = self.systemConfigs."n2p1-commit".config;
               rockWg = rock.environment.etc."systemd/network/99-wg1.netdev".text;
               rockNetworkdCredentials =
                 rock.environment.etc."systemd/system/systemd-networkd.service.d/50-homelab-wireguard-credentials.conf".text;
@@ -178,6 +179,11 @@
               == builtins.readFile ./ssh_pub_keys/democratic-csi.pub;
             assert lib.hasInfix "AuthorizedKeysFile .ssh/authorized_keys /etc/ssh/authorized_keys.d/%u"
               rock.environment.etc."ssh/sshd_config.d/90-homelab-hardening.conf".text;
+            assert lib.hasInfix "AuthorizedKeysFile /etc/ssh/authorized_keys.d/%u"
+              n2p1Commit.environment.etc."ssh/sshd_config.d/90-homelab-hardening.conf".text;
+            assert
+              !(lib.hasInfix "AuthorizedKeysFile .ssh/authorized_keys"
+                n2p1Commit.environment.etc."ssh/sshd_config.d/90-homelab-hardening.conf".text);
             assert !(builtins.hasAttr "homelab-host-settings" rock.systemd.services);
             assert !(builtins.hasAttr "homelab-wireguard" rock.systemd.services);
             assert !(builtins.hasAttr "homelab-firewall" rock.systemd.services);
