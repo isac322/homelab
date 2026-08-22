@@ -17,7 +17,8 @@ nix run .#homelab-host -- inventory
 
 ## Secret model
 
-WireGuard ciphertext는 `nix/secrets/wireguard/hosts/<nodeId>.sops.yaml`에 둔다. 각 bundle은 세 recipient로 암호화한다: 해당 node의 host-local age identity, 일상적인 SOPS 작업에 사용하는 online operator identity, 비상 복구에만 쓰는 offline recovery identity. host identity는 node마다 하나씩 만들고, operator/recovery identity는 전체 host bundle에 공통으로 사용한다. K3s node bundle에는 기존 cluster의 canonical server token을 byte-exact base64로 저장한다. 두 operator recipient의 `REPLACE_WITH_*` 값은 배포를 의도적으로 막는 placeholder다.
+WireGuard ciphertext는 `nix/secrets/wireguard/hosts/<nodeId>.sops.yaml`에 둔다. 각 bundle은 세 recipient로 암호화한다: 해당 node의 host-local age identity, 일상적인 SOPS 작업에 사용하는 online operator identity, 비상 복구에만 쓰는 offline recovery identity. host identity는 node마다 하나씩 만들고, operator/recovery identity는 전체 host bundle에 공통으로 사용한다. K3s node bundle에는 기존 cluster의 canonical server token을 byte-exact base64로 저장한다. recipient의 `REPLACE_WITH_*` 값은 배포를 의도적으로 막는 placeholder다.
+이 저장소의 secret app은 `SOPS_AGE_KEY_FILE`이 없으면 `${XDG_CONFIG_HOME:-$HOME/.config}/sops/age/keys.txt`를 online operator identity 경로로 사용한다. 다른 위치를 쓰려면 `HOMELAB_OPERATOR_AGE_KEY_FILE` 또는 `SOPS_AGE_KEY_FILE`을 명시한다.
 
 ```bash
 nix run .#bootstrap-host -- n2p1
@@ -31,8 +32,7 @@ nix run .#stage-secrets -- n2p1
 nix run .#rotate-psk -- --link wg0-n2p1-n2p2
 ```
 `bootstrap-host`는 기존 SSH identity로 접속하며, 비-root host에서는 현재 sudo 암호를 TTY로 한 번 요구해 `/etc/sudoers.d/homelab-admin`을 검증·설치한다. 이후 migration command는 `sudo -n`만 사용하고 암호 prompt가 발생하면 실패한다.
-
-복호화 workspace와 machine-bound credential staging tree는 tmpfs에만 생성한다. 원격 host는 generation을 검증한 뒤 `systemd-creds encrypt --with-key=host`로 `/var/lib/homelab-secrets/generations/<generation>/*.cred`를 만들고 `active`/`previous` symlink를 원자 교체한다. systemd는 unit별 `LoadCredentialEncrypted=`로 `/run/credentials/<unit>/`에만 plaintext를 제공한다. Migration receipt는 Git revision과 secret generation을 함께 고정한다.
+복호화 workspace와 machine-bound credential staging tree는 Linux에서는 runtime tmpfs를 우선 사용하고, `/dev/shm`이 없는 macOS에서는 권한이 제한된 `${TMPDIR:-/tmp}` workspace를 사용한 뒤 trap으로 즉시 제거한다. 원격 host는 generation을 검증한 뒤 `systemd-creds encrypt --with-key=host`로 `/var/lib/homelab-secrets/generations/<generation>/*.cred`를 만들고 `active`/`previous` symlink를 원자 교체한다. systemd는 unit별 `LoadCredentialEncrypted=`로 `/run/credentials/<unit>/`에만 plaintext를 제공한다. Migration receipt는 Git revision과 secret generation을 함께 고정한다.
 
 ## Linux migration
 

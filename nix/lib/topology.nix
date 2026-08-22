@@ -377,7 +377,7 @@ in
     edges = wg1Edges;
   };
   secretRecipients = {
-    operator = "REPLACE_WITH_ONLINE_OPERATOR_AGE_RECIPIENT";
+    operator = "age1ghdfjncup4cw6rfmvm4z0rnvdg7230svt5u2dxn8ced6uq4ze5wsdy22sd";
     recovery = "REPLACE_WITH_OFFLINE_OPERATOR_AGE_RECIPIENT";
   };
 }
