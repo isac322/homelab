@@ -167,7 +167,10 @@
             assert !(lib.hasInfix "diffie-hellman-group-exchange-sha256" rockSsh);
             assert rock.users.users.root.shell == "/bin/bash";
             assert rock.environment.etc."sudoers.d/homelab-admin".text == "bhyoo ALL=(ALL) NOPASSWD: ALL\n";
-            assert !(builtins.hasAttr "sudoers.d/homelab-admin" n2p1.environment.etc);
+            assert n2p1.environment.etc."sudoers.d/homelab-admin".text == "bhyoo ALL=(ALL) NOPASSWD: ALL\n";
+            assert n2p1.users.users.bhyoo.uid == 1000;
+            assert lib.hasInfix "PermitRootLogin no"
+              n2p1.environment.etc."ssh/sshd_config.d/90-homelab-hardening.conf".text;
             assert lib.hasInfix "exec /usr/local/bin/k3s server" rock.systemd.services.homelab-k3s.script;
             assert
               !(lib.hasInfix "${topology.wg0.edgeNetwork} -d ${topology.wg0.edgeNetwork} -j ACCEPT" firewall);

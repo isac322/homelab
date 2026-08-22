@@ -91,6 +91,7 @@ require(
     '".ssh/authorized_keys /etc/ssh/authorized_keys.d/%u"',
     '"/etc/ssh/authorized_keys.d/%u"',
     "ssh/authorized_keys.d/democratic-csi",
+    "PermitRootLogin no",
     '"sudoers.d/homelab-admin"',
     'root.shell = "/bin/bash";',
     "DNS=1.1.1.1#cloudflare-dns.com",
@@ -102,6 +103,8 @@ forbid(
     "homelab-legacy-tuning-cleanup =",
     "mkswap /dev/zram0",
     "diffie-hellman-group-exchange-sha256",
+    "PermitRootLogin ${",
+    'name != "n2p1"',
 )
 require(
     "nix/modules/linux/packages.nix",
@@ -254,7 +257,7 @@ require(
     "plaintext_workdir",
     "systemd-creds encrypt --with-key=host",
     "/var/lib/homelab-secrets",
-    "REPLACE_WITH_*)",
+    "replace the online operator recipient before import",
     "replace the offline recovery recipient before import",
 )
 forbid(

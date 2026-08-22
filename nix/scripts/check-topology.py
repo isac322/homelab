@@ -58,8 +58,8 @@ if text.count('fullMeshLinks "wg1"') != 1:
     raise SystemExit("wg1 backbone full-mesh construction changed")
 if "PrivateKey = " in text or "PresharedKey = " in text:
     raise SystemExit("topology contains plaintext secret")
-if not re.search(r"secretRecipients\s*=\s*\{.*?recovery\s*=", text, re.S):
-    raise SystemExit("operator recovery recipient contract missing")
+if not re.search(r"secretRecipients\s*=\s*\{.*?operator\s*=.*?recovery\s*=", text, re.S):
+    raise SystemExit("operator and recovery recipient contracts missing")
 if text.count("iscsiClient = true;") < 5:
     raise SystemExit("live backbone iSCSI client scope must retain the existing five hosts")
 if 'lifecycle = extra.lifecycle or "active";' not in text:

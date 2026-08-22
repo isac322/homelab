@@ -38,7 +38,7 @@ let
 
   nodes = {
     n2p1 =
-      mkNode "node-n2p1" "n2p1" "aarch64-linux" "debian" "apt" "root@192.168.219.3" "192.168.219.3"
+      mkNode "node-n2p1" "n2p1" "aarch64-linux" "debian" "apt" "bhyoo@192.168.219.3" "192.168.219.3"
         "192.168.219.1"
         "eth0"
         4096
@@ -58,7 +58,7 @@ let
           iscsiClient = true;
         };
     n2p2 =
-      mkNode "node-n2p2" "n2p2" "aarch64-linux" "debian" "apt" "root@192.168.219.4" "192.168.219.4"
+      mkNode "node-n2p2" "n2p2" "aarch64-linux" "debian" "apt" "bhyoo@192.168.219.4" "192.168.219.4"
         "192.168.219.1"
         "eth0"
         4096
@@ -377,6 +377,7 @@ in
     edges = wg1Edges;
   };
   secretRecipients = {
+    operator = "REPLACE_WITH_ONLINE_OPERATOR_AGE_RECIPIENT";
     recovery = "REPLACE_WITH_OFFLINE_OPERATOR_AGE_RECIPIENT";
   };
 }

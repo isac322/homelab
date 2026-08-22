@@ -177,7 +177,7 @@ in
           PrintLastLog yes
           PrintMotd no
           Banner none
-          PermitRootLogin ${if name == "n2p1" || name == "n2p2" then "prohibit-password" else "no"}
+          PermitRootLogin no
           PasswordAuthentication no
           AuthorizedKeysFile ${authorizedKeysFile}
           KexAlgorithms sntrup761x25519-sha512@openssh.com,curve25519-sha256,curve25519-sha256@libssh.org,diffie-hellman-group16-sha512,diffie-hellman-group18-sha512
@@ -237,8 +237,6 @@ in
     users.users = lib.mkMerge [
       {
         root.shell = "/bin/bash";
-      }
-      (lib.mkIf (name != "n2p1" && name != "n2p2") {
         bhyoo = {
           isNormalUser = true;
           uid = 1000;
@@ -247,7 +245,7 @@ in
           shell = pkgs.bashInteractive;
           extraGroups = [ "sudo" ];
         };
-      })
+      }
       (lib.mkIf hostConfig.iscsiServer {
         democratic-csi = {
           isNormalUser = true;
