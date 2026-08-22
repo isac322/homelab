@@ -32,6 +32,7 @@ let
   );
   adminKeys = map builtins.readFile [
     ../../../ssh_pub_keys/desktop.pub
+    ../../../ssh_pub_keys/laptop.pub
     ../../../ssh_pub_keys/mobile.pub
     ../../../ssh_pub_keys/tablet.pub
     ../../../ssh_pub_keys/office.pub
@@ -183,11 +184,11 @@ in
         '';
       };
       "ssh/authorized_keys.d/root" = {
-        text = lib.concatStringsSep "" adminKeys;
+        text = lib.concatStringsSep "\n" adminKeys + "\n";
         mode = "0644";
       };
       "ssh/authorized_keys.d/bhyoo" = {
-        text = lib.concatStringsSep "" adminKeys;
+        text = lib.concatStringsSep "\n" adminKeys + "\n";
         mode = "0644";
       };
       "ssh/authorized_keys.d/democratic-csi" = lib.mkIf hostConfig.iscsiServer {

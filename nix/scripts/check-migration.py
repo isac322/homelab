@@ -84,6 +84,8 @@ require(
     "tmpfiles.d/20-homelab-resolv.conf",
     'source = "${pkgs.tzdata}/share/zoneinfo/Asia/Seoul"',
     "AuthorizedKeysFile .ssh/authorized_keys /etc/ssh/authorized_keys.d/%u",
+    "../../../ssh_pub_keys/laptop.pub",
+    'lib.concatStringsSep "\\n" adminKeys + "\\n"',
     "ssh/authorized_keys.d/democratic-csi",
     '"sudoers.d/homelab-admin"',
     'root.shell = "/bin/bash";',
