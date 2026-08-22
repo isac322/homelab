@@ -17,7 +17,7 @@ nix run .#homelab-host -- inventory
 
 ## Secret model
 
-WireGuard ciphertext는 `nix/secrets/wireguard/hosts/<nodeId>.sops.yaml`에 둔다. 각 bundle은 target host age recipient와 offline recovery recipient를 모두 포함한다. K3s node bundle에는 기존 cluster의 canonical server token을 byte-exact base64로 저장한다. `REPLACE_WITH_*` recipient는 배포를 의도적으로 막는 placeholder다.
+WireGuard ciphertext는 `nix/secrets/wireguard/hosts/<nodeId>.sops.yaml`에 둔다. 각 bundle은 `bootstrap-age-identity`로 읽은 target host age recipient와 `nix/lib/topology.nix`의 offline recovery recipient를 모두 포함한다. K3s node bundle에는 기존 cluster의 canonical server token을 byte-exact base64로 저장한다. recovery recipient의 `REPLACE_WITH_*` 값은 배포를 의도적으로 막는 placeholder다.
 
 ```bash
 nix run .#bootstrap-host -- n2p1

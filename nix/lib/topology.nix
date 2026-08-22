@@ -378,6 +378,5 @@ in
   };
   secretRecipients = {
     recovery = "REPLACE_WITH_OFFLINE_OPERATOR_AGE_RECIPIENT";
-    hosts = lib.mapAttrs (_: node: "REPLACE_WITH_${lib.toUpper node.nodeId}_AGE_RECIPIENT") nodes;
   };
 }

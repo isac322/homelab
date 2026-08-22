@@ -250,6 +250,8 @@ require(
     "plaintext_workdir",
     "systemd-creds encrypt --with-key=host",
     "/var/lib/homelab-secrets",
+    "REPLACE_WITH_*)",
+    "replace the offline recovery recipient before import",
 )
 forbid(
     "nix/scripts/wireguard-secrets",
