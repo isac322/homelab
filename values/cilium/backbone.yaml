@@ -14,6 +14,11 @@
 # compatibility fixes do not affect the running agent process.
 rollOutCiliumPods: true
 
+# Keep Cilium/Kubernetes feeder chains ahead of the host HOMELAB hooks. The
+# migration activation inserts each HOMELAB jump immediately after them.
+prependIptablesChains: true
+
+
 # Agent metrics hostPorts already guarantee one Cilium pod per node, so let the
 # scheduler use its native hostPort conflict handling instead of pod anti-affinity.
 scheduling:
@@ -222,7 +227,7 @@ loadBalancer:
   algorithm: random   # 56 서비스 규모에 maglev는 과잉
   mode: snat          # DSR은 비대칭 라우팅 / MTU 문제 가능, 홈랩에선 snat 안정적
 
-# Host firewall: 별도 ansible iptables role이 노드 방화벽 관리
+# Host firewall: system-manager renders distro-native iptables persistence rules
 hostFirewall:
   enabled: false
 

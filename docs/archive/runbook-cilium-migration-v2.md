@@ -225,7 +225,7 @@ for entry in "bhyoo@192.168.219.5:rpi5" "bhyoo@192.168.219.6:rock5bp" \
   # Flannel이 만든 설정 파일 제거 (k3s에 내장된 기본 경로)
   case "$target" in
     bhyoo@*)
-      ssh "$target" "echo haZldGoQh3! | sudo -S -p '' rm -f /etc/cni/net.d/10-flannel* /etc/cni/net.d/*cilium* 2>&1 | grep -v password"
+      ssh "$target" "sudo -n rm -f /etc/cni/net.d/10-flannel* /etc/cni/net.d/*cilium*"
       ;;
     root@*)
       ssh "$target" "rm -f /etc/cni/net.d/10-flannel* /etc/cni/net.d/*cilium*"

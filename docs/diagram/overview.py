@@ -12,22 +12,16 @@ from diagrams.onprem.vcs import Github
 with Diagram('Overview', show=False):
     dns = Custom('Cloudflare DNS', icon_path=str(importlib.resources.path('assets', 'cloudflare-icon.png')))
 
-    with Cluster('k8s Cluster - prod'):
-        prod_masters = [Master(), Master(), Master()]
-
-        dns - prod_masters
-
     with Cluster('k8s Cluster - backbone'):
-        backbone_master = Master()
-        backbone_worker = Node()
-        backbone_master - dns
+        backbone_masters = [Master(), Master(), Master()]
+        backbone_workers = [Node(), Node()]
+        backbone_masters[0] - dns
 
     admin = User('Admin')
-    admin >> Edge(label='TO BE DEPRECATED', style='dotted') >> prod_masters[0]
     github_repo = Github('isac322/homelab')
-    github_repo << Edge(label='GitOps') << [backbone_master, admin]
+    github_repo << Edge(label='GitOps') << [backbone_masters[0], admin]
 
     gha = GithubActions('Github Actions')
     secret_store = Vault('OCI Secret Store')
     github_repo - gha >> Terraform('Terraform Cloud') >> [dns, secret_store]
-    secret_store << Edge(label='External Secrets') << [backbone_master, prod_masters[0]]
+    secret_store << Edge(label='External Secrets') << backbone_masters[0]

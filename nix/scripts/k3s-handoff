@@ -1,0 +1,357 @@
+#!/usr/bin/env bash
+set -euo pipefail
+root=${HOMELAB_REPO_ROOT:-$(git rev-parse --show-toplevel 2>/dev/null || pwd)}
+rollback_root=/var/lib/homelab-host-rollback
+rollback_unit=homelab-host-rollback
+
+usage() {
+  cat <<'EOF'
+Usage: k3s-handoff <command> <host> [arguments]
+  preflight <host> [legacy-unit]
+  arm <host> <recovery-directory> <previous-generation> [legacy-unit]
+  rearm <host>
+  disarm <host>
+  accept <host>
+  restore <host>
+  status <host>
+EOF
+}
+
+host_field() { nix --extra-experimental-features 'nix-command flakes' eval --raw "$root#topology.nodes.$1.$2"; }
+nix_json() { nix --extra-experimental-features 'nix-command flakes' eval --json "$@"; }
+remote() { local host=$1; shift; ssh -o BatchMode=yes -o StrictHostKeyChecking=accept-new "$(host_field "$host" sshTarget)" "$@"; }
+
+case "${1:-}" in
+  preflight)
+    host=${2:?host required}; legacy=${3:-}
+    case "$legacy" in ""|k3s.service|k3s-agent.service) ;; *) echo "invalid legacy unit: $legacy" >&2; exit 2 ;; esac
+    if [ -n "$legacy" ]; then
+      printf -v command 'sudo -n env LEGACY_UNIT=%q sh -s' "$legacy"
+    else
+      command='sudo -n env LEGACY_UNIT= sh -s'
+    fi
+    remote "$host" "$command" <<'REMOTE_PREFLIGHT'
+set -eu
+test ! -e /var/lib/homelab-host-rollback/current
+test ! -e /etc/systemd/system/homelab-host-rollback.service
+test ! -e /etc/systemd/system/homelab-host-rollback.timer
+if test -n "$LEGACY_UNIT"; then
+  test "$(systemctl is-active "$LEGACY_UNIT" 2>/dev/null || true)" = active
+  fragment=$(systemctl show -p FragmentPath --value "$LEGACY_UNIT")
+  case "$fragment" in /etc/systemd/system/*) ;; *) echo "unexpected legacy unit path: $fragment" >&2; exit 1 ;; esac
+  test -x /usr/local/bin/k3s
+  test -d /var/lib/rancher/k3s
+fi
+REMOTE_PREFLIGHT
+    ;;
+  arm)
+    host=${2:?host required}; recovery=${3:?recovery directory required}; previous=${4:-}; legacy=${5:-}
+    case "$previous" in ""|*[!0-9]*) test -z "$previous" || { echo "invalid previous generation: $previous" >&2; exit 2; } ;; esac
+    case "$legacy" in ""|k3s.service|k3s-agent.service) ;; *) echo "invalid legacy unit: $legacy" >&2; exit 2 ;; esac
+    test -s "$recovery/etc-state.tar"
+    test -s "$recovery/firewall-runtime.rules"
+    backend=$(host_field "$host" packageBackend)
+    default_interface=$(host_field "$host" defaultInterface)
+    interfaces=$(nix_json "$root#topology.nodes.$host.wireguard" | jq -r 'join(" ")')
+    role=$(host_field "$host" k3sRole 2>/dev/null || true)
+    absent_packages=$(nix_json "$root#systemConfigs.$host.config.homelab.distroPackages.absent" | jq -r 'join(" ")')
+    printf -v package_snapshot_command 'sudo -n env BACKEND=%q CANDIDATES=%q sh -s' "$backend" "$absent_packages"
+    remote "$host" "$package_snapshot_command" <<'REMOTE_PACKAGE_SNAPSHOT' > "$recovery/distro-packages.txt"
+set -eu
+case "$BACKEND" in
+  pacman)
+    for package in $CANDIDATES; do
+      /usr/bin/pacman -Q "$package" >/dev/null 2>&1 && printf '%s\n' "$package" || true
+    done
+    ;;
+  apt)
+    for package in $CANDIDATES; do
+      status=$(/usr/bin/dpkg-query -W -f='${Status}' "$package" 2>/dev/null || true)
+      test "$status" != "install ok installed" || printf '%s\n' "$package"
+    done
+    ;;
+  *) exit 2 ;;
+esac
+REMOTE_PACKAGE_SNAPSHOT
+    chmod 0600 "$recovery/distro-packages.txt"
+    if [ "$backend" = pacman ]; then
+      firewall_service=iptables.service
+      ssh_service=sshd.service
+    else
+      firewall_service=netfilter-persistent.service
+      ssh_service=ssh.service
+    fi
+    remote "$host" "sudo -n sh -ceu '
+      umask 077
+      base=$rollback_root
+      test ! -e \"\$base/current\"
+      test ! -e /etc/systemd/system/$rollback_unit.service
+      test ! -e /etc/systemd/system/$rollback_unit.timer
+      rm -rf \"\$base/.staging\"
+      install -d -m 0700 \"\$base/.staging\"
+    '"
+    if ! remote "$host" "sudo -n tee '$rollback_root/.staging/etc-state.tar' >/dev/null" < "$recovery/etc-state.tar" \
+      || ! remote "$host" "sudo -n tee '$rollback_root/.staging/firewall-runtime.rules' >/dev/null" < "$recovery/firewall-runtime.rules" \
+      || ! remote "$host" "sudo -n tee '$rollback_root/.staging/distro-packages.txt' >/dev/null" < "$recovery/distro-packages.txt"; then
+      remote "$host" "sudo -n rm -rf '$rollback_root/.staging'" || true
+      exit 1
+    fi
+    printf -v command \
+      'sudo -n env PREVIOUS_GENERATION=%q LEGACY_UNIT=%q FIREWALL_SERVICE=%q SSH_SERVICE=%q DEFAULT_INTERFACE=%q WG_INTERFACES=%q ROLE=%q PACKAGE_BACKEND=%q sh -s' \
+      "$previous" "$legacy" "$firewall_service" "$ssh_service" "$default_interface" "$interfaces" "$role" "$backend"
+    remote "$host" "$command" <<'REMOTE_ARM'
+set -eu
+base=/var/lib/homelab-host-rollback
+staging=$base/.staging
+dir=$base/current
+service=homelab-host-rollback
+case "$PREVIOUS_GENERATION" in ""|*[!0-9]*) test -z "$PREVIOUS_GENERATION" || exit 2 ;; esac
+case "$LEGACY_UNIT" in ""|k3s.service|k3s-agent.service) ;; *) exit 2 ;; esac
+case "$FIREWALL_SERVICE" in iptables.service|netfilter-persistent.service) ;; *) exit 2 ;; esac
+case "$SSH_SERVICE" in ssh.service|sshd.service) ;; *) exit 2 ;; esac
+case "$DEFAULT_INTERFACE" in ""|*[!A-Za-z0-9_.-]*) exit 2 ;; esac
+for interface in $WG_INTERFACES; do case "$interface" in *[!A-Za-z0-9_.-]*) exit 2 ;; esac; done
+case "$PACKAGE_BACKEND" in apt|pacman) ;; *) exit 2 ;; esac
+if test "$ROLE" = server || test "$ROLE" = agent; then
+  test -L /var/lib/homelab-secrets/active
+  test -s /var/lib/homelab-secrets/active/k3s-token.cred
+fi
+test -s "$staging/etc-state.tar"
+test -s "$staging/firewall-runtime.rules"
+test -e "$staging/distro-packages.txt"
+mv "$staging" "$dir"
+chmod 0600 "$dir/etc-state.tar" "$dir/firewall-runtime.rules" "$dir/distro-packages.txt"
+{
+  printf '%s\n' "$PREVIOUS_GENERATION"
+  printf '%s\n' "$LEGACY_UNIT"
+  printf '%s\n' "$FIREWALL_SERVICE"
+  printf '%s\n' "$SSH_SERVICE"
+  printf '%s\n' "$DEFAULT_INTERFACE"
+  printf '%s\n' "$WG_INTERFACES"
+  printf '%s\n' "$ROLE"
+  printf '%s\n' "$PACKAGE_BACKEND"
+} > "$dir/config"
+chmod 0600 "$dir/config"
+cat > "$dir/rollback" <<'ROLLBACK'
+#!/bin/sh
+set -eu
+dir=/var/lib/homelab-host-rollback/current
+{
+  IFS= read -r previous_generation
+  IFS= read -r legacy_unit
+  IFS= read -r firewall_service
+  IFS= read -r ssh_service
+  IFS= read -r default_interface
+  IFS= read -r wg_interfaces
+  IFS= read -r role
+  IFS= read -r package_backend
+} < "$dir/config"
+exec >> "$dir/rollback.log" 2>&1
+printf 'rollback started %s\n' "$(date -u +%FT%TZ)"
+if systemctl is-active homelab-k3s.service >/dev/null 2>&1; then
+  systemctl stop homelab-k3s.service
+fi
+test "$(systemctl is-active homelab-k3s.service 2>/dev/null || true)" != active
+systemctl disable homelab-k3s.service >/dev/null 2>&1 || true
+systemctl stop dev-zram0.swap systemd-zram-setup@zram0.service >/dev/null 2>&1 || true
+base=/var/lib/homelab-secrets
+if test -L "$base/previous"; then
+  abandoned=$(readlink "$base/active" 2>/dev/null || true)
+  restore=$(readlink "$base/previous")
+  name=${restore#generations/}
+  case "$name" in ""|.|..|*/*) exit 1 ;; esac
+  test "$restore" = "generations/$name"
+  test -d "$base/$restore"
+  rm -f "$base/active.new"
+  ln -s "$restore" "$base/active.new"
+  mv -Tf "$base/active.new" "$base/active"
+  if test -n "$abandoned" && test "$abandoned" != "$restore"; then
+    name=${abandoned#generations/}
+    case "$name" in ""|.|..|*/*) exit 1 ;; esac
+    test "$abandoned" = "generations/$name"
+    rm -rf -- "$base/$abandoned"
+  fi
+  rm -f "$base/previous"
+fi
+profile=/nix/var/nix/profiles/system-manager-profiles/system-manager
+if test -n "$previous_generation"; then
+  nix_env=$(command -v nix-env || true)
+  test -n "$nix_env" || nix_env=/nix/var/nix/profiles/default/bin/nix-env
+  test -x "$nix_env"
+  "$nix_env" --profile "$profile" --switch-generation "$previous_generation"
+  test -x "$profile/bin/activate"
+  "$profile/bin/activate"
+elif test -x "$profile/bin/deactivate"; then
+  "$profile/bin/deactivate"
+fi
+tar -C / -xf "$dir/etc-state.tar"
+systemctl daemon-reload
+iptables-restore --wait < "$dir/firewall-runtime.rules"
+systemctl enable systemd-networkd.service systemd-resolved.service "$firewall_service" "$ssh_service"
+hostnamectl set-hostname "$(cat /etc/hostname)"
+if test -s /etc/timezone; then timedatectl set-timezone "$(cat /etc/timezone)"; fi
+if test -s /etc/locale.conf; then localectl set-locale "$(cat /etc/locale.conf)"; fi
+systemctl restart systemd-resolved.service
+sshd -t
+systemctl reload "$ssh_service"
+sysctl --system
+systemctl restart systemd-networkd.service
+networkctl reload
+networkctl reconfigure "$default_interface"
+for interface in $wg_interfaces; do networkctl reconfigure "$interface"; done
+if test -s "$dir/distro-packages.txt"; then
+  packages=$(tr '\n' ' ' < "$dir/distro-packages.txt")
+  for package in $packages; do
+    case "$package" in ""|*[!A-Za-z0-9+._:-]*) exit 1 ;; esac
+  done
+  case "$package_backend" in
+    pacman)
+      /usr/bin/pacman --noconfirm --needed -S $packages
+      ;;
+    apt)
+      policy=/usr/sbin/policy-rc.d
+      policy_backup=
+      restore_policy() {
+        rm -f "$policy"
+        if test -n "$policy_backup"; then
+          mv "$policy_backup/policy-rc.d" "$policy"
+          rmdir "$policy_backup"
+        fi
+      }
+      if test -e "$policy" || test -L "$policy"; then
+        policy_backup=$(mktemp -d /run/homelab-policy-rc.d.XXXXXX)
+        cp -a "$policy" "$policy_backup/policy-rc.d"
+      fi
+      printf '#!/bin/sh\nexit 101\n' > "$policy"
+      chmod 0755 "$policy"
+      trap restore_policy EXIT HUP INT TERM
+      /usr/bin/apt-get update
+      /usr/bin/apt-get -o Dpkg::Options::=--force-confold install -y --no-install-recommends $packages
+      restore_policy
+      trap - EXIT HUP INT TERM
+      ;;
+    *) exit 1 ;;
+  esac
+fi
+for unit in zram-swap.service ksm.service thp-madvise.service iscsid.service open-iscsi.service; do
+  if systemctl is-enabled "$unit" >/dev/null 2>&1; then systemctl start "$unit"; fi
+done
+if test -n "$legacy_unit"; then
+  if systemctl is-active homelab-k3s.service >/dev/null 2>&1; then
+    systemctl disable --now homelab-k3s.service
+  fi
+  test "$(systemctl is-active homelab-k3s.service 2>/dev/null || true)" != active
+  systemctl enable --now "$legacy_unit"
+  test "$(systemctl is-active "$legacy_unit" 2>/dev/null || true)" = active
+elif test "$role" = server || test "$role" = agent; then
+  systemctl is-active homelab-k3s.service
+fi
+systemctl is-active systemd-networkd.service systemd-resolved.service "$ssh_service"
+systemctl disable homelab-host-rollback.timer >/dev/null 2>&1 || true
+touch "$dir/restored"
+printf 'rollback completed %s\n' "$(date -u +%FT%TZ)"
+ROLLBACK
+chmod 0700 "$dir/rollback"
+cat > /etc/systemd/system/$service.service <<'SERVICE'
+[Unit]
+Description=Restore the pre-activation homelab host state
+After=local-fs.target
+
+[Service]
+Type=oneshot
+ExecStart=/bin/sh /var/lib/homelab-host-rollback/current/rollback
+RemainAfterExit=yes
+SERVICE
+cat > /etc/systemd/system/$service.timer <<'TIMER'
+[Unit]
+Description=Rollback an unaccepted homelab host activation
+
+[Timer]
+OnActiveSec=15min
+AccuracySec=1s
+Unit=homelab-host-rollback.service
+
+[Install]
+WantedBy=timers.target
+TIMER
+chmod 0644 /etc/systemd/system/$service.service /etc/systemd/system/$service.timer
+systemctl daemon-reload
+cleanup_arm() {
+  systemctl disable --now "$service.timer" >/dev/null 2>&1 || true
+  rm -f "/etc/systemd/system/$service.service" "/etc/systemd/system/$service.timer"
+  systemctl daemon-reload
+  rm -rf "$dir"
+}
+arm_complete=false
+rollback_arm_failure() {
+  if test "$arm_complete" != true; then
+    if test -n "$LEGACY_UNIT"; then
+      systemctl enable --now "$LEGACY_UNIT" >/dev/null 2>&1 || true
+    fi
+    cleanup_arm
+  fi
+}
+trap rollback_arm_failure EXIT HUP INT TERM
+systemctl enable --now "$service.timer"
+if test -n "$LEGACY_UNIT"; then
+  systemctl disable --now "$LEGACY_UNIT"
+  test "$(systemctl is-active "$LEGACY_UNIT" 2>/dev/null || true)" != active
+fi
+systemctl is-active "$service.timer"
+arm_complete=true
+trap - EXIT HUP INT TERM
+REMOTE_ARM
+    ;;
+  rearm)
+    host=${2:?host required}
+    remote "$host" "sudo -n sh -ceu '
+      test -s $rollback_root/current/etc-state.tar
+      test -s $rollback_root/current/firewall-runtime.rules
+      test -e $rollback_root/current/distro-packages.txt
+      systemctl reset-failed $rollback_unit.service
+      systemctl enable --now $rollback_unit.timer
+      systemctl restart $rollback_unit.timer
+      systemctl is-active $rollback_unit.timer
+    '"
+    ;;
+  disarm)
+    host=${2:?host required}
+    remote "$host" "sudo -n sh -ceu '
+      test -d $rollback_root/current
+      systemctl disable --now $rollback_unit.timer
+      test \"\$(systemctl is-active $rollback_unit.timer 2>/dev/null || true)\" != active
+    '"
+    ;;
+  accept)
+    host=${2:?host required}
+    remote "$host" "sudo -n sh -ceu '
+      systemctl disable --now $rollback_unit.timer 2>/dev/null || true
+      systemctl stop $rollback_unit.service 2>/dev/null || true
+      rm -f /etc/systemd/system/$rollback_unit.service /etc/systemd/system/$rollback_unit.timer
+      systemctl daemon-reload
+      systemctl reset-failed $rollback_unit.service 2>/dev/null || true
+      rm -rf $rollback_root/current $rollback_root/.staging
+    '"
+    ;;
+  restore)
+    host=${2:?host required}
+    remote "$host" "sudo -n sh -ceu '
+      test -s $rollback_root/current/etc-state.tar
+      test -s $rollback_root/current/firewall-runtime.rules
+      test -e $rollback_root/current/distro-packages.txt
+      if ! test -f $rollback_root/current/restored; then
+        systemctl reset-failed $rollback_unit.service
+        systemctl start $rollback_unit.service
+      fi
+      test -f $rollback_root/current/restored
+    '"
+    ;;
+  status)
+    host=${2:?host required}
+    remote "$host" "sudo -n sh -ceu '
+      systemctl show $rollback_unit.timer $rollback_unit.service homelab-k3s.service k3s.service k3s-agent.service -p Id -p ActiveState -p UnitFileState 2>/dev/null || true
+      test ! -d $rollback_root/current || find $rollback_root/current -maxdepth 1 -type f -printf \"%f\\n\" | sort
+    '"
+    ;;
+  *) usage; exit 2 ;;
+esac

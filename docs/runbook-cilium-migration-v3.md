@@ -106,7 +106,6 @@
 | D | Traefik DaemonSet/Service 잔존 (port 443 conflict 잠재) | KPR shadow로 동작 안 함, 자원만 차지 | P2 |
 | E | static-lb 잔존 | Node IPAM과 중복, 부수효과는 없으나 정리 필요 | P3 |
 | F | `backbone-traefik` OutOfSync | 진단 필요 | P3 |
-| G | 다음 Traefik values 파일 잔존 후 prod 클러스터 영향 | prod 클러스터는 별도 (이번 범위 밖) | P3 |
 
 P0 = 시작 즉시. P1~P3 = 순차 정리.
 
@@ -131,7 +130,6 @@ P0 = 시작 즉시. P1~P3 = 순차 정리.
 
 - `values/cilium/backbone.yaml` (CNI/KPR/Node IPAM 그대로 사용)
 - `cluster-setup/k3s.yaml`, `cluster-setup/firewall.yaml` (v2에서 적용 완료)
-- prod 클러스터 (별도 마이그레이션 계획 필요. 이번엔 손대지 않음)
 - LB-IPAM, L2 Announcement (LG U+ 라우터 검증 후 별도 계획)
 - WireGuard 메쉬, k3s 노드 구성 (그대로)
 
@@ -385,28 +383,26 @@ ingress:
   - line 33 `grafana.ingress` → `enabled: false`
   - line 280 `prometheus.ingress` → `enabled: false`
 
-D.2 ApplicationSet `argocd/appsets/traefik.yaml`에서 `backbone` 항목 삭제:
+D.2 Traefik ApplicationSet과 values는 active desired state에서 제거한다.
 
-```yaml
-generators:
-  - list:
-      elements:
-        - cluster: prod   # backbone 줄 삭제
+```bash
+test ! -e argocd/appsets/traefik.yaml
+test ! -e values/traefik/backbone.yaml
+kubectl --context private-backbone -n argocd get application backbone-traefik
 ```
 
-D.3 `argocd/apps/_traefik-internal.yaml` — `_` 접두사 그대로 두면 ArgoCD에 미배포라 영향 없음. 정리 차원에서 삭제는 선택.
+마지막 명령은 `NotFound`여야 한다. 남아 있으면 ArgoCD finalizer와 child resource 상태를 확인한 뒤 제거한다.
 
-D.4 commit + push.
+D.3 commit + push.
 
 ```bash
 git add values/hindsight/backbone.yaml values/immich/backbone.yaml \
-        values/versitygw/backbone.yaml values/kube-prometheus-stack/backbone.yaml \
-        argocd/appsets/traefik.yaml
-git commit -m "chore(backbone): disable Traefik Ingress for 5 apps (moved to Cilium Gateway HTTPRoute)"
+        values/versitygw/backbone.yaml values/kube-prometheus-stack/backbone.yaml
+git commit -m "chore(backbone): remove superseded Traefik ingress ownership"
 git push origin master
 ```
 
-D.5 ArgoCD sync 진행. `backbone-traefik` App 자동 삭제 + finalizer로 종속 리소스 cleanup.
+D.4 ArgoCD sync 후 Cilium Gateway/HTTPRoute와 backend endpoint를 재검증한다.
 
 ```bash
 # Application 삭제 진행 확인
@@ -638,9 +634,8 @@ ls -lt ~/backup/cilium-migration/ | head
 
 ## 7. 후속 계획 (이 runbook 범위 밖)
 
-1. **prod 클러스터 마이그레이션**: 별도 계획 필요. backbone과 다르게 prod는 노드별 LAN/WG/external IP 매핑이 더 복잡(`values/static-lb/prod.yaml`의 `internalIPMappings/externalIPMappings`). prod도 단일 스택으로 갈지, LAN 노출 plane을 따로 둘지 결정 후 v4 runbook 작성.
-2. **LAN VIP 도입 가능성**: LG U+ 라우터 `ARP spoofing 대응` 비활성 + Cilium L2 Announcement + LB-IPAM 도입 검토. 별도 검증 + 별도 plane.
-3. **WG VIP 진짜 fail-over**: 현재 rpi5 단일 노드 의존이 아닌 진정한 multi-node WG endpoint failover가 필요하면 BGP 또는 외부 health-checked LB(별도 SBC) 필요. 후속 계획.
+1. **LAN VIP 도입 가능성**: LG U+ 라우터 `ARP spoofing 대응` 비활성 + Cilium L2 Announcement + LB-IPAM 도입 검토. 별도 검증 + 별도 plane.
+2. **WG VIP 진짜 fail-over**: 현재 rpi5 단일 노드 의존이 아닌 진정한 multi-node WG endpoint failover가 필요하면 BGP 또는 외부 health-checked LB(별도 SBC) 필요. 후속 계획.
 
 ---
 
