@@ -315,13 +315,14 @@ case "${1:-}" in
   bootstrap-host)
     host=${2:?host required}; target=$(host_field "$host" sshTarget)
     ssh -tt -o StrictHostKeyChecking=accept-new "$target" "sh -ceu '
+      user=\$(id -un)
       if test \"\$(id -u)\" -eq 0; then
         SUDO=
       else
         sudo -v
         SUDO=sudo
         tmp=\$(mktemp /tmp/homelab-admin.XXXXXX)
-        trap 'rm -f \"\$tmp\"' EXIT HUP INT TERM
+        trap \"rm -f -- \$tmp\" EXIT HUP INT TERM
         printf \"%s ALL=(ALL) NOPASSWD: ALL\\n\" \"\$user\" > \"\$tmp\"
         chmod 0440 \"\$tmp\"
         sudo visudo -cf \"\$tmp\"

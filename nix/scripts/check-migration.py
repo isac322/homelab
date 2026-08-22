@@ -173,6 +173,8 @@ require(
 require(
     "nix/scripts/homelab-host",
     "bootstrap-host",
+    r"user=\$(id -un)",
+    r'trap \"rm -f -- \$tmp\"',
     "secretGeneration",
     "different Git revision",
     "--baseline",
@@ -193,6 +195,10 @@ require(
     '"(nf_tables)"',
     "reconcile)",
     "lifecycle",
+)
+forbid(
+    "nix/scripts/homelab-host",
+    "trap 'rm -f",
 )
 for relative in (
     "README.md",
