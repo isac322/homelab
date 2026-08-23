@@ -35,18 +35,19 @@ nix run .#rotate-psk -- --link wg0-n2p1-n2p2
 
 ## Linux migration
 
-일반 activation은 다음 네 단계다. K3s version과 rolling upgrade는 기존 Rancher `system-upgrade-controller`, `server-plan`, `agent-plan`, `backbone-k3s-upgrade` Application이 계속 소유한다. Host migration 중에는 Plan version을 변경하거나 별도 rollout을 시작하지 않는다.
+일반 activation은 다음 다섯 단계다. K3s version과 rolling upgrade는 기존 Rancher `system-upgrade-controller`, `server-plan`, `agent-plan`, `backbone-k3s-upgrade` Application이 계속 소유한다. Host migration 중에는 Plan version을 변경하거나 별도 rollout을 시작하지 않는다.
 
 1. `prepare`: clean/pushed Git revision을 대상 Linux host가 native architecture로 build/register하고, 필수 distro package reconciliation, iptables-nft backend preflight, baseline/recovery archive, secret staging, legacy K3s preflight를 완료한다. macOS operator는 Linux generation을 로컬에서 build하지 않는다.
-2. `activate`: runtime firewall snapshot과 recovery archive를 `/var/lib/homelab-host-rollback/current`에 복제하고 reboot 후에도 다시 시작되는 15분 rollback timer를 arm한 뒤, server datastore cold backup, `prepare`가 등록한 정확한 system-manager generation activation, host verification을 수행한다.
-3. `reboot-verify`: 새 SSH session과 runtime contract를 재검증한 뒤 timer만 disarm한다. recovery archive/service는 `commit` 완료 전까지 유지한다.
-4. `commit`: 대상 host가 commit generation을 native build/register한 뒤 persistent timer를 다시 arm하고, destructive activation과 legacy systemd unit/tuning wrapper/distro package 제거를 수행한다. Rancher upgrade가 사용하는 `/usr/local/bin/k3s` install layout은 유지하며, 전체 검증이 성공한 경우에만 rollback artifact와 timer를 삭제한다.
+2. `activate`: runtime firewall snapshot과 recovery archive를 `/var/lib/homelab-host-rollback/current`에 복제하고 reboot 후에도 다시 시작되는 15분 rollback timer를 arm한 뒤, server datastore cold backup과 `prepare`가 등록한 정확한 system-manager generation activation을 수행한다. Armed 상태의 내부 runtime verification은 timer를 먼저 15분으로 rearm한 뒤 시작하며, 검증 완료 후 다음 operator 승인 대기 전에 다시 rearm한다.
+3. `reboot`: local `activated` 또는 retry 가능한 `rebooting` receipt를 확인한 직후, remote receipt/state/secret/store path/boot ID를 읽기 전에 timer를 먼저 15분으로 rearm한다. 그 뒤 phase 조건을 검증하고, 최초 요청이면 현재 kernel boot ID를 receipt에 보존해 phase를 `rebooting`으로 기록한 뒤 non-blocking reboot를 요청한다. Watchdog rollback이 시작됐거나 완료됐으면 command-entry rearm이 실패한다. Reboot 요청이 실패하고 boot ID가 그대로면 같은 `reboot` command가 다시 command-entry rearm 후 요청을 재시도하며, boot ID가 이미 바뀌었으면 timer만 갱신된 상태로 재부팅하지 않고 `reboot-verify`를 요구한다.
+4. `reboot-verify`: host가 다시 연결되면 local receipt가 `rebooting`인지 먼저 확인하고, 다른 remote receipt/boot 검증보다 먼저 rollback timer를 15분으로 rearm한다. 그 뒤 remote receipt 조건과 pre-reboot boot ID를 검증하고 현재 boot ID가 달라졌는지 확인한다. 새 SSH session과 runtime contract 검증도 내부 armed verification entrypoint가 다시 rearm한 뒤 최대 12분 동안 수행하며, 성공한 경우에만 timer를 disarm한다. 검증 timeout/실패 시 timer를 armed 상태로 둔 채 즉시 restore를 시도하므로 SSH session이 끊겨도 persistent service가 복구를 계속할 수 있다. recovery archive/service는 `commit` 완료 전까지 유지한다.
+5. `commit`: 대상 host가 commit generation을 native build/register한 뒤 persistent timer를 arm하고 destructive activation과 legacy systemd unit/tuning wrapper/distro package 제거를 수행한다. 각 armed runtime verification은 시작 전에 timer를 다시 갱신하고, 최종 `accept`도 cleanup 전에 먼저 rearm하여 rollback이 이미 시작되거나 완료된 상태에서 artifact를 삭제하지 않는다. Rancher upgrade가 사용하는 `/usr/local/bin/k3s` install layout은 유지하며, 전체 검증과 `accept`가 성공한 경우에만 rollback artifact와 timer를 삭제한다.
 
 ```bash
 nix run .#adopt-host -- n2p1
 nix run .#deploy -- n2p1
 nix run .#homelab-host -- activate n2p1
-# 운영자가 재부팅
+nix run .#homelab-host -- reboot n2p1
 nix run .#homelab-host -- reboot-verify n2p1
 nix run .#homelab-host -- commit n2p1
 ```
@@ -63,17 +64,19 @@ nix run .#homelab-host -- restore-host n2p1
 nix run .#homelab-host -- rollback n2p1 <system-manager-generation>
 ```
 
-Recovery artifact에는 전체 `/etc`, root/사용자 SSH state, cron spool, purge 전 distro package inventory, runtime firewall, K3s install-script binary/helper files, legacy K3s unit, server etcd snapshot과 datastore cold backup을 보관한다. 자동 rollback은 새 K3s/zram을 정지하고 previous secret generation, 이전 system-manager generation 또는 deactivate, recovery archive, runtime firewall, native network/SSH, 제거된 distro package, tuning/iSCSI, legacy K3s 순서로 복구한다. 복구가 끝날 때까지 timer는 enabled 상태로 남아 실패 후 reboot에서 다시 시도할 수 있다.
+`restore-host`는 activation이 timer를 arm한 뒤 receipt 기록 전에 중단된 `prepared` 상태와 `activated`, `rebooting`, `reboot-verified` 상태를 모두 복구할 수 있다. Watchdog가 먼저 완료된 경우 다음 phase-gated command는 `restored` marker를 확인하고 `prepared` receipt를 포함한 local receipt를 먼저 `rolled-back`으로 동기화한 뒤 `cleanup-restored`로 rollback service/artifact cleanup을 시도한다. Remote recovery가 없는 `prepared` receipt는 정상적인 prepare 재실행 상태이므로 그대로 유지한다. `accept`는 아직 armed이고 rollback service가 inactive인 recovery만 대상으로 하며 command entry에서 먼저 rearm한다. Cleanup이 실패해도 `rolled-back` receipt와 recovery artifact를 유지해 다음 phase-gated command가 cleanup을 재시도한다. Restore가 진행 중이거나 실패한 상태는 완료로 기록하지 않으며 artifact와 timer를 보존한다.
+
+Recovery artifact에는 전체 `/etc`, root/사용자 SSH state, cron spool, purge 전 distro package inventory, runtime firewall, K3s install-script binary/helper files, legacy K3s unit, server etcd snapshot과 datastore cold backup을 보관한다. 자동 rollback은 새 K3s/zram을 정지하고 previous secret generation, 이전 system-manager generation 또는 deactivate, recovery archive, native network/SSH/time synchronization, legacy K3s, runtime firewall, 제거된 distro package와 tuning/iSCSI 순서로 복구한다. systemd에서 실행되는 rollback script는 `/usr/local/sbin:/usr/local/bin:/usr/sbin:/usr/bin:/sbin:/bin`을 명시적으로 사용한다. Cilium이 재생성하는 nft set을 참조하는 captured ruleset은 legacy K3s가 먼저 시작된 뒤 `iptables-restore --test` bounded retry를 통과할 때만 적용한다. Full snapshot 적용 뒤 node-local CRI로 `cilium-agent` container를 restart하고 새 container ID와 `127.0.0.1:9879/healthz`를 확인해 initial full reconciliation을 강제한다. NTP가 일시적으로 unavailable이면 package 복구만 보류하고 legacy K3s를 먼저 복구한 채 rollback timer를 유지한다. Restore는 한 번 재시도하며, 완료된 secret/system-manager/archive/firewall stage marker를 재사용해 destructive prefix와 Cilium restart를 반복하지 않는다. 두 번 모두 실패하면 `accept`를 실행하거나 recovery artifact와 `rollback.log`를 삭제하지 않는다. `status`는 rollback log와 service journal을 함께 출력한다. 복구가 끝날 때까지 timer는 enabled 상태로 남아 실패 후 reboot에서 다시 시도할 수 있다.
 
 ## Service ownership
 
 `system-manager`가 직접 관리할 수 있는 파일·사용자·tmpfs·mount·networkd·native loader 설정은 선언형 state로 둔다. Permanent declarative custom unit은 장기 실행 daemon인 `homelab-k3s.service` 하나뿐이며, 15분 rollback service/timer는 activation 동안 `/etc/systemd/system`에만 임시 설치된다.
 
-- hostname, locale, timezone, hosts, resolver, SSH, sysctl, tmpfiles, zram-generator는 declarative file과 native generator가 소유한다. DNS는 live-proven `DNSSEC=yes`, `DNSOverTLS=yes`를 사용하고 LAN link에 DoT hostname, `MulticastDNS=yes`, `LLMNR=no`를 명시한다.
+- hostname, locale, timezone, hosts, resolver, SSH, sysctl, tmpfiles, zram-generator는 declarative file과 native generator가 소유한다. Native `systemd-timesyncd`는 activation과 rollback에서 enable/restart한다. 최초 clock recovery가 DNSSEC/DoT와 현재 시각에 의존하지 않도록 `/etc/systemd/timesyncd.conf`에는 numeric NTP endpoints만 선언하며 compiled hostname fallback은 비운다. Activation과 verification은 `NTPSynchronized=yes`를 bounded retry로 확인한 뒤 K3s 전환을 진행한다. DNS는 live-proven `DNSSEC=yes`, `DNSOverTLS=yes`를 사용하고 LAN link에 DoT hostname, `MulticastDNS=yes`, `LLMNR=no`를 명시한다.
 - WireGuard는 networkd `.netdev`/`.network`와 encrypted systemd credentials를 사용한다. 첫 activation의 reload/reconfigure와 peer 검증은 migration command가 수행한다.
 - Firewall은 distro-native `iptables.service`/`netfilter-persistent`가 Nix-rendered rules file을 boot에 적재한다. `iptables`, `iptables-save`, `iptables-restore`는 모두 `(nf_tables)`를 보고해야 하는 iptables-nft backend invariant다. Running host에서는 native loader를 restart하지 않고 migration command가 `iptables-restore --noflush`로 rules를 갱신한 뒤 기존 Cilium feeder chain 뒤에 HOMELAB jump를 재삽입한다. 실패 시 persistent recovery service가 archive의 runtime ruleset을 복구한다. rock5bp의 active Samba client `192.168.219.139/32` TCP/445와 LAN NetBIOS UDP/137-138도 선언적으로 유지한다.
 - Distro package 설치·삭제, native service enable/reload, legacy file 제거는 `prepare`/`activate`/`commit` migration command에서만 실행한다.
-- iSCSI client는 K3s가 native `iscsid.service`와 `open-iscsi.service`를 직접 wants/after로 참조한다. sshd는 `/etc/ssh/authorized_keys.d/%u`를 실제 effective config에서 읽는지 검증한다. 비-root migration SSH 사용자의 NOPASSWD grant도 `/etc/sudoers.d/homelab-admin`으로 선언한다.
+- iSCSI client는 K3s가 native `iscsid.service`와 `open-iscsi.service`를 직접 wants/after로 참조한다. sshd는 legacy main config가 drop-in을 include하지 않는 host도 있으므로 `/etc/ssh/sshd_config` 전체를 Nix가 소유하고 `/etc/ssh/authorized_keys.d/%u`를 실제 effective config에서 읽는지 검증한다. 비-root migration SSH 사용자의 NOPASSWD grant도 `/etc/sudoers.d/homelab-admin`으로 선언한다.
 
 iptables frontend가 legacy backend를 보고하면 `prepare`, `activate`, `verify-host`, runtime capture/restore는 ruleset을 건드리기 전에 실패한다. Migration command는 `update-alternatives`를 실행하거나 backend를 자동 전환하지 않는다. x_tables와 nf_tables ruleset은 서로 보이지 않으므로 backend 전환은 이 migration의 범위가 아니다. 필요한 경우 두 backend를 각각 별도 보존하고 독립된 canary 절차로 전환해야 한다.
 
@@ -104,6 +107,7 @@ nix run .#issue-kubeconfig -- <identity>
 ```bash
 nix run .#provision-host -- <new-node> --token-source rock5bp
 nix run .#homelab-host -- activate <new-node>
+nix run .#homelab-host -- reboot <new-node>
 nix run .#homelab-host -- reboot-verify <new-node>
 nix run .#homelab-host -- commit <new-node>
 ```
@@ -132,4 +136,4 @@ python3 nix/scripts/check-migration.py
 bash -n nix/scripts/adopt-host nix/scripts/decommission-host nix/scripts/homelab-host nix/scripts/k3s-handoff nix/scripts/provision-host nix/scripts/render-macbook-wireguard nix/scripts/rollout-peers nix/scripts/wireguard-secrets
 ```
 
-실호스트에서는 새 SSH session, effective sshd config, WireGuard public key/peer/AllowedIPs/handshake, firewall INPUT/FORWARD policy와 Cilium/Samba/NetBIOS rules, K3s version/Ready/etcd, iSCSI path, persistent rollback timer 상태를 확인한다. 기존 Ansible host-management 경로는 모든 node cutover와 reboot 검증이 끝날 때까지 rollback 기준으로 유지한다.
+실호스트에서는 새 SSH session, effective sshd config, synchronized system clock, WireGuard public key/peer/AllowedIPs/handshake, firewall INPUT/FORWARD policy와 Cilium/Samba/NetBIOS rules, K3s version/Ready/etcd, iSCSI path, persistent rollback timer 상태를 확인한다. 기존 Ansible host-management 경로는 모든 node cutover와 reboot 검증이 끝날 때까지 rollback 기준으로 유지한다.

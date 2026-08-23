@@ -34,6 +34,9 @@ baseline() {
     printf "arch="; uname -m
     printf "hostname="; hostname
     printf "networkd="; systemctl is-enabled systemd-networkd 2>/dev/null || true
+    printf "timesyncd="; systemctl is-active systemd-timesyncd 2>/dev/null || true
+    printf "timesyncd-enabled="; systemctl is-enabled systemd-timesyncd 2>/dev/null || true
+    printf "ntp-synchronized="; timedatectl show -p NTPSynchronized --value 2>/dev/null || true
     printf "wireguard="; sudo -n wg show interfaces 2>/dev/null || true
     printf "wireguard-public="; for i in $(sudo -n wg show interfaces 2>/dev/null); do printf "%s:%s " "$i" "$(sudo -n wg show "$i" public-key)"; done; echo
     printf "iptables-backend="; sudo -n iptables --version 2>/dev/null || true

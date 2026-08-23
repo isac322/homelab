@@ -14,6 +14,9 @@ let
     topology.wg0.trustedNetwork
   ]
   ++ map (edge: topology.wg0.edges.${edge}.address) (builtins.attrNames topology.wg0.edges);
+  peerCount = builtins.length (
+    builtins.filter (peer: peer != name) (builtins.attrNames topology.wg0.peerNodes)
+  );
 in
 {
   environment.systemPackages = [
@@ -48,7 +51,7 @@ in
             "/sbin/route -n add -net ${network} -interface wg0 2>/dev/null || /sbin/route -n change -net ${network} -interface wg0"
           ) routeNetworks}
           test "$(${pkgs.wireguard-tools}/bin/wg show wg0 public-key)" = ${lib.escapeShellArg node.publicKey}
-          test "$(${pkgs.wireguard-tools}/bin/wg show wg0 peers | /usr/bin/wc -w | /usr/bin/tr -d ' ')" -eq 6
+          test "$(${pkgs.wireguard-tools}/bin/wg show wg0 peers | /usr/bin/wc -w | /usr/bin/tr -d ' ')" -eq ${toString peerCount}
         ''
       ];
       RunAtLoad = true;

@@ -11,7 +11,9 @@ Usage: k3s-handoff <command> <host> [arguments]
   arm <host> <recovery-directory> <previous-generation> [legacy-unit]
   rearm <host>
   disarm <host>
+  state <host>
   accept <host>
+  cleanup-restored <host>
   restore <host>
   status <host>
 EOF
@@ -135,7 +137,10 @@ chmod 0600 "$dir/config"
 cat > "$dir/rollback" <<'ROLLBACK'
 #!/bin/sh
 set -eu
+export PATH="/usr/local/sbin:/usr/local/bin:/usr/sbin:/usr/bin:/sbin:/bin:${PATH:-}"
 dir=/var/lib/homelab-host-rollback/current
+stages="$dir/stages"
+mkdir -p "$stages"
 {
   IFS= read -r previous_generation
   IFS= read -r legacy_unit
@@ -155,42 +160,56 @@ test "$(systemctl is-active homelab-k3s.service 2>/dev/null || true)" != active
 systemctl disable homelab-k3s.service >/dev/null 2>&1 || true
 systemctl stop dev-zram0.swap systemd-zram-setup@zram0.service >/dev/null 2>&1 || true
 base=/var/lib/homelab-secrets
-if test -L "$base/previous"; then
-  abandoned=$(readlink "$base/active" 2>/dev/null || true)
-  restore=$(readlink "$base/previous")
-  name=${restore#generations/}
-  case "$name" in ""|.|..|*/*) exit 1 ;; esac
-  test "$restore" = "generations/$name"
-  test -d "$base/$restore"
-  rm -f "$base/active.new"
-  ln -s "$restore" "$base/active.new"
-  mv -Tf "$base/active.new" "$base/active"
-  if test -n "$abandoned" && test "$abandoned" != "$restore"; then
-    name=${abandoned#generations/}
+if ! test -e "$stages/secrets-restored"; then
+  if test -L "$base/previous"; then
+    abandoned=$(readlink "$base/active" 2>/dev/null || true)
+    restore=$(readlink "$base/previous")
+    name=${restore#generations/}
     case "$name" in ""|.|..|*/*) exit 1 ;; esac
-    test "$abandoned" = "generations/$name"
-    rm -rf -- "$base/$abandoned"
+    test "$restore" = "generations/$name"
+    test -d "$base/$restore"
+    rm -f "$base/active.new"
+    ln -s "$restore" "$base/active.new"
+    mv -Tf "$base/active.new" "$base/active"
+    if test -n "$abandoned" && test "$abandoned" != "$restore"; then
+      name=${abandoned#generations/}
+      case "$name" in ""|.|..|*/*) exit 1 ;; esac
+      test "$abandoned" = "generations/$name"
+      rm -rf -- "$base/$abandoned"
+    fi
+    rm -f "$base/previous"
   fi
-  rm -f "$base/previous"
+  touch "$stages/secrets-restored"
 fi
 profile=/nix/var/nix/profiles/system-manager-profiles/system-manager
-if test -n "$previous_generation"; then
-  nix_env=$(command -v nix-env || true)
-  test -n "$nix_env" || nix_env=/nix/var/nix/profiles/default/bin/nix-env
-  test -x "$nix_env"
-  "$nix_env" --profile "$profile" --switch-generation "$previous_generation"
-  test -x "$profile/bin/activate"
-  "$profile/bin/activate"
-elif test -x "$profile/bin/deactivate"; then
-  "$profile/bin/deactivate"
+if ! test -e "$stages/system-manager-restored"; then
+  if test -n "$previous_generation"; then
+    nix_env=$(command -v nix-env || true)
+    test -n "$nix_env" || nix_env=/nix/var/nix/profiles/default/bin/nix-env
+    test -x "$nix_env"
+    "$nix_env" --profile "$profile" --switch-generation "$previous_generation"
+    test -x "$profile/bin/activate"
+    "$profile/bin/activate"
+  elif test -x "$profile/bin/deactivate"; then
+    "$profile/bin/deactivate" || {
+      rc=$?
+      printf 'rollback failed during system-manager deactivation (exit %s)\n' "$rc" >&2
+      exit "$rc"
+    }
+  fi
+  touch "$stages/system-manager-restored"
 fi
-tar -C / -xf "$dir/etc-state.tar"
+if ! test -e "$stages/archive-restored"; then
+  tar -C / -xf "$dir/etc-state.tar" || {
+    rc=$?
+    printf 'rollback failed while restoring the host archive (exit %s)\n' "$rc" >&2
+    exit "$rc"
+  }
+  touch "$stages/archive-restored"
+fi
 systemctl daemon-reload
-iptables-restore --wait < "$dir/firewall-runtime.rules"
-systemctl enable systemd-networkd.service systemd-resolved.service "$firewall_service" "$ssh_service"
+systemctl enable systemd-networkd.service systemd-resolved.service systemd-timesyncd.service "$firewall_service" "$ssh_service"
 hostnamectl set-hostname "$(cat /etc/hostname)"
-if test -s /etc/timezone; then timedatectl set-timezone "$(cat /etc/timezone)"; fi
-if test -s /etc/locale.conf; then localectl set-locale "$(cat /etc/locale.conf)"; fi
 systemctl restart systemd-resolved.service
 sshd -t
 systemctl reload "$ssh_service"
@@ -203,43 +222,18 @@ for interface in $wg_interfaces; do
     networkctl reconfigure "$interface"
   fi
 done
-if test -s "$dir/distro-packages.txt"; then
-  packages=$(tr '\n' ' ' < "$dir/distro-packages.txt")
-  for package in $packages; do
-    case "$package" in ""|*[!A-Za-z0-9+._:-]*) exit 1 ;; esac
-  done
-  case "$package_backend" in
-    pacman)
-      /usr/bin/pacman --noconfirm --needed -S $packages
-      ;;
-    apt)
-      policy=/usr/sbin/policy-rc.d
-      policy_backup=
-      restore_policy() {
-        rm -f "$policy"
-        if test -n "$policy_backup"; then
-          mv "$policy_backup/policy-rc.d" "$policy"
-          rmdir "$policy_backup"
-        fi
-      }
-      if test -e "$policy" || test -L "$policy"; then
-        policy_backup=$(mktemp -d /run/homelab-policy-rc.d.XXXXXX)
-        cp -a "$policy" "$policy_backup/policy-rc.d"
-      fi
-      printf '#!/bin/sh\nexit 101\n' > "$policy"
-      chmod 0755 "$policy"
-      trap restore_policy EXIT HUP INT TERM
-      /usr/bin/apt-get update
-      /usr/bin/apt-get -o Dpkg::Options::=--force-confold install -y --no-install-recommends $packages
-      restore_policy
-      trap - EXIT HUP INT TERM
-      ;;
-    *) exit 1 ;;
-  esac
-fi
-for unit in zram-swap.service ksm.service thp-madvise.service iscsid.service open-iscsi.service; do
-  if systemctl is-enabled "$unit" >/dev/null 2>&1; then systemctl start "$unit"; fi
+systemctl restart systemd-timesyncd.service
+attempt=0
+while test "$(timedatectl show -p NTPSynchronized --value)" != yes && test "$attempt" -lt 45; do
+  attempt=$((attempt + 1))
+  sleep 2
 done
+time_synchronized=false
+if test "$(timedatectl show -p NTPSynchronized --value)" = yes; then
+  time_synchronized=true
+else
+  echo "system clock did not synchronize within 90 seconds; continuing service recovery" >&2
+fi
 if test -n "$legacy_unit"; then
   if systemctl is-active homelab-k3s.service >/dev/null 2>&1; then
     systemctl disable --now homelab-k3s.service
@@ -250,7 +244,110 @@ if test -n "$legacy_unit"; then
 elif test "$role" = server || test "$role" = agent; then
   systemctl is-active homelab-k3s.service
 fi
-systemctl is-active systemd-networkd.service systemd-resolved.service "$ssh_service"
+if ! test -e "$stages/firewall-restored"; then
+  firewall_attempt=0
+  while ! iptables-restore --test --wait < "$dir/firewall-runtime.rules"; do
+    firewall_attempt=$((firewall_attempt + 1))
+    if test "$firewall_attempt" -ge 60; then
+      echo "captured runtime firewall did not become restorable within 120 seconds" >&2
+      exit 1
+    fi
+    sleep 2
+  done
+  iptables-restore --wait < "$dir/firewall-runtime.rules" || {
+    rc=$?
+    printf 'rollback failed while restoring the runtime firewall (exit %s)\n' "$rc" >&2
+    exit "$rc"
+  }
+  if grep -q 'CILIUM_' "$dir/firewall-runtime.rules"; then
+    crictl=/usr/local/bin/crictl
+    runtime_endpoint=unix:///run/k3s/containerd/containerd.sock
+    test -x "$crictl"
+    attempt=0
+    previous_cilium_id=
+    while test "$attempt" -lt 60; do
+      cilium_ids=$("$crictl" --runtime-endpoint "$runtime_endpoint" ps --namespace kube-system --name '^cilium-agent$' -q 2>/dev/null || true)
+      set -- $cilium_ids
+      if test "$#" -eq 1; then
+        previous_cilium_id=$1
+        break
+      fi
+      attempt=$((attempt + 1))
+      sleep 2
+    done
+    if test -z "$previous_cilium_id"; then
+      echo "exactly one running cilium-agent container did not become available within 120 seconds" >&2
+      exit 1
+    fi
+    "$crictl" --runtime-endpoint "$runtime_endpoint" stop --timeout 10 "$previous_cilium_id"
+    attempt=0
+    cilium_restarted=false
+    while test "$attempt" -lt 60; do
+      cilium_ids=$("$crictl" --runtime-endpoint "$runtime_endpoint" ps --namespace kube-system --name '^cilium-agent$' -q 2>/dev/null || true)
+      set -- $cilium_ids
+      if test "$#" -eq 1 \
+        && test "$1" != "$previous_cilium_id" \
+        && /usr/bin/curl -fsS --max-time 2 http://127.0.0.1:9879/healthz >/dev/null; then
+        cilium_restarted=true
+        break
+      fi
+      attempt=$((attempt + 1))
+      sleep 2
+    done
+    if test "$cilium_restarted" != true; then
+      echo "cilium-agent did not restart and become healthy within 120 seconds" >&2
+      exit 1
+    fi
+  fi
+  touch "$stages/firewall-restored"
+fi
+package_restore_blocked=false
+if test -s "$dir/distro-packages.txt"; then
+  packages=$(tr '\n' ' ' < "$dir/distro-packages.txt")
+  for package in $packages; do
+    case "$package" in ""|*[!A-Za-z0-9+._:-]*) exit 1 ;; esac
+  done
+  if test "$time_synchronized" != true; then
+    package_restore_blocked=true
+  else
+    case "$package_backend" in
+      pacman)
+        /usr/bin/pacman --noconfirm --needed -S $packages
+        ;;
+      apt)
+        policy=/usr/sbin/policy-rc.d
+        policy_backup=
+        restore_policy() {
+          rm -f "$policy"
+          if test -n "$policy_backup"; then
+            mv "$policy_backup/policy-rc.d" "$policy"
+            rmdir "$policy_backup"
+          fi
+        }
+        if test -e "$policy" || test -L "$policy"; then
+          policy_backup=$(mktemp -d /run/homelab-policy-rc.d.XXXXXX)
+          cp -a "$policy" "$policy_backup/policy-rc.d"
+        fi
+        printf '#!/bin/sh\nexit 101\n' > "$policy"
+        chmod 0755 "$policy"
+        trap restore_policy EXIT HUP INT TERM
+        /usr/bin/apt-get update
+        /usr/bin/apt-get -o Dpkg::Options::=--force-confold install -y --no-install-recommends $packages
+        restore_policy
+        trap - EXIT HUP INT TERM
+        ;;
+      *) exit 1 ;;
+    esac
+  fi
+fi
+for unit in zram-swap.service ksm.service thp-madvise.service iscsid.service open-iscsi.service; do
+  if systemctl is-enabled "$unit" >/dev/null 2>&1; then systemctl start "$unit"; fi
+done
+systemctl is-active systemd-networkd.service systemd-resolved.service systemd-timesyncd.service "$ssh_service"
+if test "$package_restore_blocked" = true; then
+  echo "legacy services restored, but distro package restore requires synchronized time; rollback remains armed" >&2
+  exit 1
+fi
 systemctl disable homelab-host-rollback.timer >/dev/null 2>&1 || true
 touch "$dir/restored"
 printf 'rollback completed %s\n' "$(date -u +%FT%TZ)"
@@ -306,29 +403,84 @@ arm_complete=true
 trap - EXIT HUP INT TERM
 REMOTE_ARM
     ;;
+  state)
+    host=${2:?host required}
+    remote "$host" "sudo -n sh -ceu '
+      dir=$rollback_root/current
+      if ! test -d \"\$dir\"; then
+        printf \"%s\n\" absent
+        exit 0
+      fi
+      service_state=\$(systemctl is-active $rollback_unit.service 2>/dev/null || true)
+      if test -f \"\$dir/restored\"; then
+        printf \"%s\n\" restored
+      elif test -d \"\$dir/stages\" || test \"\$service_state\" != inactive; then
+        printf \"%s\n\" restoring
+      else
+        printf \"%s\n\" armed
+      fi
+    '"
+    ;;
   rearm)
     host=${2:?host required}
     remote "$host" "sudo -n sh -ceu '
+      assert_rearmable() {
+        service_state=\$(systemctl is-active $rollback_unit.service 2>/dev/null || true)
+        if test -f $rollback_root/current/restored; then
+          echo \"rollback already completed; refusing to rearm\" >&2
+          return 1
+        fi
+        if test -d $rollback_root/current/stages; then
+          echo \"rollback already started; refusing to rearm\" >&2
+          return 1
+        fi
+        if test \"\$service_state\" != inactive; then
+          echo \"rollback service is \$service_state; refusing to rearm\" >&2
+          return 1
+        fi
+      }
       test -s $rollback_root/current/etc-state.tar
       test -s $rollback_root/current/firewall-runtime.rules
       test -e $rollback_root/current/distro-packages.txt
-      systemctl reset-failed $rollback_unit.service
+      assert_rearmable
+      systemctl reset-failed $rollback_unit.service 2>/dev/null || true
       systemctl enable --now $rollback_unit.timer
       systemctl restart $rollback_unit.timer
       systemctl is-active $rollback_unit.timer
+      assert_rearmable
     '"
     ;;
   disarm)
     host=${2:?host required}
     remote "$host" "sudo -n sh -ceu '
       test -d $rollback_root/current
+      test \"\$(systemctl is-active $rollback_unit.service 2>/dev/null || true)\" = inactive
       systemctl disable --now $rollback_unit.timer
       test \"\$(systemctl is-active $rollback_unit.timer 2>/dev/null || true)\" != active
+      test \"\$(systemctl is-active $rollback_unit.service 2>/dev/null || true)\" = inactive
     '"
     ;;
   accept)
     host=${2:?host required}
+    "$BASH" "$0" rearm "$host"
     remote "$host" "sudo -n sh -ceu '
+      test -d $rollback_root/current
+      test ! -f $rollback_root/current/restored
+      test ! -d $rollback_root/current/stages
+      test \"\$(systemctl is-active $rollback_unit.service 2>/dev/null || true)\" = inactive
+      test \"\$(systemctl is-active $rollback_unit.timer 2>/dev/null || true)\" = active
+      systemctl disable --now $rollback_unit.timer
+      systemctl stop $rollback_unit.service 2>/dev/null || true
+      rm -f /etc/systemd/system/$rollback_unit.service /etc/systemd/system/$rollback_unit.timer
+      systemctl daemon-reload
+      systemctl reset-failed $rollback_unit.service 2>/dev/null || true
+      rm -rf $rollback_root/current $rollback_root/.staging
+    '"
+    ;;
+  cleanup-restored)
+    host=${2:?host required}
+    remote "$host" "sudo -n sh -ceu '
+      test -f $rollback_root/current/restored
       systemctl disable --now $rollback_unit.timer 2>/dev/null || true
       systemctl stop $rollback_unit.service 2>/dev/null || true
       rm -f /etc/systemd/system/$rollback_unit.service /etc/systemd/system/$rollback_unit.timer
@@ -344,7 +496,21 @@ REMOTE_ARM
       test -s $rollback_root/current/firewall-runtime.rules
       test -e $rollback_root/current/distro-packages.txt
       if ! test -f $rollback_root/current/restored; then
-        systemctl reset-failed $rollback_unit.service
+        if ! systemctl cat $rollback_unit.service >/dev/null 2>&1; then
+          printf \"%s\n\" \
+            \"[Unit]\" \
+            \"Description=Restore the pre-activation homelab host state\" \
+            \"After=local-fs.target\" \
+            \"\" \
+            \"[Service]\" \
+            \"Type=oneshot\" \
+            \"ExecStart=/bin/sh $rollback_root/current/rollback\" \
+            \"RemainAfterExit=yes\" \
+            > /etc/systemd/system/$rollback_unit.service
+          chmod 0644 /etc/systemd/system/$rollback_unit.service
+          systemctl daemon-reload
+        fi
+        systemctl reset-failed $rollback_unit.service 2>/dev/null || true
         systemctl start $rollback_unit.service
       fi
       test -f $rollback_root/current/restored
@@ -354,7 +520,15 @@ REMOTE_ARM
     host=${2:?host required}
     remote "$host" "sudo -n sh -ceu '
       systemctl show $rollback_unit.timer $rollback_unit.service homelab-k3s.service k3s.service k3s-agent.service -p Id -p ActiveState -p UnitFileState 2>/dev/null || true
-      test ! -d $rollback_root/current || find $rollback_root/current -maxdepth 1 -type f -printf \"%f\\n\" | sort
+      if test -d $rollback_root/current; then
+        find $rollback_root/current -maxdepth 2 -printf \"%P\n\" | sort
+        if test -s $rollback_root/current/rollback.log; then
+          printf \"%s\n\" \"--- rollback.log ---\"
+          tail -n 80 $rollback_root/current/rollback.log
+        fi
+      fi
+      printf \"%s\n\" \"--- rollback journal ---\"
+      journalctl -u $rollback_unit.service -n 80 --no-pager 2>/dev/null || true
     '"
     ;;
   *) usage; exit 2 ;;

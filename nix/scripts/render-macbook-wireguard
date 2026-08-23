@@ -18,7 +18,7 @@ runtime=${XDG_RUNTIME_DIR:-/tmp}
 expected_keys=$(mktemp "$runtime/homelab-macbook-expected.XXXXXX")
 actual_keys=$(mktemp "$runtime/homelab-macbook-actual.XXXXXX")
 trap 'rm -f "$expected_keys" "$actual_keys"' EXIT HUP INT TERM
-nix --extra-experimental-features 'nix-command flakes' eval --json "$root#topology.wg0.nodes" \
+nix --extra-experimental-features 'nix-command flakes' eval --json "$root#topology.wg0.peerNodes" \
   | jq -r 'to_entries[] | select(.key != "bhyoo-macbook-pro") | .value.publicKey' \
   | sort > "$expected_keys"
 sed -n 's/^PublicKey[[:space:]]*=[[:space:]]*//p' "$out" | sort > "$actual_keys"

@@ -117,6 +117,14 @@ in
         '';
         replaceExisting = true;
       };
+      "systemd/timesyncd.conf" = {
+        text = ''
+          [Time]
+          NTP=162.159.200.1 162.159.200.123
+          FallbackNTP=
+        '';
+        replaceExisting = true;
+      };
       "locale.conf" = {
         text = "LANG=ko_KR.UTF-8\n";
         replaceExisting = true;
@@ -133,8 +141,10 @@ in
         source = "${pkgs.tzdata}/share/zoneinfo/Asia/Seoul";
         replaceExisting = true;
       };
-      "tmpfiles.d/20-homelab-resolv.conf".text =
-        "L+ /etc/resolv.conf - - - - /run/systemd/resolve/stub-resolv.conf\n";
+      "tmpfiles.d/20-homelab-resolv.conf" = {
+        text = "L+ /etc/resolv.conf - - - - /run/systemd/resolve/stub-resolv.conf\n";
+        replaceExisting = true;
+      };
       "systemd/zram-generator.conf" = lib.mkIf zramEnabled {
         text = ''
           [zram0]
@@ -142,6 +152,7 @@ in
           compression-algorithm = zstd
           swap-priority = 100
         '';
+        replaceExisting = true;
       };
       "tmpfiles.d/60-homelab-runtime-tuning.conf" = lib.mkIf zramEnabled {
         text = ''
@@ -151,6 +162,7 @@ in
           w- /sys/kernel/mm/ksm/sleep_millisecs - - - - 100
           w- /sys/kernel/mm/ksm/pages_to_scan - - - - 200
         '';
+        replaceExisting = true;
       };
       "systemd/network/10-homelab-lan.network" = lib.mkIf staticLan {
         text = ''
@@ -176,38 +188,77 @@ in
       "sudoers.d/democratic-csi" = lib.mkIf hostConfig.iscsiServer {
         text = "democratic-csi ALL=(ALL) NOPASSWD: ALL\n";
         mode = "0440";
+        replaceExisting = true;
       };
       "sudoers.d/homelab-admin" = lib.mkIf (sshUser != "root") {
         text = "${sshUser} ALL=(ALL) NOPASSWD: ALL\n";
         mode = "0440";
+        replaceExisting = true;
       };
-      "ssh/sshd_config.d/90-homelab-hardening.conf" = {
+      "ssh/sshd_config" = {
         text = ''
-          PrintLastLog yes
-          PrintMotd no
-          Banner none
-          PermitRootLogin no
+          Port 22
+          AddressFamily any
+          ListenAddress 0.0.0.0
+          HostKey /etc/ssh/ssh_host_rsa_key
+          HostKey /etc/ssh/ssh_host_ed25519_key
+          HostKeyAlgorithms sk-ssh-ed25519-cert-v01@openssh.com,ssh-ed25519-cert-v01@openssh.com,rsa-sha2-512-cert-v01@openssh.com,rsa-sha2-256-cert-v01@openssh.com,sk-ssh-ed25519@openssh.com,ssh-ed25519,rsa-sha2-512,rsa-sha2-256
+          StrictModes yes
+          SyslogFacility AUTH
+          LogLevel INFO
+          LoginGraceTime 30s
+          MaxAuthTries 2
+          MaxSessions 10
+          MaxStartups 10:30:60
+          PubkeyAuthentication yes
+          AuthenticationMethods publickey
           PasswordAuthentication no
+          PermitEmptyPasswords no
+          KbdInteractiveAuthentication no
+          ChallengeResponseAuthentication no
+          PermitRootLogin no
+          UsePAM yes
+          IgnoreRhosts yes
+          IgnoreUserKnownHosts yes
+          HostbasedAuthentication no
+          KerberosAuthentication no
+          GSSAPIAuthentication no
+          TCPKeepAlive no
+          ClientAliveInterval 300
+          ClientAliveCountMax 3
+          PermitTunnel no
+          AllowTcpForwarding no
+          AllowAgentForwarding no
+          GatewayPorts no
+          X11Forwarding no
+          PermitUserEnvironment no
+          Compression no
+          UseDNS no
+          PrintMotd no
+          PrintLastLog yes
+          Banner none
           AuthorizedKeysFile ${authorizedKeysFile}
           KexAlgorithms sntrup761x25519-sha512@openssh.com,curve25519-sha256,curve25519-sha256@libssh.org,diffie-hellman-group16-sha512,diffie-hellman-group18-sha512
           Ciphers chacha20-poly1305@openssh.com,aes256-gcm@openssh.com,aes128-gcm@openssh.com,aes256-ctr,aes192-ctr,aes128-ctr
           MACs hmac-sha2-256-etm@openssh.com,hmac-sha2-512-etm@openssh.com,umac-128-etm@openssh.com
-          HostKey /etc/ssh/ssh_host_rsa_key
-          HostKey /etc/ssh/ssh_host_ed25519_key
-          LogLevel INFO
+          Subsystem sftp internal-sftp -l INFO -f LOCAL6 -u 0027
         '';
+        replaceExisting = true;
       };
       "ssh/authorized_keys.d/root" = {
         text = lib.concatStringsSep "\n" adminKeys + "\n";
         mode = "0644";
+        replaceExisting = true;
       };
       "ssh/authorized_keys.d/bhyoo" = {
         text = lib.concatStringsSep "\n" adminKeys + "\n";
         mode = "0644";
+        replaceExisting = true;
       };
       "ssh/authorized_keys.d/democratic-csi" = lib.mkIf hostConfig.iscsiServer {
         text = democraticCsiKey;
         mode = "0644";
+        replaceExisting = true;
       };
       "sysctl.d/99-kubernetes-network.conf" = lib.mkIf k8sMember {
         text = ''
@@ -215,6 +266,7 @@ in
           net.ipv4.neigh.default.gc_thresh2=8192
           net.ipv4.neigh.default.gc_thresh3=16384
         '';
+        replaceExisting = true;
       };
       "sysctl.d/99-memory.conf" = lib.mkIf zramEnabled {
         text = ''
@@ -227,14 +279,20 @@ in
           vm.dirty_ratio=10
           vm.min_free_kbytes=${minFreeKb}
         '';
+        replaceExisting = true;
       };
       "sysctl.d/99-wireguard-forwarding.conf" = lib.mkIf k8sMember {
         text = "net.ipv4.ip_forward=1\n";
+        replaceExisting = true;
       };
       "udev/rules.d/60-io-scheduler.rules" = lib.mkIf emmcIoScheduler {
-        text = ''ACTION=="add|change", KERNEL=="mmcblk*", ATTR{queue/scheduler}="none"\n'';
+        text = ''
+          ACTION=="add|change", KERNEL=="mmcblk*", ATTR{queue/scheduler}="none"
+        '';
+        replaceExisting = true;
       };
       "modprobe.d/usb-autosuspend.conf" = lib.mkIf usbDisableAutosuspend {
+        replaceExisting = true;
         text = "options usbcore autosuspend=-1\n";
       };
     };

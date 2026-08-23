@@ -29,6 +29,7 @@ let
     "ufw"
   ];
   commonPresent = [
+    "curl"
     "vim"
     "htop"
     "wireguard-tools"

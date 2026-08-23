@@ -101,15 +101,19 @@ in
     environment.etc."homelab/firewall.rules" = {
       text = liveRules;
       mode = "0600";
+      replaceExisting = true;
     };
     environment.etc.${nativeRulesPath} = {
       text = bootRules;
       mode = "0600";
       replaceExisting = true;
     };
-    environment.etc."systemd/system/${firewallService}.d/50-homelab-order.conf".text = ''
-      [Unit]
-      Before=homelab-k3s.service
-    '';
+    environment.etc."systemd/system/${firewallService}.d/50-homelab-order.conf" = {
+      text = ''
+        [Unit]
+        Before=homelab-k3s.service
+      '';
+      replaceExisting = true;
+    };
   };
 }

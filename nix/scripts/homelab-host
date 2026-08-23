@@ -15,6 +15,7 @@ Usage: homelab-host <command> [arguments]
   reconcile <host>             Idempotently converge an active Nix-owned host
   prepare <host>
   activate <host>
+  reboot <host>
   reboot-verify <host>
   commit <host>
   restore-host <host>
@@ -66,7 +67,10 @@ remote_system_manager() {
 register_system() {
   local host=$1 attribute=$2 flake
   flake=$(committed_flake "$attribute")
-  remote_system_manager "$host" register --flake "$flake" --sudo >&2
+  if ! remote_system_manager "$host" register --flake "$flake" --sudo >&2; then
+    echo "failed to register system-manager generation for $host from $flake" >&2
+    return 1
+  fi
   remote "$host" 'sudo -n readlink -f /nix/var/nix/profiles/system-manager-profiles/system-manager'
 }
 activate_registered_system() {
@@ -182,14 +186,12 @@ apply_native_runtime() {
   remote "$host" "$command" <<'REMOTE_NATIVE_RUNTIME'
 set -eu
 systemctl daemon-reload
-systemctl enable systemd-networkd.service systemd-resolved.service "$FIREWALL_SERVICE"
+systemctl enable systemd-networkd.service systemd-resolved.service systemd-timesyncd.service "$FIREWALL_SERVICE"
 if test "$ROLE" = server || test "$ROLE" = agent; then
   systemctl enable homelab-k3s.service
 fi
 hostnamectl set-hostname "$HOST_NAME"
 if command -v locale-gen >/dev/null 2>&1; then locale-gen; fi
-localectl set-locale LANG=ko_KR.UTF-8
-timedatectl set-timezone Asia/Seoul
 systemd-tmpfiles --create --prefix=/etc/resolv.conf
 systemctl restart systemd-resolved.service
 sshd -t
@@ -212,6 +214,16 @@ if test "$STATIC_LAN" = true; then networkctl reconfigure "$DEFAULT_INTERFACE"; 
 for interface in $WG_INTERFACES; do
   networkctl reconfigure "$interface"
   ip link show "$interface" >/dev/null
+done
+systemctl restart systemd-timesyncd.service
+attempt=0
+while test "$(timedatectl show -p NTPSynchronized --value)" != yes; do
+  attempt=$((attempt + 1))
+  if test "$attempt" -ge 45; then
+    echo "system clock did not synchronize within 90 seconds" >&2
+    exit 1
+  fi
+  sleep 2
 done
 while iptables -C INPUT -j HOMELAB_INPUT 2>/dev/null; do iptables -D INPUT -j HOMELAB_INPUT; done
 while iptables -C FORWARD -j HOMELAB_FORWARD 2>/dev/null; do iptables -D FORWARD -j HOMELAB_FORWARD; done
@@ -288,20 +300,81 @@ verify_legacy_cleanup() {
     done
   '\'''
 }
-require_receipt_phase() {
-  local host=$1 phase=$2 file generation active store_path active_store
+rollback_state() {
+  "$root/nix/scripts/k3s-handoff" state "$1"
+}
+sync_completed_rollback() {
+  local host=$1 file phase rollback_status previous legacy recovery secret_generation
   file=$(receipt "$host")
-  test "$(jq -r .phase "$file" 2>/dev/null)" = "$phase"
+  test -s "$file" || return 0
+  phase=$(jq -r '.phase // empty' "$file")
+  case "$phase" in
+    prepared|activated|rebooting|reboot-verified|rolled-back) ;;
+    *) return 0 ;;
+  esac
+  rollback_status=$(rollback_state "$host") || return 1
+  case "$rollback_status" in
+    armed)
+      if [ "$phase" = rolled-back ]; then
+        echo "$host receipt is rolled-back but remote recovery is armed" >&2
+        return 1
+      fi
+      return 0
+      ;;
+    restored)
+      if [ "$phase" != rolled-back ]; then
+        previous=$(jq -r '.previousGeneration // empty' "$file")
+        legacy=$(jq -r '.legacyK3sUnit // empty' "$file")
+        recovery=$(jq -r '.recoveryDirectory // empty' "$file")
+        secret_generation=$(jq -r '.secretGeneration // empty' "$file")
+        write_receipt "$host" rolled-back "$previous" "$legacy" "$recovery" "$secret_generation" || return 1
+      fi
+      if ! "$root/nix/scripts/k3s-handoff" cleanup-restored "$host"; then
+        echo "$host completed rollback cleanup failed; receipt is rolled-back and recovery remains retryable" >&2
+        return 1
+      fi
+      echo "$host completed watchdog rollback synchronized locally" >&2
+      ;;
+    restoring)
+      echo "$host rollback is still restoring; inspect nix run .#k3s-handoff -- status $host" >&2
+      return 1
+      ;;
+    absent)
+      case "$phase" in
+        prepared|rolled-back) return 0 ;;
+      esac
+      echo "$host rollback state is absent for receipt phase $phase" >&2
+      return 1
+      ;;
+    *)
+      echo "$host reported invalid rollback state: $rollback_status" >&2
+      return 1
+      ;;
+  esac
+}
+require_receipt_phase() {
+  local host=$1 phase=$2 file actual generation active store_path active_store
+  sync_completed_rollback "$host" || return 1
+  file=$(receipt "$host")
+  test -s "$file" || {
+    echo "$host migration receipt is missing" >&2
+    return 1
+  }
+  actual=$(jq -r '.phase // empty' "$file")
+  test "$actual" = "$phase" || {
+    echo "$host receipt phase is ${actual:-missing}; expected $phase" >&2
+    return 1
+  }
   test "$(jq -r .revision "$file")" = "$(current_revision)" || {
     echo "$host receipt belongs to a different Git revision; rerun prepare" >&2
-    exit 1
+    return 1
   }
   generation=$(jq -r '.secretGeneration // empty' "$file")
   if [ -n "$generation" ]; then
     active=$(remote "$host" 'sudo -n readlink /var/lib/homelab-secrets/active')
     test "$active" = "generations/$generation" || {
       echo "$host active secret generation changed after prepare" >&2
-      exit 1
+      return 1
     }
   fi
   store_path=$(jq -r '.storePath // empty' "$file")
@@ -309,7 +382,7 @@ require_receipt_phase() {
     active_store=$(remote "$host" 'sudo -n readlink -f /nix/var/nix/profiles/system-manager-profiles/system-manager')
     test "$active_store" = "$store_path" || {
       echo "$host system-manager generation changed after prepare" >&2
-      exit 1
+      return 1
     }
   fi
 }
@@ -344,15 +417,152 @@ current_k3s() {
   printf '%s\n' "$version"
 }
 write_receipt() {
-  local host=$1 phase=$2 previous=${3:-null} legacy=${4:-} recovery=${5:-} secret_generation=${6:-} store_path=${7:-}
-  jq -n --arg host "$host" --arg phase "$phase" --arg revision "$(current_revision)" --arg previous "$previous" --arg legacy "$legacy" --arg recovery "$recovery" --arg secretGeneration "$secret_generation" --arg storePath "$store_path" --arg time "$(date -u +%FT%TZ)" '{host:$host,phase:$phase,revision:$revision,previousGeneration:$previous,legacyK3sUnit:$legacy,recoveryDirectory:$recovery,secretGeneration:$secretGeneration,storePath:$storePath,time:$time}' > "$(receipt "$host").new"
+  local host=$1 phase=$2 previous=${3-} legacy=${4:-} recovery=${5:-} secret_generation=${6:-} store_path=${7:-} boot_id=${8:-}
+  jq -n --arg host "$host" --arg phase "$phase" --arg revision "$(current_revision)" --arg previous "$previous" --arg legacy "$legacy" --arg recovery "$recovery" --arg secretGeneration "$secret_generation" --arg storePath "$store_path" --arg bootId "$boot_id" --arg time "$(date -u +%FT%TZ)" '{host:$host,phase:$phase,revision:$revision,previousGeneration:$previous,legacyK3sUnit:$legacy,recoveryDirectory:$recovery,secretGeneration:$secretGeneration,storePath:$storePath,bootId:$bootId,time:$time}' > "$(receipt "$host").new"
   mv -f "$(receipt "$host").new" "$(receipt "$host")"
   chmod 0600 "$(receipt "$host")"
 }
+record_rolled_back() {
+  local host=$1 previous=${2-} legacy=${3:-} recovery=${4:-} secret_generation=${5:-}
+  write_receipt "$host" rolled-back "$previous" "$legacy" "$recovery" "$secret_generation" || return 1
+  if ! "$root/nix/scripts/k3s-handoff" cleanup-restored "$host"; then
+    echo "$host rollback is recorded locally, but recovery artifact cleanup failed; rerun a phase-gated command or nix run .#k3s-handoff -- cleanup-restored $host" >&2
+    return 1
+  fi
+}
 rollback_armed_host() {
-  local host=$1
-  "$root/nix/scripts/k3s-handoff" restore "$host"
-  "$root/nix/scripts/k3s-handoff" accept "$host"
+  local host=$1 attempt=1
+  while ! "$root/nix/scripts/k3s-handoff" restore "$host"; do
+    if [ "$attempt" -ge 2 ]; then
+      echo "$host rollback restore failed after $attempt attempts; recovery remains armed" >&2
+      return 1
+    fi
+    attempt=$((attempt + 1))
+    echo "$host rollback restore failed; retrying once" >&2
+  done
+}
+assert_host_rebooted() {
+  local host=$1 file recorded_boot_id active_boot_id
+  file=$(receipt "$host")
+  recorded_boot_id=$(jq -r '.bootId // empty' "$file")
+  test -n "$recorded_boot_id" || {
+    echo "$host reboot receipt has no pre-reboot boot ID; run prepare and activate again" >&2
+    return 1
+  }
+  active_boot_id=$(remote "$host" 'cat /proc/sys/kernel/random/boot_id') || return 1
+  test -n "$active_boot_id" || {
+    echo "$host returned an empty boot ID" >&2
+    return 1
+  }
+  test "$active_boot_id" != "$recorded_boot_id" || {
+    echo "$host has not rebooted since the reboot receipt was written" >&2
+    return 1
+  }
+}
+reboot_host() {
+  local host=$1 file phase previous legacy recovery secret_generation store_path boot_id active_boot_id rc
+  file=$(receipt "$host")
+  test -s "$file" || {
+    echo "$host migration receipt is missing" >&2
+    return 1
+  }
+  phase=$(jq -r '.phase // empty' "$file")
+  case "$phase" in
+    activated|rebooting)
+      "$root/nix/scripts/k3s-handoff" rearm "$host" || return 1
+      ;;
+    *)
+      echo "$host receipt phase is ${phase:-missing}; expected activated or rebooting" >&2
+      return 1
+      ;;
+  esac
+  require_receipt_phase "$host" "$phase" || return 1
+  file=$(receipt "$host")
+  case "$phase" in
+    activated)
+      previous=$(jq -r '.previousGeneration // empty' "$file")
+      legacy=$(jq -r '.legacyK3sUnit // empty' "$file")
+      recovery=$(jq -r '.recoveryDirectory // empty' "$file")
+      secret_generation=$(jq -r '.secretGeneration // empty' "$file")
+      store_path=$(jq -r '.storePath // empty' "$file")
+      boot_id=$(remote "$host" 'cat /proc/sys/kernel/random/boot_id') || return 1
+      test -n "$boot_id" || {
+        echo "$host returned an empty boot ID" >&2
+        return 1
+      }
+      write_receipt "$host" rebooting "$previous" "$legacy" "$recovery" "$secret_generation" "$store_path" "$boot_id" || return 1
+      ;;
+    rebooting)
+      boot_id=$(jq -r '.bootId // empty' "$file")
+      test -n "$boot_id" || {
+        echo "$host reboot receipt has no pre-reboot boot ID; run prepare and activate again" >&2
+        return 1
+      }
+      active_boot_id=$(remote "$host" 'cat /proc/sys/kernel/random/boot_id') || return 1
+      test -n "$active_boot_id" || {
+        echo "$host returned an empty boot ID" >&2
+        return 1
+      }
+      if [ "$active_boot_id" != "$boot_id" ]; then
+        echo "$host already rebooted; run reboot-verify" >&2
+        return 1
+      fi
+      ;;
+  esac
+  rc=0
+  remote "$host" 'sudo -n systemctl --no-block reboot' || rc=$?
+  case "$rc" in
+    0|255) ;;
+    *)
+      echo "$host reboot request failed with exit $rc; the rebooting receipt is retryable" >&2
+      return "$rc"
+      ;;
+  esac
+}
+restore_host() {
+  local host=$1 receipt_file phase rollback_status previous legacy recovery secret_generation
+  receipt_file=$(receipt "$host")
+  phase=$(jq -r '.phase // empty' "$receipt_file" 2>/dev/null)
+  case "$phase" in
+    prepared|activated|rebooting|reboot-verified) ;;
+    *) echo "$host has no migration recovery to restore" >&2; return 1 ;;
+  esac
+  rollback_status=$(rollback_state "$host") || return 1
+  case "$rollback_status" in
+    armed|restoring|restored) ;;
+    absent) echo "$host has no remote recovery state to restore" >&2; return 1 ;;
+    *) echo "$host reported invalid rollback state: $rollback_status" >&2; return 1 ;;
+  esac
+  previous=$(jq -r '.previousGeneration // empty' "$receipt_file")
+  legacy=$(jq -r '.legacyK3sUnit // empty' "$receipt_file")
+  recovery=$(jq -r '.recoveryDirectory // empty' "$receipt_file")
+  secret_generation=$(jq -r '.secretGeneration // empty' "$receipt_file")
+  rollback_armed_host "$host" || return 1
+  record_rolled_back "$host" "$previous" "$legacy" "$recovery" "$secret_generation"
+}
+verify_wireguard_handshake() {
+  local host=$1 interface=$2 peer=$3 peer_public=$4 peer_address=$5 command
+  printf -v command \
+    'sudo -n env WG_INTERFACE=%q WG_PEER=%q WG_PUBLIC=%q WG_ADDRESS=%q sh -s' \
+    "$interface" "$peer" "$peer_public" "$peer_address"
+  remote "$host" "$command" <<'REMOTE_WIREGUARD_HANDSHAKE'
+set -eu
+attempt=0
+while [ "$attempt" -lt 30 ]; do
+  if command -v ping >/dev/null 2>&1; then
+    ping -c 1 -W 1 "$WG_ADDRESS" >/dev/null 2>&1 || true
+  fi
+  handshake=$(wg show "$WG_INTERFACE" latest-handshakes | awk -v key="$WG_PUBLIC" '$1 == key { print $2 }')
+  case "${handshake:-}" in ""|*[!0-9]*) handshake=0 ;; esac
+  if [ "$handshake" -gt 0 ]; then
+    exit 0
+  fi
+  attempt=$((attempt + 1))
+  sleep 2
+done
+echo "$WG_INTERFACE handshake with $WG_PEER ($WG_ADDRESS) did not recover after 30 attempts" >&2
+exit 1
+REMOTE_WIREGUARD_HANDSHAKE
 }
 
 case "${1:-}" in
@@ -403,6 +613,7 @@ case "${1:-}" in
     ;;
   reconcile)
     host=${2:?host required}
+    sync_completed_rollback "$host"
     test "$(host_field "$host" lifecycle)" = active || {
       echo "$host must have lifecycle=active before reconciliation" >&2
       exit 1
@@ -429,9 +640,9 @@ case "${1:-}" in
     "$root/nix/scripts/k3s-handoff" arm "$host" "$recovery" "$previous" ""
     if ! activate_registered_system "$host" \
       || ! apply_native_runtime "$host" \
-      || ! "$0" verify-host "$host"; then
+      || ! "$0" verify-host-while-armed "$host"; then
       if rollback_armed_host "$host"; then
-        write_receipt "$host" rolled-back "$previous" "" "$recovery" "$secret_generation"
+        record_rolled_back "$host" "$previous" "" "$recovery" "$secret_generation"
       fi
       exit 1
     fi
@@ -442,6 +653,7 @@ case "${1:-}" in
     ;;
   prepare|deploy)
     host=${2:?host required}
+    sync_completed_rollback "$host"
     legacy_unit=$(remote "$host" 'for unit in k3s.service k3s-agent.service; do test "$(systemctl is-active "$unit" 2>/dev/null || true)" = active && { printf "%s" "$unit"; exit; }; done; true')
     "$root/nix/scripts/k3s-handoff" preflight "$host" "$legacy_unit"
     recovery=$("$root/nix/scripts/adopt-host" "$host")
@@ -477,7 +689,7 @@ tar -C /var/lib/rancher/k3s -cf - server/db server/cred server/token
 REMOTE_K3S_COLD_BACKUP
       then
         if rollback_armed_host "$host"; then
-          write_receipt "$host" rolled-back "$previous" "$legacy" "$recovery" "$secret_generation"
+          record_rolled_back "$host" "$previous" "$legacy" "$recovery" "$secret_generation"
         fi
         exit 1
       fi
@@ -485,9 +697,9 @@ REMOTE_K3S_COLD_BACKUP
     fi
     if ! activate_registered_system "$host" \
       || ! apply_native_runtime "$host" \
-      || ! "$0" verify-host "$host"; then
+      || ! "$0" verify-host-while-armed "$host"; then
       if rollback_armed_host "$host"; then
-        write_receipt "$host" rolled-back "$previous" "$legacy" "$recovery" "$secret_generation"
+        record_rolled_back "$host" "$previous" "$legacy" "$recovery" "$secret_generation"
       else
         echo "$host automatic rollback failed; inspect nix run .#k3s-handoff -- status $host" >&2
       fi
@@ -495,24 +707,36 @@ REMOTE_K3S_COLD_BACKUP
     fi
     if ! "$root/nix/scripts/k3s-handoff" rearm "$host"; then
       if rollback_armed_host "$host"; then
-        write_receipt "$host" rolled-back "$previous" "$legacy" "$recovery" "$secret_generation"
+        record_rolled_back "$host" "$previous" "$legacy" "$recovery" "$secret_generation"
       fi
       exit 1
     fi
     write_receipt "$host" activated "$previous" "$legacy" "$recovery" "$secret_generation" "$store_path"
-    printf 'activated %s; reboot before the 15-minute rollback timer expires\n' "$host"
+    printf 'activated %s; run homelab-host reboot %s while the rollback timer remains armed\n' "$host" "$host"
+    ;;
+  reboot)
+    reboot_host "${2:?host required}"
     ;;
   reboot-verify)
-    host=${2:?host required}; require_receipt_phase "$host" activated
+    host=${2:?host required}
     receipt_file=$(receipt "$host")
+    phase=$(jq -r '.phase // empty' "$receipt_file" 2>/dev/null || true)
+    test "$phase" = rebooting || {
+      echo "$host receipt phase is ${phase:-missing}; expected rebooting" >&2
+      exit 1
+    }
+    "$root/nix/scripts/k3s-handoff" rearm "$host"
+    require_receipt_phase "$host" rebooting
+    assert_host_rebooted "$host"
     previous=$(jq -r '.previousGeneration // empty' "$receipt_file")
     legacy=$(jq -r '.legacyK3sUnit // empty' "$receipt_file")
     recovery=$(jq -r '.recoveryDirectory // empty' "$receipt_file")
     secret_generation=$(jq -r '.secretGeneration // empty' "$receipt_file")
     store_path=$(jq -r '.storePath // empty' "$receipt_file")
-    if ! "$0" verify-host "$host" || ! "$root/nix/scripts/k3s-handoff" disarm "$host"; then
+    if ! timeout --foreground --kill-after=30s 12m "$0" verify-host-while-armed "$host" \
+      || ! "$root/nix/scripts/k3s-handoff" disarm "$host"; then
       if rollback_armed_host "$host"; then
-        write_receipt "$host" rolled-back "$previous" "$legacy" "$recovery" "$secret_generation"
+        record_rolled_back "$host" "$previous" "$legacy" "$recovery" "$secret_generation"
       fi
       exit 1
     fi
@@ -532,14 +756,14 @@ REMOTE_K3S_COLD_BACKUP
     fi
     if ! activate_registered_system "$host" \
       || ! apply_native_runtime "$host" \
-      || ! "$0" verify-host "$host" \
+      || ! "$0" verify-host-while-armed "$host" \
       || ! reconcile_distro_packages "$host" yes \
       || ! cleanup_legacy_files "$host" \
       || ! apply_native_runtime "$host" \
-      || ! "$0" verify-host "$host" \
+      || ! "$0" verify-host-while-armed "$host" \
       || ! verify_legacy_cleanup "$host"; then
       if rollback_armed_host "$host"; then
-        write_receipt "$host" rolled-back "$previous" "$legacy" "$recovery" "$secret_generation"
+        record_rolled_back "$host" "$previous" "$legacy" "$recovery" "$secret_generation"
       else
         echo "$host rollback failed; recovery remains armed" >&2
       fi
@@ -566,6 +790,12 @@ REMOTE_K3S_COLD_BACKUP
       *) usage; exit 2 ;;
     esac
     reconcile_distro_packages "${2:?host required}" "$purge"
+    ;;
+  verify-host-while-armed)
+    host=${2:?host required}
+    "$root/nix/scripts/k3s-handoff" rearm "$host"
+    shift
+    exec "$0" verify-host "$@"
     ;;
   verify-host|verify)
     host=${2:?host required}; shift 2
@@ -598,6 +828,7 @@ REMOTE_K3S_COLD_BACKUP
     samba_clients=$(nix_eval --json "$root#systemConfigs.$host.config.homelab.firewall.sambaClients" | jq -r 'join(" ")')
     netbios=$(nix_eval --json "$root#systemConfigs.$host.config.homelab.firewall.netbios")
     local_network=$(nix_eval --raw "$root#systemConfigs.$host.config.homelab.firewall.localNetwork")
+    localtime_source=$(nix_eval --raw "$root#systemConfigs.$host.config.environment.etc.localtime.source")
     if [ "$backend" = pacman ]; then
       firewall_rules=/etc/iptables/iptables.rules
       firewall_service=iptables.service
@@ -612,19 +843,29 @@ REMOTE_K3S_COLD_BACKUP
       democratic_csi_key_sha=$(sha256sum "$root/ssh_pub_keys/democratic-csi.pub" | awk '{print $1}')
     fi
     printf -v verify_command \
-      'env HOST_NAME=%q ROLE=%q ISCSI_CLIENT=%q ISCSI_SERVER=%q ZRAM=%q DEMOCRATIC_CSI_KEY_SHA=%q LAN_ADDRESS=%q GATEWAY_ADDRESS=%q DEFAULT_INTERFACE=%q FIREWALL_RULES=%q FIREWALL_SERVICE=%q SSH_SERVICE=%q ADMIN_USER=%q SAMBA_CLIENTS=%q NETBIOS=%q LOCAL_NETWORK=%q sh -s' \
+      'env HOST_NAME=%q ROLE=%q ISCSI_CLIENT=%q ISCSI_SERVER=%q ZRAM=%q DEMOCRATIC_CSI_KEY_SHA=%q LAN_ADDRESS=%q GATEWAY_ADDRESS=%q DEFAULT_INTERFACE=%q FIREWALL_RULES=%q FIREWALL_SERVICE=%q SSH_SERVICE=%q ADMIN_USER=%q SAMBA_CLIENTS=%q NETBIOS=%q LOCAL_NETWORK=%q LOCALTIME_SOURCE=%q sh -s' \
       "$host" "$role" "$iscsi_client" "$iscsi_server" "$zram" "$democratic_csi_key_sha" \
       "$lan_address" "$gateway_address" "$default_interface" "$firewall_rules" "$firewall_service" "$ssh_service" \
-      "$admin_user" "$samba_clients" "$netbios" "$local_network"
+      "$admin_user" "$samba_clients" "$netbios" "$local_network" "$localtime_source"
     remote "$host" "$verify_command" <<'REMOTE_VERIFY'
 set -eu
 test "$(hostname)" = "$HOST_NAME"
-systemctl is-active systemd-networkd systemd-resolved "$SSH_SERVICE"
-systemctl is-enabled systemd-networkd systemd-resolved "$FIREWALL_SERVICE"
+systemctl is-active systemd-networkd systemd-resolved systemd-timesyncd "$SSH_SERVICE"
+systemctl is-enabled systemd-networkd systemd-resolved systemd-timesyncd "$FIREWALL_SERVICE"
 if test "$ROLE" = server || test "$ROLE" = agent; then
   systemctl is-enabled homelab-k3s.service
 fi
-test "$(timedatectl show -p Timezone --value)" = Asia/Seoul
+attempt=0
+while test "$(timedatectl show -p NTPSynchronized --value)" != yes; do
+  attempt=$((attempt + 1))
+  if test "$attempt" -ge 45; then
+    echo "system clock did not synchronize within 90 seconds" >&2
+    exit 1
+  fi
+  sleep 2
+done
+test "$(readlink /etc/localtime)" = "$LOCALTIME_SOURCE"
+grep -qx "Asia/Seoul" /etc/timezone
 grep -qx "LANG=ko_KR.UTF-8" /etc/locale.conf
 locale -a | grep -qi '^ko_KR\.utf8$'
 grep -qx "DNSSEC=yes" /etc/systemd/resolved.conf
@@ -634,9 +875,9 @@ grep -qx "LLMNR=no" /etc/systemd/resolved.conf
 test "$(readlink /etc/resolv.conf)" = /run/systemd/resolve/stub-resolv.conf
 test "$(getent passwd root | cut -d: -f7)" = /bin/bash
 sshd_bin=$(command -v sshd || printf /usr/sbin/sshd)
-sudo -n "$sshd_bin" -T | grep -Eqi '^authorizedkeysfile .*\.ssh/authorized_keys.*/etc/ssh/authorized_keys\.d/%u'
+sudo -n "$sshd_bin" -T | grep -Eqi '^authorizedkeysfile( \.ssh/authorized_keys)? /etc/ssh/authorized_keys\.d/%u$'
 if test "$ADMIN_USER" != root; then
-  grep -Fx "$ADMIN_USER ALL=(ALL) NOPASSWD: ALL" /etc/sudoers.d/homelab-admin
+  sudo -n grep -Fx "$ADMIN_USER ALL=(ALL) NOPASSWD: ALL" /etc/sudoers.d/homelab-admin
   visudo_bin=$(command -v visudo || printf /usr/sbin/visudo)
   sudo -n "$visudo_bin" -cf /etc/sudoers.d/homelab-admin
 fi
@@ -705,7 +946,8 @@ REMOTE_VERIFY
       remote "$host" "sudo -n sh -ceu 'test -s \"/run/credentials/systemd-networkd.service/$interface-private\"; test \"\$(wg show \"$interface\" public-key)\" = \"$expected_public\"; ip -o -4 address show dev \"$interface\" | awk \"{print \\\$4}\" | grep -Fx \"$expected_address\"'"
       while IFS= read -r peer; do
         peer_public=$(nix_eval --raw "$root#topology.$interface.nodes.$peer.publicKey")
-        remote "$host" "sudo -n sh -ceu 'test \"\$(wg show \"$interface\" latest-handshakes | awk -v key=\"$peer_public\" \"\\\$1 == key { print \\\$2 }\")\" -gt 0'"
+        peer_address=$(nix_eval --raw "$root#topology.$interface.nodes.$peer.address")
+        verify_wireguard_handshake "$host" "$interface" "$peer" "$peer_public" "${peer_address%/*}"
       done < <(nix_eval --json "$root#topology.requiredLinks" | jq -r --arg host "$host" --arg interface "$interface" '.[] | select(.network == $interface and .managed and (.aName == $host or .bName == $host)) | if .aName == $host then .bName else .aName end')
     done < <(nix_eval --json "$root#topology.nodes.$host.wireguard" | jq -r '.[]')
     if [ "$role" = server ] || [ "$role" = agent ]; then
@@ -714,15 +956,7 @@ REMOTE_VERIFY
     fi
     ;;
   restore-host)
-    host=${2:?host required}; receipt_file=$(receipt "$host")
-    phase=$(jq -r '.phase // empty' "$receipt_file" 2>/dev/null)
-    case "$phase" in activated|reboot-verified) ;; *) echo "$host has no armed activation to restore" >&2; exit 1 ;; esac
-    previous=$(jq -r '.previousGeneration // empty' "$receipt_file")
-    legacy=$(jq -r '.legacyK3sUnit // empty' "$receipt_file")
-    recovery=$(jq -r '.recoveryDirectory // empty' "$receipt_file")
-    secret_generation=$(jq -r '.secretGeneration // empty' "$receipt_file")
-    rollback_armed_host "$host"
-    write_receipt "$host" rolled-back "$previous" "$legacy" "$recovery" "$secret_generation"
+    restore_host "${2:?host required}"
     ;;
   rollback)
     host=${2:?host required}; generation=${3:?generation required}

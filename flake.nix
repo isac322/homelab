@@ -130,7 +130,7 @@
               rockFirewall = rock.environment.etc."iptables/rules.v4".text;
               rockLan = rock.environment.etc."systemd/network/10-homelab-lan.network".text;
               rockResolved = rock.environment.etc."systemd/resolved.conf".text;
-              rockSsh = rock.environment.etc."ssh/sshd_config.d/90-homelab-hardening.conf".text;
+              rockSsh = rock.environment.etc."ssh/sshd_config".text;
               projectServices =
                 cfg:
                 lib.filter (service: lib.hasPrefix "homelab-" service) (builtins.attrNames cfg.systemd.services);
@@ -142,8 +142,26 @@
                 projectServices self.systemConfigs.${hostName}.config == expected
                 && projectServices self.systemConfigs."${hostName}-commit".config == expected
               ) (builtins.attrNames linuxHosts);
+              frameworkEtcTargets = [
+                "environment.d/10-system-manager.conf"
+                "profile.d/system-manager-path.sh"
+                "systemd/system"
+                "tmpfiles.d"
+              ];
+              etcOwnershipIsExplicit =
+                configName:
+                let
+                  entries = self.systemConfigs.${configName}.config.environment.etc;
+                in
+                lib.all (target: entries.${target}.replaceExisting || builtins.elem target frameworkEtcTargets) (
+                  builtins.attrNames entries
+                );
+              projectEtcOwnershipIsExplicit = lib.all (
+                hostName: etcOwnershipIsExplicit hostName && etcOwnershipIsExplicit "${hostName}-commit"
+              ) (builtins.attrNames linuxHosts);
             in
             assert projectServiceOwnershipIsMinimal;
+            assert projectEtcOwnershipIsExplicit;
             assert builtins.length topology.requiredLinks == 35;
             assert !(builtins.hasAttr "wg1" topology);
             assert lib.hasInfix "Address=192.168.219.6/24"
@@ -164,16 +182,31 @@
             assert lib.hasInfix "MulticastDNS=yes" rockLan && lib.hasInfix "LLMNR=no" rockLan;
             assert lib.hasInfix "DNSSEC=yes" rockResolved;
             assert lib.hasInfix "DNSOverTLS=yes" rockResolved;
+            assert lib.hasInfix "NTP=162.159.200.1 162.159.200.123"
+              n2p1.environment.etc."systemd/timesyncd.conf".text;
+            assert lib.hasInfix "FallbackNTP=" n2p1.environment.etc."systemd/timesyncd.conf".text;
+            assert n2p1.environment.etc."systemd/timesyncd.conf".replaceExisting;
             assert !(lib.hasInfix "diffie-hellman-group-exchange-sha256" rockSsh);
             assert rock.users.users.root.shell == "/bin/bash";
             assert rock.environment.etc."sudoers.d/homelab-admin".text == "bhyoo ALL=(ALL) NOPASSWD: ALL\n";
             assert n2p1.environment.etc."sudoers.d/homelab-admin".text == "bhyoo ALL=(ALL) NOPASSWD: ALL\n";
+            assert rock.environment.etc."sudoers.d/democratic-csi".replaceExisting;
+            assert rock.environment.etc."sudoers.d/homelab-admin".replaceExisting;
+            assert n2p1.environment.etc."sudoers.d/homelab-admin".replaceExisting;
             assert n2p1.users.users.bhyoo.uid == 1000;
-            assert lib.hasInfix "PermitRootLogin no"
-              n2p1.environment.etc."ssh/sshd_config.d/90-homelab-hardening.conf".text;
+            assert lib.hasInfix "PermitRootLogin no" n2p1.environment.etc."ssh/sshd_config".text;
+            assert n2p1.environment.etc."ssh/sshd_config".replaceExisting;
+            assert !(builtins.hasAttr "ssh/sshd_config.d/90-homelab-hardening.conf" n2p1.environment.etc);
             assert n2p1.environment.etc."locale.conf".replaceExisting;
             assert n2p1.environment.etc."locale.gen".replaceExisting;
             assert n2p1.environment.etc.timezone.replaceExisting;
+            assert n2p1.environment.etc."sysctl.d/99-kubernetes-network.conf".replaceExisting;
+            assert n2p1.environment.etc."udev/rules.d/60-io-scheduler.rules".replaceExisting;
+            assert
+              n2p1.environment.etc."udev/rules.d/60-io-scheduler.rules".text
+              == "ACTION==\"add|change\", KERNEL==\"mmcblk*\", ATTR{queue/scheduler}=\"none\"\n";
+            assert rock.environment.etc."sysctl.d/99-memory.conf".replaceExisting;
+            assert rock.environment.etc."modprobe.d/usb-autosuspend.conf".replaceExisting;
             assert lib.hasInfix "exec /usr/local/bin/k3s server" rock.systemd.services.homelab-k3s.script;
             assert
               !(lib.hasInfix "${topology.wg0.edgeNetwork} -d ${topology.wg0.edgeNetwork} -j ACCEPT" firewall);
@@ -184,12 +217,12 @@
               rock.environment.etc."ssh/authorized_keys.d/democratic-csi".text
               == builtins.readFile ./ssh_pub_keys/democratic-csi.pub;
             assert lib.hasInfix "AuthorizedKeysFile .ssh/authorized_keys /etc/ssh/authorized_keys.d/%u"
-              rock.environment.etc."ssh/sshd_config.d/90-homelab-hardening.conf".text;
+              rock.environment.etc."ssh/sshd_config".text;
             assert lib.hasInfix "AuthorizedKeysFile /etc/ssh/authorized_keys.d/%u"
-              n2p1Commit.environment.etc."ssh/sshd_config.d/90-homelab-hardening.conf".text;
+              n2p1Commit.environment.etc."ssh/sshd_config".text;
             assert
               !(lib.hasInfix "AuthorizedKeysFile .ssh/authorized_keys"
-                n2p1Commit.environment.etc."ssh/sshd_config.d/90-homelab-hardening.conf".text
+                n2p1Commit.environment.etc."ssh/sshd_config".text
               );
             assert !(builtins.hasAttr "homelab-host-settings" rock.systemd.services);
             assert !(builtins.hasAttr "homelab-wireguard" rock.systemd.services);
@@ -265,6 +298,7 @@
               {
                 nativeBuildInputs = [
                   pkgs.bash
+                  pkgs.jq
                   pkgs.python3
                 ];
               }

@@ -1,8 +1,12 @@
 #!/usr/bin/env python3
 from pathlib import Path
+import json
 import os
 import re
+import shutil
 import subprocess
+import tarfile
+import tempfile
 
 root = Path(os.environ.get("HOMELAB_SOURCE_ROOT", Path(__file__).resolve().parents[2]))
 
@@ -71,18 +75,1598 @@ def check_shell_syntax() -> None:
                 )
 
 
+def check_receipt_round_trip() -> None:
+    migration = source("nix/scripts/homelab-host")
+    match = re.search(
+        r"(write_receipt\(\) \{\n.*?^\})",
+        migration,
+        re.DOTALL | re.MULTILINE,
+    )
+    if match is None:
+        raise SystemExit("nix/scripts/homelab-host: write_receipt function missing")
+    with tempfile.TemporaryDirectory() as state:
+        script = f"""
+set -euo pipefail
+{match.group(1)}
+receipt() {{ printf '%s/receipt.json' "$STATE"; }}
+current_revision() {{ printf test-revision; }}
+write_receipt test-host prepared "" legacy recovery secret store
+jq -e '.previousGeneration == "" and .bootId == ""' "$STATE/receipt.json" >/dev/null
+write_receipt test-host rebooting "" legacy recovery secret store boot-1
+jq -e '.phase == "rebooting" and .bootId == "boot-1"' "$STATE/receipt.json" >/dev/null
+"""
+        result = subprocess.run(
+            ["bash"],
+            input=script,
+            text=True,
+            capture_output=True,
+            env={**os.environ, "STATE": state},
+        )
+        if result.returncode:
+            raise SystemExit(
+                "nix/scripts/homelab-host: empty previous generation receipt failed\n"
+                f"{result.stderr.strip()}"
+            )
+
+
+def check_completed_rollback_receipt_sync() -> None:
+    migration = source("nix/scripts/homelab-host")
+    write_match = re.search(
+        r"(write_receipt\(\) \{\n.*?^\})",
+        migration,
+        re.DOTALL | re.MULTILINE,
+    )
+    sync_match = re.search(
+        r"(sync_completed_rollback\(\) \{\n.*?^\})",
+        migration,
+        re.DOTALL | re.MULTILINE,
+    )
+    if write_match is None or sync_match is None:
+        raise SystemExit("nix/scripts/homelab-host: rollback receipt synchronization missing")
+    with tempfile.TemporaryDirectory() as directory:
+        directory_path = Path(directory)
+        handoff = directory_path / "nix/scripts/k3s-handoff"
+        handoff.parent.mkdir(parents=True)
+        handoff.write_text(
+            "#!/bin/sh\n"
+            'test "$1" = cleanup-restored\n'
+            'printf "cleanup-restored\\n" >> "$ACCEPT_LOG"\n'
+            'test "${ACCEPT_FAIL:-0}" != 1\n'
+        )
+        handoff.chmod(0o755)
+        receipt_state = directory_path / "state"
+        accepted = directory_path / "accepted"
+        script = f"""
+set -euo pipefail
+root=$ROOT
+state=$TEST_STATE
+mkdir -p "$state/receipts"
+receipt() {{ printf '%s/receipts/%s.json' "$state" "$1"; }}
+current_revision() {{ printf test-revision; }}
+rollback_state() {{ printf '%s\\n' "$ROLLBACK_STATUS"; }}
+{write_match.group(1)}
+{sync_match.group(1)}
+seed() {{
+  write_receipt test-host activated "" k3s.service recovery secret store
+}}
+seed
+ROLLBACK_STATUS=restored
+export ROLLBACK_STATUS
+sync_completed_rollback test-host
+test "$(jq -r .phase "$(receipt test-host)")" = rolled-back
+test "$(cat "$ACCEPT_LOG")" = cleanup-restored
+
+rm -f "$ACCEPT_LOG"
+seed
+ACCEPT_FAIL=1
+export ACCEPT_FAIL
+if sync_completed_rollback test-host; then
+  echo "completed rollback cleanup failure was ignored" >&2
+  exit 1
+fi
+test "$(jq -r .phase "$(receipt test-host)")" = rolled-back
+test "$(cat "$ACCEPT_LOG")" = cleanup-restored
+unset ACCEPT_FAIL
+sync_completed_rollback test-host
+test "$(jq -r .phase "$(receipt test-host)")" = rolled-back
+test "$(wc -l < "$ACCEPT_LOG" | tr -d ' ')" = 2
+ROLLBACK_STATUS=absent
+export ROLLBACK_STATUS
+sync_completed_rollback test-host
+rm -f "$ACCEPT_LOG"
+seed
+ROLLBACK_STATUS=restoring
+export ROLLBACK_STATUS
+if sync_completed_rollback test-host; then
+  echo "incomplete rollback was recorded as complete" >&2
+  exit 1
+fi
+test "$(jq -r .phase "$(receipt test-host)")" = activated
+test ! -e "$ACCEPT_LOG"
+
+ROLLBACK_STATUS=armed
+export ROLLBACK_STATUS
+sync_completed_rollback test-host
+test "$(jq -r .phase "$(receipt test-host)")" = activated
+
+ROLLBACK_STATUS=absent
+export ROLLBACK_STATUS
+if sync_completed_rollback test-host; then
+  echo "missing remote recovery was accepted" >&2
+  exit 1
+fi
+test "$(jq -r .phase "$(receipt test-host)")" = activated
+
+rm -f "$ACCEPT_LOG"
+write_receipt test-host prepared "" k3s.service recovery secret store
+ROLLBACK_STATUS=absent
+export ROLLBACK_STATUS
+sync_completed_rollback test-host
+test "$(jq -r .phase "$(receipt test-host)")" = prepared
+test ! -e "$ACCEPT_LOG"
+
+ROLLBACK_STATUS=restored
+export ROLLBACK_STATUS
+sync_completed_rollback test-host
+test "$(jq -r .phase "$(receipt test-host)")" = rolled-back
+test "$(cat "$ACCEPT_LOG")" = cleanup-restored
+"""
+        result = subprocess.run(
+            ["bash"],
+            input=script,
+            text=True,
+            capture_output=True,
+            env={
+                **os.environ,
+                "ROOT": directory,
+                "TEST_STATE": str(receipt_state),
+                "ACCEPT_LOG": str(accepted),
+            },
+        )
+        if result.returncode:
+            raise SystemExit(
+                "nix/scripts/homelab-host: completed rollback receipt synchronization is unsafe\n"
+                f"{result.stderr.strip()}"
+            )
+
+
+def check_record_rolled_back_order() -> None:
+    migration = source("nix/scripts/homelab-host")
+    write_match = re.search(
+        r"(write_receipt\(\) \{\n.*?^\})",
+        migration,
+        re.DOTALL | re.MULTILINE,
+    )
+    record_match = re.search(
+        r"(record_rolled_back\(\) \{\n.*?^\})",
+        migration,
+        re.DOTALL | re.MULTILINE,
+    )
+    if write_match is None or record_match is None:
+        raise SystemExit("nix/scripts/homelab-host: rolled-back receipt helper missing")
+    with tempfile.TemporaryDirectory() as directory:
+        directory_path = Path(directory)
+        handoff = directory_path / "nix/scripts/k3s-handoff"
+        handoff.parent.mkdir(parents=True)
+        receipt_file = directory_path / "receipt.json"
+        accepted = directory_path / "accepted"
+        handoff.write_text(
+            "#!/bin/sh\n"
+            'test "$1" = cleanup-restored\n'
+            'test "$(jq -r .phase "$TEST_RECEIPT")" = rolled-back\n'
+            'printf "cleanup-restored\\n" >> "$ACCEPT_LOG"\n'
+            'test "${ACCEPT_FAIL:-0}" != 1\n'
+        )
+        handoff.chmod(0o755)
+        script = f"""
+set -euo pipefail
+root=$ROOT
+receipt() {{ printf '%s' "$TEST_RECEIPT"; }}
+current_revision() {{ printf test-revision; }}
+{write_match.group(1)}
+{record_match.group(1)}
+ACCEPT_FAIL=1
+export ACCEPT_FAIL
+if record_rolled_back test-host "" k3s.service recovery secret; then
+  echo "completed rollback cleanup failure was ignored" >&2
+  exit 1
+fi
+test "$(jq -r .phase "$TEST_RECEIPT")" = rolled-back
+test "$(cat "$ACCEPT_LOG")" = cleanup-restored
+unset ACCEPT_FAIL
+record_rolled_back test-host "" k3s.service recovery secret
+test "$(wc -l < "$ACCEPT_LOG" | tr -d ' ')" = 2
+"""
+        result = subprocess.run(
+            ["bash"],
+            input=script,
+            text=True,
+            capture_output=True,
+            env={
+                **os.environ,
+                "ROOT": directory,
+                "TEST_RECEIPT": str(receipt_file),
+                "ACCEPT_LOG": str(accepted),
+            },
+        )
+        if result.returncode:
+            raise SystemExit(
+                "nix/scripts/homelab-host: rolled-back receipt cleanup ordering is unsafe\n"
+                f"{result.stderr.strip()}"
+            )
+
+def check_guarded_reboot() -> None:
+    migration = source("nix/scripts/homelab-host")
+    match = re.search(
+        r"(reboot_host\(\) \{\n.*?^\})",
+        migration,
+        re.DOTALL | re.MULTILINE,
+    )
+    if match is None:
+        raise SystemExit("nix/scripts/homelab-host: guarded reboot helper missing")
+    with tempfile.TemporaryDirectory() as directory:
+        directory_path = Path(directory)
+        handoff = directory_path / "nix/scripts/k3s-handoff"
+        handoff.parent.mkdir(parents=True)
+        handoff.write_text(
+            "#!/bin/sh\n"
+            'test "$1" = rearm\n'
+            'printf "rearm\\n" >> "$EVENTS"\n'
+            'test "${REARM_FAIL:-0}" != 1\n'
+        )
+        handoff.chmod(0o755)
+        receipt_path = directory_path / "receipt.json"
+        events = directory_path / "events"
+        script = f"""
+set -euo pipefail
+root=$ROOT
+receipt() {{ printf '%s\\n' "$RECEIPT"; }}
+seed() {{
+  jq -n --arg phase "$1" --arg bootId "${{2:-}}" \
+    '{{phase:$phase,previousGeneration:"",legacyK3sUnit:"k3s.service",recoveryDirectory:"recovery",secretGeneration:"secret",storePath:"store",bootId:$bootId}}' \
+    > "$RECEIPT"
+}}
+sync_completed_rollback() {{ printf 'sync\\n' >> "$EVENTS"; }}
+guard_count=0
+require_receipt_phase() {{
+  sync_completed_rollback "$1"
+  guard_count=$((guard_count + 1))
+  printf 'guard\\n' >> "$EVENTS"
+  test "$(jq -r .phase "$RECEIPT")" = "$2"
+  test "$guard_count" != "${{FAIL_GUARD:-0}}"
+}}
+write_receipt() {{
+  printf 'receipt:%s\\n' "$2" >> "$EVENTS"
+  jq --arg phase "$2" --arg bootId "${{8:-}}" \
+    '.phase = $phase | .bootId = $bootId' "$RECEIPT" > "$RECEIPT.new"
+  mv "$RECEIPT.new" "$RECEIPT"
+}}
+remote() {{
+  host=$1
+  shift
+  test "$host" = test-host
+  case "$*" in
+    "cat /proc/sys/kernel/random/boot_id")
+      printf 'boot-id\\n' >> "$EVENTS"
+      printf '%s\\n' "${{CURRENT_BOOT_ID-boot-1}}"
+      ;;
+    "sudo -n systemctl --no-block reboot")
+      printf 'reboot\\n' >> "$EVENTS"
+      return "${{REBOOT_RC:-0}}"
+      ;;
+    *) return 2 ;;
+  esac
+}}
+{match.group(1)}
+
+seed activated
+guard_count=0
+: > "$EVENTS"
+reboot_host test-host
+printf '%s\\n' rearm sync guard boot-id receipt:rebooting reboot > "$EXPECTED"
+cmp "$EXPECTED" "$EVENTS"
+test "$(jq -r .phase "$RECEIPT")" = rebooting
+test "$(jq -r .bootId "$RECEIPT")" = boot-1
+
+seed activated
+guard_count=0
+: > "$EVENTS"
+REARM_FAIL=1
+export REARM_FAIL
+if reboot_host test-host; then
+  echo "reboot continued after rearm failure" >&2
+  exit 1
+fi
+printf '%s\\n' rearm > "$EXPECTED"
+cmp "$EXPECTED" "$EVENTS"
+test "$(jq -r .phase "$RECEIPT")" = activated
+unset REARM_FAIL
+
+seed activated
+guard_count=0
+: > "$EVENTS"
+FAIL_GUARD=1
+export FAIL_GUARD
+if reboot_host test-host; then
+  echo "reboot continued after the command-entry state guard failed" >&2
+  exit 1
+fi
+printf '%s\\n' rearm sync guard > "$EXPECTED"
+cmp "$EXPECTED" "$EVENTS"
+test "$(jq -r .phase "$RECEIPT")" = activated
+unset FAIL_GUARD
+
+seed activated
+guard_count=0
+: > "$EVENTS"
+REBOOT_RC=1
+export REBOOT_RC
+if reboot_host test-host; then
+  echo "failed reboot request reported success" >&2
+  exit 1
+fi
+test "$(jq -r .phase "$RECEIPT")" = rebooting
+test "$(jq -r .bootId "$RECEIPT")" = boot-1
+unset REBOOT_RC
+guard_count=0
+: > "$EVENTS"
+reboot_host test-host
+printf '%s\\n' rearm sync guard boot-id reboot > "$EXPECTED"
+cmp "$EXPECTED" "$EVENTS"
+
+seed rebooting boot-1
+guard_count=0
+: > "$EVENTS"
+CURRENT_BOOT_ID=boot-2
+export CURRENT_BOOT_ID
+if reboot_host test-host; then
+  echo "already rebooted host was rebooted again" >&2
+  exit 1
+fi
+printf '%s\\n' rearm sync guard boot-id > "$EXPECTED"
+cmp "$EXPECTED" "$EVENTS"
+unset CURRENT_BOOT_ID
+
+seed rebooting boot-1
+guard_count=0
+: > "$EVENTS"
+CURRENT_BOOT_ID=
+export CURRENT_BOOT_ID
+if reboot_host test-host; then
+  echo "empty boot ID was accepted for reboot retry" >&2
+  exit 1
+fi
+printf '%s\\n' rearm sync guard boot-id > "$EXPECTED"
+cmp "$EXPECTED" "$EVENTS"
+unset CURRENT_BOOT_ID
+
+seed activated
+guard_count=0
+: > "$EVENTS"
+REBOOT_RC=255
+export REBOOT_RC
+reboot_host test-host
+printf '%s\\n' rearm sync guard boot-id receipt:rebooting reboot > "$EXPECTED"
+cmp "$EXPECTED" "$EVENTS"
+unset REBOOT_RC
+"""
+        result = subprocess.run(
+            ["bash"],
+            input=script,
+            text=True,
+            capture_output=True,
+            env={
+                **os.environ,
+                "ROOT": directory,
+                "RECEIPT": str(receipt_path),
+                "EVENTS": str(events),
+                "EXPECTED": str(directory_path / "expected"),
+            },
+        )
+        if result.returncode:
+            raise SystemExit(
+                "nix/scripts/homelab-host: guarded reboot ordering is unsafe\n"
+                f"{result.stderr.strip()}"
+            )
+
+
+def check_reboot_verify_phase_gate() -> None:
+    migration = source("nix/scripts/homelab-host")
+    match = re.search(
+        r"  reboot-verify\)\n(.*?)\n    ;;",
+        migration,
+        re.DOTALL,
+    )
+    if match is None:
+        raise SystemExit("nix/scripts/homelab-host: reboot-verify entrypoint missing")
+    block = match.group(1)
+    timeout_call = (
+        'timeout --foreground --kill-after=30s 12m "$0" '
+        'verify-host-while-armed "$host"'
+    )
+    if timeout_call not in block:
+        raise SystemExit(
+            "nix/scripts/homelab-host: reboot-verify armed verification call missing"
+        )
+    block = block.replace(timeout_call, 'verify_armed "$host"', 1)
+    with tempfile.TemporaryDirectory() as directory:
+        directory_path = Path(directory)
+        handoff = directory_path / "nix/scripts/k3s-handoff"
+        receipt_file = directory_path / "receipt.json"
+        events = directory_path / "events"
+        handoff.parent.mkdir(parents=True)
+        handoff.write_text(
+            "#!/bin/sh\n"
+            'printf "%s\\n" "$1" >> "$EVENTS"\n'
+        )
+        handoff.chmod(0o755)
+        script = f"""
+set -euo pipefail
+root=$ROOT
+receipt() {{ printf '%s\\n' "$RECEIPT"; }}
+require_receipt_phase() {{
+  printf 'guard\\n' >> "$EVENTS"
+  test "$(jq -r .phase "$RECEIPT")" = "$2"
+}}
+assert_host_rebooted() {{ printf 'boot\\n' >> "$EVENTS"; }}
+verify_armed() {{ printf 'verify\\n' >> "$EVENTS"; }}
+rollback_armed_host() {{ printf 'rollback\\n' >> "$EVENTS"; return 1; }}
+record_rolled_back() {{ printf 'rolled-back\\n' >> "$EVENTS"; }}
+write_receipt() {{ printf 'receipt:%s\\n' "$2" >> "$EVENTS"; }}
+set -- reboot-verify test-host
+{block}
+"""
+        environment = {
+            **os.environ,
+            "ROOT": directory,
+            "RECEIPT": str(receipt_file),
+            "EVENTS": str(events),
+        }
+
+        def run_case(phase: str) -> subprocess.CompletedProcess[str]:
+            events.unlink(missing_ok=True)
+            receipt_file.write_text(
+                json.dumps(
+                    {
+                        "phase": phase,
+                        "previousGeneration": "4",
+                        "legacyK3sUnit": "k3s.service",
+                        "recoveryDirectory": "recovery",
+                        "secretGeneration": "secret",
+                        "storePath": "store",
+                    }
+                )
+            )
+            return subprocess.run(
+                ["bash"],
+                input=script,
+                text=True,
+                capture_output=True,
+                env=environment,
+            )
+
+        result = run_case("rebooting")
+        if (
+            result.returncode
+            or events.read_text()
+            != "rearm\nguard\nboot\nverify\ndisarm\nreceipt:reboot-verified\n"
+        ):
+            raise SystemExit(
+                "nix/scripts/homelab-host: reboot-verify armed ordering is unsafe\n"
+                f"{result.stderr.strip()}"
+            )
+
+        result = run_case("reboot-verified")
+        if (
+            result.returncode == 0
+            or events.exists()
+            or "expected rebooting" not in result.stderr
+        ):
+            raise SystemExit(
+                "nix/scripts/homelab-host: reboot-verify rearmed an invalid local phase"
+            )
+
+
+def check_reboot_boot_id_proof() -> None:
+    migration = source("nix/scripts/homelab-host")
+    match = re.search(
+        r"(assert_host_rebooted\(\) \{\n.*?^\})",
+        migration,
+        re.DOTALL | re.MULTILINE,
+    )
+    if match is None:
+        raise SystemExit("nix/scripts/homelab-host: reboot boot ID proof missing")
+    with tempfile.TemporaryDirectory() as directory:
+        directory_path = Path(directory)
+        receipt_file = directory_path / "receipt.json"
+        script = f"""
+set -euo pipefail
+receipt() {{ printf '%s\\n' "$RECEIPT"; }}
+remote() {{
+  test "$1" = test-host
+  test "$2" = "cat /proc/sys/kernel/random/boot_id"
+  printf '%s\\n' "$ACTIVE_BOOT_ID"
+}}
+{match.group(1)}
+jq -n --arg bootId boot-1 '{{bootId:$bootId}}' > "$RECEIPT"
+ACTIVE_BOOT_ID=boot-2
+export ACTIVE_BOOT_ID
+assert_host_rebooted test-host
+ACTIVE_BOOT_ID=boot-1
+export ACTIVE_BOOT_ID
+if assert_host_rebooted test-host; then
+  echo "unchanged boot ID was accepted" >&2
+  exit 1
+fi
+jq -n '{{}}' > "$RECEIPT"
+if assert_host_rebooted test-host; then
+  echo "missing pre-reboot boot ID was accepted" >&2
+  exit 1
+fi
+"""
+        result = subprocess.run(
+            ["bash"],
+            input=script,
+            text=True,
+            capture_output=True,
+            env={**os.environ, "RECEIPT": str(receipt_file)},
+        )
+        if result.returncode:
+            raise SystemExit(
+                "nix/scripts/homelab-host: reboot boot ID proof is unsafe\n"
+                f"{result.stderr.strip()}"
+            )
+
+
+def check_restore_host_guard() -> None:
+    migration = source("nix/scripts/homelab-host")
+    match = re.search(
+        r"(restore_host\(\) \{\n.*?^\})",
+        migration,
+        re.DOTALL | re.MULTILINE,
+    )
+    if match is None:
+        raise SystemExit("nix/scripts/homelab-host: restore_host function missing")
+    with tempfile.TemporaryDirectory() as directory:
+        directory_path = Path(directory)
+        receipt_file = directory_path / "receipt.json"
+        restore_log = directory_path / "restore"
+        phase_log = directory_path / "phase"
+        script = (
+            "set -eu\n"
+            "receipt() { printf '%s\\n' \"$TEST_RECEIPT\"; }\n"
+            "rollback_state() { printf '%s\\n' \"$ROLLBACK_STATE\"; }\n"
+            "rollback_armed_host() { printf 'restore\\n' > \"$RESTORE_LOG\"; }\n"
+            "record_rolled_back() { printf '%s\\n' rolled-back > \"$PHASE_LOG\"; }\n"
+            f"{match.group(1)}\n"
+            "restore_host test-host\n"
+        )
+        environment = {
+            **os.environ,
+            "TEST_RECEIPT": str(receipt_file),
+            "RESTORE_LOG": str(restore_log),
+            "PHASE_LOG": str(phase_log),
+        }
+
+        def run_case(phase: str, rollback_status: str) -> subprocess.CompletedProcess[str]:
+            restore_log.unlink(missing_ok=True)
+            phase_log.unlink(missing_ok=True)
+            receipt_file.write_text(
+                json.dumps(
+                    {
+                        "phase": phase,
+                        "previousGeneration": "4",
+                        "legacyK3sUnit": "k3s.service",
+                        "recoveryDirectory": "/recovery",
+                        "secretGeneration": "generation",
+                    }
+                )
+            )
+            return subprocess.run(
+                ["sh"],
+                input=script,
+                text=True,
+                capture_output=True,
+                env={**environment, "ROLLBACK_STATE": rollback_status},
+            )
+
+        result = run_case("prepared", "armed")
+        if (
+            result.returncode
+            or not restore_log.exists()
+            or phase_log.read_text().strip() != "rolled-back"
+        ):
+            raise SystemExit(
+                "nix/scripts/homelab-host: prepared recovery cannot be restored safely\n"
+                f"{result.stderr.strip()}"
+            )
+
+        for phase, rollback_status, expected_error in (
+            ("rolled-back", "armed", "no migration recovery"),
+            ("prepared", "absent", "no remote recovery state"),
+            ("prepared", "unknown", "invalid rollback state"),
+        ):
+            result = run_case(phase, rollback_status)
+            if (
+                result.returncode == 0
+                or expected_error not in result.stderr
+                or restore_log.exists()
+                or phase_log.exists()
+            ):
+                raise SystemExit(
+                    "nix/scripts/homelab-host: restore-host phase/state guard is unsafe"
+                )
+
+def check_rollback_state_classification() -> None:
+    handoff = source("nix/scripts/k3s-handoff")
+    match = re.search(
+        r'  state\).*?remote "\$host" "sudo -n sh -ceu \'\n(.*?)\n    \'"',
+        handoff,
+        re.DOTALL,
+    )
+    if match is None:
+        raise SystemExit("nix/scripts/k3s-handoff: rollback state block missing")
+    block = match.group(1).replace(r"\$", "$").replace(r"\"", '"')
+    with tempfile.TemporaryDirectory() as directory:
+        directory_path = Path(directory)
+        rollback_root = directory_path / "rollback"
+        current = rollback_root / "current"
+        mock_bin = directory_path / "bin"
+        mock_bin.mkdir()
+        systemctl = mock_bin / "systemctl"
+        systemctl.write_text(
+            "#!/bin/sh\n"
+            'test "$1" = is-active\n'
+            'printf "%s\\n" "${SERVICE_STATE:-inactive}"\n'
+        )
+        systemctl.chmod(0o755)
+        environment = {
+            **os.environ,
+            "PATH": f"{mock_bin}:{os.environ['PATH']}",
+            "TEST_ROLLBACK_ROOT": str(rollback_root),
+        }
+
+        def classify(
+            *,
+            exists: bool,
+            stages: bool = False,
+            restored: bool = False,
+            service_state: str = "inactive",
+        ) -> str:
+            shutil.rmtree(rollback_root, ignore_errors=True)
+            if exists:
+                current.mkdir(parents=True)
+                if stages:
+                    (current / "stages").mkdir()
+                if restored:
+                    (current / "restored").touch()
+            result = subprocess.run(
+                ["sh"],
+                input=(
+                    'set -eu\nrollback_root="$TEST_ROLLBACK_ROOT"\n'
+                    "rollback_unit=homelab-host-rollback\n"
+                    f"{block}\n"
+                ),
+                text=True,
+                capture_output=True,
+                env={**environment, "SERVICE_STATE": service_state},
+            )
+            if result.returncode:
+                raise SystemExit(
+                    "nix/scripts/k3s-handoff: rollback state fixture failed\n"
+                    f"{result.stderr.strip()}"
+                )
+            return result.stdout.strip()
+
+        cases = (
+            ("absent", classify(exists=False)),
+            ("armed", classify(exists=True)),
+            ("restoring", classify(exists=True, stages=True)),
+            ("restoring", classify(exists=True, service_state="active")),
+            (
+                "restored",
+                classify(exists=True, restored=True, service_state="active"),
+            ),
+        )
+        for expected, actual in cases:
+            if actual != expected:
+                raise SystemExit(
+                    "nix/scripts/k3s-handoff: rollback state misclassified "
+                    f"{expected} fixture as {actual or 'empty'}"
+                )
+
+
+def check_rearm_guards() -> None:
+    handoff = source("nix/scripts/k3s-handoff")
+    match = re.search(
+        r'  rearm\).*?remote "\$host" "sudo -n sh -ceu \'\n(.*?)\n    \'"',
+        handoff,
+        re.DOTALL,
+    )
+    if match is None:
+        raise SystemExit("nix/scripts/k3s-handoff: rearm guard block missing")
+    block = match.group(1).replace(r"\$", "$").replace(r"\"", '"')
+    with tempfile.TemporaryDirectory() as directory:
+        directory_path = Path(directory)
+        rollback_root = directory_path / "rollback"
+        current = rollback_root / "current"
+        mock_bin = directory_path / "bin"
+        events = directory_path / "events"
+        restarted = directory_path / "restarted"
+        current.mkdir(parents=True)
+        mock_bin.mkdir()
+        systemctl = mock_bin / "systemctl"
+        systemctl.write_text(
+            "#!/bin/sh\n"
+            'case "$1" in\n'
+            "  is-active)\n"
+            '    if test "$2" = homelab-host-rollback.service; then\n'
+            '      if test "${POST_RESTART_RACE:-0}" = 1 && test -e "$RESTARTED"; then\n'
+            "        printf 'activating\\n'\n"
+            "      else\n"
+            "        printf '%s\\n' \"${SERVICE_STATE:-inactive}\"\n"
+            "      fi\n"
+            "    else\n"
+            "      printf 'active\\n'\n"
+            "    fi\n"
+            "    ;;\n"
+            "  reset-failed) ;;\n"
+            "  enable) printf 'enable\\n' >> \"$EVENTS\" ;;\n"
+            "  restart)\n"
+            "    printf 'restart\\n' >> \"$EVENTS\"\n"
+            '    : > "$RESTARTED"\n'
+            "    ;;\n"
+            "  *) exit 2 ;;\n"
+            "esac\n"
+        )
+        systemctl.chmod(0o755)
+        for name in ("etc-state.tar", "firewall-runtime.rules", "distro-packages.txt"):
+            (current / name).write_text("fixture\n")
+        environment = {
+            **os.environ,
+            "PATH": f"{mock_bin}:{os.environ['PATH']}",
+            "TEST_ROLLBACK_ROOT": str(rollback_root),
+            "EVENTS": str(events),
+            "RESTARTED": str(restarted),
+        }
+
+        def run_case(**extra: str) -> subprocess.CompletedProcess[str]:
+            events.unlink(missing_ok=True)
+            restarted.unlink(missing_ok=True)
+            return subprocess.run(
+                ["sh"],
+                input=(
+                    'set -eu\nrollback_root="$TEST_ROLLBACK_ROOT"\n'
+                    "rollback_unit=homelab-host-rollback\n"
+                    f"{block}\n"
+                ),
+                text=True,
+                capture_output=True,
+                env={**environment, **extra},
+            )
+
+        (current / "restored").touch()
+        result = run_case()
+        if (
+            result.returncode == 0
+            or "rollback already completed" not in result.stderr
+            or restarted.exists()
+        ):
+            raise SystemExit(
+                "nix/scripts/k3s-handoff: completed rollback rearm guard is unsafe"
+            )
+        (current / "restored").unlink()
+
+        (current / "stages").mkdir()
+        result = run_case()
+        if (
+            result.returncode == 0
+            or "rollback already started" not in result.stderr
+            or restarted.exists()
+        ):
+            raise SystemExit(
+                "nix/scripts/k3s-handoff: in-progress rollback rearm guard is unsafe"
+            )
+        (current / "stages").rmdir()
+
+        result = run_case(SERVICE_STATE="active")
+        if (
+            result.returncode == 0
+            or "rollback service is active" not in result.stderr
+            or restarted.exists()
+        ):
+            raise SystemExit(
+                "nix/scripts/k3s-handoff: active rollback service rearm guard is unsafe"
+            )
+
+        result = run_case(POST_RESTART_RACE="1")
+        if (
+            result.returncode == 0
+            or "rollback service is activating" not in result.stderr
+            or not restarted.exists()
+        ):
+            raise SystemExit(
+                "nix/scripts/k3s-handoff: post-restart rollback race was not rejected"
+            )
+
+        result = run_case()
+        if result.returncode or not restarted.exists():
+            raise SystemExit(
+                "nix/scripts/k3s-handoff: safe rollback timer rearm failed\n"
+                f"{result.stderr.strip()}"
+            )
+
+def check_accept_rearms_before_cleanup() -> None:
+    handoff = root / "nix/scripts/k3s-handoff"
+    with tempfile.TemporaryDirectory() as directory:
+        directory_path = Path(directory)
+        mock_bin = directory_path / "bin"
+        events = directory_path / "events"
+        expected = directory_path / "expected"
+        mock_bin.mkdir()
+        (mock_bin / "nix").write_text("#!/bin/sh\nprintf 'test-target\\n'\n")
+        (mock_bin / "nix").chmod(0o755)
+        (mock_bin / "ssh").write_text(
+            "#!/bin/sh\n"
+            "for argument in \"$@\"; do command=$argument; done\n"
+            "case \"$command\" in\n"
+            "  *assert_rearmable*)\n"
+            "    printf 'rearm\\n' >> \"$EVENTS\"\n"
+            "    test \"${REARM_FAIL:-0}\" != 1\n"
+            "    ;;\n"
+            "  *'test -d /var/lib/homelab-host-rollback/current'*)\n"
+            "    printf 'accept\\n' >> \"$EVENTS\"\n"
+            "    ;;\n"
+            "  *'test -f /var/lib/homelab-host-rollback/current/restored'*)\n"
+            "    printf 'cleanup-restored\\n' >> \"$EVENTS\"\n"
+            "    ;;\n"
+            "  *)\n"
+            "    printf 'unexpected remote command: %s\\n' \"$command\" >&2\n"
+            "    exit 2\n"
+            "    ;;\n"
+            "esac\n"
+        )
+        (mock_bin / "ssh").chmod(0o755)
+        environment = {
+            **os.environ,
+            "PATH": f"{mock_bin}:{os.environ['PATH']}",
+            "HOMELAB_REPO_ROOT": str(root),
+            "EVENTS": str(events),
+        }
+
+        result = subprocess.run(
+            ["bash", str(handoff), "accept", "test-host"],
+            text=True,
+            capture_output=True,
+            env=environment,
+        )
+        expected.write_text("rearm\naccept\n")
+        if result.returncode or events.read_text() != expected.read_text():
+            raise SystemExit(
+                "nix/scripts/k3s-handoff: accept did not rearm before cleanup\n"
+                f"{result.stderr.strip()}"
+            )
+
+        events.unlink()
+        result = subprocess.run(
+            ["bash", str(handoff), "accept", "test-host"],
+            text=True,
+            capture_output=True,
+            env={**environment, "REARM_FAIL": "1"},
+        )
+        if result.returncode == 0 or events.read_text() != "rearm\n":
+            raise SystemExit(
+                "nix/scripts/k3s-handoff: accept continued after command-entry rearm failed"
+            )
+
+        events.unlink()
+        result = subprocess.run(
+            ["bash", str(handoff), "cleanup-restored", "test-host"],
+            text=True,
+            capture_output=True,
+            env=environment,
+        )
+        if result.returncode or events.read_text() != "cleanup-restored\n":
+            raise SystemExit(
+                "nix/scripts/k3s-handoff: restored rollback cleanup incorrectly rearmed"
+            )
+
+
+def check_armed_verify_entrypoint() -> None:
+    migration = source("nix/scripts/homelab-host")
+    usage_block = migration.split("Usage: homelab-host", 1)[1].split("\nEOF", 1)[0]
+    if "verify-host-while-armed" in usage_block:
+        raise SystemExit(
+            "nix/scripts/homelab-host: armed verification must remain internal"
+        )
+    match = re.search(
+        r"  verify-host-while-armed\)\n(.*?)\n    ;;",
+        migration,
+        re.DOTALL,
+    )
+    if match is None:
+        raise SystemExit(
+            "nix/scripts/homelab-host: verify-host-while-armed entrypoint missing"
+        )
+    block = match.group(1).replace(
+        'exec "$0" verify-host "$@"',
+        'exec "$VERIFY_TARGET" verify-host "$@"',
+    )
+    with tempfile.TemporaryDirectory() as directory:
+        directory_path = Path(directory)
+        handoff = directory_path / "nix/scripts/k3s-handoff"
+        verify_target = directory_path / "verify"
+        events = directory_path / "events"
+        handoff.parent.mkdir(parents=True)
+        handoff.write_text(
+            "#!/bin/sh\n"
+            'test "$1" = rearm\n'
+            'printf "rearm:%s\\n" "$2" >> "$EVENTS"\n'
+            'test "${REARM_FAIL:-0}" != 1\n'
+        )
+        handoff.chmod(0o755)
+        verify_target.write_text(
+            "#!/bin/sh\n"
+            'printf "verify:%s\\n" "$*" >> "$EVENTS"\n'
+        )
+        verify_target.chmod(0o755)
+        script = f"""
+set -euo pipefail
+root=$ROOT
+set -- verify-host-while-armed test-host --baseline baseline
+{block}
+"""
+        environment = {
+            **os.environ,
+            "ROOT": directory,
+            "VERIFY_TARGET": str(verify_target),
+            "EVENTS": str(events),
+        }
+        result = subprocess.run(
+            ["bash"],
+            input=script,
+            text=True,
+            capture_output=True,
+            env=environment,
+        )
+        if (
+            result.returncode
+            or events.read_text()
+            != "rearm:test-host\nverify:verify-host test-host --baseline baseline\n"
+        ):
+            raise SystemExit(
+                "nix/scripts/homelab-host: armed verification did not rearm before checks\n"
+                f"{result.stderr.strip()}"
+            )
+
+        events.unlink()
+        result = subprocess.run(
+            ["bash"],
+            input=script,
+            text=True,
+            capture_output=True,
+            env={**environment, "REARM_FAIL": "1"},
+        )
+        if result.returncode == 0 or events.read_text() != "rearm:test-host\n":
+            raise SystemExit(
+                "nix/scripts/homelab-host: armed verification continued after rearm failed"
+            )
+
+
+def check_rollback_restore_failure() -> None:
+    migration = source("nix/scripts/homelab-host")
+    match = re.search(
+        r"(rollback_armed_host\(\) \{\n.*?^\})",
+        migration,
+        re.DOTALL | re.MULTILINE,
+    )
+    if match is None:
+        raise SystemExit("nix/scripts/homelab-host: rollback_armed_host function missing")
+    with tempfile.TemporaryDirectory() as directory:
+        directory_path = Path(directory)
+        handoff = directory_path / "nix/scripts/k3s-handoff"
+        handoff.parent.mkdir(parents=True)
+        handoff.write_text(
+            "#!/bin/sh\n"
+            'test "$1" = restore\n'
+            'count=$(cat "$ROLLBACK_COUNT" 2>/dev/null || printf 0)\n'
+            "count=$((count + 1))\n"
+            'printf "%s\\n" "$count" > "$ROLLBACK_COUNT"\n'
+            'test "${RESTORE_SUCCEED_AFTER:-0}" -gt 0 '
+            '&& test "$count" -ge "$RESTORE_SUCCEED_AFTER"\n'
+        )
+        handoff.chmod(0o755)
+        count = directory_path / "restore-count"
+        script = f"""
+set -euo pipefail
+{match.group(1)}
+root=$ROOT
+if rollback_armed_host test-host; then
+  echo "rollback accepted two failed restore attempts" >&2
+  exit 1
+fi
+test "$(cat "$ROLLBACK_COUNT")" = 2
+rm -f "$ROLLBACK_COUNT"
+RESTORE_SUCCEED_AFTER=2
+export RESTORE_SUCCEED_AFTER
+rollback_armed_host test-host
+test "$(cat "$ROLLBACK_COUNT")" = 2
+rm -f "$ROLLBACK_COUNT"
+RESTORE_SUCCEED_AFTER=1
+export RESTORE_SUCCEED_AFTER
+rollback_armed_host test-host
+test "$(cat "$ROLLBACK_COUNT")" = 1
+"""
+        result = subprocess.run(
+            ["bash"],
+            input=script,
+            text=True,
+            capture_output=True,
+            env={
+                **os.environ,
+                "ROOT": directory,
+                "ROLLBACK_COUNT": str(count),
+            },
+        )
+        if result.returncode:
+            raise SystemExit(
+                "nix/scripts/homelab-host: rollback restore failure handling is unsafe\n"
+                f"{result.stderr.strip()}"
+            )
+
+
+def check_rollback_stage_resume() -> None:
+    handoff = source("nix/scripts/k3s-handoff")
+    delimiter = 'cat > "$dir/rollback" <<\'ROLLBACK\'\n'
+    if delimiter not in handoff or "\nROLLBACK\n" not in handoff:
+        raise SystemExit("nix/scripts/k3s-handoff: generated rollback script missing")
+    rollback = handoff.split(delimiter, 1)[1].split("\nROLLBACK\n", 1)[0]
+    rollback = rollback.split("systemctl daemon-reload", 1)[0]
+    replacements = {
+        'export PATH="/usr/local/sbin:/usr/local/bin:/usr/sbin:/usr/bin:/sbin:/bin:${PATH:-}"': 'export PATH="$TEST_BIN:$PATH"',
+        "dir=/var/lib/homelab-host-rollback/current": 'dir="$TEST_CURRENT"',
+        "base=/var/lib/homelab-secrets": 'base="$TEST_SECRETS"',
+        "profile=/nix/var/nix/profiles/system-manager-profiles/system-manager": 'profile="$TEST_PROFILE"',
+        'tar -C / -xf "$dir/etc-state.tar"': 'tar -C "$TEST_ROOT" -xf "$dir/etc-state.tar"',
+    }
+    for original, replacement in replacements.items():
+        if original not in rollback:
+            raise SystemExit(
+                f"nix/scripts/k3s-handoff: rollback resume fixture missing {original!r}"
+            )
+        rollback = rollback.replace(original, replacement, 1)
+    rollback += '\nprintf "injected post-archive failure\\n" >&2\nexit 73\n'
+
+    with tempfile.TemporaryDirectory() as directory:
+        tar_binary = shutil.which("tar")
+        if tar_binary is None:
+            raise SystemExit("nix/scripts/check-migration.py: tar executable missing")
+        directory_path = Path(directory)
+        current = directory_path / "current"
+        secrets = directory_path / "secrets"
+        profile = directory_path / "profile"
+        test_root = directory_path / "root"
+        mock_bin = directory_path / "bin"
+        for path in (current, secrets, profile / "bin", test_root, mock_bin):
+            path.mkdir(parents=True, exist_ok=True)
+        (current / "config").write_text(
+            "\n\niptables.service\nsshd.service\neth0\n\nagent\napt\n"
+        )
+        payload = directory_path / "payload"
+        payload.write_text("restored\n")
+        with tarfile.open(current / "etc-state.tar", "w") as archive:
+            archive.add(payload, arcname="etc/pr287-rollback-stage")
+
+        deactivate_count = directory_path / "deactivate-count"
+        tar_count = directory_path / "tar-count"
+        (profile / "bin/deactivate").write_text(
+            "#!/bin/sh\n"
+            'count=$(cat "$DEACTIVATE_COUNT" 2>/dev/null || printf 0)\n'
+            'printf "%s\\n" "$((count + 1))" > "$DEACTIVATE_COUNT"\n'
+        )
+        (profile / "bin/deactivate").chmod(0o755)
+        (mock_bin / "systemctl").write_text(
+            "#!/bin/sh\n"
+            'test "${1:-}" != is-active\n'
+        )
+        (mock_bin / "tar").write_text(
+            "#!/bin/sh\n"
+            'count=$(cat "$TAR_COUNT" 2>/dev/null || printf 0)\n'
+            'printf "%s\\n" "$((count + 1))" > "$TAR_COUNT"\n'
+            f'exec "{tar_binary}" "$@"\n'
+        )
+        for command in ("systemctl", "tar"):
+            (mock_bin / command).chmod(0o755)
+
+        rollback_path = directory_path / "rollback"
+        rollback_path.write_text(rollback)
+        rollback_path.chmod(0o755)
+        environment = {
+            **os.environ,
+            "PATH": f"{mock_bin}:{os.environ['PATH']}",
+            "TEST_BIN": str(mock_bin),
+            "TEST_CURRENT": str(current),
+            "TEST_SECRETS": str(secrets),
+            "TEST_PROFILE": str(profile),
+            "TEST_ROOT": str(test_root),
+            "DEACTIVATE_COUNT": str(deactivate_count),
+            "TAR_COUNT": str(tar_count),
+        }
+        for _ in range(2):
+            result = subprocess.run(
+                ["/bin/sh", str(rollback_path)],
+                text=True,
+                capture_output=True,
+                env=environment,
+            )
+            if result.returncode != 73:
+                raise SystemExit(
+                    "nix/scripts/k3s-handoff: rollback resume fixture did not reach the injected failure\n"
+                    f"{result.stderr.strip()}"
+                )
+        if deactivate_count.read_text().strip() != "1":
+            raise SystemExit(
+                "nix/scripts/k3s-handoff: rollback retried completed system-manager restoration"
+            )
+        if tar_count.read_text().strip() != "1":
+            raise SystemExit(
+                "nix/scripts/k3s-handoff: rollback retried completed archive restoration"
+            )
+        for marker in (
+            "secrets-restored",
+            "system-manager-restored",
+            "archive-restored",
+        ):
+            if not (current / "stages" / marker).is_file():
+                raise SystemExit(
+                    f"nix/scripts/k3s-handoff: rollback stage marker {marker!r} missing"
+                )
+        if (test_root / "etc/pr287-rollback-stage").read_text() != "restored\n":
+            raise SystemExit(
+                "nix/scripts/k3s-handoff: rollback archive fixture was not restored"
+            )
+
+def check_authorized_keys_verification() -> None:
+    migration = source("nix/scripts/homelab-host")
+    match = re.search(r"grep -Eqi '(\^authorizedkeysfile[^']+)'", migration)
+    if match is None:
+        raise SystemExit("nix/scripts/homelab-host: AuthorizedKeysFile verification pattern missing")
+    pattern = match.group(1)
+    allowed = (
+        "authorizedkeysfile .ssh/authorized_keys /etc/ssh/authorized_keys.d/%u",
+        "authorizedkeysfile /etc/ssh/authorized_keys.d/%u",
+    )
+    for value in allowed:
+        result = subprocess.run(
+            ["grep", "-Eqi", pattern],
+            input=f"{value}\n",
+            text=True,
+        )
+        if result.returncode:
+            raise SystemExit(
+                f"nix/scripts/homelab-host: rejected valid AuthorizedKeysFile value {value!r}"
+            )
+    invalid = subprocess.run(
+        ["grep", "-Eqi", pattern],
+        input="authorizedkeysfile .ssh/authorized_keys\n",
+        text=True,
+    )
+    if invalid.returncode == 0:
+        raise SystemExit("nix/scripts/homelab-host: accepted unmanaged-only AuthorizedKeysFile value")
+
+
+def check_wireguard_handshake_probe() -> None:
+    migration = source("nix/scripts/homelab-host")
+    match = re.search(
+        r"<<'REMOTE_WIREGUARD_HANDSHAKE'\n(.*?)\nREMOTE_WIREGUARD_HANDSHAKE",
+        migration,
+        re.DOTALL,
+    )
+    if match is None:
+        raise SystemExit("nix/scripts/homelab-host: WireGuard handshake probe missing")
+    with tempfile.TemporaryDirectory() as directory:
+        directory_path = Path(directory)
+        state = directory_path / "wg-count"
+        for command, body in {
+            "ping": "#!/bin/sh\nexit 0\n",
+            "sleep": "#!/bin/sh\nexit 0\n",
+            "wg": (
+                "#!/bin/sh\n"
+                'count=$(cat "$WG_TEST_STATE" 2>/dev/null || printf 0)\n'
+                "count=$((count + 1))\n"
+                'printf "%s\\n" "$count" > "$WG_TEST_STATE"\n'
+                "handshake=0\n"
+                'if [ "${WG_TEST_SUCCEED_AFTER:-0}" -gt 0 ] '
+                '&& [ "$count" -ge "$WG_TEST_SUCCEED_AFTER" ]; then handshake=1; fi\n'
+                'printf "%s\\t%s\\n" "$WG_PUBLIC" "$handshake"\n'
+            ),
+        }.items():
+            path = directory_path / command
+            path.write_text(body)
+            path.chmod(0o755)
+        environment = {
+            **os.environ,
+            "PATH": f"{directory}:{os.environ['PATH']}",
+            "WG_INTERFACE": "wg0",
+            "WG_PEER": "n2p2",
+            "WG_PUBLIC": "test-public-key",
+            "WG_ADDRESS": "10.222.0.2",
+            "WG_TEST_STATE": str(state),
+            "WG_TEST_SUCCEED_AFTER": "3",
+        }
+        result = subprocess.run(
+            ["sh"],
+            input=match.group(1),
+            text=True,
+            capture_output=True,
+            env=environment,
+        )
+        if result.returncode or state.read_text().strip() != "3":
+            raise SystemExit(
+                "nix/scripts/homelab-host: WireGuard handshake probe did not retry to success\n"
+                f"{result.stderr.strip()}"
+            )
+        state.unlink()
+        environment["WG_TEST_SUCCEED_AFTER"] = "0"
+        result = subprocess.run(
+            ["sh"],
+            input=match.group(1),
+            text=True,
+            capture_output=True,
+            env=environment,
+        )
+        expected = "wg0 handshake with n2p2 (10.222.0.2) did not recover after 30 attempts"
+        if result.returncode == 0 or expected not in result.stderr:
+            raise SystemExit(
+                "nix/scripts/homelab-host: WireGuard handshake probe failure is not actionable"
+            )
+
+
+
+def check_register_system_failure() -> None:
+    migration = source("nix/scripts/homelab-host")
+    match = re.search(
+        r"(register_system\(\) \{\n.*?^\})",
+        migration,
+        re.DOTALL | re.MULTILINE,
+    )
+    if match is None:
+        raise SystemExit("nix/scripts/homelab-host: register_system function missing")
+    with tempfile.TemporaryDirectory() as directory:
+        marker = Path(directory) / "remote-called"
+        script = f"""
+set -euo pipefail
+{match.group(1)}
+committed_flake() {{ printf 'git+https://example.invalid/homelab?rev=test#%s\\n' "$1"; }}
+remote_system_manager() {{ return 73; }}
+remote() {{ : > "$MARKER"; }}
+if register_system test-host host-test; then
+  echo "register_system accepted failed remote registration" >&2
+  exit 1
+fi
+test ! -e "$MARKER"
+"""
+        result = subprocess.run(
+            ["bash"],
+            input=script,
+            text=True,
+            capture_output=True,
+            env={**os.environ, "MARKER": str(marker)},
+        )
+        if result.returncode or "failed to register system-manager generation" not in result.stderr:
+            raise SystemExit(
+                "nix/scripts/homelab-host: failed remote registration did not stop preparation\n"
+                f"{result.stderr.strip()}"
+            )
+
+
+def check_time_sync_waits() -> None:
+    migration = source("nix/scripts/homelab-host")
+    loops = re.findall(
+        r'(attempt=0\nwhile test "\$\(timedatectl show -p NTPSynchronized --value\)" != yes; do'
+        r'.*?^done)',
+        migration,
+        re.DOTALL | re.MULTILINE,
+    )
+    if len(loops) != 2:
+        raise SystemExit("nix/scripts/homelab-host: activation and verification time-sync waits missing")
+    with tempfile.TemporaryDirectory() as directory:
+        directory_path = Path(directory)
+        state = directory_path / "time-count"
+        timedatectl = directory_path / "timedatectl"
+        timedatectl.write_text(
+            "#!/bin/sh\n"
+            'count=$(cat "$TIME_TEST_STATE" 2>/dev/null || printf 0)\n'
+            "count=$((count + 1))\n"
+            'printf "%s\\n" "$count" > "$TIME_TEST_STATE"\n'
+            'if test "$count" -ge 3; then printf "yes\\n"; else printf "no\\n"; fi\n'
+        )
+        timedatectl.chmod(0o755)
+        sleep = directory_path / "sleep"
+        sleep.write_text("#!/bin/sh\nexit 0\n")
+        sleep.chmod(0o755)
+        environment = {
+            **os.environ,
+            "PATH": f"{directory}:{os.environ['PATH']}",
+            "TIME_TEST_STATE": str(state),
+        }
+        for loop in loops:
+            state.unlink(missing_ok=True)
+            result = subprocess.run(
+                ["sh"],
+                input=f"set -eu\n{loop}\n",
+                text=True,
+                capture_output=True,
+                env=environment,
+            )
+            if result.returncode or state.read_text().strip() != "3":
+                raise SystemExit(
+                    "nix/scripts/homelab-host: time synchronization wait did not retry to success\n"
+                    f"{result.stderr.strip()}"
+                )
+
+    handoff = source("nix/scripts/k3s-handoff")
+    match = re.search(
+        r"(systemctl restart systemd-timesyncd\.service\nattempt=0\n"
+        r'while test .*?time_synchronized=true\nelse\n.*?^fi)\nif test -n "\$legacy_unit"',
+        handoff,
+        re.DOTALL | re.MULTILINE,
+    )
+    if match is None:
+        raise SystemExit("nix/scripts/k3s-handoff: best-effort rollback time synchronization missing")
+    with tempfile.TemporaryDirectory() as directory:
+        directory_path = Path(directory)
+        for command, body in {
+            "systemctl": "#!/bin/sh\nexit 0\n",
+            "timedatectl": "#!/bin/sh\nprintf 'no\\n'\n",
+            "sleep": "#!/bin/sh\nexit 0\n",
+        }.items():
+            path = directory_path / command
+            path.write_text(body)
+            path.chmod(0o755)
+        result = subprocess.run(
+            ["sh"],
+            input=f"set -eu\n{match.group(1)}\ntest \"$time_synchronized\" = false\n",
+            text=True,
+            capture_output=True,
+            env={**os.environ, "PATH": f"{directory}:{os.environ['PATH']}"},
+        )
+        if result.returncode:
+            raise SystemExit(
+                "nix/scripts/k3s-handoff: NTP timeout aborted rollback before service recovery\n"
+                f"{result.stderr.strip()}"
+            )
+
+
+
+def check_firewall_restore_waits() -> None:
+    handoff = source("nix/scripts/k3s-handoff")
+    match = re.search(
+        r'(  firewall_attempt=0\n  while ! iptables-restore --test --wait .*?'
+        r"rollback failed while restoring the runtime firewall.*?^  \})",
+        handoff,
+        re.DOTALL | re.MULTILINE,
+    )
+    if match is None:
+        raise SystemExit("nix/scripts/k3s-handoff: bounded runtime firewall restore wait missing")
+    with tempfile.TemporaryDirectory() as directory:
+        directory_path = Path(directory)
+        state = directory_path / "firewall-count"
+        applied = directory_path / "firewall-applied"
+        rules = directory_path / "firewall-runtime.rules"
+        rules.write_text("*filter\nCOMMIT\n")
+        iptables_restore = directory_path / "iptables-restore"
+        iptables_restore.write_text(
+            "#!/bin/sh\n"
+            'if test "$1" = --test; then\n'
+            '  count=$(cat "$FIREWALL_TEST_STATE" 2>/dev/null || printf 0)\n'
+            "  count=$((count + 1))\n"
+            '  printf "%s\\n" "$count" > "$FIREWALL_TEST_STATE"\n'
+            '  test "${FIREWALL_SUCCEED_AFTER:-0}" -gt 0 '
+            '&& test "$count" -ge "$FIREWALL_SUCCEED_AFTER"\n'
+            "  exit\n"
+            "fi\n"
+            ': > "$FIREWALL_APPLIED"\n'
+        )
+        iptables_restore.chmod(0o755)
+        sleep = directory_path / "sleep"
+        sleep.write_text("#!/bin/sh\nexit 0\n")
+        sleep.chmod(0o755)
+        environment = {
+            **os.environ,
+            "PATH": f"{directory}:{os.environ['PATH']}",
+            "DIR": directory,
+            "FIREWALL_TEST_STATE": str(state),
+            "FIREWALL_APPLIED": str(applied),
+            "FIREWALL_SUCCEED_AFTER": "3",
+        }
+        result = subprocess.run(
+            ["sh"],
+            input=f'set -eu\ndir="$DIR"\n{match.group(1)}\n',
+            text=True,
+            capture_output=True,
+            env=environment,
+        )
+        if (
+            result.returncode
+            or state.read_text().strip() != "3"
+            or not applied.exists()
+        ):
+            raise SystemExit(
+                "nix/scripts/k3s-handoff: runtime firewall restore did not retry to success\n"
+                f"{result.stderr.strip()}"
+            )
+        state.unlink()
+        applied.unlink()
+        environment["FIREWALL_SUCCEED_AFTER"] = "0"
+        result = subprocess.run(
+            ["sh"],
+            input=f'set -eu\ndir="$DIR"\n{match.group(1)}\n',
+            text=True,
+            capture_output=True,
+            env=environment,
+        )
+        if (
+            result.returncode == 0
+            or state.read_text().strip() != "60"
+            or "did not become restorable within 120 seconds" not in result.stderr
+            or applied.exists()
+        ):
+            raise SystemExit(
+                "nix/scripts/k3s-handoff: runtime firewall restore timeout is unsafe"
+            )
+
+
+def check_cilium_restart_waits() -> None:
+    handoff = source("nix/scripts/k3s-handoff")
+    start = "if grep -q 'CILIUM_' \"$dir/firewall-runtime.rules\"; then"
+    end = '\n  touch "$stages/firewall-restored"'
+    if start not in handoff or end not in handoff:
+        raise SystemExit("nix/scripts/k3s-handoff: cilium-agent restart wait missing")
+    block = start + handoff.split(start, 1)[1].split(end, 1)[0]
+    block = block.replace(
+        "crictl=/usr/local/bin/crictl", 'crictl="$TEST_CRICTL"', 1
+    ).replace("/usr/bin/curl", '"$TEST_CURL"', 1)
+
+    with tempfile.TemporaryDirectory() as directory:
+        directory_path = Path(directory)
+        rules = directory_path / "firewall-runtime.rules"
+        rules.write_text("*filter\n:CILIUM_INPUT - [0:0]\nCOMMIT\n")
+        state = directory_path / "crictl-count"
+        stopped = directory_path / "stopped"
+        healthy = directory_path / "healthy"
+        crictl = directory_path / "crictl"
+        crictl.write_text(
+            "#!/bin/sh\n"
+            'case " $* " in\n'
+            '  *" ps "*)\n'
+            '    count=$(cat "$CRICTL_STATE" 2>/dev/null || printf 0)\n'
+            "    count=$((count + 1))\n"
+            '    printf "%s\\n" "$count" > "$CRICTL_STATE"\n'
+            '    if test ! -e "$CRICTL_STOPPED"; then\n'
+            '      case "$count" in\n'
+            "        1) exit 1 ;;\n"
+            "        2) printf '%s\\n' old-cilium-id second-cilium-id ;;\n"
+            "        *) printf '%s\\n' old-cilium-id ;;\n"
+            "      esac\n"
+            '    elif test "${CRICTL_RESTART:-0}" = 1 && test "$count" -ge 5; then\n'
+            "      printf '%s\\n' new-cilium-id\n"
+            "    else\n"
+            "      printf '%s\\n' old-cilium-id\n"
+            "    fi\n"
+            "    ;;\n"
+            '  *" stop "*)\n'
+            '    for argument do previous=$argument; done\n'
+            '    test "$previous" = old-cilium-id\n'
+            '    : > "$CRICTL_STOPPED"\n'
+            "    ;;\n"
+            "  *) exit 1 ;;\n"
+            "esac\n"
+        )
+        curl = directory_path / "curl"
+        curl.write_text('#!/bin/sh\n: > "$CILIUM_HEALTHY"\n')
+        sleep = directory_path / "sleep"
+        sleep.write_text("#!/bin/sh\nexit 0\n")
+        for command in (crictl, curl, sleep):
+            command.chmod(0o755)
+        environment = {
+            **os.environ,
+            "PATH": f"{directory}:{os.environ['PATH']}",
+            "DIR": directory,
+            "TEST_CRICTL": str(crictl),
+            "TEST_CURL": str(curl),
+            "CRICTL_STATE": str(state),
+            "CRICTL_STOPPED": str(stopped),
+            "CILIUM_HEALTHY": str(healthy),
+            "CRICTL_RESTART": "1",
+        }
+        result = subprocess.run(
+            ["sh"],
+            input=f'set -eu\ndir="$DIR"\n{block}\n',
+            text=True,
+            capture_output=True,
+            env=environment,
+        )
+        if (
+            result.returncode
+            or state.read_text().strip() != "5"
+            or not stopped.exists()
+            or not healthy.exists()
+        ):
+            raise SystemExit(
+                "nix/scripts/k3s-handoff: cilium-agent restart did not converge\n"
+                f"{result.stderr.strip()}"
+            )
+
+        for path in (state, stopped, healthy):
+            path.unlink(missing_ok=True)
+        environment["CRICTL_RESTART"] = "0"
+        result = subprocess.run(
+            ["sh"],
+            input=f'set -eu\ndir="$DIR"\n{block}\n',
+            text=True,
+            capture_output=True,
+            env=environment,
+        )
+        if (
+            result.returncode == 0
+            or state.read_text().strip() != "63"
+            or "did not restart and become healthy within 120 seconds"
+            not in result.stderr
+            or healthy.exists()
+        ):
+            raise SystemExit(
+                "nix/scripts/k3s-handoff: cilium-agent restart timeout is unsafe"
+            )
+
+def check_provision_active_service_guard() -> None:
+    provision = source("nix/scripts/provision-host")
+    match = re.search(
+        r"(for unit in k3s\.service k3s-agent\.service homelab-k3s\.service; do.*?\ndone)\ncurl",
+        provision,
+        re.DOTALL,
+    )
+    if match is None:
+        raise SystemExit("nix/scripts/provision-host: active K3s service guard missing")
+    with tempfile.TemporaryDirectory() as directory:
+        systemctl = Path(directory) / "systemctl"
+        systemctl.write_text(
+            "#!/bin/sh\n"
+            "test \"$1\" = is-active || exit 2\n"
+            "shift\n"
+            "test \"$1\" = --quiet || exit 2\n"
+            "shift\n"
+            "test \"$1\" = k3s-agent.service\n"
+        )
+        systemctl.chmod(0o755)
+        result = subprocess.run(
+            ["sh"],
+            input=f"set -eu\n{match.group(1)}\n",
+            text=True,
+            capture_output=True,
+            env={**os.environ, "PATH": f"{directory}:{os.environ['PATH']}"},
+        )
+        if result.returncode == 0 or "k3s-agent.service is already active" not in result.stderr:
+            raise SystemExit(
+                "nix/scripts/provision-host: middle active K3s service was not rejected"
+            )
+
 require(
     "nix/modules/linux/base.nix",
     "10-homelab-lan.network",
     "DNSSEC=yes",
     "DNSOverTLS=yes",
     "MulticastDNS=yes",
+    "systemd/timesyncd.conf",
+    "NTP=162.159.200.1 162.159.200.123",
+    "FallbackNTP=",
     "LLMNR=no",
     "lib.mkIf k8sMember",
     "systemd/zram-generator.conf",
     "tmpfiles.d/60-homelab-runtime-tuning.conf",
     "tmpfiles.d/20-homelab-resolv.conf",
     'source = "${pkgs.tzdata}/share/zoneinfo/Asia/Seoul"',
+    '"ssh/sshd_config"',
     "AuthorizedKeysFile ${authorizedKeysFile}",
     "../../../ssh_pub_keys/laptop.pub",
     'lib.concatStringsSep "\\n" adminKeys + "\\n"',
@@ -93,8 +1677,13 @@ require(
     "ssh/authorized_keys.d/democratic-csi",
     "PermitRootLogin no",
     '"sudoers.d/homelab-admin"',
+    "replaceExisting = true;",
     'root.shell = "/bin/bash";',
     "DNS=1.1.1.1#cloudflare-dns.com",
+)
+forbid(
+    "nix/modules/linux/base.nix",
+    '"ssh/sshd_config.d/90-homelab-hardening.conf"',
 )
 forbid(
     "nix/modules/linux/base.nix",
@@ -160,6 +1749,16 @@ forbid(
     "PersistentKeepaliveSec=",
 )
 require(
+    "nix/modules/darwin/base.nix",
+    "peerCount = builtins.length",
+    "topology.wg0.peerNodes",
+    "-eq ${toString peerCount}",
+)
+require(
+    "nix/scripts/render-macbook-wireguard",
+    "$root#topology.wg0.peerNodes",
+)
+require(
     "nix/scripts/rollout-peers",
     "systemd/network/99-wg0.netdev",
     "systemd/network/99-wg0.network",
@@ -179,6 +1778,7 @@ require(
     "etcd-snapshot save",
     "pre-Nix state",
     "iptables-backend=",
+    "ntp-synchronized=",
 )
 require(
     "nix/scripts/homelab-host",
@@ -193,6 +1793,8 @@ require(
     "apply_native_runtime",
     "systemd-tmpfiles --create",
     "iptables-restore --noflush --wait",
+    "authorizedkeysfile( \\.ssh/authorized_keys)?",
+    'sudo -n grep -Fx "$ADMIN_USER ALL=(ALL) NOPASSWD: ALL" /etc/sudoers.d/homelab-admin',
     "cleanup_legacy_files",
     "! systemctl cat",
     "reconcile_distro_packages",
@@ -201,6 +1803,9 @@ require(
     "policy-rc.d",
     "FIREWALL_SERVICE",
     "locale -a",
+    "LOCALTIME_SOURCE",
+    'test "$(readlink /etc/localtime)" = "$LOCALTIME_SOURCE"',
+    'grep -qx "Asia/Seoul" /etc/timezone',
     "DNSSEC=yes",
     "DNSOverTLS=yes",
     "verify_legacy_cleanup",
@@ -212,10 +1817,15 @@ require(
     "activate_registered_system",
     "storePath",
     "system-manager generation changed after prepare",
+    "systemd-timesyncd.service",
+    "NTPSynchronized",
 )
 forbid(
     "nix/scripts/homelab-host",
     "trap 'rm -f",
+    "localectl set-locale",
+    "timedatectl set-timezone",
+    "timedatectl show -p Timezone",
 )
 for relative in (
     "README.md",
@@ -228,6 +1838,15 @@ require(
     "nix/scripts/homelab-host",
     "BACKBONE_CONTEXT:-homelab-backbone",
     "BOOTSTRAP_CONTEXT:-homelab-backbone",
+)
+require(
+    "nix/scripts/provision-host",
+    'for unit in k3s.service k3s-agent.service homelab-k3s.service; do',
+    'systemctl is-active --quiet "$unit"',
+)
+forbid(
+    "nix/scripts/provision-host",
+    "systemctl is-active k3s.service k3s-agent.service homelab-k3s.service",
 )
 require(
     "ssh_pub_keys/democratic-csi.pub",
@@ -247,6 +1866,14 @@ for description, pattern in (
         r"capture_runtime_firewall\(\).*?assert_iptables_nft_backend.*?iptables-save",
     ),
     (
+        "prepare must reconcile completed watchdog rollback before a new preflight",
+        r"  prepare\|deploy\).*?sync_completed_rollback.*?k3s-handoff.*?preflight",
+    ),
+    (
+        "reconcile must reconcile completed watchdog rollback before host mutation",
+        r"  reconcile\).*?sync_completed_rollback.*?host_field.*?lifecycle",
+    ),
+    (
         "prepare must assert nft before secret staging",
         r"prepare\|deploy\).*?reconcile_distro_packages.*?assert_iptables_nft_backend.*?stage_result=",
     ),
@@ -259,13 +1886,105 @@ for description, pattern in (
         r"verify-host\|verify\).*?assert_iptables_nft_backend.*?current_baseline=",
     ),
     (
+        "phase guards must reconcile completed watchdog rollback before drift checks",
+        r"require_receipt_phase\(\).*?sync_completed_rollback.*?actual=.*?active secret generation changed",
+    ),
+    (
+        "guarded reboot must rearm before phase checks, capture boot ID, and record rebooting before reboot",
+        r"reboot_host\(\).*?activated\|rebooting\)"
+        r".*?k3s-handoff.*?rearm"
+        r".*?require_receipt_phase.*?\$phase"
+        r".*?activated\)"
+        r".*?boot_id=.*?kernel/random/boot_id"
+        r".*?write_receipt.*?rebooting.*?boot_id"
+        r".*?systemctl --no-block reboot",
+    ),
+    (
+        "reboot retry must rearm before rejecting an already rebooted host",
+        r"reboot_host\(\).*?activated\|rebooting\)"
+        r".*?k3s-handoff.*?rearm"
+        r".*?require_receipt_phase.*?\$phase"
+        r".*?rebooting\)"
+        r".*?active_boot_id=.*?kernel/random/boot_id"
+        r".*?already rebooted",
+    ),
+    (
         "commit must rearm persistent rollback before activating the destructive generation",
         r"  commit\).*?committed_store_path=\$\(register_system.*?k3s-handoff.*?rearm"
         r".*?activate_registered_system",
     ),
+    (
+        "reboot verification must gate locally, then rearm before remote checks",
+        r"  reboot-verify\).*?receipt_file=.*?phase=.*?test.*?\$phase.*?rebooting"
+        r".*?k3s-handoff.*?rearm"
+        r".*?require_receipt_phase.*?rebooting"
+        r".*?assert_host_rebooted"
+        r".*?timeout --foreground --kill-after=30s 12m.*?verify-host-while-armed"
+        r".*?k3s-handoff.*?disarm",
+    ),
+    (
+        "armed verification must rearm before ordinary verification",
+        r"  verify-host-while-armed\).*?k3s-handoff.*?rearm"
+        r".*?exec.*?verify-host",
+    ),
+    (
+        "reconcile verification and acceptance must each renew the armed window",
+        r"  reconcile\).*?k3s-handoff.*?arm"
+        r".*?verify-host-while-armed"
+        r".*?k3s-handoff.*?accept",
+    ),
+    (
+        "activation verification must renew the armed window",
+        r"  activate\).*?k3s-handoff.*?arm"
+        r".*?verify-host-while-armed"
+        r".*?k3s-handoff.*?rearm",
+    ),
+    (
+        "commit verification and acceptance must each renew the armed window",
+        r"  commit\).*?k3s-handoff.*?rearm"
+        r".*?verify-host-while-armed"
+        r".*?reconcile_distro_packages"
+        r".*?verify-host-while-armed"
+        r".*?k3s-handoff.*?accept",
+    ),
+    (
+        "activation must synchronize the system clock before restarting K3s",
+        r"apply_native_runtime\(\).*?systemctl restart systemd-timesyncd\.service"
+        r".*?NTPSynchronized.*?systemctl restart homelab-k3s\.service",
+    ),
 ):
     if not re.search(pattern, host_migration, re.DOTALL):
         raise SystemExit(f"nix/scripts/homelab-host: {description}")
+handoff = source("nix/scripts/k3s-handoff")
+for needle in (
+    "state <host>",
+    "cleanup-restored <host>",
+    "rollback already completed; refusing to rearm",
+    "rollback already started; refusing to rearm",
+    "assert_rearmable",
+):
+    if needle not in handoff:
+        raise SystemExit(f"nix/scripts/k3s-handoff: missing reboot race contract {needle!r}")
+if handoff.count("assert_rearmable") != 3:
+    raise SystemExit("nix/scripts/k3s-handoff: rearm must guard before and after timer restart")
+for description, pattern in (
+    (
+        "accept must rearm before validating and deleting armed recovery",
+        r'  accept\).*?"\$BASH" "\$0" rearm.*?remote'
+        r".*?test ! -f .*?/restored"
+        r".*?test ! -d .*?/stages"
+        r".*?rollback_unit\.timer.*?active"
+        r".*?disable --now",
+    ),
+    (
+        "completed rollback cleanup must require a restored marker without rearming",
+        r"  cleanup-restored\).*?remote"
+        r".*?test -f .*?/restored"
+        r".*?disable --now",
+    ),
+):
+    if not re.search(pattern, handoff, re.DOTALL):
+        raise SystemExit(f"nix/scripts/k3s-handoff: {description}")
 cleanup_block = host_migration.split("cleanup_legacy_files()", 1)[1].split(
     "verify_legacy_cleanup()", 1
 )[0]
@@ -335,24 +2054,90 @@ require(
     "/usr/bin/pacman --noconfirm --needed -S $packages",
     "/usr/bin/apt-get -o Dpkg::Options::=--force-confold install -y --no-install-recommends $packages",
     'if ip link show "$interface" >/dev/null 2>&1; then',
+    "networkctl reconfigure",
+    "systemd-timesyncd.service",
+    "NTPSynchronized",
+)
+require(
+    "nix/scripts/k3s-handoff",
+    'export PATH="/usr/local/sbin:/usr/local/bin:/usr/sbin:/usr/bin:/sbin:/bin:${PATH:-}"',
+    "$stages/secrets-restored",
+    "$stages/system-manager-restored",
+    "$stages/archive-restored",
+    "$stages/firewall-restored",
+    "rollback failed during system-manager deactivation",
+    "rollback failed while restoring the host archive",
+    "rollback failed while restoring the runtime firewall",
+    "> /etc/systemd/system/$rollback_unit.service",
+    "--- rollback.log ---",
+    "journalctl -u $rollback_unit.service",
 )
 forbid(
     "nix/scripts/k3s-handoff",
     "/run/homelab-secrets",
     "/run/homelab-k3s-handoff-rollback",
     "systemd-run --quiet",
+    "localectl set-locale",
+    "timedatectl set-timezone",
 )
+forbid("nix/scripts/k3s-handoff", "tar --overwrite")
 handoff = source("nix/scripts/k3s-handoff")
+rearm_block = handoff.split("  rearm)", 1)[1].split("  disarm)", 1)[0]
 if not re.search(
-    r"systemctl is-active systemd-networkd\.service systemd-resolved\.service \"\$ssh_service\""
+    r"assert_rearmable\(\).*?current/restored"
+    r".*?current/stages"
+    r".*?service_state.*?inactive"
+    r".*?assert_rearmable"
+    r".*?systemctl restart \$rollback_unit\.timer"
+    r".*?assert_rearmable",
+    rearm_block,
+    re.DOTALL,
+):
+    raise SystemExit(
+        "nix/scripts/k3s-handoff: rearm must reject rollback before and after timer restart"
+    )
+if not re.search(
+    r"systemctl is-active systemd-networkd\.service systemd-resolved\.service "
+    r"systemd-timesyncd\.service \"\$ssh_service\""
     r".*?systemctl disable homelab-host-rollback\.timer",
     handoff,
     re.DOTALL,
 ):
     raise SystemExit("nix/scripts/k3s-handoff: rollback timer must remain armed until restore verification")
+if not re.search(
+    r"systemctl restart systemd-timesyncd\.service.*?NTPSynchronized"
+    r".*?if test -s \"\$dir/distro-packages\.txt\"",
+    handoff,
+    re.DOTALL,
+):
+    raise SystemExit("nix/scripts/k3s-handoff: rollback must synchronize time before package restore")
+if not re.search(
+    r"systemctl enable --now \"\$legacy_unit\""
+    r".*?iptables-restore --test --wait"
+    r".*?iptables-restore --wait < \"\$dir/firewall-runtime\.rules\""
+    r".*?crictl.*?stop --timeout 10 \"\$previous_cilium_id\""
+    r".*?/usr/bin/curl -fsS --max-time 2 http://127\.0\.0\.1:9879/healthz"
+    r".*?package_restore_blocked=false",
+    handoff,
+    re.DOTALL,
+):
+    raise SystemExit(
+        "nix/scripts/k3s-handoff: rollback must start K3s for dependencies, restore the snapshot, then restart and verify cilium-agent"
+    )
 restore_block = handoff.split("  restore)", 1)[1].split("  status)", 1)[0]
 if "systemctl disable --now $rollback_unit.timer" in restore_block:
     raise SystemExit("nix/scripts/k3s-handoff: explicit restore must leave retry control to the rollback script")
+if not re.search(
+    r"  restore\).*?if ! systemctl cat \$rollback_unit\.service"
+    r".*?> /etc/systemd/system/\$rollback_unit\.service"
+    r".*?systemctl start \$rollback_unit\.service"
+    r".*?test -f \$rollback_root/current/restored",
+    handoff,
+    re.DOTALL,
+):
+    raise SystemExit(
+        "nix/scripts/k3s-handoff: explicit restore must recreate and start a persistent recovery service"
+    )
 require("nix/secrets/README", "/var/lib/homelab-secrets/generations/<generation>")
 forbid("nix/secrets/README", "/run/homelab-secrets")
 require("values/cilium/backbone.yaml", "prependIptablesChains: true")
@@ -425,5 +2210,25 @@ forbid(
     "assert_no_k3s_upgrade_manager",
     "K3s upgrade must not downgrade",
 )
+check_receipt_round_trip()
+check_completed_rollback_receipt_sync()
+check_record_rolled_back_order()
+check_guarded_reboot()
+check_reboot_verify_phase_gate()
+check_reboot_boot_id_proof()
+check_restore_host_guard()
+check_rollback_state_classification()
+check_rearm_guards()
+check_accept_rearms_before_cleanup()
+check_armed_verify_entrypoint()
+check_rollback_restore_failure()
+check_rollback_stage_resume()
+check_authorized_keys_verification()
+check_wireguard_handshake_probe()
+check_register_system_failure()
+check_time_sync_waits()
+check_firewall_restore_waits()
+check_cilium_restart_waits()
+check_provision_active_service_guard()
 check_shell_syntax()
 print("migration-contracts: ok")
