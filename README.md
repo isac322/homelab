@@ -32,16 +32,16 @@ nix run .#stage-secrets -- n2p1
 nix run .#rotate-psk -- --link wg0-n2p1-n2p2
 ```
 `bootstrap-host`는 기존 SSH identity로 접속하며, 비-root host에서는 현재 sudo 암호를 TTY로 한 번 요구해 `/etc/sudoers.d/homelab-admin`을 검증·설치한다. 이후 migration command는 `sudo -n`만 사용하고 암호 prompt가 발생하면 실패한다.
-복호화 workspace와 machine-bound credential staging tree는 Linux에서는 runtime tmpfs를 우선 사용하고, `/dev/shm`이 없는 macOS에서는 권한이 제한된 `${TMPDIR:-/tmp}` workspace를 사용한 뒤 trap으로 즉시 제거한다. 원격 host는 generation을 검증한 뒤 `systemd-creds encrypt --with-key=host`로 `/var/lib/homelab-secrets/generations/<generation>/*.cred`를 만들고 `active`/`previous` symlink를 원자 교체한다. systemd는 unit별 `LoadCredentialEncrypted=`로 `/run/credentials/<unit>/`에만 plaintext를 제공한다. Migration receipt는 Git revision과 secret generation을 함께 고정한다.
+복호화 workspace와 machine-bound credential staging tree는 Linux에서는 runtime tmpfs를 우선 사용하고, `/dev/shm`이 없는 macOS에서는 권한이 제한된 `${TMPDIR:-/tmp}` workspace를 사용한 뒤 trap으로 즉시 제거한다. 원격 host는 generation을 검증한 뒤 `systemd-creds encrypt --with-key=host`로 `/var/lib/homelab-secrets/generations/<generation>/*.cred`를 만들고 `active`/`previous` symlink를 원자 교체한다. systemd는 unit별 `LoadCredentialEncrypted=`로 `/run/credentials/<unit>/`에만 plaintext를 제공한다. Migration receipt는 Git revision, secret generation, 등록된 system-manager store path를 함께 고정한다.
 
 ## Linux migration
 
 일반 activation은 다음 네 단계다. K3s version과 rolling upgrade는 기존 Rancher `system-upgrade-controller`, `server-plan`, `agent-plan`, `backbone-k3s-upgrade` Application이 계속 소유한다. Host migration 중에는 Plan version을 변경하거나 별도 rollout을 시작하지 않는다.
 
-1. `prepare`: 필수 distro package reconciliation, iptables-nft backend preflight, baseline/recovery archive, secret staging, build/register, legacy K3s preflight
-2. `activate`: runtime firewall snapshot과 recovery archive를 `/var/lib/homelab-host-rollback/current`에 복제하고 reboot 후에도 다시 시작되는 15분 rollback timer를 arm한 뒤, server datastore cold backup, system-manager switch, host verification을 수행
+1. `prepare`: clean/pushed Git revision을 대상 Linux host가 native architecture로 build/register하고, 필수 distro package reconciliation, iptables-nft backend preflight, baseline/recovery archive, secret staging, legacy K3s preflight를 완료한다. macOS operator는 Linux generation을 로컬에서 build하지 않는다.
+2. `activate`: runtime firewall snapshot과 recovery archive를 `/var/lib/homelab-host-rollback/current`에 복제하고 reboot 후에도 다시 시작되는 15분 rollback timer를 arm한 뒤, server datastore cold backup, `prepare`가 등록한 정확한 system-manager generation activation, host verification을 수행한다.
 3. `reboot-verify`: 새 SSH session과 runtime contract를 재검증한 뒤 timer만 disarm한다. recovery archive/service는 `commit` 완료 전까지 유지한다.
-4. `commit`: commit generation을 build/register한 뒤 persistent timer를 다시 arm하고, destructive switch와 legacy systemd unit/tuning wrapper/distro package 제거를 수행한다. Rancher upgrade가 사용하는 `/usr/local/bin/k3s` install layout은 유지하며, 전체 검증이 성공한 경우에만 rollback artifact와 timer를 삭제한다.
+4. `commit`: 대상 host가 commit generation을 native build/register한 뒤 persistent timer를 다시 arm하고, destructive activation과 legacy systemd unit/tuning wrapper/distro package 제거를 수행한다. Rancher upgrade가 사용하는 `/usr/local/bin/k3s` install layout은 유지하며, 전체 검증이 성공한 경우에만 rollback artifact와 timer를 삭제한다.
 
 ```bash
 nix run .#adopt-host -- n2p1

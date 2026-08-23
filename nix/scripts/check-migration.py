@@ -195,6 +195,11 @@ require(
     '"(nf_tables)"',
     "reconcile)",
     "lifecycle",
+    "committed_flake",
+    "remote_system_manager",
+    "activate_registered_system",
+    "storePath",
+    "system-manager generation changed after prepare",
 )
 forbid(
     "nix/scripts/homelab-host",
@@ -242,9 +247,9 @@ for description, pattern in (
         r"verify-host\|verify\).*?assert_iptables_nft_backend.*?current_baseline=",
     ),
     (
-        "commit must rearm persistent rollback before the destructive generation switch",
-        r"  commit\).*?system_manager build.*?system_manager register.*?k3s-handoff.*?rearm"
-        r".*?system_manager switch",
+        "commit must rearm persistent rollback before activating the destructive generation",
+        r"  commit\).*?committed_store_path=\$\(register_system.*?k3s-handoff.*?rearm"
+        r".*?activate_registered_system",
     ),
 ):
     if not re.search(pattern, host_migration, re.DOTALL):

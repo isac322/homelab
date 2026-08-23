@@ -30,11 +30,48 @@ EOF
 }
 
 nix_eval() { nix --extra-experimental-features 'nix-command flakes' eval "$@"; }
-system_manager() { nix --extra-experimental-features 'nix-command flakes' run "github:numtide/system-manager/48d47346e0c6ad05b6c869ea92649c47723d1cfc" -- "$@"; }
+system_manager_source=github:numtide/system-manager/48d47346e0c6ad05b6c869ea92649c47723d1cfc
 host_field() { nix_eval --raw "$root#topology.nodes.$1.$2"; }
 remote() { local host=$1; shift; ssh -o BatchMode=yes -o StrictHostKeyChecking=accept-new "$(host_field "$host" sshTarget)" "$@"; }
 receipt() { printf '%s/receipts/%s.json' "$state" "$1"; }
 current_revision() { git rev-parse HEAD 2>/dev/null || printf unknown; }
+committed_flake() {
+  local attribute=$1 repository revision
+  git diff --quiet && git diff --cached --quiet || {
+    echo "host rollout requires a clean committed worktree" >&2
+    return 1
+  }
+  revision=$(current_revision)
+  repository=$(git remote get-url origin)
+  case "$repository" in
+    git@github.com:*) repository="https://github.com/${repository#git@github.com:}" ;;
+    https://github.com/*) ;;
+    *)
+      echo "unsupported origin URL for remote Nix build: $repository" >&2
+      return 1
+      ;;
+  esac
+  printf 'git+%s?rev=%s#%s\n' "$repository" "$revision" "$attribute"
+}
+remote_system_manager() {
+  local host=$1 command argument
+  shift
+  printf -v command '%q --extra-experimental-features %q --accept-flake-config run %q --' \
+    /nix/var/nix/profiles/default/bin/nix 'nix-command flakes' "$system_manager_source"
+  for argument in "$@"; do
+    printf -v command '%s %q' "$command" "$argument"
+  done
+  remote "$host" "$command"
+}
+register_system() {
+  local host=$1 attribute=$2 flake
+  flake=$(committed_flake "$attribute")
+  remote_system_manager "$host" register --flake "$flake" --sudo >&2
+  remote "$host" 'sudo -n readlink -f /nix/var/nix/profiles/system-manager-profiles/system-manager'
+}
+activate_registered_system() {
+  remote "$1" 'sudo -n /nix/var/nix/profiles/system-manager-profiles/system-manager/bin/activate'
+}
 assert_iptables_nft_backend() {
   local host=$1
   remote "$host" 'sudo -n sh -ceu '\''
@@ -252,7 +289,7 @@ verify_legacy_cleanup() {
   '\'''
 }
 require_receipt_phase() {
-  local host=$1 phase=$2 file generation active
+  local host=$1 phase=$2 file generation active store_path active_store
   file=$(receipt "$host")
   test "$(jq -r .phase "$file" 2>/dev/null)" = "$phase"
   test "$(jq -r .revision "$file")" = "$(current_revision)" || {
@@ -264,6 +301,14 @@ require_receipt_phase() {
     active=$(remote "$host" 'sudo -n readlink /var/lib/homelab-secrets/active')
     test "$active" = "generations/$generation" || {
       echo "$host active secret generation changed after prepare" >&2
+      exit 1
+    }
+  fi
+  store_path=$(jq -r '.storePath // empty' "$file")
+  if [ -n "$store_path" ]; then
+    active_store=$(remote "$host" 'sudo -n readlink -f /nix/var/nix/profiles/system-manager-profiles/system-manager')
+    test "$active_store" = "$store_path" || {
+      echo "$host system-manager generation changed after prepare" >&2
       exit 1
     }
   fi
@@ -299,8 +344,8 @@ current_k3s() {
   printf '%s\n' "$version"
 }
 write_receipt() {
-  local host=$1 phase=$2 previous=${3:-null} legacy=${4:-} recovery=${5:-} secret_generation=${6:-}
-  jq -n --arg host "$host" --arg phase "$phase" --arg revision "$(current_revision)" --arg previous "$previous" --arg legacy "$legacy" --arg recovery "$recovery" --arg secretGeneration "$secret_generation" --arg time "$(date -u +%FT%TZ)" '{host:$host,phase:$phase,revision:$revision,previousGeneration:$previous,legacyK3sUnit:$legacy,recoveryDirectory:$recovery,secretGeneration:$secretGeneration,time:$time}' > "$(receipt "$host").new"
+  local host=$1 phase=$2 previous=${3:-null} legacy=${4:-} recovery=${5:-} secret_generation=${6:-} store_path=${7:-}
+  jq -n --arg host "$host" --arg phase "$phase" --arg revision "$(current_revision)" --arg previous "$previous" --arg legacy "$legacy" --arg recovery "$recovery" --arg secretGeneration "$secret_generation" --arg storePath "$store_path" --arg time "$(date -u +%FT%TZ)" '{host:$host,phase:$phase,revision:$revision,previousGeneration:$previous,legacyK3sUnit:$legacy,recoveryDirectory:$recovery,secretGeneration:$secretGeneration,storePath:$storePath,time:$time}' > "$(receipt "$host").new"
   mv -f "$(receipt "$host").new" "$(receipt "$host")"
   chmod 0600 "$(receipt "$host")"
 }
@@ -371,20 +416,18 @@ case "${1:-}" in
     recovery=$(capture_managed_recovery "$host")
     reconcile_distro_packages "$host" no
     assert_iptables_nft_backend "$host"
-    target=$(host_field "$host" sshTarget)
     previous=$(remote "$host" 'sudo -n nix-env --profile /nix/var/nix/profiles/system-manager-profiles/system-manager --list-generations 2>/dev/null | awk "/\(current\)/ {print \$1}"')
     test -n "$previous" || {
       echo "$host has no active system-manager generation; use the provisioning or adoption workflow" >&2
       exit 1
     }
-    system_manager build --flake "$root#$host"
-    system_manager register --target-host "$target" --flake "$root#$host" --sudo
+    store_path=$(register_system "$host" "$host")
     stage_result=$("$root/nix/scripts/wireguard-secrets" stage-secrets "$host")
     secret_generation=${stage_result#* }
     test -n "$secret_generation" && test "$secret_generation" != "$stage_result"
     capture_runtime_firewall "$host" "$recovery"
     "$root/nix/scripts/k3s-handoff" arm "$host" "$recovery" "$previous" ""
-    if ! system_manager switch --target-host "$target" --flake "$root#$host" --sudo \
+    if ! activate_registered_system "$host" \
       || ! apply_native_runtime "$host" \
       || ! "$0" verify-host "$host"; then
       if rollback_armed_host "$host"; then
@@ -393,7 +436,7 @@ case "${1:-}" in
       exit 1
     fi
     "$root/nix/scripts/k3s-handoff" accept "$host"
-    write_receipt "$host" reconciled "$previous" "" "$recovery" "$secret_generation"
+    write_receipt "$host" reconciled "$previous" "" "$recovery" "$secret_generation" "$store_path"
     rm -rf "$recovery"
     printf 'reconciled %s at %s\n' "$host" "$(current_revision)"
     ;;
@@ -404,24 +447,22 @@ case "${1:-}" in
     recovery=$("$root/nix/scripts/adopt-host" "$host")
     reconcile_distro_packages "$host" no
     assert_iptables_nft_backend "$host"
-    target=$(host_field "$host" sshTarget)
     previous=$(remote "$host" 'sudo -n nix-env --profile /nix/var/nix/profiles/system-manager-profiles/system-manager --list-generations 2>/dev/null | awk "/\(current\)/ {print \$1}"')
-    system_manager build --flake "$root#$host"
-    system_manager register --target-host "$target" --flake "$root#$host" --sudo
+    store_path=$(register_system "$host" "$host")
     stage_result=$("$root/nix/scripts/wireguard-secrets" stage-secrets "$host")
     secret_generation=${stage_result#* }
     test -n "$secret_generation" && test "$secret_generation" != "$stage_result"
-    write_receipt "$host" prepared "$previous" "$legacy_unit" "$recovery" "$secret_generation"
+    write_receipt "$host" prepared "$previous" "$legacy_unit" "$recovery" "$secret_generation" "$store_path"
     printf 'prepared %s; run activate explicitly\n' "$host"
     ;;
   activate)
     host=${2:?host required}; require_receipt_phase "$host" prepared
     assert_iptables_nft_backend "$host"
-    target=$(host_field "$host" sshTarget)
     legacy=$(jq -r '.legacyK3sUnit // empty' "$(receipt "$host")")
     recovery=$(jq -r '.recoveryDirectory // empty' "$(receipt "$host")")
     previous=$(jq -r '.previousGeneration // empty' "$(receipt "$host")")
     secret_generation=$(jq -r '.secretGeneration // empty' "$(receipt "$host")")
+    store_path=$(jq -r '.storePath // empty' "$(receipt "$host")")
     role=$(host_field "$host" k3sRole 2>/dev/null || true)
     capture_runtime_firewall "$host" "$recovery"
     "$root/nix/scripts/k3s-handoff" arm "$host" "$recovery" "$previous" "$legacy"
@@ -442,7 +483,7 @@ REMOTE_K3S_COLD_BACKUP
       fi
       chmod 0600 "$recovery/k3s-cold-state.tar"
     fi
-    if ! system_manager switch --target-host "$target" --flake "$root#$host" --sudo \
+    if ! activate_registered_system "$host" \
       || ! apply_native_runtime "$host" \
       || ! "$0" verify-host "$host"; then
       if rollback_armed_host "$host"; then
@@ -458,7 +499,7 @@ REMOTE_K3S_COLD_BACKUP
       fi
       exit 1
     fi
-    write_receipt "$host" activated "$previous" "$legacy" "$recovery" "$secret_generation"
+    write_receipt "$host" activated "$previous" "$legacy" "$recovery" "$secret_generation" "$store_path"
     printf 'activated %s; reboot before the 15-minute rollback timer expires\n' "$host"
     ;;
   reboot-verify)
@@ -468,31 +509,28 @@ REMOTE_K3S_COLD_BACKUP
     legacy=$(jq -r '.legacyK3sUnit // empty' "$receipt_file")
     recovery=$(jq -r '.recoveryDirectory // empty' "$receipt_file")
     secret_generation=$(jq -r '.secretGeneration // empty' "$receipt_file")
+    store_path=$(jq -r '.storePath // empty' "$receipt_file")
     if ! "$0" verify-host "$host" || ! "$root/nix/scripts/k3s-handoff" disarm "$host"; then
       if rollback_armed_host "$host"; then
         write_receipt "$host" rolled-back "$previous" "$legacy" "$recovery" "$secret_generation"
       fi
       exit 1
     fi
-    write_receipt "$host" reboot-verified "$previous" "$legacy" "$recovery" "$secret_generation"
+    write_receipt "$host" reboot-verified "$previous" "$legacy" "$recovery" "$secret_generation" "$store_path"
     ;;
   commit)
     host=${2:?host required}; require_receipt_phase "$host" reboot-verified
-    target=$(host_field "$host" sshTarget)
     receipt_file=$(receipt "$host")
     previous=$(jq -r '.previousGeneration // empty' "$receipt_file")
     legacy=$(jq -r '.legacyK3sUnit // empty' "$receipt_file")
     recovery=$(jq -r '.recoveryDirectory // empty' "$receipt_file")
     secret_generation=$(jq -r '.secretGeneration // empty' "$receipt_file")
-    if ! system_manager build --flake "$root#$host-commit" \
-      || ! system_manager register --target-host "$target" --flake "$root#$host-commit" --sudo; then
-      exit 1
-    fi
+    committed_store_path=$(register_system "$host" "$host-commit")
     if ! "$root/nix/scripts/k3s-handoff" rearm "$host"; then
       echo "$host commit rollback timer could not be armed; host state was not changed" >&2
       exit 1
     fi
-    if ! system_manager switch --target-host "$target" --flake "$root#$host-commit" --sudo \
+    if ! activate_registered_system "$host" \
       || ! apply_native_runtime "$host" \
       || ! "$0" verify-host "$host" \
       || ! reconcile_distro_packages "$host" yes \
@@ -511,7 +549,7 @@ REMOTE_K3S_COLD_BACKUP
       echo "$host is committed but rollback artifact cleanup failed; rerun commit" >&2
       exit 1
     fi
-    write_receipt "$host" committed "$previous" "$legacy" "$recovery" "$secret_generation"
+    write_receipt "$host" committed "$previous" "$legacy" "$recovery" "$secret_generation" "$committed_store_path"
     ;;
   onboard-k3s-node)
     host=${2:?host required}; test "${3:-}" = --token-source; source_host=${4:?token source required}
