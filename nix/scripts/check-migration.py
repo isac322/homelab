@@ -265,6 +265,8 @@ require(
     "SOPS_AGE_KEY_FILE",
     "${TMPDIR:-/tmp}",
     "systemd-creds encrypt --with-key=host",
+    'systemd-creds decrypt --name=',
+    "generation_committed",
     "/var/lib/homelab-secrets",
     "replace the online operator recipient before import",
     "replace the offline recovery recipient before import",

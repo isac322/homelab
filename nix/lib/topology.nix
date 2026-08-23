@@ -378,6 +378,6 @@ in
   };
   secretRecipients = {
     operator = "age1ghdfjncup4cw6rfmvm4z0rnvdg7230svt5u2dxn8ced6uq4ze5wsdy22sd";
-    recovery = "REPLACE_WITH_OFFLINE_OPERATOR_AGE_RECIPIENT";
+    recovery = "age1xgfve9gexpqlrnmgu05kgej9fjwk9qvw0k0h5449hnwdha85vyzq9n5ats";
   };
 }
