@@ -38,7 +38,7 @@ let
       ${lib.optionalString (topology.nodes.${peer}.lanAddress != null)
         "Endpoint=${topology.nodes.${peer}.lanAddress}:${toString topology.wg0.listenPort}"
       }
-      PersistentKeepaliveSec=25
+      PersistentKeepalive=25
     '';
   wg0Edge =
     edge:

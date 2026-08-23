@@ -148,6 +148,7 @@ require(
     "[WireGuardPeer]",
     "PrivateKeyFile=${credentialPath",
     "PresharedKeyFile=${credentialPath",
+    "PersistentKeepalive=25",
     "LoadCredentialEncrypted=",
     "/var/lib/homelab-secrets/active",
 )
@@ -156,6 +157,7 @@ forbid(
     "systemd.services.homelab-wireguard",
     "wg syncconf",
     "/run/homelab-wireguard-",
+    "PersistentKeepaliveSec=",
 )
 require(
     "nix/scripts/rollout-peers",
