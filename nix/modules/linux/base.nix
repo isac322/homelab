@@ -117,9 +117,18 @@ in
         '';
         replaceExisting = true;
       };
-      "locale.conf".text = "LANG=ko_KR.UTF-8\n";
-      "locale.gen".text = "ko_KR.UTF-8 UTF-8\n";
-      "timezone".text = "Asia/Seoul\n";
+      "locale.conf" = {
+        text = "LANG=ko_KR.UTF-8\n";
+        replaceExisting = true;
+      };
+      "locale.gen" = {
+        text = "ko_KR.UTF-8 UTF-8\n";
+        replaceExisting = true;
+      };
+      timezone = {
+        text = "Asia/Seoul\n";
+        replaceExisting = true;
+      };
       "localtime" = {
         source = "${pkgs.tzdata}/share/zoneinfo/Asia/Seoul";
         replaceExisting = true;

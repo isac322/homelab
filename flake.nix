@@ -24,9 +24,7 @@
     let
       lib = nixpkgs.lib;
       topology = import ./nix/lib/topology.nix { inherit lib; };
-      linuxHosts = lib.filterAttrs (
-        _: host: lib.hasSuffix "-linux" host.system
-      ) topology.deployableNodes;
+      linuxHosts = lib.filterAttrs (_: host: lib.hasSuffix "-linux" host.system) topology.deployableNodes;
       darwinHosts = lib.filterAttrs (
         _: host: lib.hasSuffix "-darwin" host.system
       ) topology.deployableNodes;
@@ -173,6 +171,9 @@
             assert n2p1.users.users.bhyoo.uid == 1000;
             assert lib.hasInfix "PermitRootLogin no"
               n2p1.environment.etc."ssh/sshd_config.d/90-homelab-hardening.conf".text;
+            assert n2p1.environment.etc."locale.conf".replaceExisting;
+            assert n2p1.environment.etc."locale.gen".replaceExisting;
+            assert n2p1.environment.etc.timezone.replaceExisting;
             assert lib.hasInfix "exec /usr/local/bin/k3s server" rock.systemd.services.homelab-k3s.script;
             assert
               !(lib.hasInfix "${topology.wg0.edgeNetwork} -d ${topology.wg0.edgeNetwork} -j ACCEPT" firewall);
@@ -188,7 +189,8 @@
               n2p1Commit.environment.etc."ssh/sshd_config.d/90-homelab-hardening.conf".text;
             assert
               !(lib.hasInfix "AuthorizedKeysFile .ssh/authorized_keys"
-                n2p1Commit.environment.etc."ssh/sshd_config.d/90-homelab-hardening.conf".text);
+                n2p1Commit.environment.etc."ssh/sshd_config.d/90-homelab-hardening.conf".text
+              );
             assert !(builtins.hasAttr "homelab-host-settings" rock.systemd.services);
             assert !(builtins.hasAttr "homelab-wireguard" rock.systemd.services);
             assert !(builtins.hasAttr "homelab-firewall" rock.systemd.services);
@@ -215,10 +217,14 @@
           lifecycleFixtures =
             let
               baseNodes = {
-                existing = { lifecycle = "active"; };
+                existing = {
+                  lifecycle = "active";
+                };
               };
               addedNodes = baseNodes // {
-                new = { lifecycle = "provisioning"; };
+                new = {
+                  lifecycle = "provisioning";
+                };
               };
               changedNodes = baseNodes // {
                 existing = {
@@ -227,7 +233,9 @@
                 };
               };
               deletedNodes = baseNodes // {
-                existing = { lifecycle = "decommissioning"; };
+                existing = {
+                  lifecycle = "decommissioning";
+                };
               };
               select = lifecycle: nodes: lib.filterAttrs (_: node: node.lifecycle == lifecycle) nodes;
               deployable = nodes: lib.filterAttrs (_: node: node.lifecycle != "decommissioning") nodes;
