@@ -110,8 +110,8 @@ in
           [Resolve]
           DNS=1.1.1.1#cloudflare-dns.com
           FallbackDNS=1.0.0.1#cloudflare-dns.com
-          DNSSEC=no
-          DNSOverTLS=opportunistic
+          DNSSEC=yes
+          DNSOverTLS=yes
           MulticastDNS=yes
           LLMNR=no
         '';
@@ -153,8 +153,8 @@ in
           Gateway=${hostConfig.gatewayAddress}
           DNS=1.1.1.1#cloudflare-dns.com
           DNS=1.0.0.1#cloudflare-dns.com
-          DNSSEC=no
-          DNSOverTLS=opportunistic
+          DNSSEC=yes
+          DNSOverTLS=yes
           MulticastDNS=yes
           LLMNR=no
           IPv6AcceptRA=yes

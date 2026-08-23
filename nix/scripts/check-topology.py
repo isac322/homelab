@@ -21,8 +21,6 @@ for required in (
     'edgeNetwork = "10.222.0.128/25"',
     'gateway = "rpi5"',
     'listenPort = 51902',
-    'network = "10.223.0.0/24"',
-    'listenPort = 51903',
 ):
     if required not in text:
         raise SystemExit(f"missing topology contract: {required}")
@@ -32,30 +30,16 @@ if "10.222.0.134/32" in text:
     raise SystemExit("retired MacBook edge identity remains")
 wg0_nodes = re.search(r"wg0Nodes = \{(.*?)\n  \};\n  wg0Edges", text, re.S).group(1)
 node_count = len(re.findall(r"^    [a-z0-9-]+ = \{", wg0_nodes, re.M))
-wg0_edges = re.search(r"wg0Edges = \{(.*?)\n  \};\n  wg1Nodes", text, re.S).group(1)
+wg0_edges = re.search(r"wg0Edges = \{(.*?)\n  \};\n\n  combinations", text, re.S).group(1)
 edge_count = len(re.findall(r"^    [a-z0-9-]+ = \{", wg0_edges, re.M))
-if "wg0PeerNodes" not in text or "fullMeshLinks \"wg0\"" not in text:
+if node_count != 7:
+    raise SystemExit(f"wg0 topology must contain exactly 7 nodes, found {node_count}")
+if edge_count != 14:
+    raise SystemExit(f"wg0 topology must contain exactly 14 edges, found {edge_count}")
+if "wg0PeerNodes" not in text or text.count('fullMeshLinks "wg0"') != 1:
     raise SystemExit("wg0 lifecycle-aware full-mesh construction changed")
-if node_count < 2 or edge_count < 0:
-    raise SystemExit("wg0 topology must contain at least two nodes")
-for required in (
-    'address = "10.223.0.65/24"',
-    'address = "10.223.0.66/24"',
-    'address = "10.223.0.67/24"',
-    'address = "10.223.0.68/24"',
-    'address = "10.223.0.69/24"',
-    'groups.backbone = {',
-):
-    if required not in text:
-        raise SystemExit(f"wg1 backbone contract missing: {required}")
-wg1_nodes = re.search(r"wg1Nodes = \{(.*?)\n  \};\n  wg1Edges", text, re.S).group(1)
-wg1_node_count = len(re.findall(r"^    [a-z0-9-]+ = \{", wg1_nodes, re.M))
-if "wg1PeerNodes" not in text or 'fullMeshLinks "wg1"' not in text:
-    raise SystemExit("wg1 lifecycle-aware full-mesh construction changed")
-if wg1_node_count < 2:
-    raise SystemExit("wg1 topology must contain at least two nodes")
-if text.count('fullMeshLinks "wg1"') != 1:
-    raise SystemExit("wg1 backbone full-mesh construction changed")
+if "requiredLinks = wg0RequiredLinks;" not in text:
+    raise SystemExit("requiredLinks must contain only the wg0 link set")
 if "PrivateKey = " in text or "PresharedKey = " in text:
     raise SystemExit("topology contains plaintext secret")
 if not re.search(r"secretRecipients\s*=\s*\{.*?operator\s*=.*?recovery\s*=", text, re.S):

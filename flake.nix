@@ -123,7 +123,7 @@
               rpi5 = self.systemConfigs.rpi5.config;
               n2p1 = self.systemConfigs.n2p1.config;
               n2p1Commit = self.systemConfigs."n2p1-commit".config;
-              rockWg = rock.environment.etc."systemd/network/99-wg1.netdev".text;
+              rockWg = rock.environment.etc."systemd/network/99-wg0.netdev".text;
               rockNetworkdCredentials =
                 rock.environment.etc."systemd/system/systemd-networkd.service.d/50-homelab-wireguard-credentials.conf".text;
               rockK3s = rock.environment.etc."rancher/k3s/config.yaml".text;
@@ -146,15 +146,17 @@
               ) (builtins.attrNames linuxHosts);
             in
             assert projectServiceOwnershipIsMinimal;
+            assert builtins.length topology.requiredLinks == 35;
+            assert !(builtins.hasAttr "wg1" topology);
             assert lib.hasInfix "Address=192.168.219.6/24"
               rock.environment.etc."systemd/network/10-homelab-lan.network".text;
-            assert lib.hasInfix "Endpoint=192.168.219.3:51903" rockWg;
-            assert lib.hasInfix "AllowedIPs=10.223.0.68/32" rockWg;
-            assert lib.hasInfix "PrivateKeyFile=/run/credentials/systemd-networkd.service/wg1-private" rockWg;
-            assert lib.hasInfix "PresharedKeyFile=/run/credentials/systemd-networkd.service/wg1-psk-n2p1"
+            assert lib.hasInfix "Endpoint=192.168.219.3:51902" rockWg;
+            assert lib.hasInfix "AllowedIPs=10.222.0.1/32" rockWg;
+            assert lib.hasInfix "PrivateKeyFile=/run/credentials/systemd-networkd.service/wg0-private" rockWg;
+            assert lib.hasInfix "PresharedKeyFile=/run/credentials/systemd-networkd.service/wg0-psk-n2p1"
               rockWg;
             assert lib.hasInfix
-              "LoadCredentialEncrypted=wg1-private:/var/lib/homelab-secrets/active/wg1-private.cred"
+              "LoadCredentialEncrypted=wg0-private:/var/lib/homelab-secrets/active/wg0-private.cred"
               rockNetworkdCredentials;
             assert lib.hasInfix "node-ip: 192.168.219.6" rockK3s;
             assert lib.hasInfix "advertise-address: 192.168.219.6" rockK3s;
@@ -162,8 +164,8 @@
             assert lib.hasInfix "-s 192.168.219.139/32 -p tcp --dport 445 -j ACCEPT" rockFirewall;
             assert lib.hasInfix "-s 192.168.219.0/24 -p udp --dport 137:138 -j ACCEPT" rockFirewall;
             assert lib.hasInfix "MulticastDNS=yes" rockLan && lib.hasInfix "LLMNR=no" rockLan;
-            assert lib.hasInfix "DNSSEC=no" rockResolved;
-            assert lib.hasInfix "DNSOverTLS=opportunistic" rockResolved;
+            assert lib.hasInfix "DNSSEC=yes" rockResolved;
+            assert lib.hasInfix "DNSOverTLS=yes" rockResolved;
             assert !(lib.hasInfix "diffie-hellman-group-exchange-sha256" rockSsh);
             assert rock.users.users.root.shell == "/bin/bash";
             assert rock.environment.etc."sudoers.d/homelab-admin".text == "bhyoo ALL=(ALL) NOPASSWD: ALL\n";

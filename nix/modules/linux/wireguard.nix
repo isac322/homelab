@@ -1,5 +1,4 @@
 {
-  config,
   lib,
   name,
   hostConfig,
@@ -7,13 +6,10 @@
   ...
 }:
 let
-  has = interface: builtins.elem interface hostConfig.wireguard;
   stripPrefix = address: builtins.head (lib.splitString "/" address);
   encryptedRoot = "/var/lib/homelab-secrets/active";
-  credentialName = interface: kind: "${interface}-${kind}";
-  privateCredential = interface: credentialName interface "private";
-  peerCredential =
-    interface: peer: credentialName interface "psk-${builtins.replaceStrings [ "." ] [ "-" ] peer}";
+  privateCredential = "wg0-private";
+  peerCredential = peer: "wg0-psk-${builtins.replaceStrings [ "." ] [ "-" ] peer}";
   credentialPath = credential: "/run/credentials/systemd-networkd.service/${credential}";
   encryptedPath = credential: "${encryptedRoot}/${credential}.cred";
 
@@ -33,7 +29,7 @@ let
     ''
       [WireGuardPeer]
       PublicKey=${peerCfg.publicKey}
-      PresharedKeyFile=${credentialPath (peerCredential "wg0" peer)}
+      PresharedKeyFile=${credentialPath (peerCredential peer)}
       AllowedIPs=${
         lib.concatStringsSep "," (
           [ "${stripPrefix peerCfg.address}/32" ] ++ lib.optionals (peer == topology.wg0.gateway) edgeAllowed
@@ -52,96 +48,56 @@ let
     ''
       [WireGuardPeer]
       PublicKey=${edgeCfg.publicKey}
-      PresharedKeyFile=${credentialPath (peerCredential "wg0" edge)}
+      PresharedKeyFile=${credentialPath (peerCredential edge)}
       AllowedIPs=${edgeCfg.address}
     '';
-
-  wg1Node = topology.wg1.nodes.${name} or null;
-  wg1PeerNames = lib.optionals (wg1Node != null) (
-    lib.filter (peer: peer != name) (builtins.attrNames topology.wg1.peerNodes)
-  );
-  wg1RequiredPeers = wg1PeerNames;
-  wg1Peer =
-    peer:
-    let
-      peerCfg = topology.wg1.nodes.${peer};
-    in
-    ''
-      [WireGuardPeer]
-      PublicKey=${peerCfg.publicKey}
-      PresharedKeyFile=${credentialPath (peerCredential "wg1" peer)}
-      AllowedIPs=${stripPrefix peerCfg.address}/32
-      Endpoint=${topology.nodes.${peer}.lanAddress}:${toString topology.wg1.listenPort}
-      PersistentKeepaliveSec=25
-    '';
-
-  requiredPeers = interface: if interface == "wg0" then wg0RequiredPeers else wg1RequiredPeers;
-  credentials = lib.concatMap (
-    interface:
-    [ (privateCredential interface) ] ++ map (peerCredential interface) (requiredPeers interface)
-  ) hostConfig.wireguard;
-  netdev = interface: port: peers: ''
-    [NetDev]
-    Name=${interface}
-    Kind=wireguard
-    Description=Homelab ${interface}
-
-    [WireGuard]
-    ListenPort=${toString port}
-    PrivateKeyFile=${credentialPath (privateCredential interface)}
-
-    ${lib.concatStringsSep "\n" peers}
-  '';
-  network = interface: address: ''
-    [Match]
-    Name=${interface}
-
-    [Network]
-    Address=${address}
-    ConfigureWithoutCarrier=yes
-
-    [Link]
-    RequiredForOnline=no
-  '';
+  credentials = [ privateCredential ] ++ map peerCredential wg0RequiredPeers;
 in
 {
-  config = lib.mkMerge [
-    (lib.mkIf (has "wg0" && wg0Node != null) {
-      environment.etc."systemd/network/99-wg0.netdev" = {
-        text = netdev "wg0" topology.wg0.listenPort (
-          (map wg0Peer wg0PeerNames)
-          ++ lib.optionals (name == topology.wg0.gateway) (map wg0Edge wg0EdgeNames)
-        );
+  config = lib.mkIf (builtins.elem "wg0" hostConfig.wireguard && wg0Node != null) {
+    environment.etc = {
+      "systemd/network/99-wg0.netdev" = {
+        text = ''
+          [NetDev]
+          Name=wg0
+          Kind=wireguard
+          Description=Homelab wg0
+
+          [WireGuard]
+          ListenPort=${toString topology.wg0.listenPort}
+          PrivateKeyFile=${credentialPath privateCredential}
+
+          ${lib.concatStringsSep "\n" (
+            (map wg0Peer wg0PeerNames)
+            ++ lib.optionals (name == topology.wg0.gateway) (map wg0Edge wg0EdgeNames)
+          )}
+        '';
         replaceExisting = true;
         mode = "0644";
       };
-      environment.etc."systemd/network/99-wg0.network" = {
-        text = network "wg0" wg0Node.address;
+      "systemd/network/99-wg0.network" = {
+        text = ''
+          [Match]
+          Name=wg0
+
+          [Network]
+          Address=${wg0Node.address}
+          ConfigureWithoutCarrier=yes
+
+          [Link]
+          RequiredForOnline=no
+        '';
         replaceExisting = true;
       };
-    })
-    (lib.mkIf (has "wg1" && wg1Node != null) {
-      environment.etc."systemd/network/99-wg1.netdev" = {
-        text = netdev "wg1" topology.wg1.listenPort (map wg1Peer wg1PeerNames);
-        replaceExisting = true;
+      "systemd/system/systemd-networkd.service.d/50-homelab-wireguard-credentials.conf" = {
+        text = ''
+          [Service]
+          ${lib.concatMapStringsSep "\n" (
+            credential: "LoadCredentialEncrypted=${credential}:${encryptedPath credential}"
+          ) credentials}
+        '';
         mode = "0644";
       };
-      environment.etc."systemd/network/99-wg1.network" = {
-        text = network "wg1" wg1Node.address;
-        replaceExisting = true;
-      };
-    })
-    (lib.mkIf (hostConfig.wireguard != [ ]) {
-      environment.etc."systemd/system/systemd-networkd.service.d/50-homelab-wireguard-credentials.conf" =
-        {
-          text = ''
-            [Service]
-            ${lib.concatMapStringsSep "\n" (
-              credential: "LoadCredentialEncrypted=${credential}:${encryptedPath credential}"
-            ) credentials}
-          '';
-          mode = "0644";
-        };
-    })
-  ];
+    };
+  };
 }

@@ -627,8 +627,8 @@ fi
 test "$(timedatectl show -p Timezone --value)" = Asia/Seoul
 grep -qx "LANG=ko_KR.UTF-8" /etc/locale.conf
 locale -a | grep -qi '^ko_KR\.utf8$'
-grep -qx "DNSSEC=no" /etc/systemd/resolved.conf
-grep -qx "DNSOverTLS=opportunistic" /etc/systemd/resolved.conf
+grep -qx "DNSSEC=yes" /etc/systemd/resolved.conf
+grep -qx "DNSOverTLS=yes" /etc/systemd/resolved.conf
 grep -qx "MulticastDNS=yes" /etc/systemd/resolved.conf
 grep -qx "LLMNR=no" /etc/systemd/resolved.conf
 test "$(readlink /etc/resolv.conf)" = /run/systemd/resolve/stub-resolv.conf

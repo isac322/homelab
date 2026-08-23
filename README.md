@@ -11,8 +11,7 @@ nix run .#homelab-host -- inventory
 - Linux: `n2p1`, `n2p2`, `rpi4`, `rpi5`, `rock5bp`, `macmini`
 - macOS: `bhyoo-macbook-pro`
 - `wg0`: 7-node full mesh 21개와 rpi5를 통하는 `/32` edge link 14개
-- `wg1`: K3s backbone 5-node full mesh 10개
-- 전체 required link: 45개. `linkId`는 immutable하다.
+- 전체 required link: 35개. `linkId`는 immutable하다.
 - MacBook이 한쪽 endpoint인 6개 link와 edge link는 `managed=false`다. 저장소가 양쪽 Linux bundle을 모두 소유하는 link만 PSK 생성·회전 대상이다.
 
 ## Secret model
@@ -70,7 +69,7 @@ Recovery artifact에는 전체 `/etc`, root/사용자 SSH state, cron spool, pur
 
 `system-manager`가 직접 관리할 수 있는 파일·사용자·tmpfs·mount·networkd·native loader 설정은 선언형 state로 둔다. Permanent declarative custom unit은 장기 실행 daemon인 `homelab-k3s.service` 하나뿐이며, 15분 rollback service/timer는 activation 동안 `/etc/systemd/system`에만 임시 설치된다.
 
-- hostname, locale, timezone, hosts, resolver, SSH, sysctl, tmpfiles, zram-generator는 declarative file과 native generator가 소유한다. DNS는 live-proven `DNSSEC=no`, `DNSOverTLS=opportunistic`을 사용하고 LAN link에 DoT hostname, `MulticastDNS=yes`, `LLMNR=no`를 명시한다.
+- hostname, locale, timezone, hosts, resolver, SSH, sysctl, tmpfiles, zram-generator는 declarative file과 native generator가 소유한다. DNS는 live-proven `DNSSEC=yes`, `DNSOverTLS=yes`를 사용하고 LAN link에 DoT hostname, `MulticastDNS=yes`, `LLMNR=no`를 명시한다.
 - WireGuard는 networkd `.netdev`/`.network`와 encrypted systemd credentials를 사용한다. 첫 activation의 reload/reconfigure와 peer 검증은 migration command가 수행한다.
 - Firewall은 distro-native `iptables.service`/`netfilter-persistent`가 Nix-rendered rules file을 boot에 적재한다. `iptables`, `iptables-save`, `iptables-restore`는 모두 `(nf_tables)`를 보고해야 하는 iptables-nft backend invariant다. Running host에서는 native loader를 restart하지 않고 migration command가 `iptables-restore --noflush`로 rules를 갱신한 뒤 기존 Cilium feeder chain 뒤에 HOMELAB jump를 재삽입한다. 실패 시 persistent recovery service가 archive의 runtime ruleset을 복구한다. rock5bp의 active Samba client `192.168.219.139/32` TCP/445와 LAN NetBIOS UDP/137-138도 선언적으로 유지한다.
 - Distro package 설치·삭제, native service enable/reload, legacy file 제거는 `prepare`/`activate`/`commit` migration command에서만 실행한다.

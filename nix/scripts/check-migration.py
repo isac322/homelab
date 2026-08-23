@@ -74,8 +74,8 @@ def check_shell_syntax() -> None:
 require(
     "nix/modules/linux/base.nix",
     "10-homelab-lan.network",
-    "DNSSEC=no",
-    "DNSOverTLS=opportunistic",
+    "DNSSEC=yes",
+    "DNSOverTLS=yes",
     "MulticastDNS=yes",
     "LLMNR=no",
     "lib.mkIf k8sMember",
@@ -143,7 +143,7 @@ forbid(
 )
 require(
     "nix/modules/linux/wireguard.nix",
-    "wg1PeerNames",
+    "wg0PeerNames",
     'Endpoint=${topology.nodes.${peer}.lanAddress}',
     "[WireGuardPeer]",
     "PrivateKeyFile=${credentialPath",
@@ -156,6 +156,14 @@ forbid(
     "systemd.services.homelab-wireguard",
     "wg syncconf",
     "/run/homelab-wireguard-",
+)
+require(
+    "nix/scripts/rollout-peers",
+    "systemd/network/99-wg0.netdev",
+    "systemd/network/99-wg0.network",
+    "$root#topology.wg0.nodes.$target.publicKey",
+    "networkctl reconfigure wg0",
+    "wg show wg0 peers",
 )
 require(
     "nix/scripts/adopt-host",
@@ -191,6 +199,8 @@ require(
     "policy-rc.d",
     "FIREWALL_SERVICE",
     "locale -a",
+    "DNSSEC=yes",
+    "DNSOverTLS=yes",
     "verify_legacy_cleanup",
     '"(nf_tables)"',
     "reconcile)",
@@ -376,6 +386,27 @@ for retained in (
 ):
     if not (root / retained).exists():
         raise SystemExit(f"{retained}: Rancher K3s upgrade ownership must remain declared")
+forbid("argocd/appsets/k3s-upgrade.yaml", "- cluster: prod")
+forbid("argocd/appprojects/system-upgrade.yaml", "name: prod")
+for relative in (
+    "charts/cluster-secrets/templates/cluster-secret-store.yaml",
+    "charts/cluster-secrets/values.yaml",
+):
+    forbid(relative, "oracle", "vaultOCID", "tenancyOCID", "userOCID")
+if (root / "values/adguard-home.yaml").exists():
+    raise SystemExit("values/adguard-home.yaml: retired Oracle-pinned values remain")
+chart_text = source("charts/cluster-secrets/Chart.yaml")
+chart_version_match = re.search(r"^version:\s*(\S+)\s*$", chart_text, re.MULTILINE)
+if chart_version_match is None:
+    raise SystemExit("charts/cluster-secrets/Chart.yaml: chart version missing")
+chart_version = chart_version_match.group(1)
+cluster_secrets_appset = source("argocd/appsets/external-secrets.yaml")
+if not re.search(
+    rf"chart:\s*cluster-secrets.*?targetRevision:\s*{re.escape(chart_version)}(?:\s|$)",
+    cluster_secrets_appset,
+    re.DOTALL,
+):
+    raise SystemExit("cluster-secrets chart version and ApplicationSet targetRevision differ")
 require(
     "apps/objects/k3s-system-upgrade/k3s-upgrade-plan.yaml",
     "name: server-plan",

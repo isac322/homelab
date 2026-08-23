@@ -20,9 +20,7 @@ let
       "iptables.service"
     else
       "netfilter-persistent.service";
-  wgPorts = map (
-    interface: if interface == "wg0" then topology.wg0.listenPort else topology.wg1.listenPort
-  ) hostConfig.wireguard;
+  wgPorts = lib.optional (builtins.elem "wg0" hostConfig.wireguard) topology.wg0.listenPort;
   body = ''
     :HOMELAB_INPUT - [0:0]
     :HOMELAB_FORWARD - [0:0]
@@ -53,7 +51,6 @@ let
     ) "-A HOMELAB_TCP -i wg0 -s ${topology.wg0.network} -p tcp --dport 6443 -j ACCEPT"}
     ${lib.optionalString k3s "-A HOMELAB_TCP -s ${localNetwork} -p tcp --dport 10250 -j ACCEPT\n-A HOMELAB_TCP -s 10.42.0.0/16 -p tcp --dport 10250 -j ACCEPT"}
     ${lib.optionalString k3s "-A HOMELAB_TCP -s ${localNetwork} -p tcp --dport 9100 -j ACCEPT\n-A HOMELAB_TCP -s 10.42.0.0/16 -p tcp --dport 9100 -j ACCEPT"}
-    ${lib.optionalString (builtins.elem "wg1" hostConfig.wireguard) "-A HOMELAB_TCP -i wg1 -s ${topology.wg1.network} -p tcp --dport 6443 -j ACCEPT\n-A HOMELAB_TCP -i wg1 -s ${topology.wg1.network} -p tcp --dport 10250 -j ACCEPT"}
     ${lib.optionalString k3s "-A HOMELAB_TCP -s ${localNetwork} -p tcp --dport 4240 -j ACCEPT\n-A HOMELAB_TCP -s ${localNetwork} -p tcp --dport 4244:4245 -j ACCEPT\n-A HOMELAB_TCP -s 10.42.0.0/16 -p tcp --dport 4244:4245 -j ACCEPT\n-A HOMELAB_TCP -s ${localNetwork} -p tcp --dport 9962 -j ACCEPT\n-A HOMELAB_TCP -s 10.42.0.0/16 -p tcp --dport 9962 -j ACCEPT\n-A HOMELAB_TCP -s ${localNetwork} -p tcp --dport 9965 -j ACCEPT\n-A HOMELAB_TCP -s 10.42.0.0/16 -p tcp --dport 9965 -j ACCEPT"}
     ${lib.optionalString server "-A HOMELAB_TCP -s ${localNetwork} -p tcp --dport 2379:2381 -j ACCEPT"}
     ${lib.optionalString hostConfig.iscsiServer "-A HOMELAB_TCP -s ${localNetwork} -p tcp --dport 3260 -j ACCEPT"}

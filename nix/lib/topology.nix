@@ -44,10 +44,7 @@ let
         4096
         {
           wireguardEndpointHost = "backbone.bhyoo.com";
-          wireguard = [
-            "wg0"
-            "wg1"
-          ];
+          wireguard = [ "wg0" ];
           k3sRole = "agent";
           k3sServer = "https://k8s.backbone.homelab.bhyoo.com:6443";
           k3sLabels = [
@@ -64,10 +61,7 @@ let
         4096
         {
           wireguardEndpointHost = "backbone.bhyoo.com";
-          wireguard = [
-            "wg0"
-            "wg1"
-          ];
+          wireguard = [ "wg0" ];
           k3sRole = "agent";
           k3sServer = "https://k8s.backbone.homelab.bhyoo.com:6443";
           k3sLabels = [
@@ -84,10 +78,7 @@ let
         4096
         {
           wireguardEndpointHost = "backbone.bhyoo.com";
-          wireguard = [
-            "wg0"
-            "wg1"
-          ];
+          wireguard = [ "wg0" ];
           k3sRole = "server";
           k3sServer = "https://k8s.backbone.homelab.bhyoo.com:6443";
           tuning = {
@@ -103,10 +94,7 @@ let
         8192
         {
           wireguardEndpointHost = "backbone.bhyoo.com";
-          wireguard = [
-            "wg0"
-            "wg1"
-          ];
+          wireguard = [ "wg0" ];
           k3sRole = "server";
           k3sServer = "https://k8s.backbone.homelab.bhyoo.com:6443";
           k3sLabels = [
@@ -131,10 +119,7 @@ let
         32768
         {
           wireguardEndpointHost = "backbone.bhyoo.com";
-          wireguard = [
-            "wg0"
-            "wg1"
-          ];
+          wireguard = [ "wg0" ];
           k3sRole = "server";
           k3sServer = "https://k8s.backbone.homelab.bhyoo.com:6443";
           k3sLabels = [
@@ -268,34 +253,6 @@ let
       publicKey = "vRSVWjIMwGadIPmdPYEOheYLQQ0t7eIIHq3wCaW+aXc=";
     };
   };
-  wg1Nodes = {
-    n2p1 = {
-      address = "10.223.0.65/24";
-      publicKey = wg0Nodes.n2p1.publicKey;
-      group = "backbone";
-    };
-    n2p2 = {
-      address = "10.223.0.66/24";
-      publicKey = wg0Nodes.n2p2.publicKey;
-      group = "backbone";
-    };
-    rpi4 = {
-      address = "10.223.0.67/24";
-      publicKey = wg0Nodes.rpi4.publicKey;
-      group = "backbone";
-    };
-    rpi5 = {
-      address = "10.223.0.68/24";
-      publicKey = wg0Nodes.rpi5.publicKey;
-      group = "backbone";
-    };
-    rock5bp = {
-      address = "10.223.0.69/24";
-      publicKey = wg0Nodes.rock5bp.publicKey;
-      group = "backbone";
-    };
-  };
-  wg1Edges = { };
 
   combinations =
     values: lib.concatMap (a: map (b: { inherit a b; }) (lib.filter (b: b > a) values)) values;
@@ -313,9 +270,6 @@ let
   wg0PeerNodes = lib.filterAttrs (
     name: _: (nodes.${name}.lifecycle or "active") != "decommissioning"
   ) wg0Nodes;
-  wg1PeerNodes = lib.filterAttrs (
-    name: _: (nodes.${name}.lifecycle or "active") != "decommissioning"
-  ) wg1Nodes;
   wg0RequiredLinks =
     fullMeshLinks "wg0" (builtins.attrNames wg0PeerNodes)
     ++ map (edge: {
@@ -327,7 +281,6 @@ let
       bNodeId = "edge-${edge}";
       managed = false;
     }) (builtins.attrNames wg0Edges);
-  wg1RequiredLinks = fullMeshLinks "wg1" (builtins.attrNames wg1PeerNodes);
   activeNodes = lib.filterAttrs (_: node: node.lifecycle == "active") nodes;
   provisioningNodes = lib.filterAttrs (_: node: node.lifecycle == "provisioning") nodes;
   decommissioningNodes = lib.filterAttrs (_: node: node.lifecycle == "decommissioning") nodes;
@@ -344,14 +297,11 @@ in
     wg0Nodes
     wg0PeerNodes
     wg0Edges
-    wg1Nodes
-    wg1PeerNodes
-    wg1Edges
     ;
   trustedNodes = {
     bhyoo-macbook-pro = wg0Nodes.bhyoo-macbook-pro;
   };
-  requiredLinks = wg0RequiredLinks ++ wg1RequiredLinks;
+  requiredLinks = wg0RequiredLinks;
   wg0 = {
     interface = "wg0";
     network = "10.222.0.0/24";
@@ -363,18 +313,6 @@ in
     nodes = wg0Nodes;
     peerNodes = wg0PeerNodes;
     edges = wg0Edges;
-  };
-  wg1 = {
-    interface = "wg1";
-    network = "10.223.0.0/24";
-    listenPort = 51903;
-    groups.backbone = {
-      cidr = "10.223.0.64/26";
-      gateway = "rpi5";
-    };
-    nodes = wg1Nodes;
-    peerNodes = wg1PeerNodes;
-    edges = wg1Edges;
   };
   secretRecipients = {
     operator = "age1ghdfjncup4cw6rfmvm4z0rnvdg7230svt5u2dxn8ced6uq4ze5wsdy22sd";

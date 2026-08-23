@@ -1,15 +1,4 @@
 clusterSecretStore:
-  oracle:
-    enabled: false
-    region: ""
-    vaultOCID: ""
-    auth:
-      secretRef: {}
-        # key: ""
-        # name: ""
-        # namespace: ""
-      tenancyOCID: ""
-      userOCID: ""
   aws:
     enabled: true
     region: ""
