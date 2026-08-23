@@ -198,7 +198,11 @@ sysctl --system
 systemctl restart systemd-networkd.service
 networkctl reload
 networkctl reconfigure "$default_interface"
-for interface in $wg_interfaces; do networkctl reconfigure "$interface"; done
+for interface in $wg_interfaces; do
+  if ip link show "$interface" >/dev/null 2>&1; then
+    networkctl reconfigure "$interface"
+  fi
+done
 if test -s "$dir/distro-packages.txt"; then
   packages=$(tr '\n' ' ' < "$dir/distro-packages.txt")
   for package in $packages; do

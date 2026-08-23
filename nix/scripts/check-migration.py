@@ -332,6 +332,7 @@ require(
     "trap rollback_arm_failure EXIT HUP INT TERM",
     "/usr/bin/pacman --noconfirm --needed -S $packages",
     "/usr/bin/apt-get -o Dpkg::Options::=--force-confold install -y --no-install-recommends $packages",
+    'if ip link show "$interface" >/dev/null 2>&1; then',
 )
 forbid(
     "nix/scripts/k3s-handoff",
