@@ -1255,6 +1255,57 @@ def check_authorized_keys_verification() -> None:
         raise SystemExit("nix/scripts/homelab-host: accepted unmanaged-only AuthorizedKeysFile value")
 
 
+def check_ssh_strict_modes_guard() -> None:
+    require(
+        "nix/modules/linux/base.nix",
+        'systemd.tmpfiles.rules = [\n'
+        '      "d /etc 0755 root root -"\n'
+        '      "d /etc/ssh 0755 root root -"\n'
+        '      "d /etc/ssh/authorized_keys.d 0755 root root -"\n'
+        "    ];",
+    )
+    migration = source("nix/scripts/homelab-host")
+    native_match = re.search(
+        r"<<'REMOTE_NATIVE_RUNTIME'\n(.*?)\nREMOTE_NATIVE_RUNTIME",
+        migration,
+        re.DOTALL,
+    )
+    if native_match is None:
+        raise SystemExit("nix/scripts/homelab-host: native runtime body missing")
+    native = native_match.group(1)
+    guard = """for path in /etc /etc/ssh /etc/ssh/authorized_keys.d; do
+  test "$(stat -c '%a %u %g' "$path")" = "755 0 0"
+done"""
+    apply_tmpfiles = "systemd-tmpfiles --create --prefix=/etc\n"
+    reload_ssh = 'systemctl reload "$SSH_SERVICE"'
+    if apply_tmpfiles not in native:
+        raise SystemExit("nix/scripts/homelab-host: /etc tmpfiles convergence missing")
+    if guard not in native:
+        raise SystemExit("nix/scripts/homelab-host: SSH StrictModes ancestor guard missing")
+    if reload_ssh not in native:
+        raise SystemExit("nix/scripts/homelab-host: SSH reload missing")
+    if native.index(apply_tmpfiles) > native.index(guard):
+        raise SystemExit("nix/scripts/homelab-host: StrictModes guard precedes tmpfiles convergence")
+    if native.index(guard) > native.index(reload_ssh):
+        raise SystemExit("nix/scripts/homelab-host: SSH reload precedes StrictModes ancestor guard")
+    verify_match = re.search(
+        r"<<'REMOTE_VERIFY'\n(.*?)\nREMOTE_VERIFY",
+        migration,
+        re.DOTALL,
+    )
+    if verify_match is None:
+        raise SystemExit("nix/scripts/homelab-host: verify-host body missing")
+    verify = verify_match.group(1)
+    for expected in (
+        guard,
+        'test -s "/etc/ssh/authorized_keys.d/$ADMIN_USER"',
+    ):
+        if expected not in verify:
+            raise SystemExit(
+                f"nix/scripts/homelab-host: SSH StrictModes verification missing {expected!r}"
+            )
+
+
 def check_wireguard_handshake_probe() -> None:
     migration = source("nix/scripts/homelab-host")
     match = re.search(
@@ -2224,6 +2275,7 @@ check_armed_verify_entrypoint()
 check_rollback_restore_failure()
 check_rollback_stage_resume()
 check_authorized_keys_verification()
+check_ssh_strict_modes_guard()
 check_wireguard_handshake_probe()
 check_register_system_failure()
 check_time_sync_waits()

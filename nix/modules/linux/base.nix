@@ -324,6 +324,12 @@ in
       })
     ];
 
+    systemd.tmpfiles.rules = [
+      "d /etc 0755 root root -"
+      "d /etc/ssh 0755 root root -"
+      "d /etc/ssh/authorized_keys.d 0755 root root -"
+    ];
+
     systemd.mounts = lib.optionals k8sMember [
       {
         what = "tmpfs";

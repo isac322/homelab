@@ -192,8 +192,11 @@ if test "$ROLE" = server || test "$ROLE" = agent; then
 fi
 hostnamectl set-hostname "$HOST_NAME"
 if command -v locale-gen >/dev/null 2>&1; then locale-gen; fi
-systemd-tmpfiles --create --prefix=/etc/resolv.conf
+systemd-tmpfiles --create --prefix=/etc
 systemctl restart systemd-resolved.service
+for path in /etc /etc/ssh /etc/ssh/authorized_keys.d; do
+  test "$(stat -c '%a %u %g' "$path")" = "755 0 0"
+done
 sshd -t
 systemctl reload "$SSH_SERVICE"
 sysctl --system
@@ -874,6 +877,10 @@ grep -qx "MulticastDNS=yes" /etc/systemd/resolved.conf
 grep -qx "LLMNR=no" /etc/systemd/resolved.conf
 test "$(readlink /etc/resolv.conf)" = /run/systemd/resolve/stub-resolv.conf
 test "$(getent passwd root | cut -d: -f7)" = /bin/bash
+for path in /etc /etc/ssh /etc/ssh/authorized_keys.d; do
+  test "$(stat -c '%a %u %g' "$path")" = "755 0 0"
+done
+test -s "/etc/ssh/authorized_keys.d/$ADMIN_USER"
 sshd_bin=$(command -v sshd || printf /usr/sbin/sshd)
 sudo -n "$sshd_bin" -T | grep -Eqi '^authorizedkeysfile( \.ssh/authorized_keys)? /etc/ssh/authorized_keys\.d/%u$'
 if test "$ADMIN_USER" != root; then
