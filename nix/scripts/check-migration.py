@@ -2131,6 +2131,13 @@ cleanup_block = host_migration.split("cleanup_legacy_files()", 1)[1].split(
 )[0]
 if "/usr/local/bin/k3s" in cleanup_block:
     raise SystemExit("nix/scripts/homelab-host: commit cleanup must retain the Rancher-managed K3s binary")
+if 'rm -rf "/etc/systemd/system/$unit.d"' not in cleanup_block:
+    raise SystemExit("nix/scripts/homelab-host: commit cleanup must remove legacy systemd drop-ins")
+verify_cleanup_block = host_migration.split("verify_legacy_cleanup()", 1)[1].split(
+    "rollback_state()", 1
+)[0]
+if 'test ! -e "/etc/systemd/system/$unit.d"' not in verify_cleanup_block:
+    raise SystemExit("nix/scripts/homelab-host: legacy systemd drop-in removal is not verified")
 if 'test -x /usr/local/bin/k3s' not in host_migration:
     raise SystemExit("nix/scripts/homelab-host: K3s install layout retention is not verified")
 require(

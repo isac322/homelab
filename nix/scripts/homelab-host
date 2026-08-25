@@ -289,6 +289,7 @@ cleanup_legacy_files() {
       case "$fragment" in /etc/systemd/system/*) rm -f "$fragment" ;; esac
       rm -f "/etc/systemd/system/multi-user.target.wants/$unit"
       rm -f "/etc/systemd/system/$unit.env"
+      rm -rf "/etc/systemd/system/$unit.d"
     done
     systemctl daemon-reload
   '\'''
@@ -300,6 +301,7 @@ verify_legacy_cleanup() {
     for unit in k3s.service k3s-agent.service zram-swap.service ksm.service thp-madvise.service; do
       test -z "$(systemctl show -p FragmentPath --value "$unit" 2>/dev/null || true)"
       test ! -e "/etc/systemd/system/$unit.env"
+      test ! -e "/etc/systemd/system/$unit.d"
     done
   '\'''
 }
