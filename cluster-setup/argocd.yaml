@@ -1,6 +1,6 @@
 ---
 - name: Group by k8s_master [backbone]
-  hosts: backbone
+  hosts: "ansible_managed:&backbone"
   tasks:
     - name: Group by k8s_master
       ansible.builtin.group_by:

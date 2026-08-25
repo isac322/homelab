@@ -1,4 +1,4 @@
-- hosts: backbone
+- hosts: "ansible_managed:&backbone"
   tasks:
     - name: Install k3s
       block:
@@ -76,7 +76,7 @@
 # CNI 없음 상태. 이 play가 Cilium을 helm install하여 CNI 설치 + kubeProxyReplacement 가동.
 # 이후 ArgoCD가 설치되면 backbone-cilium App이 이 Helm release를 adopt하여 GitOps로 관리 이관.
 - name: Group by k8s_master [backbone cilium]
-  hosts: backbone
+  hosts: "ansible_managed:&backbone"
   gather_facts: no
   tasks:
     - name: Group by k8s_master

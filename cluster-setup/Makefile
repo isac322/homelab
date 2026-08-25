@@ -31,10 +31,10 @@ ssh-hardening: init-backbone-os ssh-hardening.yaml
 firewall: init-backbone-os firewall.yaml
 	ansible-playbook $@.yaml
 
-wireguard: firewall wireguard.yaml
+wireguard: ansible-install wireguard.yaml
 	ansible-playbook $@.yaml
 
-k3s: etc-hosts ssh-hardening firewall wireguard k3s.yaml
+k3s: etc-hosts ssh-hardening firewall k3s.yaml
 	ansible-playbook $@.yaml
 
 argocd: k3s argocd.yaml

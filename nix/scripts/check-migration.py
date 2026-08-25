@@ -29,6 +29,101 @@ def forbid(relative: str, *needles: str) -> None:
             raise SystemExit(f"{relative}: forbidden contract {needle!r}")
 
 
+def inventory_groups(relative: str) -> dict[str, set[str]]:
+    groups: dict[str, set[str]] = {}
+    current: str | None = None
+    for raw_line in source(relative).splitlines():
+        line = raw_line.split("#", 1)[0].strip()
+        if not line:
+            continue
+        if line.startswith("[") and line.endswith("]"):
+            current = line[1:-1]
+            groups.setdefault(current, set())
+            continue
+        if current is not None:
+            groups[current].add(line.split()[0])
+    return groups
+
+
+def check_ansible_cutover_partition() -> None:
+    groups = inventory_groups("cluster-setup/inventory/hosts")
+    nix_managed = groups.get("nix_managed", set())
+    ansible_managed = groups.get("ansible_managed", set())
+    for host in ("n2p1", "n2p2"):
+        if host not in nix_managed:
+            raise SystemExit(
+                f"cluster-setup/inventory/hosts: migrated host {host} is not nix_managed"
+            )
+        if host in ansible_managed:
+            raise SystemExit(
+                f"cluster-setup/inventory/hosts: migrated host {host} remains ansible_managed"
+            )
+    if nix_managed & ansible_managed:
+        overlap = ", ".join(sorted(nix_managed & ansible_managed))
+        raise SystemExit(
+            f"cluster-setup/inventory/hosts: ownership groups overlap: {overlap}"
+        )
+
+    if groups.get("homelab:children") != {"ansible_managed", "nix_managed"}:
+        raise SystemExit(
+            "cluster-setup/inventory/hosts: homelab must contain both ownership groups"
+        )
+    if not {"n2p1", "n2p2"}.issubset(groups.get("backbone", set())):
+        raise SystemExit(
+            "cluster-setup/inventory/hosts: migrated backbone topology was removed"
+        )
+
+    expected_play_hosts = {
+        "cluster-setup/init-backbone-os.yaml": ["ansible_managed"] * 4,
+        "cluster-setup/etc-hosts.yaml": ["ansible_managed"],
+        "cluster-setup/ssh-hardening.yaml": ["ansible_managed"] * 3,
+        "cluster-setup/firewall.yaml": ["ansible_managed"],
+        "cluster-setup/wireguard.yaml": ["ansible_managed"],
+        "cluster-setup/k3s.yaml": [
+            "ansible_managed:&backbone",
+            "ansible_managed:&backbone",
+            "backbone_k8s_masters_for_cilium",
+        ],
+        "cluster-setup/argocd.yaml": [
+            "ansible_managed:&backbone",
+            "backbone_k8s_masters",
+            "backbone_k8s_masters",
+        ],
+    }
+    for relative, expected in expected_play_hosts.items():
+        actual = re.findall(
+            r'^\s*(?:-\s+)?hosts:\s*["\']?([^"\'\s]+)["\']?\s*$',
+            source(relative),
+            re.MULTILINE,
+        )
+        if actual != expected:
+            raise SystemExit(
+                f"{relative}: play host ownership differs: expected {expected}, got {actual}"
+            )
+
+    require(
+        "cluster-setup/wireguard.yaml",
+        "any_errors_fatal: true",
+        "gather_facts: false",
+        "groups['nix_managed']",
+        "nix run .#rollout-peers -- <host>",
+    )
+    makefile = source("cluster-setup/Makefile")
+    if not re.search(
+        r"^wireguard:\s+ansible-install\s+wireguard\.yaml\s*$",
+        makefile,
+        re.MULTILINE,
+    ):
+        raise SystemExit(
+            "cluster-setup/Makefile: WireGuard must fail before changing remote hosts"
+        )
+    k3s_target = re.search(r"^k3s:\s*(.*)$", makefile, re.MULTILINE)
+    if k3s_target is None or "wireguard" in k3s_target.group(1).split():
+        raise SystemExit(
+            "cluster-setup/Makefile: K3s must not invoke disabled legacy WireGuard"
+        )
+
+
 def check_shell_syntax() -> None:
     scripts = [
         "nix/scripts/adopt-host",
@@ -2676,5 +2771,6 @@ check_provision_active_service_guard()
 check_iscsi_service_verification()
 check_rollback_restored_services()
 check_legacy_cleanup_path_verification()
+check_ansible_cutover_partition()
 check_shell_syntax()
 print("migration-contracts: ok")

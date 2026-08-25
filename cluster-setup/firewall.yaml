@@ -1,5 +1,5 @@
 ---
-- hosts: homelab
+- hosts: ansible_managed
   become: yes
   pre_tasks:
     - name: Flag whether this host belongs to the backbone (k8s) group

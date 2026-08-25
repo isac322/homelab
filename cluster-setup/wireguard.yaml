@@ -1,5 +1,17 @@
-- hosts: all
+- hosts: ansible_managed
   name: Setup wireguard mesh
+  any_errors_fatal: true
+  gather_facts: false
+  pre_tasks:
+    - name: Reject legacy WireGuard after a partial Nix cutover
+      ansible.builtin.assert:
+        that:
+          - (groups['nix_managed'] | default([]) | length) == 0
+        fail_msg: >-
+          Legacy Ansible WireGuard cannot safely combine Nix-managed encrypted
+          identities with its host-generated keys. Use
+          `nix run .#rollout-peers -- <host>` instead.
+      run_once: true
   become: yes
   roles:
     - role: wireguard_mesh

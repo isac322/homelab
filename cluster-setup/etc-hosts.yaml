@@ -1,4 +1,4 @@
-- hosts: homelab
+- hosts: ansible_managed
   name: Edits the hosts file in /etc
   become: yes
   roles:
