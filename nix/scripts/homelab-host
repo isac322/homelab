@@ -287,6 +287,7 @@ cleanup_legacy_files() {
       systemctl disable --now "$unit" >/dev/null 2>&1 || true
       fragment=$(systemctl show -p FragmentPath --value "$unit" 2>/dev/null || true)
       case "$fragment" in /etc/systemd/system/*) rm -f "$fragment" ;; esac
+      rm -f "/etc/systemd/system/$unit"
       rm -f "/etc/systemd/system/multi-user.target.wants/$unit"
       rm -f "/etc/systemd/system/$unit.env"
       rm -rf "/etc/systemd/system/$unit.d"
@@ -298,10 +299,16 @@ verify_legacy_cleanup() {
   local host=$1
   remote "$host" 'sudo -n sh -ceu '\''
     test -x /usr/local/bin/k3s
+    assert_path_absent() {
+      test ! -e "$1"
+      test ! -L "$1"
+    }
     for unit in k3s.service k3s-agent.service zram-swap.service ksm.service thp-madvise.service; do
       test -z "$(systemctl show -p FragmentPath --value "$unit" 2>/dev/null || true)"
-      test ! -e "/etc/systemd/system/$unit.env"
-      test ! -e "/etc/systemd/system/$unit.d"
+      assert_path_absent "/etc/systemd/system/$unit"
+      assert_path_absent "/etc/systemd/system/$unit.env"
+      assert_path_absent "/etc/systemd/system/$unit.d"
+      assert_path_absent "/etc/systemd/system/multi-user.target.wants/$unit"
     done
   '\'''
 }
