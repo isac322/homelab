@@ -1,5 +1,15 @@
 - hosts: ansible_managed
   name: Edits the hosts file in /etc
+  any_errors_fatal: true
+  gather_facts: true
+  pre_tasks:
+    - name: Reject a partial ownership batch
+      ansible.builtin.assert:
+        that:
+          - (ansible_play_hosts_all | sort) == (groups['ansible_managed'] | sort)
+        fail_msg: >-
+          etc-hosts requires every Ansible-managed host; do not use --limit.
+      run_once: true
   become: yes
   roles:
     - role: etc_hosts
@@ -7,11 +17,21 @@
         etc_hosts_ipv6: false
         hosts_dns_hostname: >-
           {{
-            dict(
-              groups['backbone'] | map('extract', hostvars)
-              | selectattr('is_k8s_master', 'defined')
-              | selectattr('is_k8s_master')
-              | map(attribute='ansible_host')
-              | zip_longest([], fillvalue=k8s_registration_address)
+            (
+              dict(
+                groups['backbone'] | map('extract', hostvars)
+                | selectattr('is_k8s_master', 'defined')
+                | selectattr('is_k8s_master')
+                | map(attribute='ansible_host')
+                | zip_longest([], fillvalue=k8s_registration_address)
+              )
+              | combine(
+                  dict(
+                    groups['nix_managed']
+                    | map('extract', hostvars)
+                    | map(attribute='ansible_host')
+                    | zip(groups['nix_managed'])
+                  )
+                )
             ) | dict2items(key_name='address', value_name='hostname')
           }}

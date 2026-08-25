@@ -297,13 +297,14 @@
             pkgs.runCommand "homelab-migration-contracts"
               {
                 nativeBuildInputs = [
+                  pkgs.ansible
                   pkgs.bash
                   pkgs.jq
-                  pkgs.python3
+                  (pkgs.python3.withPackages (pythonPackages: [ pythonPackages.jinja2 ]))
                 ];
               }
               ''
-                HOMELAB_SOURCE_ROOT=${self} python3 ${./nix/scripts/check-migration.py}
+                HOMELAB_REQUIRE_ANSIBLE_RENDER=1 HOMELAB_REQUIRE_JINJA_RENDER=1 HOMELAB_SOURCE_ROOT=${self} python3 ${./nix/scripts/check-migration.py}
                 for script in \
                   ${./nix/scripts/adopt-host} \
                   ${./nix/scripts/decommission-host} \

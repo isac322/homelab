@@ -1,17 +1,20 @@
 # Legacy Ansible host bootstrap
 
 이 디렉터리는 아직 전환하지 않은 `[ansible_managed]` 호스트의 bootstrap과
-Nix 전환 전 동작을 확인하는 rollback 기준으로만 유지한다.
-`[nix_managed]`에 있는 호스트는 어떤 operational playbook도 대상으로 삼지 않는다.
+Nix 전환 전 동작을 확인하는 rollback 기준으로 유지한다. Legacy host-management
+playbook은 `[ansible_managed]`만 target으로 삼고, `[nix_managed]` 호스트에는 SSH
+연결이나 remote task를 실행하지 않는다. 두 ownership group은 `homelab`의
+child로 남으며 `backbone` 같은 topology group도 유지한다.
 
-호스트 전환 시 `inventory/hosts`에서 해당 호스트를 `[ansible_managed]`에서
-`[nix_managed]`로 옮긴다. `backbone` membership은 cluster topology 참조이므로
-그대로 유지한다. 현재 `n2p1`과 `n2p2`는 Nix가 관리한다.
+`etc-hosts.yaml`은 모든 Ansible-managed host가 포함된 실행만 허용하고 `--limit`을
+거부한다. Managed host 하나라도 fact gathering에 실패하면 어떤 `/etc/hosts`도
+쓰기 전에 전체 play를 중단한다. Nix-managed host entry는 연결이나 facts 없이
+inventory의 `[nix_managed]`와 `ansible_host`에서 `hosts_dns_hostname`으로 정적으로
+추가한다.
 
-부분 전환 이후 legacy `wireguard.yaml`은 fail closed한다. 이 role은 play 대상에서
-제외된 Nix 호스트의 encrypted identity와 PSK를 안전하게 읽을 수 없으므로,
-남은 호스트만 대상으로 실행하면 peer를 누락한다. Peer 변경은 다음 명령으로
-수행한다.
+부분 전환 이후 legacy `wireguard.yaml`은 fact gathering이나 remote mutation 전에
+fail closed한다. 이 role은 Nix host의 encrypted identity와 PSK를 안전하게 읽을 수
+없다. Peer 변경은 다음 명령으로 수행한다.
 
 ```bash
 nix run .#rollout-peers -- <host>

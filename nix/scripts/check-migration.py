@@ -7,12 +7,51 @@ import shutil
 import subprocess
 import tarfile
 import tempfile
+import textwrap
+try:
+    from jinja2 import Environment, StrictUndefined
+except ModuleNotFoundError:
+    Environment = None
+    StrictUndefined = None
 
 root = Path(os.environ.get("HOMELAB_SOURCE_ROOT", Path(__file__).resolve().parents[2]))
 
 
 def source(relative: str) -> str:
     return (root / relative).read_text()
+
+def folded_yaml_scalar(relative: str, key: str) -> str:
+    lines = source(relative).splitlines()
+    marker = re.compile(rf"^(\s*){re.escape(key)}:\s*>-\s*$")
+    for index, line in enumerate(lines):
+        match = marker.match(line)
+        if match is None:
+            continue
+        marker_indent = len(match.group(1))
+        body: list[str] = []
+        for candidate in lines[index + 1 :]:
+            if candidate.strip():
+                indent = len(candidate) - len(candidate.lstrip())
+                if indent <= marker_indent:
+                    break
+            body.append(candidate)
+        value = textwrap.dedent("\n".join(body)).strip()
+        if not value:
+            break
+        return value
+    raise SystemExit(f"{relative}: folded scalar {key!r} is missing")
+
+
+def inventory_host_value(host: str, key: str) -> str:
+    relative = f"cluster-setup/inventory/host_vars/{host}.yaml"
+    match = re.search(
+        rf"^{re.escape(key)}:\s*([^\s#]+)\s*(?:#.*)?$",
+        source(relative),
+        re.MULTILINE,
+    )
+    if match is None:
+        raise SystemExit(f"{relative}: inventory value {key!r} is missing")
+    return match.group(1)
 
 
 def require(relative: str, *needles: str) -> None:
@@ -102,6 +141,22 @@ def check_ansible_cutover_partition() -> None:
             )
 
     require(
+        "cluster-setup/etc-hosts.yaml",
+        "any_errors_fatal: true",
+        "gather_facts: true",
+        "(ansible_play_hosts_all | sort) == (groups['ansible_managed'] | sort)",
+        "groups['nix_managed']",
+        "map(attribute='ansible_host')",
+        "zip(groups['nix_managed'])",
+        "do not use --limit",
+    )
+    require(
+        "cluster-setup/roles/etc_hosts/templates/etc/hosts.j2",
+        "{% for host in ansible_play_batch %}",
+        "{% for item in hosts_dns_hostname %}",
+    )
+
+    require(
         "cluster-setup/wireguard.yaml",
         "any_errors_fatal: true",
         "gather_facts: false",
@@ -123,6 +178,109 @@ def check_ansible_cutover_partition() -> None:
             "cluster-setup/Makefile: K3s must not invoke disabled legacy WireGuard"
         )
 
+
+def check_static_nix_hosts_render() -> None:
+    if Environment is None or StrictUndefined is None:
+        if os.environ.get("HOMELAB_REQUIRE_JINJA_RENDER") == "1":
+            raise SystemExit(
+                "check-migration.py: Jinja2 is required for the hosts render contract"
+            )
+        return
+    environment = Environment(undefined=StrictUndefined)
+    environment.filters["regex_search"] = lambda value, pattern: re.search(
+        pattern, value
+    )
+    environment.filters["ansible.utils.ipaddr"] = lambda _value, _query: False
+    template = environment.from_string(
+        source("cluster-setup/roles/etc_hosts/templates/etc/hosts.j2")
+    )
+    rendered = template.render(
+        ansible_managed="managed by Ansible",
+        inventory_hostname="rpi4",
+        inventory_hostname_short="rpi4",
+        hosts_ipv4_address="192.168.219.7",
+        ansible_lo={},
+        hosts_ipv6=False,
+        ansible_play_batch=["rpi4"],
+        hostvars={"rpi4": {"ansible_interfaces": []}},
+        hosts_excludes_interfaces=[],
+        hosts_all_private=True,
+        hosts_all_public=False,
+        hosts_dns_hostname=[
+            {"address": "192.168.219.3", "hostname": "n2p1"},
+            {"address": "192.168.219.4", "hostname": "n2p2"},
+        ],
+    )
+    for expected in ("192.168.219.3 n2p1", "192.168.219.4 n2p2"):
+        if rendered.splitlines().count(expected) != 1:
+            raise SystemExit(
+                "cluster-setup/etc-hosts.yaml: static Nix-managed host render "
+                f"differs for {expected!r}"
+            )
+
+def check_static_nix_hosts_expression() -> None:
+    ansible_playbook = shutil.which("ansible-playbook")
+    if ansible_playbook is None:
+        if os.environ.get("HOMELAB_REQUIRE_ANSIBLE_RENDER") == "1":
+            raise SystemExit(
+                "check-migration.py: ansible-playbook is required for the "
+                "hosts expression contract"
+            )
+        return
+
+    expression = folded_yaml_scalar(
+        "cluster-setup/etc-hosts.yaml", "hosts_dns_hostname"
+    )
+    expected = {
+        host: inventory_host_value(host, "ansible_host")
+        for host in ("n2p1", "n2p2")
+    }
+    assertions = "\n".join(
+        f'          - \'{{"address": "{address}", '
+        f'"hostname": "{host}"}} in evaluated_hosts\''
+        for host, address in expected.items()
+    )
+    playbook = f"""---
+- hosts: localhost
+  connection: local
+  gather_facts: false
+  vars:
+    k8s_registration_address: k8s-registration.test
+    evaluated_hosts: >-
+{textwrap.indent(expression, "      ")}
+  tasks:
+    - name: Verify static Nix-managed host entries
+      ansible.builtin.assert:
+        that:
+{assertions}
+"""
+    with tempfile.TemporaryDirectory() as temp_directory:
+        fixture = Path(temp_directory) / "check-static-hosts.yaml"
+        fixture.write_text(playbook)
+        environment = os.environ.copy()
+        environment.update(
+            {
+                "HOME": temp_directory,
+                "ANSIBLE_LOCAL_TEMP": f"{temp_directory}/local",
+                "ANSIBLE_REMOTE_TEMP": f"{temp_directory}/remote",
+            }
+        )
+        result = subprocess.run(
+            [
+                ansible_playbook,
+                "-i",
+                str(root / "cluster-setup/inventory/hosts"),
+                str(fixture),
+            ],
+            text=True,
+            capture_output=True,
+            env=environment,
+        )
+    if result.returncode != 0:
+        raise SystemExit(
+            "cluster-setup/etc-hosts.yaml: static inventory expression failed\n"
+            f"{result.stdout}{result.stderr}"
+        )
 
 def check_shell_syntax() -> None:
     scripts = [
@@ -2772,5 +2930,7 @@ check_iscsi_service_verification()
 check_rollback_restored_services()
 check_legacy_cleanup_path_verification()
 check_ansible_cutover_partition()
+check_static_nix_hosts_render()
+check_static_nix_hosts_expression()
 check_shell_syntax()
 print("migration-contracts: ok")

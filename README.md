@@ -130,16 +130,19 @@ K3s version과 순차 rollout은 기존 Rancher `system-upgrade-controller`가 �
 
 ## Ansible ownership boundary
 
-`cluster-setup/inventory/hosts`의 `[ansible_managed]`만 legacy Ansible
-host-management playbook의 대상이다. Commit까지 끝난 호스트는
-`[nix_managed]`로 옮기며, 현재 `n2p1`과 `n2p2`가 여기에 속한다. 이 호스트들의
-`backbone` membership은 topology 참조를 위해 유지하지만 Ansible은 접속하거나
-변경하지 않는다.
+Legacy host-management playbook은 `[ansible_managed]`만 target으로 삼는다. Commit까지
+끝난 호스트는 `[nix_managed]`로 옮기며, 현재 `n2p1`과 `n2p2`가 여기에 속한다.
+두 ownership group은 `homelab`의 child로 남고 `backbone` 같은 topology group도
+유지하지만, Nix-managed host에는 Ansible SSH 연결이나 remote task를 실행하지 않는다.
 
-부분 전환 이후 legacy WireGuard playbook은 Nix의 encrypted identity와 PSK를
-읽을 수 없으므로 fail closed한다. Peer 변경은
-`nix run .#rollout-peers -- <host>`로 수행한다. K3s binary/version rollout은 계속
-Rancher `system-upgrade-controller`가 소유한다.
+`etc-hosts`는 모든 Ansible-managed host가 포함된 실행만 허용하고 `--limit`을
+거부한다. Managed host 하나라도 fact gathering에 실패하면 어떤 `/etc/hosts`도
+쓰기 전에 전체 play를 중단한다. Nix-managed host entry는 연결이나 facts 없이
+inventory의 `[nix_managed]`와 `ansible_host`에서 `hosts_dns_hostname`으로 정적으로
+추가한다. Legacy WireGuard playbook은 Nix의 encrypted identity와 PSK를 읽을 수
+없으므로 fact gathering이나 remote mutation 전에 전체 play를 fail closed한다.
+Peer 변경은 `nix run .#rollout-peers -- <host>`로 수행한다. K3s binary/version
+rollout은 계속 Rancher `system-upgrade-controller`가 소유한다.
 
 ## Verification
 
@@ -151,4 +154,4 @@ python3 nix/scripts/check-migration.py
 bash -n nix/scripts/adopt-host nix/scripts/decommission-host nix/scripts/homelab-host nix/scripts/k3s-handoff nix/scripts/provision-host nix/scripts/render-macbook-wireguard nix/scripts/rollout-peers nix/scripts/wireguard-secrets
 ```
 
-실호스트에서는 새 SSH session, effective sshd config, synchronized system clock, WireGuard public key/peer/AllowedIPs/handshake, firewall INPUT/FORWARD policy와 Cilium/Samba/NetBIOS rules, K3s version/Ready/etcd, iSCSI path, persistent rollback timer 상태를 확인한다. 기존 Ansible 코드는 전환하지 않은 `[ansible_managed]` 호스트와 rollback 기준을 위해 유지하며, `[nix_managed]` 호스트에는 실행하지 않는다.
+실호스트에서는 새 SSH session, effective sshd config, synchronized system clock, WireGuard public key/peer/AllowedIPs/handshake, firewall INPUT/FORWARD policy와 Cilium/Samba/NetBIOS rules, K3s version/Ready/etcd, iSCSI path, persistent rollback timer 상태를 확인한다. 기존 Ansible 코드는 전체 topology를 inventory input으로 유지하되, `[nix_managed]` 호스트에는 remote task를 실행하지 않는다.
