@@ -464,6 +464,7 @@ assert_host_rebooted() {
 }
 reboot_host() {
   local host=$1 file phase previous legacy recovery secret_generation store_path boot_id active_boot_id rc
+  sync_completed_rollback "$host" || return 1
   file=$(receipt "$host")
   test -s "$file" || {
     echo "$host migration receipt is missing" >&2
@@ -472,7 +473,10 @@ reboot_host() {
   phase=$(jq -r '.phase // empty' "$file")
   case "$phase" in
     activated|rebooting)
-      "$root/nix/scripts/k3s-handoff" rearm "$host" || return 1
+      if ! "$root/nix/scripts/k3s-handoff" rearm "$host"; then
+        sync_completed_rollback "$host" || true
+        return 1
+      fi
       ;;
     *)
       echo "$host receipt phase is ${phase:-missing}; expected activated or rebooting" >&2
@@ -722,13 +726,17 @@ REMOTE_K3S_COLD_BACKUP
     ;;
   reboot-verify)
     host=${2:?host required}
+    sync_completed_rollback "$host" || exit 1
     receipt_file=$(receipt "$host")
     phase=$(jq -r '.phase // empty' "$receipt_file" 2>/dev/null || true)
     test "$phase" = rebooting || {
       echo "$host receipt phase is ${phase:-missing}; expected rebooting" >&2
       exit 1
     }
-    "$root/nix/scripts/k3s-handoff" rearm "$host"
+    if ! "$root/nix/scripts/k3s-handoff" rearm "$host"; then
+      sync_completed_rollback "$host" || true
+      exit 1
+    fi
     require_receipt_phase "$host" rebooting
     assert_host_rebooted "$host"
     previous=$(jq -r '.previousGeneration // empty' "$receipt_file")

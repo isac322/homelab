@@ -322,11 +322,20 @@ set -euo pipefail
 root=$ROOT
 receipt() {{ printf '%s\\n' "$RECEIPT"; }}
 seed() {{
+  sync_count=0
   jq -n --arg phase "$1" --arg bootId "${{2:-}}" \
     '{{phase:$phase,previousGeneration:"",legacyK3sUnit:"k3s.service",recoveryDirectory:"recovery",secretGeneration:"secret",storePath:"store",bootId:$bootId}}' \
     > "$RECEIPT"
 }}
-sync_completed_rollback() {{ printf 'sync\\n' >> "$EVENTS"; }}
+sync_count=0
+sync_completed_rollback() {{
+  sync_count=$((sync_count + 1))
+  printf 'sync\\n' >> "$EVENTS"
+  if [ "${{ROLLBACK_COMPLETE_ON_SYNC:-0}}" = "$sync_count" ]; then
+    jq '.phase = "rolled-back"' "$RECEIPT" > "$RECEIPT.new"
+    mv "$RECEIPT.new" "$RECEIPT"
+  fi
+}}
 guard_count=0
 require_receipt_phase() {{
   sync_completed_rollback "$1"
@@ -363,7 +372,7 @@ seed activated
 guard_count=0
 : > "$EVENTS"
 reboot_host test-host
-printf '%s\\n' rearm sync guard boot-id receipt:rebooting reboot > "$EXPECTED"
+printf '%s\\n' sync rearm sync guard boot-id receipt:rebooting reboot > "$EXPECTED"
 cmp "$EXPECTED" "$EVENTS"
 test "$(jq -r .phase "$RECEIPT")" = rebooting
 test "$(jq -r .bootId "$RECEIPT")" = boot-1
@@ -377,10 +386,37 @@ if reboot_host test-host; then
   echo "reboot continued after rearm failure" >&2
   exit 1
 fi
-printf '%s\\n' rearm > "$EXPECTED"
+printf '%s\\n' sync rearm sync > "$EXPECTED"
 cmp "$EXPECTED" "$EVENTS"
 test "$(jq -r .phase "$RECEIPT")" = activated
 unset REARM_FAIL
+
+seed activated
+: > "$EVENTS"
+REARM_FAIL=1
+ROLLBACK_COMPLETE_ON_SYNC=2
+export REARM_FAIL ROLLBACK_COMPLETE_ON_SYNC
+if reboot_host test-host; then
+  echo "reboot continued after rollback completed during rearm" >&2
+  exit 1
+fi
+printf '%s\\n' sync rearm sync > "$EXPECTED"
+cmp "$EXPECTED" "$EVENTS"
+test "$(jq -r .phase "$RECEIPT")" = rolled-back
+unset REARM_FAIL ROLLBACK_COMPLETE_ON_SYNC
+
+seed rebooting boot-1
+: > "$EVENTS"
+ROLLBACK_COMPLETE_ON_SYNC=1
+export ROLLBACK_COMPLETE_ON_SYNC
+if reboot_host test-host; then
+  echo "reboot continued after rollback completed before rearm" >&2
+  exit 1
+fi
+printf '%s\\n' sync > "$EXPECTED"
+cmp "$EXPECTED" "$EVENTS"
+test "$(jq -r .phase "$RECEIPT")" = rolled-back
+unset ROLLBACK_COMPLETE_ON_SYNC
 
 seed activated
 guard_count=0
@@ -391,7 +427,7 @@ if reboot_host test-host; then
   echo "reboot continued after the command-entry state guard failed" >&2
   exit 1
 fi
-printf '%s\\n' rearm sync guard > "$EXPECTED"
+printf '%s\\n' sync rearm sync guard > "$EXPECTED"
 cmp "$EXPECTED" "$EVENTS"
 test "$(jq -r .phase "$RECEIPT")" = activated
 unset FAIL_GUARD
@@ -411,7 +447,7 @@ unset REBOOT_RC
 guard_count=0
 : > "$EVENTS"
 reboot_host test-host
-printf '%s\\n' rearm sync guard boot-id reboot > "$EXPECTED"
+printf '%s\\n' sync rearm sync guard boot-id reboot > "$EXPECTED"
 cmp "$EXPECTED" "$EVENTS"
 
 seed rebooting boot-1
@@ -423,7 +459,7 @@ if reboot_host test-host; then
   echo "already rebooted host was rebooted again" >&2
   exit 1
 fi
-printf '%s\\n' rearm sync guard boot-id > "$EXPECTED"
+printf '%s\\n' sync rearm sync guard boot-id > "$EXPECTED"
 cmp "$EXPECTED" "$EVENTS"
 unset CURRENT_BOOT_ID
 
@@ -436,7 +472,7 @@ if reboot_host test-host; then
   echo "empty boot ID was accepted for reboot retry" >&2
   exit 1
 fi
-printf '%s\\n' rearm sync guard boot-id > "$EXPECTED"
+printf '%s\\n' sync rearm sync guard boot-id > "$EXPECTED"
 cmp "$EXPECTED" "$EVENTS"
 unset CURRENT_BOOT_ID
 
@@ -446,7 +482,7 @@ guard_count=0
 REBOOT_RC=255
 export REBOOT_RC
 reboot_host test-host
-printf '%s\\n' rearm sync guard boot-id receipt:rebooting reboot > "$EXPECTED"
+printf '%s\\n' sync rearm sync guard boot-id receipt:rebooting reboot > "$EXPECTED"
 cmp "$EXPECTED" "$EVENTS"
 unset REBOOT_RC
 """
@@ -498,13 +534,24 @@ def check_reboot_verify_phase_gate() -> None:
         handoff.write_text(
             "#!/bin/sh\n"
             'printf "%s\\n" "$1" >> "$EVENTS"\n'
+            'test "$1" != rearm || test "${REARM_FAIL:-0}" != 1\n'
         )
         handoff.chmod(0o755)
         script = f"""
 set -euo pipefail
 root=$ROOT
 receipt() {{ printf '%s\\n' "$RECEIPT"; }}
+sync_count=0
+sync_completed_rollback() {{
+  sync_count=$((sync_count + 1))
+  printf 'sync\\n' >> "$EVENTS"
+  if [ "${{ROLLBACK_COMPLETE_ON_SYNC:-0}}" = "$sync_count" ]; then
+    jq '.phase = "rolled-back"' "$RECEIPT" > "$RECEIPT.new"
+    mv "$RECEIPT.new" "$RECEIPT"
+  fi
+}}
 require_receipt_phase() {{
+  sync_completed_rollback "$1"
   printf 'guard\\n' >> "$EVENTS"
   test "$(jq -r .phase "$RECEIPT")" = "$2"
 }}
@@ -523,7 +570,9 @@ set -- reboot-verify test-host
             "EVENTS": str(events),
         }
 
-        def run_case(phase: str) -> subprocess.CompletedProcess[str]:
+        def run_case(
+            phase: str, **overrides: str
+        ) -> subprocess.CompletedProcess[str]:
             events.unlink(missing_ok=True)
             receipt_file.write_text(
                 json.dumps(
@@ -542,28 +591,64 @@ set -- reboot-verify test-host
                 input=script,
                 text=True,
                 capture_output=True,
-                env=environment,
+                env={**environment, **overrides},
             )
 
         result = run_case("rebooting")
         if (
             result.returncode
             or events.read_text()
-            != "rearm\nguard\nboot\nverify\ndisarm\nreceipt:reboot-verified\n"
+            != "sync\nrearm\nsync\nguard\nboot\nverify\ndisarm\nreceipt:reboot-verified\n"
         ):
             raise SystemExit(
                 "nix/scripts/homelab-host: reboot-verify armed ordering is unsafe\n"
                 f"{result.stderr.strip()}"
             )
 
+        result = run_case("rebooting", REARM_FAIL="1")
+        if (
+            result.returncode == 0
+            or events.read_text() != "sync\nrearm\nsync\n"
+            or json.loads(receipt_file.read_text())["phase"] != "rebooting"
+        ):
+            raise SystemExit(
+                "nix/scripts/homelab-host: reboot-verify mutated an ordinary rearm failure"
+            )
+
         result = run_case("reboot-verified")
         if (
             result.returncode == 0
-            or events.exists()
+            or not events.exists()
+            or events.read_text() != "sync\n"
             or "expected rebooting" not in result.stderr
         ):
             raise SystemExit(
                 "nix/scripts/homelab-host: reboot-verify rearmed an invalid local phase"
+            )
+
+        result = run_case("rebooting", ROLLBACK_COMPLETE_ON_SYNC="1")
+        if (
+            result.returncode == 0
+            or events.read_text() != "sync\n"
+            or json.loads(receipt_file.read_text())["phase"] != "rolled-back"
+            or "expected rebooting" not in result.stderr
+        ):
+            raise SystemExit(
+                "nix/scripts/homelab-host: reboot-verify ignored a completed rollback"
+            )
+
+        result = run_case(
+            "rebooting",
+            REARM_FAIL="1",
+            ROLLBACK_COMPLETE_ON_SYNC="2",
+        )
+        if (
+            result.returncode == 0
+            or events.read_text() != "sync\nrearm\nsync\n"
+            or json.loads(receipt_file.read_text())["phase"] != "rolled-back"
+        ):
+            raise SystemExit(
+                "nix/scripts/homelab-host: reboot-verify left a rearm race unsynchronized"
             )
 
 
@@ -1941,9 +2026,11 @@ for description, pattern in (
         r"require_receipt_phase\(\).*?sync_completed_rollback.*?actual=.*?active secret generation changed",
     ),
     (
-        "guarded reboot must rearm before phase checks, capture boot ID, and record rebooting before reboot",
-        r"reboot_host\(\).*?activated\|rebooting\)"
+        "guarded reboot must synchronize rollback, rearm with failure synchronization, capture boot ID, and record rebooting before reboot",
+        r"reboot_host\(\).*?sync_completed_rollback"
+        r".*?activated\|rebooting\)"
         r".*?k3s-handoff.*?rearm"
+        r".*?sync_completed_rollback.*?return 1"
         r".*?require_receipt_phase.*?\$phase"
         r".*?activated\)"
         r".*?boot_id=.*?kernel/random/boot_id"
@@ -1951,8 +2038,9 @@ for description, pattern in (
         r".*?systemctl --no-block reboot",
     ),
     (
-        "reboot retry must rearm before rejecting an already rebooted host",
-        r"reboot_host\(\).*?activated\|rebooting\)"
+        "reboot retry must synchronize rollback and rearm before rejecting an already rebooted host",
+        r"reboot_host\(\).*?sync_completed_rollback"
+        r".*?activated\|rebooting\)"
         r".*?k3s-handoff.*?rearm"
         r".*?require_receipt_phase.*?\$phase"
         r".*?rebooting\)"
@@ -1965,9 +2053,11 @@ for description, pattern in (
         r".*?activate_registered_system",
     ),
     (
-        "reboot verification must gate locally, then rearm before remote checks",
-        r"  reboot-verify\).*?receipt_file=.*?phase=.*?test.*?\$phase.*?rebooting"
+        "reboot verification must synchronize rollback, gate locally, and rearm with failure synchronization before remote checks",
+        r"  reboot-verify\).*?sync_completed_rollback"
+        r".*?receipt_file=.*?phase=.*?test.*?\$phase.*?rebooting"
         r".*?k3s-handoff.*?rearm"
+        r".*?sync_completed_rollback.*?exit 1"
         r".*?require_receipt_phase.*?rebooting"
         r".*?assert_host_rebooted"
         r".*?timeout --foreground --kill-after=30s 12m.*?verify-host-while-armed"
