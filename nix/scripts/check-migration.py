@@ -1900,7 +1900,24 @@ def check_rollback_restored_services() -> None:
 
 def check_legacy_cleanup_path_verification() -> None:
     migration = source("nix/scripts/homelab-host")
-    match = re.search(
+    cleanup_source = migration.split("cleanup_legacy_files()", 1)[1].split(
+        "verify_legacy_cleanup()", 1
+    )[0]
+    cleanup_match = re.search(
+        r'(    for unit in k3s\.service k3s-agent\.service zram-swap\.service '
+        r'ksm\.service thp-madvise\.service; do\n'
+        r'.*?'
+        r'    done\n'
+        r'    systemctl daemon-reload)',
+        cleanup_source,
+        re.DOTALL,
+    )
+    if cleanup_match is None:
+        raise SystemExit("nix/scripts/homelab-host: legacy cleanup block missing")
+    cleanup_block = cleanup_match.group(1).replace(
+        "/etc/systemd/system", "${TEST_SYSTEMD}"
+    )
+    verify_match = re.search(
         r'(    assert_path_absent\(\) \{\n'
         r'      test ! -e "\$1"\n'
         r'      test ! -L "\$1"\n'
@@ -1908,13 +1925,15 @@ def check_legacy_cleanup_path_verification() -> None:
         r'    for unit in k3s\.service k3s-agent\.service zram-swap\.service '
         r'ksm\.service thp-madvise\.service; do\n'
         r'.*?'
-        r'    done)',
+        r'^    done)',
         migration,
-        re.DOTALL,
+        re.DOTALL | re.MULTILINE,
     )
-    if match is None:
+    if verify_match is None:
         raise SystemExit("nix/scripts/homelab-host: legacy path verification block missing")
-    block = match.group(1).replace("/etc/systemd/system", "${TEST_SYSTEMD}")
+    verify_block = verify_match.group(1).replace(
+        "/etc/systemd/system", "${TEST_SYSTEMD}"
+    )
     with tempfile.TemporaryDirectory() as directory:
         directory_path = Path(directory)
         mock_bin = directory_path / "bin"
@@ -1923,7 +1942,11 @@ def check_legacy_cleanup_path_verification() -> None:
         systemctl = mock_bin / "systemctl"
         systemctl.write_text(
             "#!/bin/sh\n"
-            'test "$1" = show || exit 2\n'
+            'case "$1" in\n'
+            "  disable) exit 1 ;;\n"
+            "  show|daemon-reload) exit 0 ;;\n"
+            "  *) exit 2 ;;\n"
+            "esac\n"
         )
         systemctl.chmod(0o755)
         environment = {
@@ -1931,16 +1954,53 @@ def check_legacy_cleanup_path_verification() -> None:
             "PATH": f"{mock_bin}:{os.environ['PATH']}",
             "TEST_SYSTEMD": str(systemd),
         }
-        script = f"set -eu\n{block}\n"
+        cleanup_script = f"set -eu\n{cleanup_block}\n"
+        verify_script = f"set -eu\n{verify_block}\n"
 
         def reset() -> None:
             shutil.rmtree(systemd, ignore_errors=True)
-            (systemd / "multi-user.target.wants").mkdir(parents=True)
+            systemd.mkdir()
+
+        reset()
+        direct = systemd / "k3s.service"
+        environment_file = systemd / "k3s.service.env"
+        drop_in = systemd / "k3s.service.d"
+        multi_user_wants = systemd / "multi-user.target.wants" / "k3s.service"
+        graphical_wants = systemd / "graphical.target.wants" / "k3s.service"
+        network_requires = systemd / "network-online.target.requires" / "k3s.service"
+        direct.symlink_to("missing-unit")
+        environment_file.write_text("fixture\n")
+        drop_in.mkdir()
+        (drop_in / "log.conf").write_text("fixture\n")
+        for link in (multi_user_wants, graphical_wants, network_requires):
+            link.parent.mkdir(parents=True)
+            link.symlink_to("../k3s.service")
+        result = subprocess.run(
+            ["sh"],
+            input=cleanup_script,
+            text=True,
+            capture_output=True,
+            env=environment,
+        )
+        if result.returncode != 0:
+            raise SystemExit("nix/scripts/homelab-host: legacy cleanup failed after disable error")
+        for path in (
+            direct,
+            environment_file,
+            drop_in,
+            multi_user_wants,
+            graphical_wants,
+            network_requires,
+        ):
+            if path.exists() or path.is_symlink():
+                raise SystemExit(
+                    f"nix/scripts/homelab-host: legacy cleanup retained path: {path.relative_to(systemd)}"
+                )
 
         reset()
         result = subprocess.run(
             ["sh"],
-            input=script,
+            input=verify_script,
             text=True,
             capture_output=True,
             env=environment,
@@ -1952,7 +2012,7 @@ def check_legacy_cleanup_path_verification() -> None:
         regular.write_text("fixture\n")
         result = subprocess.run(
             ["sh"],
-            input=script,
+            input=verify_script,
             text=True,
             capture_output=True,
             env=environment,
@@ -1965,6 +2025,8 @@ def check_legacy_cleanup_path_verification() -> None:
             "k3s.service.env",
             "k3s.service.d",
             "multi-user.target.wants/k3s.service",
+            "graphical.target.wants/k3s.service",
+            "network-online.target.requires/k3s.service",
         ):
             reset()
             path = systemd / relative
@@ -1972,7 +2034,7 @@ def check_legacy_cleanup_path_verification() -> None:
             path.symlink_to("missing-target")
             result = subprocess.run(
                 ["sh"],
-                input=script,
+                input=verify_script,
                 text=True,
                 capture_output=True,
                 env=environment,
@@ -2345,6 +2407,8 @@ if 'rm -f "/etc/systemd/system/$unit"' not in cleanup_block:
     raise SystemExit("nix/scripts/homelab-host: commit cleanup must remove direct legacy unit paths")
 if 'rm -rf "/etc/systemd/system/$unit.d"' not in cleanup_block:
     raise SystemExit("nix/scripts/homelab-host: commit cleanup must remove legacy systemd drop-ins")
+if 'rm -f -- "$link"' not in cleanup_block:
+    raise SystemExit("nix/scripts/homelab-host: commit cleanup must remove legacy enablement links")
 verify_cleanup_block = host_migration.split("verify_legacy_cleanup()", 1)[1].split(
     "rollback_state()", 1
 )[0]
@@ -2354,10 +2418,19 @@ for path in (
     "/etc/systemd/system/$unit",
     "/etc/systemd/system/$unit.env",
     "/etc/systemd/system/$unit.d",
-    "/etc/systemd/system/multi-user.target.wants/$unit",
 ):
     if f'assert_path_absent "{path}"' not in verify_cleanup_block:
         raise SystemExit(f"nix/scripts/homelab-host: legacy path removal is not verified: {path}")
+for pattern in (
+    '/etc/systemd/system/*.wants/"$unit"',
+    '/etc/systemd/system/*.requires/"$unit"',
+):
+    if pattern not in cleanup_block:
+        raise SystemExit(f"nix/scripts/homelab-host: legacy enablement cleanup is missing: {pattern}")
+    if pattern not in verify_cleanup_block:
+        raise SystemExit(f"nix/scripts/homelab-host: legacy enablement verification is missing: {pattern}")
+if 'assert_path_absent "$link"' not in verify_cleanup_block:
+    raise SystemExit("nix/scripts/homelab-host: legacy enablement link removal is not verified")
 if 'test -x /usr/local/bin/k3s' not in host_migration:
     raise SystemExit("nix/scripts/homelab-host: K3s install layout retention is not verified")
 require(

@@ -288,7 +288,14 @@ cleanup_legacy_files() {
       fragment=$(systemctl show -p FragmentPath --value "$unit" 2>/dev/null || true)
       case "$fragment" in /etc/systemd/system/*) rm -f "$fragment" ;; esac
       rm -f "/etc/systemd/system/$unit"
-      rm -f "/etc/systemd/system/multi-user.target.wants/$unit"
+      for link in \
+        /etc/systemd/system/*.wants/"$unit" \
+        /etc/systemd/system/*.requires/"$unit"
+      do
+        if test -e "$link" || test -L "$link"; then
+          rm -f -- "$link"
+        fi
+      done
       rm -f "/etc/systemd/system/$unit.env"
       rm -rf "/etc/systemd/system/$unit.d"
     done
@@ -308,7 +315,12 @@ verify_legacy_cleanup() {
       assert_path_absent "/etc/systemd/system/$unit"
       assert_path_absent "/etc/systemd/system/$unit.env"
       assert_path_absent "/etc/systemd/system/$unit.d"
-      assert_path_absent "/etc/systemd/system/multi-user.target.wants/$unit"
+      for link in \
+        /etc/systemd/system/*.wants/"$unit" \
+        /etc/systemd/system/*.requires/"$unit"
+      do
+        assert_path_absent "$link"
+      done
     done
   '\'''
 }
