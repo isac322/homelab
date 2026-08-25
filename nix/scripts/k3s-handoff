@@ -343,7 +343,9 @@ fi
 for unit in zram-swap.service ksm.service thp-madvise.service iscsid.service open-iscsi.service; do
   if systemctl is-enabled "$unit" >/dev/null 2>&1; then systemctl start "$unit"; fi
 done
-systemctl is-active systemd-networkd.service systemd-resolved.service systemd-timesyncd.service "$ssh_service"
+for unit in systemd-networkd.service systemd-resolved.service systemd-timesyncd.service "$ssh_service"; do
+  systemctl is-active "$unit"
+done
 if test "$package_restore_blocked" = true; then
   echo "legacy services restored, but distro package restore requires synchronized time; rollback remains armed" >&2
   exit 1

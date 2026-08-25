@@ -943,7 +943,11 @@ if test "$ZRAM" = true; then
   swapon --show=NAME --noheadings | grep -qx /dev/zram0
 fi
 if test "$ISCSI_CLIENT" = true; then
-  systemctl is-active iscsid.service open-iscsi.service
+  systemctl is-active iscsid.service
+  systemctl is-enabled open-iscsi.service
+  if find /etc/iscsi/nodes -mindepth 1 -print -quit 2>/dev/null | grep -q .; then
+    systemctl is-active open-iscsi.service
+  fi
 fi
 if test "$ISCSI_SERVER" = true; then
   test "$(id -u democratic-csi)" -eq 1001

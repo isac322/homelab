@@ -1787,6 +1787,116 @@ def check_provision_active_service_guard() -> None:
                 "nix/scripts/provision-host: middle active K3s service was not rejected"
             )
 
+def check_iscsi_service_verification() -> None:
+    migration = source("nix/scripts/homelab-host")
+    match = re.search(
+        r'(if test "\$ISCSI_CLIENT" = true; then\n.*?^fi)',
+        migration,
+        re.DOTALL | re.MULTILINE,
+    )
+    if match is None:
+        raise SystemExit("nix/scripts/homelab-host: iSCSI service verification missing")
+    block = match.group(1).replace("/etc/iscsi/nodes", '"$TEST_NODES"')
+    with tempfile.TemporaryDirectory() as directory:
+        directory_path = Path(directory)
+        mock_bin = directory_path / "bin"
+        nodes = directory_path / "nodes"
+        events = directory_path / "events"
+        mock_bin.mkdir()
+        nodes.mkdir()
+        systemctl = mock_bin / "systemctl"
+        systemctl.write_text(
+            "#!/bin/sh\n"
+            'printf "%s\\n" "$*" >> "$EVENTS"\n'
+            'case "$1:$2" in\n'
+            '  is-active:iscsid.service) test "$ISCSID_ACTIVE" = yes ;;\n'
+            '  is-enabled:open-iscsi.service) test "$OPEN_ISCSI_ENABLED" = yes ;;\n'
+            '  is-active:open-iscsi.service) test "$OPEN_ISCSI_ACTIVE" = yes ;;\n'
+            "  *) exit 2 ;;\n"
+            "esac\n"
+        )
+        systemctl.chmod(0o755)
+        environment = {
+            **os.environ,
+            "PATH": f"{mock_bin}:{os.environ['PATH']}",
+            "TEST_NODES": str(nodes),
+            "EVENTS": str(events),
+        }
+
+        def run(*, has_nodes: bool, iscsid: str, enabled: str, active: str) -> subprocess.CompletedProcess[str]:
+            shutil.rmtree(nodes)
+            nodes.mkdir()
+            if has_nodes:
+                (nodes / "target").write_text("fixture\n")
+            events.unlink(missing_ok=True)
+            return subprocess.run(
+                ["sh"],
+                input=f"set -eu\nISCSI_CLIENT=true\n{block}\n",
+                text=True,
+                capture_output=True,
+                env={
+                    **environment,
+                    "ISCSID_ACTIVE": iscsid,
+                    "OPEN_ISCSI_ENABLED": enabled,
+                    "OPEN_ISCSI_ACTIVE": active,
+                },
+            )
+
+        result = run(has_nodes=False, iscsid="yes", enabled="yes", active="no")
+        if result.returncode != 0:
+            raise SystemExit("nix/scripts/homelab-host: target-free iSCSI client was rejected")
+        if "is-active open-iscsi.service" in events.read_text():
+            raise SystemExit("nix/scripts/homelab-host: target-free open-iscsi was required active")
+        if run(has_nodes=True, iscsid="yes", enabled="yes", active="no").returncode == 0:
+            raise SystemExit("nix/scripts/homelab-host: configured open-iscsi target may be inactive")
+        if run(has_nodes=True, iscsid="yes", enabled="yes", active="yes").returncode != 0:
+            raise SystemExit("nix/scripts/homelab-host: active configured iSCSI client was rejected")
+        if run(has_nodes=False, iscsid="no", enabled="yes", active="no").returncode == 0:
+            raise SystemExit("nix/scripts/homelab-host: inactive iscsid was accepted")
+        if run(has_nodes=False, iscsid="yes", enabled="no", active="no").returncode == 0:
+            raise SystemExit("nix/scripts/homelab-host: disabled open-iscsi was accepted")
+
+
+def check_rollback_restored_services() -> None:
+    handoff = source("nix/scripts/k3s-handoff")
+    match = re.search(
+        r'(for unit in systemd-networkd\.service systemd-resolved\.service '
+        r'systemd-timesyncd\.service "\$ssh_service"; do\n'
+        r'  systemctl is-active "\$unit"\n'
+        r'done)',
+        handoff,
+    )
+    if match is None:
+        raise SystemExit("nix/scripts/k3s-handoff: restored service verification loop missing")
+    with tempfile.TemporaryDirectory() as directory:
+        systemctl = Path(directory) / "systemctl"
+        systemctl.write_text(
+            "#!/bin/sh\n"
+            'test "$1" = is-active || exit 2\n'
+            'test "$2" != "${INACTIVE_UNIT:-}"\n'
+        )
+        systemctl.chmod(0o755)
+        environment = {**os.environ, "PATH": f"{directory}:{os.environ['PATH']}"}
+        script = f'set -eu\nssh_service=ssh.service\n{match.group(1)}\n'
+        result = subprocess.run(
+            ["sh"],
+            input=script,
+            text=True,
+            capture_output=True,
+            env=environment,
+        )
+        if result.returncode != 0:
+            raise SystemExit("nix/scripts/k3s-handoff: healthy restored services were rejected")
+        result = subprocess.run(
+            ["sh"],
+            input=script,
+            text=True,
+            capture_output=True,
+            env={**environment, "INACTIVE_UNIT": "systemd-resolved.service"},
+        )
+        if result.returncode == 0:
+            raise SystemExit("nix/scripts/k3s-handoff: inactive restored service was accepted")
+
 require(
     "nix/modules/linux/base.nix",
     "10-homelab-lan.network",
@@ -1994,6 +2104,21 @@ forbid(
     "update-alternatives",
     "iptables-legacy",
     "ip6tables-legacy",
+)
+require(
+    "nix/scripts/homelab-host",
+    "systemctl is-active iscsid.service",
+    "systemctl is-enabled open-iscsi.service",
+    "find /etc/iscsi/nodes -mindepth 1 -print -quit",
+    "systemctl is-active open-iscsi.service",
+)
+forbid(
+    "nix/scripts/homelab-host",
+    "systemctl is-active iscsid.service open-iscsi.service",
+)
+forbid(
+    "nix/scripts/k3s-handoff",
+    'systemctl is-active systemd-networkd.service systemd-resolved.service systemd-timesyncd.service "$ssh_service"',
 )
 host_migration = source("nix/scripts/homelab-host")
 for description, pattern in (
@@ -2245,13 +2370,14 @@ if not re.search(
         "nix/scripts/k3s-handoff: rearm must reject rollback before and after timer restart"
     )
 if not re.search(
-    r"systemctl is-active systemd-networkd\.service systemd-resolved\.service "
-    r"systemd-timesyncd\.service \"\$ssh_service\""
+    r'for unit in systemd-networkd\.service systemd-resolved\.service '
+    r'systemd-timesyncd\.service "\$ssh_service"; do'
+    r'.*?systemctl is-active "\$unit"'
     r".*?systemctl disable homelab-host-rollback\.timer",
     handoff,
     re.DOTALL,
 ):
-    raise SystemExit("nix/scripts/k3s-handoff: rollback timer must remain armed until restore verification")
+    raise SystemExit("nix/scripts/k3s-handoff: rollback timer must remain armed until every restored service is active")
 if not re.search(
     r"systemctl restart systemd-timesyncd\.service.*?NTPSynchronized"
     r".*?if test -s \"\$dir/distro-packages\.txt\"",
@@ -2379,5 +2505,7 @@ check_time_sync_waits()
 check_firewall_restore_waits()
 check_cilium_restart_waits()
 check_provision_active_service_guard()
+check_iscsi_service_verification()
+check_rollback_restored_services()
 check_shell_syntax()
 print("migration-contracts: ok")
