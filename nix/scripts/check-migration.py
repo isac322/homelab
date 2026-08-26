@@ -2451,6 +2451,8 @@ require(
     'sudo -n grep -Fx "$ADMIN_USER ALL=(ALL) NOPASSWD: ALL" /etc/sudoers.d/homelab-admin',
     "cleanup_legacy_files",
     "! systemctl cat",
+    "prepare_native_runtime_handoff",
+    "swapoff /dev/zram0",
     "reconcile_distro_packages",
     "--version 1.20.0",
     "etc-state.tar",
@@ -2556,6 +2558,14 @@ for description, pattern in (
     (
         "reconcile must snapshot package state before reconciliation",
         r"  reconcile\).*?capture_managed_recovery.*?snapshot-packages.*?reconcile_distro_packages",
+    ),
+    (
+        "reconcile must quiesce legacy tuning after arming and before activation",
+        r"  reconcile\).*?k3s-handoff.*?arm.*?prepare_native_runtime_handoff.*?activate_registered_system",
+    ),
+    (
+        "activate must quiesce legacy tuning after arming and before activation",
+        r"  activate\).*?k3s-handoff.*?arm.*?prepare_native_runtime_handoff.*?activate_registered_system",
     ),
     (
         "activate must assert nft before arming the legacy handoff",

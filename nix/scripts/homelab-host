@@ -163,6 +163,33 @@ case "$BACKEND" in
 esac
 REMOTE_PACKAGE_RECONCILE
 }
+prepare_native_runtime_handoff() {
+  local host=$1
+  remote "$host" 'sudo -n sh -s' <<'REMOTE_NATIVE_HANDOFF'
+set -eu
+legacy_zram=false
+for unit in zram-swap.service ksm.service thp-madvise.service; do
+  fragment=$(systemctl show -p FragmentPath --value "$unit" 2>/dev/null || true)
+  case "$fragment" in
+    /etc/systemd/system/*)
+      systemctl disable --now "$unit"
+      if test "$unit" = zram-swap.service; then legacy_zram=true; fi
+      ;;
+  esac
+done
+if test "$legacy_zram" = true; then
+  systemctl stop dev-zram0.swap systemd-zram-setup@zram0.service >/dev/null 2>&1 || true
+  if swapon --show=NAME --noheadings | grep -qx /dev/zram0; then swapoff /dev/zram0; fi
+  if test -e /sys/block/zram0/disksize && test "$(cat /sys/block/zram0/disksize)" != 0; then
+    echo 1 > /sys/block/zram0/reset
+  fi
+  systemctl reset-failed dev-zram0.swap systemd-zram-setup@zram0.service >/dev/null 2>&1 || true
+  ! swapon --show=NAME --noheadings | grep -qx /dev/zram0
+  test ! -e /sys/block/zram0/disksize || test "$(cat /sys/block/zram0/disksize)" = 0
+fi
+REMOTE_NATIVE_HANDOFF
+}
+
 apply_native_runtime() {
   local host=$1 default_interface lan_address zram interfaces backend firewall_service ssh_service role command
   assert_iptables_nft_backend "$host"
@@ -668,7 +695,8 @@ case "${1:-}" in
     test -n "$secret_generation" && test "$secret_generation" != "$stage_result"
     capture_runtime_firewall "$host" "$recovery"
     "$root/nix/scripts/k3s-handoff" arm "$host" "$recovery" "$previous" ""
-    if ! activate_registered_system "$host" \
+    if ! prepare_native_runtime_handoff "$host" \
+      || ! activate_registered_system "$host" \
       || ! apply_native_runtime "$host" \
       || ! "$0" verify-host-while-armed "$host"; then
       if rollback_armed_host "$host"; then
@@ -726,7 +754,8 @@ REMOTE_K3S_COLD_BACKUP
       fi
       chmod 0600 "$recovery/k3s-cold-state.tar"
     fi
-    if ! activate_registered_system "$host" \
+    if ! prepare_native_runtime_handoff "$host" \
+      || ! activate_registered_system "$host" \
       || ! apply_native_runtime "$host" \
       || ! "$0" verify-host-while-armed "$host"; then
       if rollback_armed_host "$host"; then
