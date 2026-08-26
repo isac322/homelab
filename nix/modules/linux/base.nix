@@ -17,7 +17,6 @@ let
   usbDisableAutosuspend = cfg.usbDisableAutosuspend;
   disabledServices = cfg.disabledServices;
   minFreeKb = toString (hostConfig.memoryMiB * 16);
-  zramSizeMiB = toString (builtins.div hostConfig.memoryMiB 2);
   staticLan =
     hostConfig.lanAddress != null
     && hostConfig.gatewayAddress != null
@@ -148,7 +147,7 @@ in
       "systemd/zram-generator.conf" = lib.mkIf zramEnabled {
         text = ''
           [zram0]
-          zram-size = ${zramSizeMiB}M
+          zram-size = ram / 2
           compression-algorithm = zstd
           swap-priority = 100
         '';

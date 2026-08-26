@@ -2314,6 +2314,7 @@ require(
     "LLMNR=no",
     "lib.mkIf k8sMember",
     "systemd/zram-generator.conf",
+    "zram-size = ram / 2",
     "tmpfiles.d/60-homelab-runtime-tuning.conf",
     "tmpfiles.d/20-homelab-resolv.conf",
     'source = "${pkgs.tzdata}/share/zoneinfo/Asia/Seoul"',
@@ -2332,6 +2333,7 @@ require(
     'root.shell = "/bin/bash";',
     "DNS=1.1.1.1#cloudflare-dns.com",
 )
+forbid("nix/modules/linux/base.nix", "zramSizeMiB")
 forbid(
     "nix/modules/linux/base.nix",
     '"ssh/sshd_config.d/90-homelab-hardening.conf"',
