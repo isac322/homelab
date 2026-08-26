@@ -234,9 +234,9 @@ for unit in zram-swap.service ksm.service thp-madvise.service; do
   systemctl disable --now "$unit" >/dev/null 2>&1 || true
 done
 if test "$ZRAM" = true; then
-  systemctl stop dev-zram0.swap systemd-zram-setup@zram0.service >/dev/null 2>&1 || true
-  systemctl daemon-reload
   systemctl start dev-zram0.swap
+else
+  systemctl stop dev-zram0.swap systemd-zram-setup@zram0.service >/dev/null 2>&1 || true
 fi
 systemctl restart systemd-networkd.service
 networkctl reload

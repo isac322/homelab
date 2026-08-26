@@ -2643,6 +2643,13 @@ for description, pattern in (
         r".*?k3s-handoff.*?accept",
     ),
     (
+        "native runtime must preserve an already-active generated zram swap",
+        r"apply_native_runtime\(\).*?if test \"\$ZRAM\" = true; then"
+        r"\s+systemctl start dev-zram0\.swap"
+        r"\s+else"
+        r"\s+systemctl stop dev-zram0\.swap systemd-zram-setup@zram0\.service",
+    ),
+    (
         "activation must synchronize the system clock before restarting K3s",
         r"apply_native_runtime\(\).*?systemctl restart systemd-timesyncd\.service"
         r".*?NTPSynchronized.*?systemctl restart homelab-k3s\.service",
