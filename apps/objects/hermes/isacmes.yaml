@@ -7,10 +7,10 @@ metadata:
 spec:
   image:
     repository: nousresearch/hermes-agent
-    tag: v2026.8.16
+    tag: v2026.8.19
   initContainers:
     - name: install-hermes-lcm
-      image: nousresearch/hermes-agent:v2026.8.16
+      image: nousresearch/hermes-agent:v2026.8.19
       command:
         - /bin/sh
         - -ec
@@ -25,7 +25,7 @@ spec:
         - name: hermes-lcm
           mountPath: /lcm
     - name: install-default-skills
-      image: nousresearch/hermes-agent:v2026.8.16
+      image: nousresearch/hermes-agent:v2026.8.19
       command:
         - /bin/sh
         - -e
@@ -66,7 +66,7 @@ spec:
         - name: hermes-default-skills
           mountPath: /skills
     - name: patch-openai-native-web-search
-      image: nousresearch/hermes-agent:v2026.8.16
+      image: nousresearch/hermes-agent:v2026.8.19
       command:
         - /opt/hermes/.venv/bin/python
         - /patch/patch.py
@@ -534,6 +534,10 @@ spec:
           key: geminiApiKey
     - name: HERMES_OPENAI_NATIVE_WEB_SEARCH
       value: "true"
+    - name: HERMES_API_CALL_STALE_TIMEOUT
+      value: "600"
+    - name: HERMES_STREAM_STALE_TIMEOUT
+      value: "600"
     - name: CAMOFOX_URL
       value: http://127.0.0.1:9377
     - name: CAMOFOX_API_KEY
