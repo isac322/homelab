@@ -51,7 +51,7 @@ baseline() {
 }
 
 capture() {
-  local host=$1 recovery role snapshot
+  local host=$1 recovery role snapshot snapshot_command
   recovery="$state/recovery/$host-$(date -u +%Y%m%dT%H%M%SZ)"
   mkdir -m 0700 "$recovery"
   baseline "$host" > "$recovery/baseline-path"
@@ -81,16 +81,21 @@ capture() {
   role=$(host_field "$host" k3sRole 2>/dev/null || true)
   if [ "$role" = server ] && remote "$host" 'sudo -n test -d /var/lib/rancher/k3s/server/db'; then
     snapshot="pre-nix-$(date -u +%Y%m%dT%H%M%SZ)"
-    remote "$host" "sudo -n sh -ceu '
-      if test -x /usr/local/bin/k3s && test \"\$(systemctl is-active k3s.service 2>/dev/null || true)\" = active; then
-        exec /usr/local/bin/k3s etcd-snapshot save --name $snapshot
-      fi
-      test \"\$(systemctl is-active homelab-k3s.service 2>/dev/null || true)\" = active
-      pid=\$(systemctl show homelab-k3s.service -p MainPID --value)
-      test \"\$pid\" -gt 1
-      binary=\$(readlink \"/proc/\$pid/exe\")
-      exec \"\$binary\" etcd-snapshot save --name $snapshot
-    '" > "$recovery/etcd-snapshot.txt"
+    printf -v snapshot_command 'sudo -n env SNAPSHOT=%q sh -s' "$snapshot"
+    remote "$host" "$snapshot_command" > "$recovery/etcd-snapshot.txt" <<'REMOTE_SNAPSHOT'
+set -eu
+if test -x /usr/local/bin/k3s && test "$(systemctl is-active k3s.service 2>/dev/null || true)" = active; then
+  binary=/usr/local/bin/k3s
+else
+  test "$(systemctl is-active homelab-k3s.service 2>/dev/null || true)" = active
+  pid=$(systemctl show homelab-k3s.service -p MainPID --value)
+  test "$pid" -gt 1
+  binary=$(readlink "/proc/$pid/exe")
+fi
+"$binary" etcd-snapshot save --name "$SNAPSHOT" >&2
+"$binary" etcd-snapshot ls 2>/dev/null | grep -F -- "$SNAPSHOT-"
+REMOTE_SNAPSHOT
+    test -s "$recovery/etcd-snapshot.txt"
     chmod 0600 "$recovery/etcd-snapshot.txt"
   fi
   chmod 0600 "$recovery/etc-state.tar"
