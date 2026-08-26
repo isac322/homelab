@@ -257,10 +257,10 @@ while test "$(timedatectl show -p NTPSynchronized --value)" != yes; do
 done
 place_jump() {
   chain=$1 target=$2 position=$3 keep=$3
-  iptables -I "$chain" "$position" -j "$target"
+  iptables --wait -I "$chain" "$position" -j "$target"
   for index in $(iptables -S "$chain" | awk -v target="$target" 'NR > 1 && $(NF - 1) == "-j" && $NF == target { print NR - 1 }' | sort -rn); do
     if test "$index" -eq "$keep"; then continue; fi
-    iptables -D "$chain" "$index"
+    iptables --wait -D "$chain" "$index"
     if test "$index" -lt "$keep"; then keep=$((keep - 1)); fi
   done
 }

@@ -2458,11 +2458,11 @@ require(
     "Cilium and HOMELAB firewall ordering did not stabilize within 120 seconds",
     "host verification failed during $stage",
     "place_jump()",
-    'iptables -I "$chain" "$position" -j "$target"',
+    'iptables --wait -I "$chain" "$position" -j "$target"',
     "systemctl cat homelab-k3s.service",
     "/var/lib/homelab-secrets/active/k3s-token.cred",
     "PATH=/usr/local/sbin:/usr/local/bin:/usr/sbin:/usr/bin:/sbin:/bin HOST_NAME=",
-    'iptables -D "$chain" "$index"',
+    'iptables --wait -D "$chain" "$index"',
     "reconcile_distro_packages",
     "--version 1.20.0",
     "etc-state.tar",
@@ -2654,8 +2654,8 @@ for description, pattern in (
     ),
     (
         "firewall jump replacement must insert the new path before deleting duplicates",
-        r"place_jump\(\).*?iptables -I \"\$chain\" \"\$position\" -j \"\$target\""
-        r".*?for index in .*?iptables -D \"\$chain\" \"\$index\"",
+        r"place_jump\(\).*?iptables --wait -I \"\$chain\" \"\$position\" -j \"\$target\""
+        r".*?for index in .*?iptables --wait -D \"\$chain\" \"\$index\"",
     ),
     (
         "native runtime must preserve an already-active generated zram swap",
@@ -2778,6 +2778,9 @@ require(
     '"dev-zram0.swap"',
     "/usr/local/bin/k3s",
     'Type = "exec";',
+    "homelab-k3s-firewall-reconcile",
+    "Cilium and HOMELAB firewall ordering did not stabilize after K3s start",
+    '${firewallReconcile} &',
     'Restart = "always";',
 )
 forbid(
