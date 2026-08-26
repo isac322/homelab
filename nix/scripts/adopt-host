@@ -30,7 +30,8 @@ current_remote_generation() {
     test -n "$nix_env" || nix_env=/nix/var/nix/profiles/default/bin/nix-env
     test -x "$nix_env"
     test -e "$profile" || exit 0
-    "$nix_env" --profile "$profile" --list-generations | awk "/\(current\)/ {print}"
+    generations=$("$nix_env" --profile "$profile" --list-generations)
+    printf "%s\n" "$generations" | awk "/\(current\)/ {print}"
   '\'''
 }
 

@@ -2441,6 +2441,7 @@ require(
     "nix_env=$(command -v nix-env || true)",
     'test -n "$nix_env" || nix_env=/nix/var/nix/profiles/default/bin/nix-env',
     'test -x "$nix_env"',
+    'generations=$("$nix_env" --profile "$profile" --list-generations)',
     'generation=$(current_remote_generation "$host")',
 )
 require(
@@ -2493,10 +2494,9 @@ require(
     "remote_system_manager",
     "current_remote_generation",
     "/nix/var/nix/profiles/default/bin/nix-env",
-    "nix_env=$(command -v nix-env || true)",
-    'test -n "$nix_env" || nix_env=/nix/var/nix/profiles/default/bin/nix-env',
+    "nix_env=/nix/var/nix/profiles/default/bin/nix-env",
     'test -x "$nix_env"',
-    r"nix_env=\$(command -v nix-env || true)",
+    'generations=$("$nix_env" --profile "$profile" --list-generations)',
     "activate_registered_system",
     "storePath",
     "system-manager generation changed after prepare",
@@ -2510,6 +2510,15 @@ forbid("nix/scripts/homelab-host", "sudo -n nix-env")
 forbid("nix/scripts/adopt-host", "sudo -n nix-env")
 forbid("nix/scripts/homelab-host", "--list-generations 2>/dev/null")
 forbid("nix/scripts/adopt-host", "--list-generations 2>/dev/null")
+forbid("nix/scripts/homelab-host", "command -v nix-env")
+forbid(
+    "nix/scripts/homelab-host",
+    '"$nix_env" --profile "$profile" --list-generations |',
+)
+forbid(
+    "nix/scripts/adopt-host",
+    '"$nix_env" --profile "$profile" --list-generations |',
+)
 forbid(
     "nix/scripts/homelab-host",
     "trap 'rm -f",
@@ -2599,15 +2608,15 @@ for description, pattern in (
         r"prepare\|deploy\).*?previous=\$\(current_remote_generation \"\$host\"\)",
     ),
     (
-        "remote generation lookup must resolve and validate nix-env before listing generations",
-        r"current_remote_generation\(\).*?nix_env=\$\(command -v nix-env \|\| true\)"
-        r".*?test -n \"\$nix_env\" \|\| nix_env=/nix/var/nix/profiles/default/bin/nix-env"
-        r".*?test -x \"\$nix_env\".*?--list-generations",
+        "remote generation lookup must pin nix-env and preserve list-generations failures",
+        r"current_remote_generation\(\).*?nix_env=/nix/var/nix/profiles/default/bin/nix-env"
+        r".*?test -x \"\$nix_env\""
+        r".*?generations=\$\(\"\$nix_env\" --profile \"\$profile\" --list-generations\)"
+        r".*?printf.*?\$generations.*?awk",
     ),
     (
-        "manual rollback must resolve and validate nix-env before switching generations",
-        r"  rollback\).*?nix_env=\\\$\(command -v nix-env \|\| true\)"
-        r".*?nix_env=/nix/var/nix/profiles/default/bin/nix-env"
+        "manual rollback must pin and validate nix-env before switching generations",
+        r"  rollback\).*?nix_env=/nix/var/nix/profiles/default/bin/nix-env"
         r".*?test -x.*?\\\$nix_env.*?--switch-generation",
     ),
     (
@@ -2716,10 +2725,12 @@ for description, pattern in (
 adopt_host = source("nix/scripts/adopt-host")
 for description, pattern in (
     (
-        "baseline generation lookup must resolve and validate nix-env",
+        "baseline generation lookup must validate nix-env and preserve list failures",
         r"current_remote_generation\(\).*?nix_env=\$\(command -v nix-env \|\| true\)"
         r".*?test -n \"\$nix_env\" \|\| nix_env=/nix/var/nix/profiles/default/bin/nix-env"
-        r".*?test -x \"\$nix_env\".*?--list-generations",
+        r".*?test -x \"\$nix_env\""
+        r".*?generations=\$\(\"\$nix_env\" --profile \"\$profile\" --list-generations\)"
+        r".*?printf.*?\$generations.*?awk",
     ),
     (
         "baseline capture must fail before recording when generation lookup fails",

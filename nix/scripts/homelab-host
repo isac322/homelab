@@ -68,11 +68,11 @@ remote_system_manager() {
 current_remote_generation() {
   remote "$1" 'sudo -n sh -ceu '\''
     profile=/nix/var/nix/profiles/system-manager-profiles/system-manager
-    nix_env=$(command -v nix-env || true)
-    test -n "$nix_env" || nix_env=/nix/var/nix/profiles/default/bin/nix-env
+    nix_env=/nix/var/nix/profiles/default/bin/nix-env
     test -x "$nix_env"
     test -e "$profile" || exit 0
-    "$nix_env" --profile "$profile" --list-generations | awk "/\(current\)/ {print \$1}"
+    generations=$("$nix_env" --profile "$profile" --list-generations)
+    printf "%s\n" "$generations" | awk "/\(current\)/ {print \$1}"
   '\'''
 }
 register_system() {
@@ -1145,8 +1145,7 @@ REMOTE_VERIFY
     restore_previous_secrets "$host"
     remote "$host" "sudo -n sh -ceu '
       profile=/nix/var/nix/profiles/system-manager-profiles/system-manager
-      nix_env=\$(command -v nix-env || true)
-      test -n \"\$nix_env\" || nix_env=/nix/var/nix/profiles/default/bin/nix-env
+      nix_env=/nix/var/nix/profiles/default/bin/nix-env
       test -x \"\$nix_env\"
       \"\$nix_env\" --profile \"\$profile\" --switch-generation \"$generation\"
       test -x \"\$profile/bin/activate\"
