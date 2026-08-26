@@ -2461,6 +2461,7 @@ require(
     'iptables -I "$chain" "$position" -j "$target"',
     "systemctl cat homelab-k3s.service",
     "/var/lib/homelab-secrets/active/k3s-token.cred",
+    "PATH=/usr/local/sbin:/usr/local/bin:/usr/sbin:/usr/bin:/sbin:/bin HOST_NAME=",
     'iptables -D "$chain" "$index"',
     "reconcile_distro_packages",
     "--version 1.20.0",
