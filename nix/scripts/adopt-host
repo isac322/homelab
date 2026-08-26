@@ -44,7 +44,7 @@ baseline() {
     printf "forward-policy="; sudo -n iptables -S FORWARD | sed -n "1p"
     printf "k3s="; systemctl is-active k3s k3s-agent homelab-k3s 2>/dev/null || true
     printf "etcd="; sudo -n /usr/local/bin/k3s etcd-snapshot ls 2>/dev/null | sed -n "1p" || true
-    printf "system-manager-generation="; sudo -n nix-env --profile /nix/var/nix/profiles/system-manager-profiles/system-manager --list-generations 2>/dev/null | awk "END {print}" || true
+    printf "system-manager-generation="; sudo -n /nix/var/nix/profiles/default/bin/nix-env --profile /nix/var/nix/profiles/system-manager-profiles/system-manager --list-generations 2>/dev/null | awk "END {print}" || true
   ' > "$file"
   chmod 0600 "$file"
   printf '%s\n' "$file"

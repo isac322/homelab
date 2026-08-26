@@ -2485,6 +2485,8 @@ require(
     "lifecycle",
     "committed_flake",
     "remote_system_manager",
+    "current_remote_generation",
+    "/nix/var/nix/profiles/default/bin/nix-env",
     "activate_registered_system",
     "storePath",
     "system-manager generation changed after prepare",
@@ -2494,6 +2496,8 @@ require(
     "age ca-certificates curl git sudo xz-utils",
     "command -v git",
 )
+forbid("nix/scripts/homelab-host", "sudo -n nix-env")
+forbid("nix/scripts/adopt-host", "sudo -n nix-env")
 forbid(
     "nix/scripts/homelab-host",
     "trap 'rm -f",
@@ -2573,6 +2577,14 @@ for description, pattern in (
     (
         "reconcile must snapshot package state before reconciliation",
         r"  reconcile\).*?capture_managed_recovery.*?snapshot-packages.*?reconcile_distro_packages",
+    ),
+    (
+        "reconcile must read the current generation through the fixed Nix profile path",
+        r"  reconcile\).*?previous=\$\(current_remote_generation \"\$host\"\)",
+    ),
+    (
+        "prepare must read the current generation through the fixed Nix profile path",
+        r"prepare\|deploy\).*?previous=\$\(current_remote_generation \"\$host\"\)",
     ),
     (
         "reconcile must quiesce legacy tuning after arming and before activation",

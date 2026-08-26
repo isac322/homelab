@@ -65,6 +65,9 @@ remote_system_manager() {
   done
   remote "$host" "$command"
 }
+current_remote_generation() {
+  remote "$1" 'sudo -n /nix/var/nix/profiles/default/bin/nix-env --profile /nix/var/nix/profiles/system-manager-profiles/system-manager --list-generations 2>/dev/null | awk "/\(current\)/ {print \$1}"'
+}
 register_system() {
   local host=$1 attribute=$2 flake
   flake=$(committed_flake "$attribute")
@@ -745,7 +748,7 @@ case "${1:-}" in
     "$root/nix/scripts/k3s-handoff" snapshot-packages "$host" "$recovery"
     reconcile_distro_packages "$host" no
     assert_iptables_nft_backend "$host"
-    previous=$(remote "$host" 'sudo -n nix-env --profile /nix/var/nix/profiles/system-manager-profiles/system-manager --list-generations 2>/dev/null | awk "/\(current\)/ {print \$1}"')
+    previous=$(current_remote_generation "$host")
     test -n "$previous" || {
       echo "$host has no active system-manager generation; use the provisioning or adoption workflow" >&2
       exit 1
@@ -779,7 +782,7 @@ case "${1:-}" in
     "$root/nix/scripts/k3s-handoff" snapshot-packages "$host" "$recovery"
     reconcile_distro_packages "$host" no
     assert_iptables_nft_backend "$host"
-    previous=$(remote "$host" 'sudo -n nix-env --profile /nix/var/nix/profiles/system-manager-profiles/system-manager --list-generations 2>/dev/null | awk "/\(current\)/ {print \$1}"')
+    previous=$(current_remote_generation "$host")
     store_path=$(register_system "$host" "$host")
     stage_result=$("$root/nix/scripts/wireguard-secrets" stage-secrets "$host")
     secret_generation=${stage_result#* }
@@ -1134,7 +1137,7 @@ REMOTE_VERIFY
     host=${2:?host required}; generation=${3:?generation required}
     restore_previous_secrets "$host"
     remote "$host" "sudo -n sh -ceu '
-      nix-env --profile /nix/var/nix/profiles/system-manager-profiles/system-manager --switch-generation \"$generation\"
+      /nix/var/nix/profiles/default/bin/nix-env --profile /nix/var/nix/profiles/system-manager-profiles/system-manager --switch-generation \"$generation\"
       /nix/var/nix/profiles/system-manager-profiles/system-manager/bin/activate
     '"
     apply_native_runtime "$host"
