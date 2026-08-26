@@ -2465,6 +2465,9 @@ require(
     "system-manager generation changed after prepare",
     "systemd-timesyncd.service",
     "NTPSynchronized",
+    "age curl git sudo xz",
+    "age ca-certificates curl git sudo xz-utils",
+    "command -v git",
 )
 forbid(
     "nix/scripts/homelab-host",

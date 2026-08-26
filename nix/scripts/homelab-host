@@ -616,11 +616,11 @@ case "${1:-}" in
       . /etc/os-release
       case \"\$ID\" in
         arch)
-          \$SUDO pacman --noconfirm --needed -S age curl sudo xz
+          \$SUDO pacman --noconfirm --needed -S age curl git sudo xz
           ;;
         debian|ubuntu|raspbian)
           \$SUDO apt-get update
-          \$SUDO env DEBIAN_FRONTEND=noninteractive apt-get install -y --no-install-recommends age ca-certificates curl sudo xz-utils
+          \$SUDO env DEBIAN_FRONTEND=noninteractive apt-get install -y --no-install-recommends age ca-certificates curl git sudo xz-utils
           ;;
         *)
           echo \"unsupported bootstrap distribution: \$ID\" >&2
@@ -632,6 +632,7 @@ case "${1:-}" in
       fi
       test -x /nix/var/nix/profiles/default/bin/nix || command -v nix >/dev/null
       command -v age-keygen >/dev/null
+      command -v git >/dev/null
       sudo -n true
     '"
     ;;
