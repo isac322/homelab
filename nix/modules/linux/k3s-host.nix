@@ -171,7 +171,6 @@ in
             exit 1
           }
         done
-        ${firewallReconcile} &
         exec /usr/local/bin/k3s ${if server then "server" else "agent"} --config "$runtime_config"
       '';
       serviceConfig = {
@@ -180,6 +179,7 @@ in
           "-${pkgs.kmod}/bin/modprobe br_netfilter"
           "-${pkgs.kmod}/bin/modprobe overlay"
         ];
+        ExecStartPost = "-${firewallReconcile}";
         Restart = "always";
         RestartSec = "5s";
         KillMode = "process";

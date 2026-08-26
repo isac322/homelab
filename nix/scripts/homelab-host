@@ -1041,22 +1041,37 @@ if test "$ROLE" = server || test "$ROLE" = agent; then
   test "$(sysctl -n net.ipv4.ip_forward)" = 1
   stage=k3s-service
   test -x /usr/local/bin/k3s
-  systemctl is-active homelab-k3s.service
+  attempt=0
+  until systemctl is-active --quiet homelab-k3s.service; do
+    attempt=$((attempt + 1))
+    if test "$attempt" -ge 120; then
+      echo "K3s service did not become active within 240 seconds" >&2
+      exit 1
+    fi
+    sleep 2
+  done
   stage=k3s-credential-config
   sudo -n test -s /var/lib/homelab-secrets/active/k3s-token.cred
   systemctl cat homelab-k3s.service | grep -Fx 'LoadCredentialEncrypted=k3s-token:/var/lib/homelab-secrets/active/k3s-token.cred'
-  stage=k3s-input-firewall
-  sudo -n iptables -S INPUT | awk '
-    /-j CILIUM_INPUT$/ || /-j KUBE-FIREWALL$/ { native = NR }
-    /-j HOMELAB_INPUT$/ { homelab = NR; count++ }
-    END { exit !(native && homelab > native && count == 1) }
-  '
-  stage=k3s-forward-firewall
-  sudo -n iptables -S FORWARD | awk '
-    /-j CILIUM_FORWARD$/ { native = NR }
-    /-j HOMELAB_FORWARD$/ { homelab = NR; count++ }
-    END { exit !(native && homelab > native && count == 1) }
-  '
+  stage=k3s-firewall
+  attempt=0
+  until sudo -n iptables -S INPUT | awk '
+      /-j CILIUM_INPUT$/ || /-j KUBE-FIREWALL$/ { native = NR }
+      /-j HOMELAB_INPUT$/ { homelab = NR; count++ }
+      END { exit !(native && homelab > native && count == 1) }
+    ' \
+    && sudo -n iptables -S FORWARD | awk '
+      /-j CILIUM_FORWARD$/ { native = NR }
+      /-j HOMELAB_FORWARD$/ { homelab = NR; count++ }
+      END { exit !(native && homelab > native && count == 1) }
+    '; do
+    attempt=$((attempt + 1))
+    if test "$attempt" -ge 120; then
+      echo "Cilium and HOMELAB firewall ordering did not stabilize within 240 seconds" >&2
+      exit 1
+    fi
+    sleep 2
+  done
 else
   test "$(sudo -n iptables -S INPUT | sed -n "2p")" = "-A INPUT -j HOMELAB_INPUT"
   test "$(sudo -n iptables -S FORWARD | sed -n "2p")" = "-A FORWARD -j HOMELAB_FORWARD"

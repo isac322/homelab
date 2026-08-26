@@ -2780,9 +2780,10 @@ require(
     'Type = "exec";',
     "homelab-k3s-firewall-reconcile",
     "Cilium and HOMELAB firewall ordering did not stabilize after K3s start",
-    '${firewallReconcile} &',
+    'ExecStartPost = "-${firewallReconcile}";',
     'Restart = "always";',
 )
+forbid("nix/modules/linux/k3s-host.nix", '${firewallReconcile} &')
 forbid(
     "nix/modules/linux/k3s-host.nix",
     "k3sPackage",
