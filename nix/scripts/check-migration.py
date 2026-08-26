@@ -2436,6 +2436,12 @@ require(
     "pre-Nix state",
     "iptables-backend=",
     "ntp-synchronized=",
+    'printf "etcd=%s\\n" "$etcd"',
+    "current_remote_generation",
+    "nix_env=$(command -v nix-env || true)",
+    'test -n "$nix_env" || nix_env=/nix/var/nix/profiles/default/bin/nix-env',
+    'test -x "$nix_env"',
+    'generation=$(current_remote_generation "$host")',
 )
 require(
     "nix/scripts/homelab-host",
@@ -2487,6 +2493,10 @@ require(
     "remote_system_manager",
     "current_remote_generation",
     "/nix/var/nix/profiles/default/bin/nix-env",
+    "nix_env=$(command -v nix-env || true)",
+    'test -n "$nix_env" || nix_env=/nix/var/nix/profiles/default/bin/nix-env',
+    'test -x "$nix_env"',
+    r"nix_env=\$(command -v nix-env || true)",
     "activate_registered_system",
     "storePath",
     "system-manager generation changed after prepare",
@@ -2498,6 +2508,8 @@ require(
 )
 forbid("nix/scripts/homelab-host", "sudo -n nix-env")
 forbid("nix/scripts/adopt-host", "sudo -n nix-env")
+forbid("nix/scripts/homelab-host", "--list-generations 2>/dev/null")
+forbid("nix/scripts/adopt-host", "--list-generations 2>/dev/null")
 forbid(
     "nix/scripts/homelab-host",
     "trap 'rm -f",
@@ -2585,6 +2597,18 @@ for description, pattern in (
     (
         "prepare must read the current generation through the fixed Nix profile path",
         r"prepare\|deploy\).*?previous=\$\(current_remote_generation \"\$host\"\)",
+    ),
+    (
+        "remote generation lookup must resolve and validate nix-env before listing generations",
+        r"current_remote_generation\(\).*?nix_env=\$\(command -v nix-env \|\| true\)"
+        r".*?test -n \"\$nix_env\" \|\| nix_env=/nix/var/nix/profiles/default/bin/nix-env"
+        r".*?test -x \"\$nix_env\".*?--list-generations",
+    ),
+    (
+        "manual rollback must resolve and validate nix-env before switching generations",
+        r"  rollback\).*?nix_env=\\\$\(command -v nix-env \|\| true\)"
+        r".*?nix_env=/nix/var/nix/profiles/default/bin/nix-env"
+        r".*?test -x.*?\\\$nix_env.*?--switch-generation",
     ),
     (
         "reconcile must quiesce legacy tuning after arming and before activation",
@@ -2689,6 +2713,22 @@ for description, pattern in (
 ):
     if not re.search(pattern, host_migration, re.DOTALL):
         raise SystemExit(f"nix/scripts/homelab-host: {description}")
+adopt_host = source("nix/scripts/adopt-host")
+for description, pattern in (
+    (
+        "baseline generation lookup must resolve and validate nix-env",
+        r"current_remote_generation\(\).*?nix_env=\$\(command -v nix-env \|\| true\)"
+        r".*?test -n \"\$nix_env\" \|\| nix_env=/nix/var/nix/profiles/default/bin/nix-env"
+        r".*?test -x \"\$nix_env\".*?--list-generations",
+    ),
+    (
+        "baseline capture must fail before recording when generation lookup fails",
+        r"baseline\(\).*?generation=\$\(current_remote_generation \"\$host\"\)"
+        r".*?system-manager-generation=%s",
+    ),
+):
+    if not re.search(pattern, adopt_host, re.DOTALL):
+        raise SystemExit(f"nix/scripts/adopt-host: {description}")
 handoff = source("nix/scripts/k3s-handoff")
 for needle in (
     "state <host>",

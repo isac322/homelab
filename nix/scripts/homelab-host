@@ -66,7 +66,14 @@ remote_system_manager() {
   remote "$host" "$command"
 }
 current_remote_generation() {
-  remote "$1" 'sudo -n /nix/var/nix/profiles/default/bin/nix-env --profile /nix/var/nix/profiles/system-manager-profiles/system-manager --list-generations 2>/dev/null | awk "/\(current\)/ {print \$1}"'
+  remote "$1" 'sudo -n sh -ceu '\''
+    profile=/nix/var/nix/profiles/system-manager-profiles/system-manager
+    nix_env=$(command -v nix-env || true)
+    test -n "$nix_env" || nix_env=/nix/var/nix/profiles/default/bin/nix-env
+    test -x "$nix_env"
+    test -e "$profile" || exit 0
+    "$nix_env" --profile "$profile" --list-generations | awk "/\(current\)/ {print \$1}"
+  '\'''
 }
 register_system() {
   local host=$1 attribute=$2 flake
@@ -1137,8 +1144,13 @@ REMOTE_VERIFY
     host=${2:?host required}; generation=${3:?generation required}
     restore_previous_secrets "$host"
     remote "$host" "sudo -n sh -ceu '
-      /nix/var/nix/profiles/default/bin/nix-env --profile /nix/var/nix/profiles/system-manager-profiles/system-manager --switch-generation \"$generation\"
-      /nix/var/nix/profiles/system-manager-profiles/system-manager/bin/activate
+      profile=/nix/var/nix/profiles/system-manager-profiles/system-manager
+      nix_env=\$(command -v nix-env || true)
+      test -n \"\$nix_env\" || nix_env=/nix/var/nix/profiles/default/bin/nix-env
+      test -x \"\$nix_env\"
+      \"\$nix_env\" --profile \"\$profile\" --switch-generation \"$generation\"
+      test -x \"\$profile/bin/activate\"
+      \"\$profile/bin/activate\"
     '"
     apply_native_runtime "$host"
     "$0" verify-host "$host"

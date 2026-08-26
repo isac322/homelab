@@ -23,11 +23,22 @@ remote() {
   shift
   ssh -o BatchMode=yes -o StrictHostKeyChecking=accept-new "$(host_field "$host" sshTarget)" "$@"
 }
+current_remote_generation() {
+  remote "$1" 'sudo -n sh -ceu '\''
+    profile=/nix/var/nix/profiles/system-manager-profiles/system-manager
+    nix_env=$(command -v nix-env || true)
+    test -n "$nix_env" || nix_env=/nix/var/nix/profiles/default/bin/nix-env
+    test -x "$nix_env"
+    test -e "$profile" || exit 0
+    "$nix_env" --profile "$profile" --list-generations | awk "/\(current\)/ {print}"
+  '\'''
+}
 
 baseline() {
-  local host=$1 stamp file
+  local host=$1 stamp file generation
   stamp=$(date -u +%Y%m%dT%H%M%SZ)
   file="$state/baselines/$host-$stamp.txt"
+  generation=$(current_remote_generation "$host")
   remote "$host" '
     set -u
     printf "os="; . /etc/os-release; printf "%s:%s\n" "$ID" "${VERSION_ID:-}"
@@ -43,9 +54,10 @@ baseline() {
     printf "input-policy="; sudo -n iptables -S INPUT | sed -n "1p"
     printf "forward-policy="; sudo -n iptables -S FORWARD | sed -n "1p"
     printf "k3s="; systemctl is-active k3s k3s-agent homelab-k3s 2>/dev/null || true
-    printf "etcd="; sudo -n /usr/local/bin/k3s etcd-snapshot ls 2>/dev/null | sed -n "1p" || true
-    printf "system-manager-generation="; sudo -n /nix/var/nix/profiles/default/bin/nix-env --profile /nix/var/nix/profiles/system-manager-profiles/system-manager --list-generations 2>/dev/null | awk "END {print}" || true
+    etcd=$(sudo -n /usr/local/bin/k3s etcd-snapshot ls 2>/dev/null | sed -n "1p" || true)
+    printf "etcd=%s\n" "$etcd"
   ' > "$file"
+  printf 'system-manager-generation=%s\n' "$generation" >> "$file"
   chmod 0600 "$file"
   printf '%s\n' "$file"
 }
