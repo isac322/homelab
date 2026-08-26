@@ -8,6 +8,7 @@ usage() {
   cat <<'EOF'
 Usage: k3s-handoff <command> <host> [arguments]
   preflight <host> [legacy-unit]
+  snapshot-packages <host> <recovery-directory>
   arm <host> <recovery-directory> <previous-generation> [legacy-unit]
   rearm <host>
   disarm <host>
@@ -23,7 +24,50 @@ host_field() { nix --extra-experimental-features 'nix-command flakes' eval --raw
 nix_json() { nix --extra-experimental-features 'nix-command flakes' eval --json "$@"; }
 remote() { local host=$1; shift; ssh -o BatchMode=yes -o StrictHostKeyChecking=accept-new "$(host_field "$host" sshTarget)" "$@"; }
 
+snapshot_packages() {
+  local host=$1 recovery=$2 backend present absent command snapshot
+  test -d "$recovery"
+  backend=$(host_field "$host" packageBackend)
+  present=$(nix_json "$root#systemConfigs.$host.config.homelab.distroPackages.present" | jq -r 'join(" ")')
+  absent=$(nix_json "$root#systemConfigs.$host.config.homelab.distroPackages.absent" | jq -r 'join(" ")')
+  printf -v command 'sudo -n env BACKEND=%q PRESENT=%q ABSENT=%q sh -s' "$backend" "$present" "$absent"
+  snapshot=$(remote "$host" "$command" <<'REMOTE_PACKAGE_SNAPSHOT'
+set -eu
+installed() {
+  case "$BACKEND" in
+    pacman) /usr/bin/pacman -Q "$1" >/dev/null 2>&1 ;;
+    apt)
+      status=$(/usr/bin/dpkg-query -W -f='${Status}' "$1" 2>/dev/null || true)
+      test "$status" = "install ok installed"
+      ;;
+    *) exit 2 ;;
+  esac
+}
+for package in $ABSENT; do
+  case "$package" in ""|*[!A-Za-z0-9+._:-]*) exit 1 ;; esac
+  installed "$package" && printf 'install %s\n' "$package" || true
+done
+for package in $PRESENT; do
+  case "$package" in ""|*[!A-Za-z0-9+._:-]*) exit 1 ;; esac
+  installed "$package" || printf 'remove %s\n' "$package"
+done
+REMOTE_PACKAGE_SNAPSHOT
+)
+  trap 'rm -f "$recovery/distro-packages.txt.new" "$recovery/distro-packages-remove.txt.new"' EXIT HUP INT TERM
+  printf '%s\n' "$snapshot" | awk '$1 == "install" && NF == 2 { print $2 }' > "$recovery/distro-packages.txt.new"
+  printf '%s\n' "$snapshot" | awk '$1 == "remove" && NF == 2 { print $2 }' > "$recovery/distro-packages-remove.txt.new"
+  chmod 0600 "$recovery/distro-packages.txt.new" "$recovery/distro-packages-remove.txt.new"
+  mv -f "$recovery/distro-packages.txt.new" "$recovery/distro-packages.txt"
+  mv -f "$recovery/distro-packages-remove.txt.new" "$recovery/distro-packages-remove.txt"
+  trap - EXIT HUP INT TERM
+}
+
+
 case "${1:-}" in
+  snapshot-packages)
+    test "$#" -eq 3 || { usage >&2; exit 2; }
+    snapshot_packages "$2" "$3"
+    ;;
   preflight)
     host=${2:?host required}; legacy=${3:-}
     case "$legacy" in ""|k3s.service|k3s-agent.service) ;; *) echo "invalid legacy unit: $legacy" >&2; exit 2 ;; esac
@@ -56,26 +100,8 @@ REMOTE_PREFLIGHT
     default_interface=$(host_field "$host" defaultInterface)
     interfaces=$(nix_json "$root#topology.nodes.$host.wireguard" | jq -r 'join(" ")')
     role=$(host_field "$host" k3sRole 2>/dev/null || true)
-    absent_packages=$(nix_json "$root#systemConfigs.$host.config.homelab.distroPackages.absent" | jq -r 'join(" ")')
-    printf -v package_snapshot_command 'sudo -n env BACKEND=%q CANDIDATES=%q sh -s' "$backend" "$absent_packages"
-    remote "$host" "$package_snapshot_command" <<'REMOTE_PACKAGE_SNAPSHOT' > "$recovery/distro-packages.txt"
-set -eu
-case "$BACKEND" in
-  pacman)
-    for package in $CANDIDATES; do
-      /usr/bin/pacman -Q "$package" >/dev/null 2>&1 && printf '%s\n' "$package" || true
-    done
-    ;;
-  apt)
-    for package in $CANDIDATES; do
-      status=$(/usr/bin/dpkg-query -W -f='${Status}' "$package" 2>/dev/null || true)
-      test "$status" != "install ok installed" || printf '%s\n' "$package"
-    done
-    ;;
-  *) exit 2 ;;
-esac
-REMOTE_PACKAGE_SNAPSHOT
-    chmod 0600 "$recovery/distro-packages.txt"
+    test -e "$recovery/distro-packages.txt"
+    test -e "$recovery/distro-packages-remove.txt"
     if [ "$backend" = pacman ]; then
       firewall_service=iptables.service
       ssh_service=sshd.service
@@ -94,7 +120,8 @@ REMOTE_PACKAGE_SNAPSHOT
     '"
     if ! remote "$host" "sudo -n tee '$rollback_root/.staging/etc-state.tar' >/dev/null" < "$recovery/etc-state.tar" \
       || ! remote "$host" "sudo -n tee '$rollback_root/.staging/firewall-runtime.rules' >/dev/null" < "$recovery/firewall-runtime.rules" \
-      || ! remote "$host" "sudo -n tee '$rollback_root/.staging/distro-packages.txt' >/dev/null" < "$recovery/distro-packages.txt"; then
+      || ! remote "$host" "sudo -n tee '$rollback_root/.staging/distro-packages.txt' >/dev/null" < "$recovery/distro-packages.txt" \
+      || ! remote "$host" "sudo -n tee '$rollback_root/.staging/distro-packages-remove.txt' >/dev/null" < "$recovery/distro-packages-remove.txt"; then
       remote "$host" "sudo -n rm -rf '$rollback_root/.staging'" || true
       exit 1
     fi
@@ -121,8 +148,9 @@ fi
 test -s "$staging/etc-state.tar"
 test -s "$staging/firewall-runtime.rules"
 test -e "$staging/distro-packages.txt"
+test -e "$staging/distro-packages-remove.txt"
 mv "$staging" "$dir"
-chmod 0600 "$dir/etc-state.tar" "$dir/firewall-runtime.rules" "$dir/distro-packages.txt"
+chmod 0600 "$dir/etc-state.tar" "$dir/firewall-runtime.rules" "$dir/distro-packages.txt" "$dir/distro-packages-remove.txt"
 {
   printf '%s\n' "$PREVIOUS_GENERATION"
   printf '%s\n' "$LEGACY_UNIT"
@@ -302,17 +330,19 @@ if ! test -e "$stages/firewall-restored"; then
   touch "$stages/firewall-restored"
 fi
 package_restore_blocked=false
-if test -s "$dir/distro-packages.txt"; then
-  packages=$(tr '\n' ' ' < "$dir/distro-packages.txt")
-  for package in $packages; do
-    case "$package" in ""|*[!A-Za-z0-9+._:-]*) exit 1 ;; esac
-  done
+install_packages=$(tr '\n' ' ' < "$dir/distro-packages.txt")
+remove_packages=$(tr '\n' ' ' < "$dir/distro-packages-remove.txt")
+for package in $install_packages $remove_packages; do
+  case "$package" in ""|*[!A-Za-z0-9+._:-]*) exit 1 ;; esac
+done
+if test -n "$install_packages$remove_packages"; then
   if test "$time_synchronized" != true; then
     package_restore_blocked=true
   else
     case "$package_backend" in
       pacman)
-        /usr/bin/pacman --noconfirm --needed -S $packages
+        test -z "$remove_packages" || /usr/bin/pacman --noconfirm -R $remove_packages
+        test -z "$install_packages" || /usr/bin/pacman --noconfirm --needed -S $install_packages
         ;;
       apt)
         policy=/usr/sbin/policy-rc.d
@@ -332,15 +362,30 @@ if test -s "$dir/distro-packages.txt"; then
         chmod 0755 "$policy"
         trap restore_policy EXIT HUP INT TERM
         /usr/bin/apt-get update
-        /usr/bin/apt-get -o Dpkg::Options::=--force-confold install -y --no-install-recommends $packages
+        test -z "$remove_packages" || /usr/bin/apt-get purge -y $remove_packages
+        test -z "$install_packages" || /usr/bin/apt-get -o Dpkg::Options::=--force-confold install -y --no-install-recommends $install_packages
         restore_policy
         trap - EXIT HUP INT TERM
         ;;
       *) exit 1 ;;
     esac
+    systemctl daemon-reload
   fi
 fi
-for unit in zram-swap.service ksm.service thp-madvise.service iscsid.service open-iscsi.service; do
+if systemctl is-enabled zram-swap.service >/dev/null 2>&1; then
+  systemctl mask --runtime dev-zram0.swap systemd-zram-setup@zram0.service >/dev/null
+  systemctl stop dev-zram0.swap systemd-zram-setup@zram0.service >/dev/null 2>&1 || true
+  if swapon --show=NAME --noheadings | grep -qx /dev/zram0; then swapoff /dev/zram0; fi
+  if test -e /sys/block/zram0/disksize && test "$(cat /sys/block/zram0/disksize)" != 0; then
+    echo 1 > /sys/block/zram0/reset
+  fi
+  systemctl reset-failed zram-swap.service >/dev/null 2>&1 || true
+  systemctl start zram-swap.service
+  if test "$package_restore_blocked" != true; then
+    systemctl unmask --runtime dev-zram0.swap systemd-zram-setup@zram0.service >/dev/null
+  fi
+fi
+for unit in ksm.service thp-madvise.service iscsid.service open-iscsi.service; do
   if systemctl is-enabled "$unit" >/dev/null 2>&1; then systemctl start "$unit"; fi
 done
 for unit in systemd-networkd.service systemd-resolved.service systemd-timesyncd.service "$ssh_service"; do
@@ -444,6 +489,7 @@ REMOTE_ARM
       test -s $rollback_root/current/etc-state.tar
       test -s $rollback_root/current/firewall-runtime.rules
       test -e $rollback_root/current/distro-packages.txt
+      test -e $rollback_root/current/distro-packages-remove.txt
       assert_rearmable
       systemctl reset-failed $rollback_unit.service 2>/dev/null || true
       systemctl enable --now $rollback_unit.timer
@@ -497,6 +543,7 @@ REMOTE_ARM
       test -s $rollback_root/current/etc-state.tar
       test -s $rollback_root/current/firewall-runtime.rules
       test -e $rollback_root/current/distro-packages.txt
+      test -e $rollback_root/current/distro-packages-remove.txt
       if ! test -f $rollback_root/current/restored; then
         if ! systemctl cat $rollback_unit.service >/dev/null 2>&1; then
           printf \"%s\n\" \

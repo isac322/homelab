@@ -1158,7 +1158,12 @@ def check_rearm_guards() -> None:
             "esac\n"
         )
         systemctl.chmod(0o755)
-        for name in ("etc-state.tar", "firewall-runtime.rules", "distro-packages.txt"):
+        for name in (
+            "etc-state.tar",
+            "firewall-runtime.rules",
+            "distro-packages.txt",
+            "distro-packages-remove.txt",
+        ):
             (current / name).write_text("fixture\n")
         environment = {
             **os.environ,
@@ -2545,6 +2550,14 @@ for description, pattern in (
         r"prepare\|deploy\).*?reconcile_distro_packages.*?assert_iptables_nft_backend.*?stage_result=",
     ),
     (
+        "prepare must snapshot package state before reconciliation",
+        r"prepare\|deploy\).*?adopt-host.*?snapshot-packages.*?reconcile_distro_packages",
+    ),
+    (
+        "reconcile must snapshot package state before reconciliation",
+        r"  reconcile\).*?capture_managed_recovery.*?snapshot-packages.*?reconcile_distro_packages",
+    ),
+    (
         "activate must assert nft before arming the legacy handoff",
         r"  activate\).*?assert_iptables_nft_backend.*?k3s-handoff.*?arm",
     ),
@@ -2751,8 +2764,12 @@ require(
     "distro-packages.txt",
     "PACKAGE_BACKEND",
     "trap rollback_arm_failure EXIT HUP INT TERM",
-    "/usr/bin/pacman --noconfirm --needed -S $packages",
-    "/usr/bin/apt-get -o Dpkg::Options::=--force-confold install -y --no-install-recommends $packages",
+    "/usr/bin/pacman --noconfirm --needed -S $install_packages",
+    "/usr/bin/apt-get -o Dpkg::Options::=--force-confold install -y --no-install-recommends $install_packages",
+    "/usr/bin/apt-get purge -y $remove_packages",
+    "distro-packages-remove.txt",
+    "snapshot-packages <host> <recovery-directory>",
+    "systemctl mask --runtime dev-zram0.swap systemd-zram-setup@zram0.service",
     'if ip link show "$interface" >/dev/null 2>&1; then',
     "networkctl reconfigure",
     "systemd-timesyncd.service",
@@ -2807,7 +2824,7 @@ if not re.search(
     raise SystemExit("nix/scripts/k3s-handoff: rollback timer must remain armed until every restored service is active")
 if not re.search(
     r"systemctl restart systemd-timesyncd\.service.*?NTPSynchronized"
-    r".*?if test -s \"\$dir/distro-packages\.txt\"",
+    r".*?install_packages=\$\(tr '\\n' ' ' < \"\$dir/distro-packages\.txt\"\)",
     handoff,
     re.DOTALL,
 ):

@@ -654,6 +654,7 @@ case "${1:-}" in
     }
     "$root/nix/scripts/k3s-handoff" preflight "$host" ""
     recovery=$(capture_managed_recovery "$host")
+    "$root/nix/scripts/k3s-handoff" snapshot-packages "$host" "$recovery"
     reconcile_distro_packages "$host" no
     assert_iptables_nft_backend "$host"
     previous=$(remote "$host" 'sudo -n nix-env --profile /nix/var/nix/profiles/system-manager-profiles/system-manager --list-generations 2>/dev/null | awk "/\(current\)/ {print \$1}"')
@@ -686,6 +687,7 @@ case "${1:-}" in
     legacy_unit=$(remote "$host" 'for unit in k3s.service k3s-agent.service; do test "$(systemctl is-active "$unit" 2>/dev/null || true)" = active && { printf "%s" "$unit"; exit; }; done; true')
     "$root/nix/scripts/k3s-handoff" preflight "$host" "$legacy_unit"
     recovery=$("$root/nix/scripts/adopt-host" "$host")
+    "$root/nix/scripts/k3s-handoff" snapshot-packages "$host" "$recovery"
     reconcile_distro_packages "$host" no
     assert_iptables_nft_backend "$host"
     previous=$(remote "$host" 'sudo -n nix-env --profile /nix/var/nix/profiles/system-manager-profiles/system-manager --list-generations 2>/dev/null | awk "/\(current\)/ {print \$1}"')
