@@ -50,6 +50,8 @@ nix run .#homelab-host -- activate n2p1
 nix run .#homelab-host -- reboot n2p1
 nix run .#homelab-host -- reboot-verify n2p1
 nix run .#homelab-host -- commit n2p1
+nix run .#homelab-host -- verify-host n2p1
+nix run .#homelab-host -- verify-legacy-cleanup n2p1
 ```
 
 권장 순서: `n2p1` → `n2p2` → `rpi4` → `rock5bp` → `macmini` → `rpi5`. rpi5는 wg0 edge gateway이므로 마지막이다.

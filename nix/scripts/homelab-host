@@ -22,6 +22,7 @@ Usage: homelab-host <command> [arguments]
   rollback <host> <system-manager-generation>
   deploy <host>                 Alias for prepare; activation remains explicit
   verify-host <host> [--baseline <file>]
+  verify-legacy-cleanup <host>
   reconcile-distro-packages <host> [--purge]
   check-bootstrap
   bootstrap-k3s <backbone>
@@ -914,6 +915,9 @@ REMOTE_K3S_COLD_BACKUP
       *) usage; exit 2 ;;
     esac
     reconcile_distro_packages "${2:?host required}" "$purge"
+    ;;
+  verify-legacy-cleanup)
+    verify_legacy_cleanup "${2:?host required}"
     ;;
   verify-host-while-armed)
     host=${2:?host required}

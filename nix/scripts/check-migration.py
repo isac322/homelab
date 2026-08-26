@@ -2453,6 +2453,8 @@ require(
     "authorizedkeysfile( \\.ssh/authorized_keys)?",
     'sudo -n grep -Fx "$ADMIN_USER ALL=(ALL) NOPASSWD: ALL" /etc/sudoers.d/homelab-admin',
     "cleanup_legacy_files",
+    "verify-legacy-cleanup <host>",
+    'verify_legacy_cleanup "${2:?host required}"',
     "! systemctl cat",
     "prepare_native_runtime_handoff",
     "swapoff /dev/zram0",
