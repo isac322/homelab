@@ -1036,12 +1036,15 @@ done
 if test "$NETBIOS" = true; then
   sudo -n iptables -C HOMELAB_UDP -s "$LOCAL_NETWORK" -p udp --dport 137:138 -j ACCEPT
 fi
-stage=k3s-runtime
+stage=k3s-sysctl
 if test "$ROLE" = server || test "$ROLE" = agent; then
   test "$(sysctl -n net.ipv4.ip_forward)" = 1
+  stage=k3s-service
   test -x /usr/local/bin/k3s
   systemctl is-active homelab-k3s.service
-  sudo -n test -s /run/credentials/homelab-k3s.service/k3s-token
+  stage=k3s-credential-config
+  sudo -n test -s /var/lib/homelab-secrets/active/k3s-token.cred
+  systemctl cat homelab-k3s.service | grep -Fx 'LoadCredentialEncrypted=k3s-token:/var/lib/homelab-secrets/active/k3s-token.cred'
   stage=k3s-input-firewall
   sudo -n iptables -S INPUT | awk '
     /-j CILIUM_INPUT$/ || /-j KUBE-FIREWALL$/ { native = NR }

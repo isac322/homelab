@@ -2459,6 +2459,8 @@ require(
     "host verification failed during $stage",
     "place_jump()",
     'iptables -I "$chain" "$position" -j "$target"',
+    "systemctl cat homelab-k3s.service",
+    "/var/lib/homelab-secrets/active/k3s-token.cred",
     'iptables -D "$chain" "$index"',
     "reconcile_distro_packages",
     "--version 1.20.0",
@@ -2788,6 +2790,7 @@ forbid(
     "nix/scripts/homelab-host",
     "while iptables -C INPUT -j HOMELAB_INPUT 2>/dev/null; do iptables -D INPUT -j HOMELAB_INPUT; done",
     "while iptables -C FORWARD -j HOMELAB_FORWARD 2>/dev/null; do iptables -D FORWARD -j HOMELAB_FORWARD; done",
+    "sudo -n test -s /run/credentials/homelab-k3s.service/k3s-token",
 )
 require(
     "nix/scripts/k3s-handoff",
