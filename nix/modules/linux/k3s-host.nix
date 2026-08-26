@@ -122,7 +122,7 @@ in
         exec /usr/local/bin/k3s ${if server then "server" else "agent"} --config "$runtime_config"
       '';
       serviceConfig = {
-        Type = if server then "notify" else "exec";
+        Type = "exec";
         ExecStartPre = [
           "-${pkgs.kmod}/bin/modprobe br_netfilter"
           "-${pkgs.kmod}/bin/modprobe overlay"

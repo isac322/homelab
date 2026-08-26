@@ -255,18 +255,50 @@ while test "$(timedatectl show -p NTPSynchronized --value)" != yes; do
   fi
   sleep 2
 done
-while iptables -C INPUT -j HOMELAB_INPUT 2>/dev/null; do iptables -D INPUT -j HOMELAB_INPUT; done
-while iptables -C FORWARD -j HOMELAB_FORWARD 2>/dev/null; do iptables -D FORWARD -j HOMELAB_FORWARD; done
+place_jump() {
+  chain=$1 target=$2 position=$3 keep=$3
+  iptables -I "$chain" "$position" -j "$target"
+  for index in $(iptables -S "$chain" | awk -v target="$target" 'NR > 1 && $(NF - 1) == "-j" && $NF == target { print NR - 1 }' | sort -rn); do
+    if test "$index" -eq "$keep"; then continue; fi
+    iptables -D "$chain" "$index"
+    if test "$index" -lt "$keep"; then keep=$((keep - 1)); fi
+  done
+}
 iptables-restore --noflush --wait < /etc/homelab/firewall.rules
 iptables -P INPUT DROP
 iptables -P FORWARD DROP
 iptables -P OUTPUT ACCEPT
 input_position=$(iptables -S INPUT | awk '/-j CILIUM_INPUT$/ || /-j KUBE-FIREWALL$/ { position = NR } END { print position ? position : 1 }')
 forward_position=$(iptables -S FORWARD | awk '/-j CILIUM_FORWARD$/ { position = NR } END { print position ? position : 1 }')
-iptables -I INPUT "$input_position" -j HOMELAB_INPUT
-iptables -I FORWARD "$forward_position" -j HOMELAB_FORWARD
+place_jump INPUT HOMELAB_INPUT "$input_position"
+place_jump FORWARD HOMELAB_FORWARD "$forward_position"
 if test "$ROLE" = server || test "$ROLE" = agent; then
   systemctl restart homelab-k3s.service
+  if test "$ROLE" = server; then
+    attempt=0
+    until /usr/bin/timeout 5 /usr/local/bin/k3s kubectl get --raw=/readyz >/dev/null 2>&1; do
+      attempt=$((attempt + 1))
+      if test "$attempt" -ge 60; then
+        echo "K3s API did not become ready within 180 seconds" >&2
+        exit 1
+      fi
+      sleep 3
+    done
+  fi
+  attempt=0
+  until iptables -S INPUT | grep -Eq -- '-j (CILIUM_INPUT|KUBE-FIREWALL)$' \
+    && iptables -S FORWARD | grep -q -- '-j CILIUM_FORWARD$'; do
+    attempt=$((attempt + 1))
+    if test "$attempt" -ge 60; then
+      echo "Cilium feeder chains did not become ready within 180 seconds" >&2
+      exit 1
+    fi
+    sleep 3
+  done
+  input_position=$(iptables -S INPUT | awk '/-j CILIUM_INPUT$/ || /-j KUBE-FIREWALL$/ { position = NR } END { print position }')
+  forward_position=$(iptables -S FORWARD | awk '/-j CILIUM_FORWARD$/ { position = NR } END { print position }')
+  place_jump INPUT HOMELAB_INPUT "$input_position"
+  place_jump FORWARD HOMELAB_FORWARD "$forward_position"
 fi
 REMOTE_NATIVE_RUNTIME
 }
@@ -276,6 +308,7 @@ capture_runtime_firewall() {
   remote "$host" 'sudo -n iptables-save' > "$recovery/firewall-runtime.rules"
   chmod 0600 "$recovery/firewall-runtime.rules"
 }
+
 capture_managed_recovery() {
   local host=$1 recovery
   recovery="$state/recovery/$host-reconcile-$(date -u +%Y%m%dT%H%M%SZ)"
@@ -913,12 +946,15 @@ REMOTE_K3S_COLD_BACKUP
       "$admin_user" "$samba_clients" "$netbios" "$local_network" "$localtime_source"
     remote "$host" "$verify_command" <<'REMOTE_VERIFY'
 set -eu
+stage=core-services
+trap 'rc=$?; test "$rc" -eq 0 || echo "host verification failed during $stage" >&2' EXIT
 test "$(hostname)" = "$HOST_NAME"
 systemctl is-active systemd-networkd systemd-resolved systemd-timesyncd "$SSH_SERVICE"
 systemctl is-enabled systemd-networkd systemd-resolved systemd-timesyncd "$FIREWALL_SERVICE"
 if test "$ROLE" = server || test "$ROLE" = agent; then
   systemctl is-enabled homelab-k3s.service
 fi
+stage=time-and-locale
 attempt=0
 while test "$(timedatectl show -p NTPSynchronized --value)" != yes; do
   attempt=$((attempt + 1))
@@ -938,6 +974,7 @@ grep -qx "MulticastDNS=yes" /etc/systemd/resolved.conf
 grep -qx "LLMNR=no" /etc/systemd/resolved.conf
 test "$(readlink /etc/resolv.conf)" = /run/systemd/resolve/stub-resolv.conf
 test "$(getent passwd root | cut -d: -f7)" = /bin/bash
+stage=ssh
 for path in /etc /etc/ssh /etc/ssh/authorized_keys.d; do
   test "$(stat -c '%a %u %g' "$path")" = "755 0 0"
 done
@@ -949,10 +986,12 @@ if test "$ADMIN_USER" != root; then
   visudo_bin=$(command -v visudo || printf /usr/sbin/visudo)
   sudo -n "$visudo_bin" -cf /etc/sudoers.d/homelab-admin
 fi
+stage=firewall
 test -s "$FIREWALL_RULES"
 for unit in homelab-host-settings.service homelab-wireguard.service homelab-firewall.service homelab-runtime-tuning.service homelab-k3s-legacy-cleanup.service homelab-legacy-tuning-cleanup.service; do
   ! systemctl cat "$unit" >/dev/null 2>&1
 done
+stage=lan
 if test -n "$LAN_ADDRESS" && test "$LAN_ADDRESS" != null; then
   ip -o -4 address show dev "$DEFAULT_INTERFACE" | awk '{print $4}' | grep -Fx "$LAN_ADDRESS/24"
   ip -4 route show default | grep -F "via $GATEWAY_ADDRESS dev $DEFAULT_INTERFACE"
@@ -970,6 +1009,7 @@ done
 if test "$NETBIOS" = true; then
   sudo -n iptables -C HOMELAB_UDP -s "$LOCAL_NETWORK" -p udp --dport 137:138 -j ACCEPT
 fi
+stage=k3s-firewall
 if test "$ROLE" = server || test "$ROLE" = agent; then
   test "$(sysctl -n net.ipv4.ip_forward)" = 1
   test -x /usr/local/bin/k3s
@@ -989,10 +1029,12 @@ else
   test "$(sudo -n iptables -S INPUT | sed -n "2p")" = "-A INPUT -j HOMELAB_INPUT"
   test "$(sudo -n iptables -S FORWARD | sed -n "2p")" = "-A FORWARD -j HOMELAB_FORWARD"
 fi
+stage=zram
 if test "$ZRAM" = true; then
   systemctl is-active dev-zram0.swap
   swapon --show=NAME --noheadings | grep -qx /dev/zram0
 fi
+stage=iscsi-client
 if test "$ISCSI_CLIENT" = true; then
   systemctl is-active iscsid.service
   systemctl is-enabled open-iscsi.service
@@ -1000,17 +1042,20 @@ if test "$ISCSI_CLIENT" = true; then
     systemctl is-active open-iscsi.service
   fi
 fi
+stage=iscsi-server
 if test "$ISCSI_SERVER" = true; then
   test "$(id -u democratic-csi)" -eq 1001
   test "$(id -g democratic-csi)" -eq 1001
   test "$(sha256sum /etc/ssh/authorized_keys.d/democratic-csi | awk '{print $1}')" = "$DEMOCRATIC_CSI_KEY_SHA"
   sudo -n -u democratic-csi sudo -n true
 fi
+stage=etcd
 if test "$ROLE" = server; then
   pid=$(systemctl show homelab-k3s.service -p MainPID --value)
   test "$pid" -gt 1
   sudo -n /usr/local/bin/k3s etcd-snapshot ls >/dev/null
 fi
+trap - EXIT
 REMOTE_VERIFY
     while IFS= read -r interface; do
       expected_public=$(nix_eval --raw "$root#topology.$interface.nodes.$host.publicKey")
@@ -1024,7 +1069,11 @@ REMOTE_VERIFY
     done < <(nix_eval --json "$root#topology.nodes.$host.wireguard" | jq -r '.[]')
     if [ "$role" = server ] || [ "$role" = agent ]; then
       context=${BACKBONE_CONTEXT:-homelab-backbone}
-      test "$(kubectl --context "$context" get node "$host" -o jsonpath='{range .status.conditions[?(@.type=="Ready")]}{.status}{end}')" = True
+      node_ready=$(kubectl --context "$context" get node "$host" -o jsonpath='{range .status.conditions[?(@.type=="Ready")]}{.status}{end}')
+      test "$node_ready" = True || {
+        echo "$host Kubernetes Node Ready is ${node_ready:-missing}" >&2
+        exit 1
+      }
     fi
     ;;
   restore-host)

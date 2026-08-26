@@ -2453,6 +2453,12 @@ require(
     "! systemctl cat",
     "prepare_native_runtime_handoff",
     "swapoff /dev/zram0",
+    "K3s API did not become ready within 180 seconds",
+    "Cilium feeder chains did not become ready within 180 seconds",
+    "host verification failed during $stage",
+    "place_jump()",
+    'iptables -I "$chain" "$position" -j "$target"',
+    'iptables -D "$chain" "$index"',
     "reconcile_distro_packages",
     "--version 1.20.0",
     "etc-state.tar",
@@ -2643,6 +2649,11 @@ for description, pattern in (
         r".*?k3s-handoff.*?accept",
     ),
     (
+        "firewall jump replacement must insert the new path before deleting duplicates",
+        r"place_jump\(\).*?iptables -I \"\$chain\" \"\$position\" -j \"\$target\""
+        r".*?for index in .*?iptables -D \"\$chain\" \"\$index\"",
+    ),
+    (
         "native runtime must preserve an already-active generated zram swap",
         r"apply_native_runtime\(\).*?if test \"\$ZRAM\" = true; then"
         r"\s+systemctl start dev-zram0\.swap"
@@ -2762,6 +2773,7 @@ require(
     '"netfilter-persistent.service"',
     '"dev-zram0.swap"',
     "/usr/local/bin/k3s",
+    'Type = "exec";',
     'Restart = "always";',
 )
 forbid(
@@ -2770,6 +2782,12 @@ forbid(
     "../../k3s-package.nix",
 )
 forbid("nix/modules/linux/k3s-host.nix", "homelab-k3s-legacy-cleanup =")
+forbid("nix/modules/linux/k3s-host.nix", 'Type = if server then "notify" else "exec";')
+forbid(
+    "nix/scripts/homelab-host",
+    "while iptables -C INPUT -j HOMELAB_INPUT 2>/dev/null; do iptables -D INPUT -j HOMELAB_INPUT; done",
+    "while iptables -C FORWARD -j HOMELAB_FORWARD 2>/dev/null; do iptables -D FORWARD -j HOMELAB_FORWARD; done",
+)
 require(
     "nix/scripts/k3s-handoff",
     "/var/lib/homelab-secrets/active/k3s-token.cred",
