@@ -264,6 +264,18 @@ place_jump() {
     if test "$index" -lt "$keep"; then keep=$((keep - 1)); fi
   done
 }
+firewall_ordered() {
+  iptables -S INPUT | awk '
+    /-j CILIUM_INPUT$/ || /-j KUBE-FIREWALL$/ { native = NR }
+    /-j HOMELAB_INPUT$/ { homelab = NR; count++ }
+    END { exit !(native && homelab > native && count == 1) }
+  ' \
+    && iptables -S FORWARD | awk '
+      /-j CILIUM_FORWARD$/ { native = NR }
+      /-j HOMELAB_FORWARD$/ { homelab = NR; count++ }
+      END { exit !(native && homelab > native && count == 1) }
+    '
+}
 iptables-restore --noflush --wait < /etc/homelab/firewall.rules
 iptables -P INPUT DROP
 iptables -P FORWARD DROP
@@ -295,10 +307,25 @@ if test "$ROLE" = server || test "$ROLE" = agent; then
     fi
     sleep 3
   done
-  input_position=$(iptables -S INPUT | awk '/-j CILIUM_INPUT$/ || /-j KUBE-FIREWALL$/ { position = NR } END { print position }')
-  forward_position=$(iptables -S FORWARD | awk '/-j CILIUM_FORWARD$/ { position = NR } END { print position }')
-  place_jump INPUT HOMELAB_INPUT "$input_position"
-  place_jump FORWARD HOMELAB_FORWARD "$forward_position"
+  stable=0
+  attempt=0
+  while test "$stable" -lt 3; do
+    if firewall_ordered; then
+      stable=$((stable + 1))
+    else
+      stable=0
+      input_position=$(iptables -S INPUT | awk '/-j CILIUM_INPUT$/ || /-j KUBE-FIREWALL$/ { position = NR } END { print position }')
+      forward_position=$(iptables -S FORWARD | awk '/-j CILIUM_FORWARD$/ { position = NR } END { print position }')
+      place_jump INPUT HOMELAB_INPUT "$input_position"
+      place_jump FORWARD HOMELAB_FORWARD "$forward_position"
+    fi
+    attempt=$((attempt + 1))
+    if test "$attempt" -ge 60; then
+      echo "Cilium and HOMELAB firewall ordering did not stabilize within 120 seconds" >&2
+      exit 1
+    fi
+    sleep 2
+  done
 fi
 REMOTE_NATIVE_RUNTIME
 }
@@ -1009,21 +1036,23 @@ done
 if test "$NETBIOS" = true; then
   sudo -n iptables -C HOMELAB_UDP -s "$LOCAL_NETWORK" -p udp --dport 137:138 -j ACCEPT
 fi
-stage=k3s-firewall
+stage=k3s-runtime
 if test "$ROLE" = server || test "$ROLE" = agent; then
   test "$(sysctl -n net.ipv4.ip_forward)" = 1
   test -x /usr/local/bin/k3s
   systemctl is-active homelab-k3s.service
   sudo -n test -s /run/credentials/homelab-k3s.service/k3s-token
+  stage=k3s-input-firewall
   sudo -n iptables -S INPUT | awk '
     /-j CILIUM_INPUT$/ || /-j KUBE-FIREWALL$/ { native = NR }
-    /-j HOMELAB_INPUT$/ { homelab = NR }
-    END { exit !(native && homelab > native) }
+    /-j HOMELAB_INPUT$/ { homelab = NR; count++ }
+    END { exit !(native && homelab > native && count == 1) }
   '
+  stage=k3s-forward-firewall
   sudo -n iptables -S FORWARD | awk '
     /-j CILIUM_FORWARD$/ { native = NR }
-    /-j HOMELAB_FORWARD$/ { homelab = NR }
-    END { exit !(native && homelab > native) }
+    /-j HOMELAB_FORWARD$/ { homelab = NR; count++ }
+    END { exit !(native && homelab > native && count == 1) }
   '
 else
   test "$(sudo -n iptables -S INPUT | sed -n "2p")" = "-A INPUT -j HOMELAB_INPUT"

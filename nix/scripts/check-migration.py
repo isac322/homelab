@@ -2455,6 +2455,7 @@ require(
     "swapoff /dev/zram0",
     "K3s API did not become ready within 180 seconds",
     "Cilium feeder chains did not become ready within 180 seconds",
+    "Cilium and HOMELAB firewall ordering did not stabilize within 120 seconds",
     "host verification failed during $stage",
     "place_jump()",
     'iptables -I "$chain" "$position" -j "$target"',
