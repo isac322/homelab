@@ -88,7 +88,8 @@ def check_ansible_cutover_partition() -> None:
     groups = inventory_groups("cluster-setup/inventory/hosts")
     nix_managed = groups.get("nix_managed", set())
     ansible_managed = groups.get("ansible_managed", set())
-    for host in ("n2p1", "n2p2"):
+    migrated_backbone = {"n2p1", "n2p2", "rpi4"}
+    for host in sorted(migrated_backbone):
         if host not in nix_managed:
             raise SystemExit(
                 f"cluster-setup/inventory/hosts: migrated host {host} is not nix_managed"
@@ -107,7 +108,7 @@ def check_ansible_cutover_partition() -> None:
         raise SystemExit(
             "cluster-setup/inventory/hosts: homelab must contain both ownership groups"
         )
-    if not {"n2p1", "n2p2"}.issubset(groups.get("backbone", set())):
+    if not migrated_backbone.issubset(groups.get("backbone", set())):
         raise SystemExit(
             "cluster-setup/inventory/hosts: migrated backbone topology was removed"
         )

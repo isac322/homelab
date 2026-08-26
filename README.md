@@ -131,7 +131,7 @@ K3s version과 순차 rollout은 기존 Rancher `system-upgrade-controller`가 �
 ## Ansible ownership boundary
 
 Legacy host-management playbook은 `[ansible_managed]`만 target으로 삼는다. Commit까지
-끝난 호스트는 `[nix_managed]`로 옮기며, 현재 `n2p1`과 `n2p2`가 여기에 속한다.
+끝난 호스트는 `[nix_managed]`로 옮기며, 현재 `n2p1`, `n2p2`, `rpi4`가 여기에 속한다.
 두 ownership group은 `homelab`의 child로 남고 `backbone` 같은 topology group도
 유지하지만, Nix-managed host에는 Ansible SSH 연결이나 remote task를 실행하지 않는다.
 
