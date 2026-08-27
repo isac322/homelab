@@ -247,17 +247,27 @@ data:
         prevLen = preedit.length;
         el.dispatchEvent(new Event("input", { bubbles: true }));
       }
+      function isHangulToggle(ev) {
+        const key = ev.key;
+        const code = ev.code;
+        if (key === "Hangul" || key === "HangulMode" || key === "Process") return true;
+        if (code === "Lang1") return true;
+        if (code === "AltRight" && !ev.ctrlKey && !ev.metaKey && !ev.shiftKey) return true;
+        if (ev.keyCode === 21 || ev.which === 21) return true;
+        return false;
+      }
       function onKey(ev) {
-        if (ev.isComposing || ev.ctrlKey || ev.metaKey || ev.altKey) return;
-        const el = ev.target;
-        if ((ev.code === "Space" && ev.shiftKey) || ev.key === "Hangul" || ev.code === "Lang1") {
+        if (isHangulToggle(ev)) {
           ev.preventDefault();
+          ev.stopPropagation();
           on = !on;
           buf.clear();
           prevLen = 0;
           badge();
           return;
         }
+        if (ev.isComposing || ev.ctrlKey || ev.metaKey || ev.altKey) return;
+        const el = ev.target;
         if (!on || !editable(el)) return;
         if (ev.key === "Backspace" && prevLen) {
           ev.preventDefault();
