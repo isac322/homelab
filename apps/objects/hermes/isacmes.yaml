@@ -309,6 +309,10 @@ spec:
           mountPath: /app/plugins/interactive/index.js
           subPath: interactive.js
           readOnly: true
+        - name: camofox-runtime
+          mountPath: /app/plugins/hangul-ime/index.js
+          subPath: hangul-ime.js
+          readOnly: true
   config:
     raw:
       _config_version: 37

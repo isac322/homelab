@@ -93,7 +93,8 @@ data:
         "youtube": { "enabled": true },
         "persistence": { "enabled": true },
         "vnc": { "enabled": false, "resolution": "1920x1080" },
-        "interactive": { "enabled": true }
+        "interactive": { "enabled": true },
+        "hangul-ime": { "enabled": true }
       }
     }
   interactive.js: |
@@ -135,4 +136,171 @@ data:
           }
         })();
       });
+    }
+  hangul-ime.js: |
+    export default async function register(_app, ctx) {
+      const INIT = String.raw`(() => {
+      if (globalThis.__camofoxHangulIme) return;
+      globalThis.__camofoxHangulIme = true;
+      const CHO = ["ㄱ","ㄲ","ㄴ","ㄷ","ㄸ","ㄹ","ㅁ","ㅂ","ㅃ","ㅅ","ㅆ","ㅇ","ㅈ","ㅉ","ㅊ","ㅋ","ㅌ","ㅍ","ㅎ"];
+      const JUNG = ["ㅏ","ㅐ","ㅑ","ㅒ","ㅓ","ㅔ","ㅕ","ㅖ","ㅗ","ㅘ","ㅙ","ㅚ","ㅛ","ㅜ","ㅝ","ㅞ","ㅟ","ㅠ","ㅡ","ㅢ","ㅣ"];
+      const JONG = ["","ㄱ","ㄲ","ㄳ","ㄴ","ㄵ","ㄶ","ㄷ","ㄹ","ㄺ","ㄻ","ㄼ","ㄽ","ㄾ","ㄿ","ㅀ","ㅁ","ㅂ","ㅄ","ㅅ","ㅆ","ㅇ","ㅈ","ㅊ","ㅋ","ㅌ","ㅍ","ㅎ"];
+      const KEY = {
+        q:"ㅂ",Q:"ㅃ",w:"ㅈ",W:"ㅉ",e:"ㄷ",E:"ㄸ",r:"ㄱ",R:"ㄲ",t:"ㅅ",T:"ㅆ",
+        y:"ㅛ",u:"ㅕ",i:"ㅑ",o:"ㅐ",O:"ㅒ",p:"ㅔ",P:"ㅖ",
+        a:"ㅁ",s:"ㄴ",d:"ㅇ",f:"ㄹ",g:"ㅎ",h:"ㅗ",j:"ㅓ",k:"ㅏ",l:"ㅣ",
+        z:"ㅋ",x:"ㅌ",c:"ㅊ",v:"ㅍ",b:"ㅠ",n:"ㅜ",m:"ㅡ",
+      };
+      const VOWEL = new Set(JUNG);
+      const JUNG_COMP = { ㅗ: {ㅏ:"ㅘ",ㅐ:"ㅙ",ㅣ:"ㅚ"}, ㅜ: {ㅓ:"ㅝ",ㅔ:"ㅞ",ㅣ:"ㅟ"}, ㅡ: {ㅣ:"ㅢ"} };
+      const JONG_COMP = {
+        ㄱ:{ㅅ:"ㄳ"}, ㄴ:{ㅈ:"ㄵ",ㅎ:"ㄶ"},
+        ㄹ:{ㄱ:"ㄺ",ㅁ:"ㄻ",ㅂ:"ㄼ",ㅅ:"ㄽ",ㅌ:"ㄾ",ㅍ:"ㄿ",ㅎ:"ㅀ"},
+        ㅂ:{ㅅ:"ㅄ"},
+      };
+      const JONG_SPLIT = {
+        ㄳ:["ㄱ","ㅅ"], ㄵ:["ㄴ","ㅈ"], ㄶ:["ㄴ","ㅎ"], ㄺ:["ㄹ","ㄱ"], ㄻ:["ㄹ","ㅁ"], ㄼ:["ㄹ","ㅂ"],
+        ㄽ:["ㄹ","ㅅ"], ㄾ:["ㄹ","ㅌ"], ㄿ:["ㄹ","ㅍ"], ㅀ:["ㄹ","ㅎ"], ㅄ:["ㅂ","ㅅ"],
+      };
+      function syl(cho, jung, jong) {
+        if (jung == null) return cho || "";
+        if (cho == null) return jung;
+        return String.fromCharCode(0xac00 + (CHO.indexOf(cho) * 21 + JUNG.indexOf(jung)) * 28 + JONG.indexOf(jong || ""));
+      }
+      class Buf {
+        constructor() { this.cho = this.jung = this.jong = null; }
+        empty() { return this.cho == null && this.jung == null && this.jong == null; }
+        text() { return syl(this.cho, this.jung, this.jong); }
+        clear() { this.cho = this.jung = this.jong = null; }
+        feed(j) {
+          let extra = "";
+          if (VOWEL.has(j)) {
+            if (this.jong) {
+              const split = JONG_SPLIT[this.jong];
+              if (split) {
+                this.jong = split[0];
+                extra = syl(this.cho, this.jung, this.jong);
+                this.cho = split[1]; this.jung = j; this.jong = null;
+              } else {
+                extra = syl(this.cho, this.jung, null);
+                this.cho = CHO.includes(this.jong) ? this.jong : null;
+                this.jung = j; this.jong = null;
+              }
+            } else if (this.jung) {
+              const comb = JUNG_COMP[this.jung]?.[j];
+              if (comb) this.jung = comb;
+              else { extra = this.text(); this.cho = null; this.jung = j; this.jong = null; }
+            } else this.jung = j;
+          } else if (this.jung && this.jong) {
+            const comb = JONG_COMP[this.jong]?.[j];
+            if (comb) this.jong = comb;
+            else { extra = this.text(); this.cho = CHO.includes(j) ? j : null; this.jung = this.jong = null; }
+          } else if (this.jung) {
+            if (JONG.includes(j)) this.jong = j;
+            else { extra = this.text(); this.cho = CHO.includes(j) ? j : null; this.jung = this.jong = null; }
+          } else if (this.cho) {
+            const doubles = {ㄱ:"ㄲ",ㄷ:"ㄸ",ㅂ:"ㅃ",ㅅ:"ㅆ",ㅈ:"ㅉ"};
+            if (this.cho === j && doubles[j]) this.cho = doubles[j];
+            else { extra = this.text(); this.cho = CHO.includes(j) ? j : null; }
+          } else this.cho = CHO.includes(j) ? j : null;
+          return extra;
+        }
+        back() {
+          if (this.jong) this.jong = null;
+          else if (this.jung) this.jung = null;
+          else if (this.cho) this.cho = null;
+          else return false;
+          return true;
+        }
+      }
+      let on = false;
+      const buf = new Buf();
+      let prevLen = 0;
+      function badge() {
+        let el = document.getElementById("camofox-hangul-badge");
+        if (!el) {
+          el = document.createElement("div");
+          el.id = "camofox-hangul-badge";
+          el.style.cssText = "position:fixed;right:12px;bottom:12px;z-index:2147483647;padding:4px 8px;border-radius:4px;font:12px/1.2 sans-serif;background:#111;color:#fff;opacity:.85;pointer-events:none";
+          (document.body || document.documentElement).appendChild(el);
+        }
+        el.textContent = on ? "가" : "A";
+      }
+      function editable(el) {
+        if (!el || el.disabled || el.readOnly) return false;
+        if (el.tagName === "TEXTAREA") return true;
+        if (el.tagName === "INPUT") {
+          const t = (el.type || "text").toLowerCase();
+          return ["", "text", "search", "url", "tel", "email"].includes(t);
+        }
+        return false;
+      }
+      function insert(el, extra, preedit) {
+        const val = el.value;
+        const end = el.selectionEnd ?? val.length;
+        let start = el.selectionStart ?? end;
+        if (prevLen > 0) start = Math.max(0, start - prevLen);
+        const add = extra + preedit;
+        el.value = val.slice(0, start) + add + val.slice(end);
+        const caret = start + add.length;
+        el.setSelectionRange(caret, caret);
+        prevLen = preedit.length;
+        el.dispatchEvent(new Event("input", { bubbles: true }));
+      }
+      function onKey(ev) {
+        if (ev.isComposing || ev.ctrlKey || ev.metaKey || ev.altKey) return;
+        const el = ev.target;
+        if ((ev.code === "Space" && ev.shiftKey) || ev.key === "Hangul" || ev.code === "Lang1") {
+          ev.preventDefault();
+          on = !on;
+          buf.clear();
+          prevLen = 0;
+          badge();
+          return;
+        }
+        if (!on || !editable(el)) return;
+        if (ev.key === "Backspace" && prevLen) {
+          ev.preventDefault();
+          if (!buf.back()) { prevLen = 0; return; }
+          insert(el, "", buf.text());
+          return;
+        }
+        const j = KEY[ev.key];
+        if (!j) {
+          if (prevLen) { buf.clear(); prevLen = 0; }
+          return;
+        }
+        ev.preventDefault();
+        insert(el, buf.feed(j), buf.text());
+      }
+      function boot() {
+        document.addEventListener("keydown", onKey, true);
+        badge();
+      }
+      if (document.body) boot();
+      else document.addEventListener("DOMContentLoaded", boot);
+    })();`;
+
+      async function install(context) {
+        await context.addInitScript({ content: INIT });
+      }
+
+      ctx.events.on("session:created", async ({ context }) => {
+        try {
+          await install(context);
+        } catch (error) {
+          ctx.log("warn", "hangul ime attach failed", { error: error.message });
+        }
+      });
+
+      ctx.events.on("tab:created", async ({ page }) => {
+        try {
+          await page.addInitScript({ content: INIT });
+          await page.evaluate(INIT);
+        } catch {
+          // page may already be gone
+        }
+      });
+
+      ctx.log("info", "hangul ime plugin loaded");
     }
