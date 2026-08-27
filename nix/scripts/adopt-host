@@ -10,14 +10,42 @@ usage() {
   cat <<'EOF'
 Usage: adopt-host <host>
        adopt-host baseline <host>
+       adopt-host manifest <host>
 
-Capture the pre-Nix state of an existing host. This migration-only command is
-not used to provision or reconcile hosts already owned by Nix.
+Capture the pre-Nix state of an existing host. The manifest command prints the
+secret-bearing external NAS inventory; baseline stores it in mode 0600.
 EOF
 }
 
 nix_eval() { nix --extra-experimental-features 'nix-command flakes' eval "$@"; }
 host_field() { nix_eval --raw "$root#topology.nodes.$1.$2"; }
+preserve_nas_state() {
+  local host=$1 value
+  value=$(nix_eval --json "$root#topology.nodes.$host.preserveNasState") || {
+    echo "$host preserveNasState could not be evaluated" >&2
+    return 1
+  }
+  case "$value" in
+    true|false) printf '%s\n' "$value" ;;
+    *) echo "$host preserveNasState is not boolean: $value" >&2; return 1 ;;
+  esac
+}
+host_mutation_hold_reason() {
+  local raw
+  raw=$(nix_eval --json "$root#topology.nodes.$1.hostMutationHoldReason") || return 1
+  printf '%s' "$raw" | jq -r '. // empty'
+}
+assert_host_mutation_allowed() {
+  local host=$1 reason
+  reason=$(host_mutation_hold_reason "$host") || {
+    echo "$host host mutation hold could not be evaluated" >&2
+    return 1
+  }
+  test -z "$reason" || {
+    echo "$host host mutation is held: $reason" >&2
+    return 1
+  }
+}
 remote() {
   local host=$1
   shift
@@ -35,7 +63,159 @@ current_remote_generation() {
   '\'''
 }
 
-baseline() {
+nas_manifest_script() {
+  cat <<'REMOTE_NAS_MANIFEST'
+set -eu
+export PATH=/usr/local/sbin:/usr/local/bin:/usr/sbin:/usr/bin:/sbin:/bin
+export LC_ALL=C
+inventory_tree() {
+  path=$1
+  mode=${2:-all}
+  if ! test -e "$path" && ! test -L "$path"; then
+    printf 'path=%s|state=absent\n' "$path"
+    return
+  fi
+  find "$path" -xdev -print0 | sort -z | while IFS= read -r -d "" item; do
+    if test "$mode" = target-configfs; then
+      case "$item" in
+        */action|*/action/*|*/fabric_statistics|*/fabric_statistics/*|*/pr|*/pr/*|*/statistics|*/statistics/*|*/dynamic_sessions|*/control|*/acls/*/info)
+          continue
+          ;;
+      esac
+    fi
+    case "$item" in
+      /etc/zfs/zpool.cache|/etc/zfs/zfs-list.cache|/etc/zfs/zfs-list.cache/*) continue ;;
+    esac
+    if test -f "$item"; then
+      metadata=$(stat -c 'type=%F|mode=%a|uid=%u|gid=%g|size=%s' "$item")
+      digest=$(sha256sum "$item" | awk '{print $1}')
+    else
+      metadata=$(stat -c 'type=%F|mode=%a|uid=%u|gid=%g' "$item")
+      if test -L "$item"; then
+        digest=$(readlink "$item" | sha256sum | awk '{print $1}')
+      else
+        digest=-
+      fi
+    fi
+    printf 'path=%s|%s|sha256=%s\n' "$item" "$metadata" "$digest"
+  done
+}
+listener_state() {
+  protocol=$1
+  port=$2
+  endpoints=$(ss -H "-ln$protocol" | awk -v port="$port" '$4 ~ (":" port "$") { print $4 }' | sort -u)
+  if test -n "$endpoints"; then
+    state=present
+  else
+    state=absent
+  fi
+  printf 'listener=%s|%s|%s|endpoints=' "$protocol" "$port" "$state"
+  printf '%s\n' "$endpoints" | paste -sd, -
+}
+stable_zpool_status() {
+  awk '
+    /^[[:space:]]*scan:/ { skip_scan = 1; next }
+    skip_scan && /^[[:space:]]*[[:alpha:]_]+:/ { skip_scan = 0 }
+    skip_scan { next }
+    { print }
+  '
+}
+
+
+command -v zpool >/dev/null
+command -v zfs >/dev/null
+command -v iptables-save >/dev/null
+command -v ss >/dev/null
+command -v testparm >/dev/null
+zpool status -v | stable_zpool_status | sed 's/^/zpool-status=/'
+zpool get -H guid | sort | sed 's/^/zpool-guid=/'
+zfs list -Hp -t filesystem,volume -o name,type,mountpoint,volsize | sort | sed 's/^/zfs=/'
+saveconfig=/etc/rtslib-fb-target/saveconfig.json
+if test -f "$saveconfig"; then
+  printf 'target-saveconfig-sha256=%s\n' "$(sha256sum "$saveconfig" | awk '{print $1}')"
+  printf 'target-saveconfig-json-begin\n'
+  cat "$saveconfig"
+  printf '\ntarget-saveconfig-json-end\n'
+else
+  printf 'target-saveconfig-state=absent\n'
+fi
+inventory_tree /sys/kernel/config/target target-configfs
+testparm -s 2>/dev/null | sed 's/^/testparm=/'
+printf 'identity-passwd=%s\n' "$(getent passwd democratic-csi 2>/dev/null || printf absent)"
+printf 'identity-group=%s\n' "$(getent group democratic-csi 2>/dev/null || printf absent)"
+
+for path in \
+  /etc/zfs \
+  /etc/default/zfs \
+  /etc/samba \
+  /etc/exports \
+  /etc/exports.d \
+  /etc/nfs.conf \
+  /etc/idmapd.conf \
+  /etc/default/nfs-common \
+  /etc/default/nfs-kernel-server \
+  /etc/default/samba \
+  /home/democratic-csi/.ssh/authorized_keys \
+  /etc/ssh/authorized_keys.d/democratic-csi \
+  /etc/sudoers.d/democratic-csi \
+  /etc/iptables/rules.v4 \
+  /etc/iptables/iptables.rules \
+  /etc/crontab \
+  /etc/cron.d \
+  /etc/cron.daily \
+  /etc/cron.hourly \
+  /etc/cron.monthly \
+  /etc/cron.weekly \
+  /var/spool/cron
+do
+  inventory_tree "$path"
+done
+
+for unit in \
+  zfs.target \
+  zfs-import-cache.service \
+  zfs-import-scan.service \
+  zfs-mount.service \
+  zfs-volume-wait.service \
+  target.service \
+  targetclid.service \
+  rtslib-fb-targetctl.service \
+  smbd.service \
+  nmbd.service \
+  samba.service \
+  nfs-server.service \
+  nfs-kernel-server.service \
+  cron.service \
+  crond.service \
+  iptables.service \
+  netfilter-persistent.service
+do
+  load=$(systemctl show "$unit" -p LoadState --value 2>/dev/null || true)
+  active=$(systemctl is-active "$unit" 2>/dev/null || true)
+  enabled=$(systemctl is-enabled "$unit" 2>/dev/null || true)
+  printf 'service=%s|load=%s|active=%s|enabled=%s\n' "$unit" "${load:-unknown}" "${active:-unknown}" "${enabled:-unknown}"
+done
+
+iptables-save | awk '
+  /^-A / && /--dport 3260([[:space:]]|$)/ { print "firewall-runtime-rule=" $0; next }
+  /^-A / && /--dport 445([[:space:]]|$)/ { print "firewall-runtime-rule=" $0; next }
+  /^-A / && /--dport 137:138([[:space:]]|$)/ { print "firewall-runtime-rule=" $0; next }
+  /^-A / && /--dports [0-9,:]*137/ { print "firewall-runtime-rule=" $0; next }
+  /^-A / && /--dports [0-9,:]*138/ { print "firewall-runtime-rule=" $0 }
+' | sort
+listener_state t 3260
+listener_state t 445
+listener_state u 137
+listener_state u 138
+REMOTE_NAS_MANIFEST
+}
+
+nas_manifest() {
+  local host=$1
+  nas_manifest_script | remote "$host" 'sudo -n bash -s'
+}
+
+generic_baseline() {
   local host=$1 stamp file generation
   stamp=$(date -u +%Y%m%dT%H%M%SZ)
   file="$state/baselines/$host-$stamp.txt"
@@ -63,11 +243,42 @@ baseline() {
   printf '%s\n' "$file"
 }
 
+nas_baseline() {
+  local host=$1 stamp directory manifest script
+  stamp=$(date -u +%Y%m%dT%H%M%SZ)
+  directory="$state/baselines/$host-nas-$stamp"
+  mkdir -m 0700 "$directory"
+  manifest="$directory/manifest.txt"
+  script="$directory/manifest-remote"
+  nas_manifest_script > "$script"
+  nas_manifest "$host" > "$manifest"
+  (
+    cd "$directory"
+    sha256sum manifest.txt manifest-remote > manifest.sha256
+  )
+  chmod 0600 "$manifest" "$directory/manifest.sha256"
+  chmod 0700 "$script"
+  printf '%s\n' "$directory"
+}
+
+baseline() {
+  local host=$1 preserve
+  preserve=$(preserve_nas_state "$host") || return 1
+  if [ "$preserve" = true ]; then
+    nas_baseline "$host"
+  else
+    generic_baseline "$host"
+  fi
+}
+
 capture() {
-  local host=$1 recovery role snapshot snapshot_command
+  local host=$1 recovery role snapshot snapshot_command baseline_path
+  assert_host_mutation_allowed "$host"
   recovery="$state/recovery/$host-$(date -u +%Y%m%dT%H%M%SZ)"
   mkdir -m 0700 "$recovery"
-  baseline "$host" > "$recovery/baseline-path"
+  baseline_path=$(baseline "$host")
+  printf '%s\n' "$baseline_path" > "$recovery/baseline-path"
+  chmod 0600 "$recovery/baseline-path"
   remote "$host" 'sudo -n sh -ceu '\''
     test -d /etc/systemd/system
     set --
@@ -119,6 +330,15 @@ case "${1:-}" in
   baseline)
     test "$#" -eq 2 || { usage >&2; exit 2; }
     baseline "$2"
+    ;;
+  manifest)
+    test "$#" -eq 2 || { usage >&2; exit 2; }
+    preserve=$(preserve_nas_state "$2") || exit 1
+    test "$preserve" = true || {
+      echo "$2 does not preserve external NAS state" >&2
+      exit 1
+    }
+    nas_manifest "$2"
     ;;
   -h|--help|'')
     usage

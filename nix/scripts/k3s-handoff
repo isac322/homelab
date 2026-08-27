@@ -22,11 +22,48 @@ EOF
 
 host_field() { nix --extra-experimental-features 'nix-command flakes' eval --raw "$root#topology.nodes.$1.$2"; }
 nix_json() { nix --extra-experimental-features 'nix-command flakes' eval --json "$@"; }
+preserve_nas_state() {
+  local host=$1 value
+  value=$(nix_json "$root#topology.nodes.$host.preserveNasState") || {
+    echo "$host preserveNasState could not be evaluated" >&2
+    return 1
+  }
+  case "$value" in
+    true|false) printf '%s\n' "$value" ;;
+    *) echo "$host preserveNasState is not boolean: $value" >&2; return 1 ;;
+  esac
+}
+manage_firewall_rules() { nix_json "$root#systemConfigs.$1.config.homelab.firewall.manageRules"; }
+host_mutation_hold_reason() {
+  local raw
+  raw=$(nix_json "$root#topology.nodes.$1.hostMutationHoldReason") || return 1
+  printf '%s' "$raw" | jq -r '. // empty'
+}
+assert_host_mutation_allowed() {
+  local host=$1 reason
+  reason=$(host_mutation_hold_reason "$host") || {
+    echo "$host host mutation hold could not be evaluated" >&2
+    return 1
+  }
+  test -z "$reason" || {
+    echo "$host host mutation is held: $reason" >&2
+    return 1
+  }
+}
 remote() { local host=$1; shift; ssh -o BatchMode=yes -o StrictHostKeyChecking=accept-new "$(host_field "$host" sshTarget)" "$@"; }
 
 snapshot_packages() {
-  local host=$1 recovery=$2 backend present absent command snapshot
+  local host=$1 recovery=$2 backend present absent command snapshot preserve
   test -d "$recovery"
+  preserve=$(preserve_nas_state "$host") || return 1
+  if [ "$preserve" = true ]; then
+    : > "$recovery/distro-packages.txt.new"
+    : > "$recovery/distro-packages-remove.txt.new"
+    chmod 0600 "$recovery/distro-packages.txt.new" "$recovery/distro-packages-remove.txt.new"
+    mv -f "$recovery/distro-packages.txt.new" "$recovery/distro-packages.txt"
+    mv -f "$recovery/distro-packages-remove.txt.new" "$recovery/distro-packages-remove.txt"
+    return
+  fi
   backend=$(host_field "$host" packageBackend)
   present=$(nix_json "$root#systemConfigs.$host.config.homelab.distroPackages.present" | jq -r 'join(" ")')
   absent=$(nix_json "$root#systemConfigs.$host.config.homelab.distroPackages.absent" | jq -r 'join(" ")')
@@ -92,6 +129,7 @@ REMOTE_PREFLIGHT
     ;;
   arm)
     host=${2:?host required}; recovery=${3:?recovery directory required}; previous=${4:-}; legacy=${5:-}
+    assert_host_mutation_allowed "$host"
     case "$previous" in ""|*[!0-9]*) test -z "$previous" || { echo "invalid previous generation: $previous" >&2; exit 2; } ;; esac
     case "$legacy" in ""|k3s.service|k3s-agent.service) ;; *) echo "invalid legacy unit: $legacy" >&2; exit 2 ;; esac
     test -s "$recovery/etc-state.tar"
@@ -100,6 +138,19 @@ REMOTE_PREFLIGHT
     default_interface=$(host_field "$host" defaultInterface)
     interfaces=$(nix_json "$root#topology.nodes.$host.wireguard" | jq -r 'join(" ")')
     role=$(host_field "$host" k3sRole 2>/dev/null || true)
+    preserve=$(preserve_nas_state "$host") || exit 1
+    manage_rules=$(manage_firewall_rules "$host")
+    if [ "$preserve" = true ] && [ "$manage_rules" != false ]; then
+      echo "$host preservation rollback requires homelab.firewall.manageRules=false" >&2
+      exit 1
+    fi
+    if [ "$preserve" = true ]; then
+      baseline=$(cat "$recovery/baseline-path")
+      test -s "$baseline/manifest.txt"
+      test -s "$baseline/manifest.sha256"
+      test -s "$baseline/manifest-remote"
+      (cd "$baseline" && sha256sum -c manifest.sha256 >/dev/null)
+    fi
     test -e "$recovery/distro-packages.txt"
     test -e "$recovery/distro-packages-remove.txt"
     if [ "$backend" = pacman ]; then
@@ -125,9 +176,17 @@ REMOTE_PREFLIGHT
       remote "$host" "sudo -n rm -rf '$rollback_root/.staging'" || true
       exit 1
     fi
+    if [ "$preserve" = true ]; then
+      if ! remote "$host" "sudo -n tee '$rollback_root/.staging/manifest.txt' >/dev/null" < "$baseline/manifest.txt" \
+        || ! remote "$host" "sudo -n tee '$rollback_root/.staging/manifest.sha256' >/dev/null" < "$baseline/manifest.sha256" \
+        || ! remote "$host" "sudo -n tee '$rollback_root/.staging/manifest-remote' >/dev/null" < "$baseline/manifest-remote"; then
+        remote "$host" "sudo -n rm -rf '$rollback_root/.staging'" || true
+        exit 1
+      fi
+    fi
     printf -v command \
-      'sudo -n env PREVIOUS_GENERATION=%q LEGACY_UNIT=%q FIREWALL_SERVICE=%q SSH_SERVICE=%q DEFAULT_INTERFACE=%q WG_INTERFACES=%q ROLE=%q PACKAGE_BACKEND=%q sh -s' \
-      "$previous" "$legacy" "$firewall_service" "$ssh_service" "$default_interface" "$interfaces" "$role" "$backend"
+      'sudo -n env PREVIOUS_GENERATION=%q LEGACY_UNIT=%q FIREWALL_SERVICE=%q SSH_SERVICE=%q DEFAULT_INTERFACE=%q WG_INTERFACES=%q ROLE=%q PACKAGE_BACKEND=%q PRESERVE_NAS_STATE=%q MANAGE_FIREWALL_RULES=%q sh -s' \
+      "$previous" "$legacy" "$firewall_service" "$ssh_service" "$default_interface" "$interfaces" "$role" "$backend" "$preserve" "$manage_rules"
     remote "$host" "$command" <<'REMOTE_ARM'
 set -eu
 base=/var/lib/homelab-host-rollback
@@ -141,6 +200,9 @@ case "$SSH_SERVICE" in ssh.service|sshd.service) ;; *) exit 2 ;; esac
 case "$DEFAULT_INTERFACE" in ""|*[!A-Za-z0-9_.-]*) exit 2 ;; esac
 for interface in $WG_INTERFACES; do case "$interface" in *[!A-Za-z0-9_.-]*) exit 2 ;; esac; done
 case "$PACKAGE_BACKEND" in apt|pacman) ;; *) exit 2 ;; esac
+case "$PRESERVE_NAS_STATE" in true|false) ;; *) exit 2 ;; esac
+case "$MANAGE_FIREWALL_RULES" in true|false) ;; *) exit 2 ;; esac
+if test "$PRESERVE_NAS_STATE" = true; then test "$MANAGE_FIREWALL_RULES" = false; fi
 if test "$ROLE" = server || test "$ROLE" = agent; then
   test -L /var/lib/homelab-secrets/active
   test -s /var/lib/homelab-secrets/active/k3s-token.cred
@@ -149,8 +211,17 @@ test -s "$staging/etc-state.tar"
 test -s "$staging/firewall-runtime.rules"
 test -e "$staging/distro-packages.txt"
 test -e "$staging/distro-packages-remove.txt"
+if test "$PRESERVE_NAS_STATE" = true; then
+  test -s "$staging/manifest.txt"
+  test -s "$staging/manifest.sha256"
+  test -s "$staging/manifest-remote"
+fi
 mv "$staging" "$dir"
 chmod 0600 "$dir/etc-state.tar" "$dir/firewall-runtime.rules" "$dir/distro-packages.txt" "$dir/distro-packages-remove.txt"
+if test "$PRESERVE_NAS_STATE" = true; then
+  chmod 0600 "$dir/manifest.txt" "$dir/manifest.sha256"
+  chmod 0700 "$dir/manifest-remote"
+fi
 {
   printf '%s\n' "$PREVIOUS_GENERATION"
   printf '%s\n' "$LEGACY_UNIT"
@@ -160,6 +231,8 @@ chmod 0600 "$dir/etc-state.tar" "$dir/firewall-runtime.rules" "$dir/distro-packa
   printf '%s\n' "$WG_INTERFACES"
   printf '%s\n' "$ROLE"
   printf '%s\n' "$PACKAGE_BACKEND"
+  printf '%s\n' "$PRESERVE_NAS_STATE"
+  printf '%s\n' "$MANAGE_FIREWALL_RULES"
 } > "$dir/config"
 chmod 0600 "$dir/config"
 cat > "$dir/rollback" <<'ROLLBACK'
@@ -168,7 +241,6 @@ set -eu
 export PATH="/usr/local/sbin:/usr/local/bin:/usr/sbin:/usr/bin:/sbin:/bin:${PATH:-}"
 dir=/var/lib/homelab-host-rollback/current
 stages="$dir/stages"
-mkdir -p "$stages"
 {
   IFS= read -r previous_generation
   IFS= read -r legacy_unit
@@ -178,9 +250,33 @@ mkdir -p "$stages"
   IFS= read -r wg_interfaces
   IFS= read -r role
   IFS= read -r package_backend
+  IFS= read -r preserve_nas_state
+  IFS= read -r manage_firewall_rules
 } < "$dir/config"
+case "$preserve_nas_state" in true|false) ;; *) exit 2 ;; esac
+case "$manage_firewall_rules" in true|false) ;; *) exit 2 ;; esac
+if test "$preserve_nas_state" = true; then test "$manage_firewall_rules" = false; fi
 exec >> "$dir/rollback.log" 2>&1
 printf 'rollback started %s\n' "$(date -u +%FT%TZ)"
+verify_nas_manifest() {
+  test -s "$dir/manifest.txt"
+  test -s "$dir/manifest.sha256"
+  test -x "$dir/manifest-remote"
+  command -v bash >/dev/null
+  (cd "$dir" && sha256sum -c manifest.sha256 >/dev/null)
+  current="$dir/manifest.current"
+  if ! bash "$dir/manifest-remote" > "$current" || ! cmp -s "$dir/manifest.txt" "$current"; then
+    echo "external NAS state changed; refusing rollback mutation" >&2
+    printf 'baseline-sha256=%s current-sha256=%s\n' \
+      "$(sha256sum "$dir/manifest.txt" | awk '{print $1}')" \
+      "$(sha256sum "$current" | awk '{print $1}')" >&2
+    rm -f "$current"
+    return 1
+  fi
+  rm -f "$current"
+}
+if test "$preserve_nas_state" = true; then verify_nas_manifest; fi
+mkdir -p "$stages"
 if systemctl is-active homelab-k3s.service >/dev/null 2>&1; then
   systemctl stop homelab-k3s.service
 fi
@@ -228,15 +324,91 @@ if ! test -e "$stages/system-manager-restored"; then
   touch "$stages/system-manager-restored"
 fi
 if ! test -e "$stages/archive-restored"; then
-  tar -C / -xf "$dir/etc-state.tar" || {
-    rc=$?
-    printf 'rollback failed while restoring the host archive (exit %s)\n' "$rc" >&2
-    exit "$rc"
-  }
+  if test "$preserve_nas_state" = true; then
+    tar -C / \
+      --exclude=etc/zfs \
+      --exclude=etc/default/zfs \
+      --exclude=etc/target \
+      --exclude=etc/rtslib-fb-target \
+      --exclude=etc/samba \
+      --exclude=etc/exports \
+      --exclude=etc/exports.d \
+      --exclude=etc/nfs.conf \
+      --exclude=etc/idmapd.conf \
+      --exclude=etc/default/nfs-common \
+      --exclude=etc/default/nfs-kernel-server \
+      --exclude=etc/default/samba \
+      --exclude=etc/iptables/rules.v4 \
+      --exclude=etc/iptables/iptables.rules \
+      --exclude=home/democratic-csi/.ssh \
+      --exclude=etc/ssh/authorized_keys.d/democratic-csi \
+      --exclude=etc/sudoers.d/democratic-csi \
+      --exclude=etc/crontab \
+      --exclude=etc/cron.d \
+      --exclude=etc/cron.daily \
+      --exclude=etc/cron.hourly \
+      --exclude=etc/cron.monthly \
+      --exclude=etc/cron.weekly \
+      --exclude=var/spool/cron \
+      --exclude='etc/systemd/system/zfs*' \
+      --exclude='etc/systemd/system/target.service*' \
+      --exclude='etc/systemd/system/targetclid.service*' \
+      --exclude='etc/systemd/system/rtslib-fb-targetctl.service*' \
+      --exclude='etc/systemd/system/smbd.service*' \
+      --exclude='etc/systemd/system/nmbd.service*' \
+      --exclude='etc/systemd/system/samba.service*' \
+      --exclude='etc/systemd/system/nfs-server.service*' \
+      --exclude='etc/systemd/system/nfs-kernel-server.service*' \
+      --exclude='etc/systemd/system/cron.service*' \
+      --exclude='etc/systemd/system/crond.service*' \
+      --exclude='etc/systemd/system/iptables.service*' \
+      --exclude='etc/systemd/system/netfilter-persistent.service*' \
+      --exclude='etc/systemd/system/*/zfs*' \
+      --exclude='etc/systemd/system/*/target.service' \
+      --exclude='etc/systemd/system/*/targetclid.service' \
+      --exclude='etc/systemd/system/*/rtslib-fb-targetctl.service' \
+      --exclude='etc/systemd/system/*/smbd.service' \
+      --exclude='etc/systemd/system/*/nmbd.service' \
+      --exclude='etc/systemd/system/*/samba.service' \
+      --exclude='etc/systemd/system/*/nfs-server.service' \
+      --exclude='etc/systemd/system/*/nfs-kernel-server.service' \
+      --exclude='etc/systemd/system/*/cron.service' \
+      --exclude='etc/systemd/system/*/crond.service' \
+      --exclude='etc/systemd/system/*/iptables.service' \
+      --exclude='etc/systemd/system/*/netfilter-persistent.service' \
+      --exclude='etc/init.d/zfs*' \
+      --exclude='etc/init.d/target*' \
+      --exclude='etc/init.d/smb*' \
+      --exclude='etc/init.d/nmb*' \
+      --exclude='etc/init.d/nfs*' \
+      --exclude='etc/init.d/cron*' \
+      --exclude='etc/init.d/iptables*' \
+      --exclude='etc/init.d/netfilter-persistent' \
+      --exclude='etc/rc*.d/*zfs*' \
+      --exclude='etc/rc*.d/*target*' \
+      --exclude='etc/rc*.d/*smb*' \
+      --exclude='etc/rc*.d/*nmb*' \
+      --exclude='etc/rc*.d/*nfs*' \
+      --exclude='etc/rc*.d/*cron*' \
+      --exclude='etc/rc*.d/*iptables*' \
+      --exclude='etc/rc*.d/*netfilter-persistent*' \
+      -xf "$dir/etc-state.tar" || {
+        rc=$?
+        printf 'rollback failed while restoring the generic host archive (exit %s)\n' "$rc" >&2
+        exit "$rc"
+      }
+  else
+    tar -C / -xf "$dir/etc-state.tar" || {
+      rc=$?
+      printf 'rollback failed while restoring the host archive (exit %s)\n' "$rc" >&2
+      exit "$rc"
+    }
+  fi
   touch "$stages/archive-restored"
 fi
 systemctl daemon-reload
-systemctl enable systemd-networkd.service systemd-resolved.service systemd-timesyncd.service "$firewall_service" "$ssh_service"
+systemctl enable systemd-networkd.service systemd-resolved.service systemd-timesyncd.service "$ssh_service"
+if test "$manage_firewall_rules" = true; then systemctl enable "$firewall_service"; fi
 hostnamectl set-hostname "$(cat /etc/hostname)"
 systemctl restart systemd-resolved.service
 sshd -t
@@ -273,6 +445,7 @@ elif test "$role" = server || test "$role" = agent; then
   systemctl is-active homelab-k3s.service
 fi
 if ! test -e "$stages/firewall-restored"; then
+  if test "$manage_firewall_rules" = true; then
   firewall_attempt=0
   while ! iptables-restore --test --wait < "$dir/firewall-runtime.rules"; do
     firewall_attempt=$((firewall_attempt + 1))
@@ -327,11 +500,16 @@ if ! test -e "$stages/firewall-restored"; then
       exit 1
     fi
   fi
+  fi
   touch "$stages/firewall-restored"
 fi
 package_restore_blocked=false
 install_packages=$(tr '\n' ' ' < "$dir/distro-packages.txt")
 remove_packages=$(tr '\n' ' ' < "$dir/distro-packages-remove.txt")
+if test "$preserve_nas_state" = true; then
+  test -z "$install_packages"
+  test -z "$remove_packages"
+fi
 for package in $install_packages $remove_packages; do
   case "$package" in ""|*[!A-Za-z0-9+._:-]*) exit 1 ;; esac
 done
@@ -385,9 +563,14 @@ if systemctl is-enabled zram-swap.service >/dev/null 2>&1; then
     systemctl unmask --runtime dev-zram0.swap systemd-zram-setup@zram0.service >/dev/null
   fi
 fi
-for unit in ksm.service thp-madvise.service iscsid.service open-iscsi.service; do
+for unit in ksm.service thp-madvise.service; do
   if systemctl is-enabled "$unit" >/dev/null 2>&1; then systemctl start "$unit"; fi
 done
+if test "$preserve_nas_state" != true; then
+  for unit in iscsid.service open-iscsi.service; do
+    if systemctl is-enabled "$unit" >/dev/null 2>&1; then systemctl start "$unit"; fi
+  done
+fi
 for unit in systemd-networkd.service systemd-resolved.service systemd-timesyncd.service "$ssh_service"; do
   systemctl is-active "$unit"
 done
@@ -395,6 +578,7 @@ if test "$package_restore_blocked" = true; then
   echo "legacy services restored, but distro package restore requires synchronized time; rollback remains armed" >&2
   exit 1
 fi
+if test "$preserve_nas_state" = true; then verify_nas_manifest; fi
 systemctl disable homelab-host-rollback.timer >/dev/null 2>&1 || true
 touch "$dir/restored"
 printf 'rollback completed %s\n' "$(date -u +%FT%TZ)"
@@ -461,15 +645,19 @@ REMOTE_ARM
       service_state=\$(systemctl is-active $rollback_unit.service 2>/dev/null || true)
       if test -f \"\$dir/restored\"; then
         printf \"%s\n\" restored
-      elif test -d \"\$dir/stages\" || test \"\$service_state\" != inactive; then
+      elif test -d \"\$dir/stages\"; then
         printf \"%s\n\" restoring
       else
-        printf \"%s\n\" armed
+        case \"\$service_state\" in
+          active|activating|deactivating) printf \"%s\n\" restoring ;;
+          *) printf \"%s\n\" armed ;;
+        esac
       fi
     '"
     ;;
   rearm)
     host=${2:?host required}
+    assert_host_mutation_allowed "$host"
     remote "$host" "sudo -n sh -ceu '
       assert_rearmable() {
         service_state=\$(systemctl is-active $rollback_unit.service 2>/dev/null || true)
@@ -481,10 +669,13 @@ REMOTE_ARM
           echo \"rollback already started; refusing to rearm\" >&2
           return 1
         fi
-        if test \"\$service_state\" != inactive; then
-          echo \"rollback service is \$service_state; refusing to rearm\" >&2
-          return 1
-        fi
+        case \"\$service_state\" in
+          inactive|failed) ;;
+          *)
+            echo \"rollback service is \$service_state; refusing to rearm\" >&2
+            return 1
+            ;;
+        esac
       }
       test -s $rollback_root/current/etc-state.tar
       test -s $rollback_root/current/firewall-runtime.rules
@@ -500,6 +691,7 @@ REMOTE_ARM
     ;;
   disarm)
     host=${2:?host required}
+    assert_host_mutation_allowed "$host"
     remote "$host" "sudo -n sh -ceu '
       test -d $rollback_root/current
       test \"\$(systemctl is-active $rollback_unit.service 2>/dev/null || true)\" = inactive
@@ -510,6 +702,7 @@ REMOTE_ARM
     ;;
   accept)
     host=${2:?host required}
+    assert_host_mutation_allowed "$host"
     "$BASH" "$0" rearm "$host"
     remote "$host" "sudo -n sh -ceu '
       test -d $rollback_root/current
@@ -527,6 +720,7 @@ REMOTE_ARM
     ;;
   cleanup-restored)
     host=${2:?host required}
+    assert_host_mutation_allowed "$host"
     remote "$host" "sudo -n sh -ceu '
       test -f $rollback_root/current/restored
       systemctl disable --now $rollback_unit.timer 2>/dev/null || true
@@ -539,6 +733,7 @@ REMOTE_ARM
     ;;
   restore)
     host=${2:?host required}
+    assert_host_mutation_allowed "$host"
     remote "$host" "sudo -n sh -ceu '
       test -s $rollback_root/current/etc-state.tar
       test -s $rollback_root/current/firewall-runtime.rules

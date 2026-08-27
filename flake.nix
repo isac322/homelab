@@ -127,10 +127,10 @@
               rockK3s = rock.environment.etc."rancher/k3s/config.yaml".text;
               firewall = rpi5.environment.etc."iptables/rules.v4".text;
               hosts = n2p1.environment.etc.hosts.text;
-              rockFirewall = rock.environment.etc."iptables/rules.v4".text;
               rockLan = rock.environment.etc."systemd/network/10-homelab-lan.network".text;
               rockResolved = rock.environment.etc."systemd/resolved.conf".text;
               rockSsh = rock.environment.etc."ssh/sshd_config".text;
+              rockCommitSsh = self.systemConfigs."rock5bp-commit".config.environment.etc."ssh/sshd_config".text;
               projectServices =
                 cfg:
                 lib.filter (service: lib.hasPrefix "homelab-" service) (builtins.attrNames cfg.systemd.services);
@@ -141,6 +141,24 @@
                 in
                 projectServices self.systemConfigs.${hostName}.config == expected
                 && projectServices self.systemConfigs."${hostName}-commit".config == expected
+              ) (builtins.attrNames linuxHosts);
+              preservationOwnershipIsExplicit = lib.all (
+                hostName:
+                let
+                  host = linuxHosts.${hostName};
+                  cfg = self.systemConfigs.${hostName}.config;
+                  etc = cfg.environment.etc;
+                in
+                !host.preserveNasState
+                || (
+                  !cfg.homelab.firewall.manageRules
+                  && !(builtins.hasAttr "democratic-csi" cfg.users.users)
+                  && !(builtins.hasAttr "democratic-csi" cfg.users.groups)
+                  && !(builtins.elem "targetcli-fb" cfg.homelab.distroPackages.present)
+                  && !(builtins.hasAttr "homelab/firewall.rules" etc)
+                  && !(builtins.hasAttr "iptables/rules.v4" etc)
+                  && !(builtins.hasAttr "iptables/iptables.rules" etc)
+                )
               ) (builtins.attrNames linuxHosts);
               frameworkEtcTargets = [
                 "environment.d/10-system-manager.conf"
@@ -162,6 +180,22 @@
             in
             assert projectServiceOwnershipIsMinimal;
             assert projectEtcOwnershipIsExplicit;
+            assert preservationOwnershipIsExplicit;
+            assert topology.nodes.rock5bp.preserveNasState;
+            assert topology.nodes.rock5bp.hostMutationHoldReason != null;
+            assert topology.nodes.rock5bp.hostMutationHoldReason != "";
+            assert !(topology.nodes.n2p1.preserveNasState);
+            assert rock.homelab.firewall.manageRules == false;
+            assert rpi5.homelab.firewall.manageRules;
+            assert !(builtins.elem "cron" rock.homelab.distroPackages.absent);
+            assert builtins.elem "cron" n2p1.homelab.distroPackages.absent;
+            assert !(builtins.hasAttr "democratic-csi" rock.users.users);
+            assert !(builtins.hasAttr "democratic-csi" rock.users.groups);
+            assert !(builtins.hasAttr "homelab/firewall.rules" rock.environment.etc);
+            assert !(builtins.hasAttr "iptables/rules.v4" rock.environment.etc);
+            assert !(builtins.hasAttr "iptables/iptables.rules" rock.environment.etc);
+            assert builtins.hasAttr "systemd/system/netfilter-persistent.service.d/50-homelab-order.conf"
+              rock.environment.etc;
             assert builtins.length topology.requiredLinks == 35;
             assert !(builtins.hasAttr "wg1" topology);
             assert lib.hasInfix "Address=192.168.219.6/24"
@@ -177,8 +211,6 @@
             assert lib.hasInfix "node-ip: 192.168.219.6" rockK3s;
             assert lib.hasInfix "advertise-address: 192.168.219.6" rockK3s;
             assert lib.hasInfix "--dport 9962" firewall && lib.hasInfix "--dport 9965" firewall;
-            assert lib.hasInfix "-s 192.168.219.139/32 -p tcp --dport 445 -j ACCEPT" rockFirewall;
-            assert lib.hasInfix "-s 192.168.219.0/24 -p udp --dport 137:138 -j ACCEPT" rockFirewall;
             assert lib.hasInfix "MulticastDNS=yes" rockLan && lib.hasInfix "LLMNR=no" rockLan;
             assert lib.hasInfix "DNSSEC=yes" rockResolved;
             assert lib.hasInfix "DNSOverTLS=yes" rockResolved;
@@ -190,7 +222,7 @@
             assert rock.users.users.root.shell == "/bin/bash";
             assert rock.environment.etc."sudoers.d/homelab-admin".text == "bhyoo ALL=(ALL) NOPASSWD: ALL\n";
             assert n2p1.environment.etc."sudoers.d/homelab-admin".text == "bhyoo ALL=(ALL) NOPASSWD: ALL\n";
-            assert rock.environment.etc."sudoers.d/democratic-csi".replaceExisting;
+            assert !(builtins.hasAttr "sudoers.d/democratic-csi" rock.environment.etc);
             assert rock.environment.etc."sudoers.d/homelab-admin".replaceExisting;
             assert n2p1.environment.etc."sudoers.d/homelab-admin".replaceExisting;
             assert n2p1.users.users.bhyoo.uid == 1000;
@@ -211,13 +243,13 @@
             assert
               !(lib.hasInfix "${topology.wg0.edgeNetwork} -d ${topology.wg0.edgeNetwork} -j ACCEPT" firewall);
             assert builtins.elem "open-iscsi" rock.homelab.distroPackages.present;
-            assert builtins.elem "targetcli-fb" rock.homelab.distroPackages.present;
+            assert !(builtins.elem "targetcli-fb" rock.homelab.distroPackages.present);
             assert !(builtins.elem "acl" rock.homelab.distroPackages.present);
-            assert
-              rock.environment.etc."ssh/authorized_keys.d/democratic-csi".text
-              == builtins.readFile ./ssh_pub_keys/democratic-csi.pub;
+            assert !(builtins.hasAttr "ssh/authorized_keys.d/democratic-csi" rock.environment.etc);
             assert lib.hasInfix "AuthorizedKeysFile .ssh/authorized_keys /etc/ssh/authorized_keys.d/%u"
               rock.environment.etc."ssh/sshd_config".text;
+            assert lib.hasInfix "AuthorizedKeysFile .ssh/authorized_keys /etc/ssh/authorized_keys.d/%u"
+              rockCommitSsh;
             assert lib.hasInfix "AuthorizedKeysFile /etc/ssh/authorized_keys.d/%u"
               n2p1Commit.environment.etc."ssh/sshd_config".text;
             assert

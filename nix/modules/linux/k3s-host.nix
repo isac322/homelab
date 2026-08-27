@@ -18,58 +18,69 @@ let
   wg0Address = topology.wg0.nodes.${name}.address or null;
   strip = address: if address == null then null else builtins.head (lib.splitString "/" address);
   tokenPath = config.homelab.k3s.tokenPath;
-  firewallReconcile = pkgs.writeShellScript "homelab-k3s-firewall-reconcile" ''
-    set -u
-    exec 9>/run/homelab-k3s-firewall-reconcile.lock
-    ${pkgs.util-linux}/bin/flock -n 9 || exit 0
-    iptables=${pkgs.iptables}/bin/iptables
-    awk=${pkgs.gawk}/bin/awk
-    sort=${pkgs.coreutils}/bin/sort
-    sleep=${pkgs.coreutils}/bin/sleep
-    place_jump() {
-      local chain=$1 target=$2 position=$3 keep=$3
-      "$iptables" --wait -I "$chain" "$position" -j "$target"
-      for index in $("$iptables" -S "$chain" | "$awk" -v target="$target" 'NR > 1 && $(NF - 1) == "-j" && $NF == target { print NR - 1 }' | "$sort" -rn); do
-        if test "$index" -eq "$keep"; then continue; fi
-        "$iptables" --wait -D "$chain" "$index"
-        if test "$index" -lt "$keep"; then keep=$((keep - 1)); fi
-      done
-    }
-    firewall_ordered() {
-      "$iptables" -S INPUT | "$awk" '
-        /-j CILIUM_INPUT$/ || /-j KUBE-FIREWALL$/ { native = NR }
-        /-j HOMELAB_INPUT$/ { homelab = NR; count++ }
-        END { exit !(native && homelab > native && count == 1) }
-      ' \
-        && "$iptables" -S FORWARD | "$awk" '
-          /-j CILIUM_FORWARD$/ { native = NR }
-          /-j HOMELAB_FORWARD$/ { homelab = NR; count++ }
-          END { exit !(native && homelab > native && count == 1) }
-        '
-    }
-    attempt=0
-    stable=0
-    while test "$attempt" -lt 90 && test "$stable" -lt 3; do
-      if firewall_ordered; then
-        stable=$((stable + 1))
-      elif "$iptables" -S INPUT | "$awk" '/-j CILIUM_INPUT$/ || /-j KUBE-FIREWALL$/ { found = 1 } END { exit !found }' \
-        && "$iptables" -S FORWARD | "$awk" '/-j CILIUM_FORWARD$/ { found = 1 } END { exit !found }'; then
+  manageRules = config.homelab.firewall.manageRules;
+  firewallReconcile = pkgs.writeShellScript "homelab-k3s-firewall-reconcile" (
+    if manageRules then
+      ''
+        set -u
+        exec 9>/run/homelab-k3s-firewall-reconcile.lock
+        ${pkgs.util-linux}/bin/flock -n 9 || exit 0
+        iptables=${pkgs.iptables}/bin/iptables
+        awk=${pkgs.gawk}/bin/awk
+        sort=${pkgs.coreutils}/bin/sort
+        sleep=${pkgs.coreutils}/bin/sleep
+        cilium_ready() {
+          "$iptables" -S INPUT | "$awk" '/-j CILIUM_INPUT$/ || /-j KUBE-FIREWALL$/ { found = 1 } END { exit !found }' \
+            && "$iptables" -S FORWARD | "$awk" '/-j CILIUM_FORWARD$/ { found = 1 } END { exit !found }'
+        }
+        firewall_ordered() {
+          "$iptables" -S INPUT | "$awk" '
+            /-j CILIUM_INPUT$/ || /-j KUBE-FIREWALL$/ { native = NR }
+            /-j HOMELAB_INPUT$/ { homelab = NR; count++ }
+            END { exit !(native && homelab > native && count == 1) }
+          ' \
+            && "$iptables" -S FORWARD | "$awk" '
+              /-j CILIUM_FORWARD$/ { native = NR }
+              /-j HOMELAB_FORWARD$/ { homelab = NR; count++ }
+              END { exit !(native && homelab > native && count == 1) }
+            '
+        }
+        place_jump() {
+          local chain=$1 target=$2 position=$3 keep=$3
+          "$iptables" --wait -I "$chain" "$position" -j "$target"
+          for index in $("$iptables" -S "$chain" | "$awk" -v target="$target" 'NR > 1 && $(NF - 1) == "-j" && $NF == target { print NR - 1 }' | "$sort" -rn); do
+            if test "$index" -eq "$keep"; then continue; fi
+            "$iptables" --wait -D "$chain" "$index"
+            if test "$index" -lt "$keep"; then keep=$((keep - 1)); fi
+          done
+        }
+        attempt=0
         stable=0
-        input_position=$("$iptables" -S INPUT | "$awk" '/-j CILIUM_INPUT$/ || /-j KUBE-FIREWALL$/ { position = NR } END { print position }')
-        forward_position=$("$iptables" -S FORWARD | "$awk" '/-j CILIUM_FORWARD$/ { position = NR } END { print position }')
-        place_jump INPUT HOMELAB_INPUT "$input_position"
-        place_jump FORWARD HOMELAB_FORWARD "$forward_position"
-      else
-        stable=0
-      fi
-      attempt=$((attempt + 1))
-      "$sleep" 2
-    done
-    if test "$stable" -lt 3; then
-      echo "Cilium and HOMELAB firewall ordering did not stabilize after K3s start" >&2
-      exit 1
-    fi
-  '';
+        while test "$attempt" -lt 90 && test "$stable" -lt 3; do
+          if firewall_ordered; then
+            stable=$((stable + 1))
+          elif cilium_ready; then
+            stable=0
+            input_position=$("$iptables" -S INPUT | "$awk" '/-j CILIUM_INPUT$/ || /-j KUBE-FIREWALL$/ { position = NR } END { print position }')
+            forward_position=$("$iptables" -S FORWARD | "$awk" '/-j CILIUM_FORWARD$/ { position = NR } END { print position }')
+            place_jump INPUT HOMELAB_INPUT "$input_position"
+            place_jump FORWARD HOMELAB_FORWARD "$forward_position"
+          else
+            stable=0
+          fi
+          attempt=$((attempt + 1))
+          "$sleep" 2
+        done
+        if test "$stable" -lt 3; then
+          echo "Cilium and HOMELAB firewall ordering did not stabilize after K3s start" >&2
+          exit 1
+        fi
+      ''
+    else
+      ''
+        exit 0
+      ''
+  );
   yamlList = values: lib.concatMapStringsSep "\n" (value: "  - ${value}") values;
   serverConfig =
     if server then

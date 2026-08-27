@@ -67,9 +67,9 @@ if 'managed = pair.a != "bhyoo-macbook-pro" && pair.b != "bhyoo-macbook-pro";' n
 if "k3sVersion" in text:
     raise SystemExit("Rancher system-upgrade-controller, not Nix topology, owns K3s versions")
 if not re.search(
-    r'rock5bp\s*=.*?firewall\s*=\s*\{\s*sambaClients\s*=\s*\[\s*"192\.168\.219\.139/32"\s*\];\s*netbios\s*=\s*true;',
+    r'rock5bp\s*=.*?preserveNasState\s*=\s*true;.*?hostMutationHoldReason\s*=\s*"[^"]+";',
     text,
     re.S,
 ):
-    raise SystemExit("rock5bp Samba and NetBIOS firewall scope changed")
+    raise SystemExit("rock5bp NAS preservation and mutation hold changed")
 print("topology: ok")

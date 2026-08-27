@@ -32,6 +32,8 @@ let
       wireguard = extra.wireguard or [ ];
       firewall = extra.firewall or { };
       tuning = extra.tuning or { };
+      preserveNasState = extra.preserveNasState or false;
+      hostMutationHoldReason = extra.hostMutationHoldReason or null;
       iscsiServer = extra.iscsiServer or false;
       iscsiClient = extra.iscsiClient or false;
     };
@@ -129,10 +131,6 @@ let
             "homelab.bhyoo.com/zfs-node=true"
             "homelab.bhyoo.com/cilium-envoy=true"
           ];
-          firewall = {
-            sambaClients = [ "192.168.219.139/32" ];
-            netbios = true;
-          };
           tuning = {
             zram = true;
             emmcIoScheduler = true;
@@ -142,6 +140,8 @@ let
               "wpa_supplicant.service"
             ];
           };
+          preserveNasState = true;
+          hostMutationHoldReason = "No verified independent NAS backup and restore test, ZFS snapshots, recent ZFS scrub, or disk SMART/NVMe health evidence";
           iscsiServer = true;
           iscsiClient = true;
         };

@@ -41,7 +41,15 @@ nix run .#rotate-psk -- --link wg0-n2p1-n2p2
 2. `activate`: runtime firewall snapshot과 recovery archive를 `/var/lib/homelab-host-rollback/current`에 복제하고 reboot 후에도 다시 시작되는 15분 rollback timer를 arm한 뒤, server datastore cold backup과 `prepare`가 등록한 정확한 system-manager generation activation을 수행한다. Armed 상태의 내부 runtime verification은 timer를 먼저 15분으로 rearm한 뒤 시작하며, 검증 완료 후 다음 operator 승인 대기 전에 다시 rearm한다.
 3. `reboot`: 완료된 watchdog rollback을 local receipt에 먼저 동기화한 뒤 `activated` 또는 retry 가능한 `rebooting` phase를 확인한다. 그 다음 remote receipt/state/secret/store path/boot ID를 읽기 전에 timer를 15분으로 rearm한다. 최초 요청이면 현재 kernel boot ID를 receipt에 보존해 phase를 `rebooting`으로 기록한 뒤 non-blocking reboot를 요청한다. Watchdog rollback이 시작됐거나 완료돼 rearm이 실패하면 즉시 한 번 더 동기화해 completed rollback을 `rolled-back`으로 기록한다. Reboot 요청이 실패하고 boot ID가 그대로면 같은 `reboot` command가 다시 command-entry synchronization/rearm 후 요청을 재시도하며, boot ID가 이미 바뀌었으면 timer만 갱신된 상태로 재부팅하지 않고 `reboot-verify`를 요구한다.
 4. `reboot-verify`: host가 다시 연결되면 완료된 watchdog rollback을 local receipt에 먼저 동기화하고 receipt가 `rebooting`인지 확인한 뒤, 다른 remote receipt/boot 검증보다 먼저 rollback timer를 15분으로 rearm한다. Rearm이 deadline과 경합해 실패하면 즉시 다시 동기화하고 검증을 중단한다. 그 뒤 remote receipt 조건과 pre-reboot boot ID를 검증하고 현재 boot ID가 달라졌는지 확인한다. 새 SSH session과 runtime contract 검증도 내부 armed verification entrypoint가 다시 rearm한 뒤 최대 12분 동안 수행하며, 성공한 경우에만 timer를 disarm한다. 검증 timeout/실패 시 timer를 armed 상태로 둔 채 즉시 restore를 시도하므로 SSH session이 끊겨도 persistent service가 복구를 계속할 수 있다. recovery archive/service는 `commit` 완료 전까지 유지한다.
-5. `commit`: 대상 host가 commit generation을 native build/register한 뒤 persistent timer를 arm하고 destructive activation과 legacy systemd unit/drop-in/tuning wrapper/distro package 제거를 수행한다. 각 armed runtime verification은 시작 전에 timer를 다시 갱신하고, 최종 `accept`도 cleanup 전에 먼저 rearm하여 rollback이 이미 시작되거나 완료된 상태에서 artifact를 삭제하지 않는다. Rancher upgrade가 사용하는 `/usr/local/bin/k3s` install layout은 유지하며, 전체 검증과 `accept`가 성공한 경우에만 rollback artifact와 timer를 삭제한다.
+5. `commit`: 대상 host가 commit generation을 native build/register한 뒤 persistent timer를 arm하고 destructive activation과 legacy systemd unit/drop-in/tuning wrapper/distro package 제거를 수행한다. 각 armed runtime verification은 시작 전에 timer를 다시 갱신한다. 검증된 terminal receipt를 local receipt directory에 먼저 stage한 뒤 최종 `accept`가 cleanup 전에 다시 rearm하며, `accept` 성공 후 atomic rename으로 receipt를 공개한다. Rancher upgrade가 사용하는 `/usr/local/bin/k3s` install layout은 유지하며, 전체 검증과 `accept`가 성공한 경우에만 rollback artifact와 timer를 삭제한다.
+
+`preserveNasState=true`인 `rock5bp`는 같은 host-plane 전환을 사용하지만 NAS data plane은 전환 대상이 아니다. `prepare`의 baseline/verify는 read-only command만 사용한다. ZFS는 `zpool status -v`, `zpool get -H guid`, `zfs list -Hp -t filesystem,volume -o name,type,mountpoint,volsize` 결과를 기록한다. `zpool status -v`의 scrub/resilver `scan:` block은 진행률·속도·ETA가 바뀌므로 equality manifest에서 제외하지만 다음 labeled section부터 다시 기록해 pool state/status/action/see, remove/checkpoint, device topology, READ/WRITE/CKSUM error counters, 최종 `errors:` 결과는 유지한다. `volsize`는 zvol shrink를 검출하지만 live `used`/free capacity는 제외한다. `targetcli`는 one-shot 조회도 종료 시 auto-save할 수 있으므로 호출하지 않는다. Live target topology는 volatile session/statistics/ACL-info/action/control subtree를 제외한 `/sys/kernel/config/target` configfs path, metadata, readable value hash와 symlink target으로 캡처하고, persistent target state는 기존 `/etc/rtslib-fb-target/saveconfig.json`의 SHA-256 및 원문만 읽는다. Samba effective configuration은 `testparm -s`로 기록한다. 그 밖에 `democratic-csi` access, NFS/firewall/cron 파일의 hash와 stable stat(type/mode/uid/gid, regular-file size), storage service 상태, NAS listener를 `.host-state/baselines/rock5bp-nas-<timestamp>/`에 기록한다. Baseline, mutation phase 전후 verify, rollback verify 어디에서도 `targetcli`, `targetcli saveconfig`, 또는 NAS state writer를 실행하지 않는다.
+
+`prepare`는 democratic-csi PV/PVC/pod/VolumeAttachment와 consuming node의 정규화한 iSCSI session inventory도 recovery directory에 저장한다. `storage-impact`는 같은 정보를 변경 없이 출력한다. `activate`, `reboot`, `commit`은 captured PVC를 쓰는 live pod, attached VolumeAttachment, captured target에 남은 iSCSI session, 또는 Samba session이 하나라도 있으면 실패한다. 명령은 workload를 scale, patch, restart하지 않는다. Operator가 dependency 순서와 application-specific flush 절차를 판단해 수동으로 quiesce/resume해야 한다.
+
+`rock5bp`는 현재 `hostMutationHoldReason`으로 모든 host mutation entrypoint가 fail-closed 상태다. 2026-08-27 read-only audit에서 ZFS snapshot 0개, Kubernetes CSI VolumeSnapshot/VolumeSnapshotClass/VolumeSnapshotContent 0개, 확인 가능한 backup workload 0개, `nas`의 마지막 scrub은 2025-10-06, `hot-data`는 2025-06-26 resilver 이후 scrub 기록 없음, `temporal`은 scan 기록 없음, `smartctl` 미설치를 확인했다. 이 hold는 `bootstrap-host`, adoption capture, `prepare`/`activate`/`reboot`/`reboot-verify`/`commit`, `restore-host`, secret staging, direct handoff `arm`/`rearm`/`disarm`/`accept`/`restore`/`cleanup-restored`, WireGuard peer rollout을 remote mutation 전에 거부한다. Hold 조회 자체가 실패하거나 boolean preservation policy를 평가할 수 없어도 같은 방식으로 거부한다.
+
+Hold 해제는 별도의 signed change로만 수행한다. 그 전에 최소한 독립된 off-host backup, 실제 restore test, 보호 대상 dataset/zvol의 ZFS snapshot과 보존 정책, 세 pool의 완료된 scrub, 모든 물리 디스크의 SMART/NVMe health, 기존 12개 democratic-csi volume의 backup/restore 범위와 application-consistent quiesce 절차를 증명해야 한다. Manifest와 rollback archive는 구성 동등성/host recovery 증거일 뿐 dataset/zvol payload backup이 아니다.
 
 ```bash
 nix run .#adopt-host -- n2p1
@@ -53,6 +61,31 @@ nix run .#homelab-host -- commit n2p1
 nix run .#homelab-host -- verify-host n2p1
 nix run .#homelab-host -- verify-legacy-cleanup n2p1
 ```
+
+`rock5bp`는 one-step `reconcile`을 사용할 수 없다. 현재 hold에서는 다음 read-only 명령만 사용한다.
+
+```bash
+nix run .#adopt-host -- manifest rock5bp
+nix run .#homelab-host -- storage-impact rock5bp
+nix run .#homelab-host -- verify-host rock5bp
+```
+
+위 backup/scrub/device-health 전제와 signed hold 해제가 끝난 뒤에만 다음 guarded lifecycle을 사용한다.
+
+```bash
+nix run .#adopt-host -- rock5bp
+nix run .#homelab-host -- storage-impact rock5bp
+nix run .#deploy -- rock5bp
+# captured storage consumers와 Samba session을 수동으로 quiesce
+nix run .#homelab-host -- activate rock5bp
+nix run .#homelab-host -- reboot rock5bp
+nix run .#homelab-host -- reboot-verify rock5bp
+nix run .#homelab-host -- commit rock5bp
+# commit은 storage-pending에 멈춘다. 원래 consumer를 수동으로 복구
+nix run .#homelab-host -- storage-resume-verify rock5bp
+```
+
+마지막 명령은 NAS baseline, PV/PVC binding, Running+Ready consumer, attached VolumeAttachment, consuming node의 matching iSCSI session을 읽기 전용으로 확인한다. 모두 복구된 뒤에만 local receipt를 `committed`로 바꾼다.
 
 권장 순서: `n2p1` → `n2p2` → `rpi4` → `rock5bp` → `macmini` → `rpi5`. rpi5는 wg0 edge gateway이므로 마지막이다.
 
@@ -70,7 +103,10 @@ nix run .#homelab-host -- rollback n2p1 <system-manager-generation>
 
 `reboot`와 `reboot-verify`는 command entry에서 완료된 watchdog rollback을 먼저 local receipt에 동기화하고, `rearm` 실패 직후에도 다시 동기화한다. Deadline과 `rearm`이 경합해 rollback이 완료된 경우 receipt는 `rolled-back`으로 남으며 stale `rebooting` 상태를 유지하지 않는다.
 
-Recovery artifact에는 전체 `/etc`, root/사용자 SSH state, cron spool, reconciliation 전 distro package 설치/미설치 inventory, runtime firewall, K3s install-script binary/helper files, legacy K3s unit, server etcd snapshot과 datastore cold backup을 보관한다. 자동 rollback은 새 K3s/zram을 정지하고 previous secret generation, 이전 system-manager generation 또는 deactivate, recovery archive, native network/SSH/time synchronization, legacy K3s, runtime firewall, migration이 제거한 distro package 재설치와 새로 설치한 package 제거, tuning/iSCSI 순서로 복구한다. systemd에서 실행되는 rollback script는 `/usr/local/sbin:/usr/local/bin:/usr/sbin:/usr/bin:/sbin:/bin`을 명시적으로 사용한다. Cilium이 재생성하는 nft set을 참조하는 captured ruleset은 legacy K3s가 먼저 시작된 뒤 `iptables-restore --test` bounded retry를 통과할 때만 적용한다. Full snapshot 적용 뒤 node-local CRI로 `cilium-agent` container를 restart하고 새 container ID와 `127.0.0.1:9879/healthz`를 확인해 initial full reconciliation을 강제한다. NTP가 일시적으로 unavailable이면 package 복구만 보류하고 legacy K3s를 먼저 복구한 채 rollback timer를 유지한다. Restore는 한 번 재시도하며, 완료된 secret/system-manager/archive/firewall stage marker를 재사용해 destructive prefix와 Cilium restart를 반복하지 않는다. 두 번 모두 실패하면 `accept`를 실행하거나 recovery artifact와 `rollback.log`를 삭제하지 않는다. `status`는 rollback log와 service journal을 함께 출력한다. 복구가 끝날 때까지 timer는 enabled 상태로 남아 실패 후 reboot에서 다시 시도할 수 있다.
+Recovery artifact에는 전체 `/etc`, root/사용자 SSH state, cron spool, reconciliation 전 distro package 설치/미설치 inventory, runtime firewall, K3s install-script binary/helper files, legacy K3s unit, server etcd snapshot과 datastore cold backup을 보관한다. 자동 rollback은 새 K3s/zram을 정지하고 previous secret generation, 이전 system-manager generation 또는 deactivate, recovery archive, native network/SSH/time synchronization, legacy K3s, runtime firewall, migration이 제거한 distro package 재설치와 새로 설치한 package 제거, tuning/iSCSI 순서로 복구한다. `rock5bp`의 full archive는 forensic recovery용으로 그대로 보존하지만 자동 rollback extraction은 ZFS, rtslib/targetcli, Samba/NFS, `democratic-csi` identity/access, native firewall, cron을 제외하며 runtime firewall restore와 firewall loader enable도 건너뛴다. systemd에서 실행되는 rollback script는 `/usr/local/sbin:/usr/local/bin:/usr/sbin:/usr/bin:/sbin:/bin`을 명시적으로 사용한다. Cilium이 재생성하는 nft set을 참조하는 captured ruleset은 legacy K3s가 먼저 시작된 뒤 `iptables-restore --test` bounded retry를 통과할 때만 적용한다. Full snapshot 적용 뒤 node-local Cilium agent container 하나를 재시작해 BPF와 restored nft state를 맞추고 Cilium health가 돌아와야 rollback을 완료한다.
+`rock5bp` rollback artifact에는 hash-verified manifest와 같은 read-only capture script도 복사한다. 수동 restore와 15분 watchdog rollback은 첫 host mutation 전에 이 baseline을 확인하고, 복구 뒤 timer를 해제하기 전에 다시 확인한다. Drift가 있으면 NAS나 host state를 더 변경하지 않고 recovery를 armed 상태로 남긴다.
+
+이 recovery artifact는 ZFS dataset/zvol의 실제 payload를 포함하지 않으며 NAS backup을 대체하지 않는다.
 
 ## Service ownership
 
@@ -78,8 +114,8 @@ Recovery artifact에는 전체 `/etc`, root/사용자 SSH state, cron spool, rec
 
 - hostname, locale, timezone, hosts, resolver, SSH, sysctl, tmpfiles, zram-generator는 declarative file과 native generator가 소유한다. zram 크기는 topology의 nominal RAM이 아니라 boot 시점의 실제 usable RAM 절반(`ram / 2`)으로 계산해 기존 Ansible `ansible_memtotal_mb // 2` 계약과 kernel-reserved memory를 보존한다. Native `systemd-timesyncd`는 activation과 rollback에서 enable/restart한다. 최초 clock recovery가 DNSSEC/DoT와 현재 시각에 의존하지 않도록 `/etc/systemd/timesyncd.conf`에는 numeric NTP endpoints만 선언하며 compiled hostname fallback은 비운다. Activation과 verification은 `NTPSynchronized=yes`를 bounded retry로 확인한 뒤 K3s 전환을 진행한다. DNS는 live-proven `DNSSEC=yes`, `DNSOverTLS=yes`를 사용하고 LAN link에 DoT hostname, `MulticastDNS=yes`, `LLMNR=no`를 명시한다.
 - WireGuard는 networkd `.netdev`/`.network`와 encrypted systemd credentials를 사용한다. 첫 activation의 reload/reconfigure와 peer 검증은 migration command가 수행한다.
-- Firewall은 distro-native `iptables.service`/`netfilter-persistent`가 Nix-rendered rules file을 boot에 적재한다. `iptables`, `iptables-save`, `iptables-restore`는 모두 `(nf_tables)`를 보고해야 하는 iptables-nft backend invariant다. Running host에서는 native loader를 restart하지 않고 migration command가 `iptables-restore --noflush`로 rules를 갱신한 뒤 기존 Cilium feeder chain 뒤에 HOMELAB jump를 재삽입한다. Reboot 뒤 Cilium이 feeder chain을 다시 만든 경우에는 `homelab-k3s.service`의 bounded `ExecStartPost` reconciliation이 완료될 때까지 unit activation을 유지하고 같은 ordering을 복구한다. Reboot verification도 K3s service와 Cilium/HOMELAB ordering을 bounded retry로 기다린다. INPUT/FORWARD jump 이동은 새 jump를 먼저 삽입하고 이전 duplicate를 뒤에서부터 제거해 DROP policy 아래에서도 관리 SSH 경로가 한 순간도 사라지지 않게 한다. 실패 시 persistent recovery service가 archive의 runtime ruleset을 복구한다. rock5bp의 active Samba client `192.168.219.139/32` TCP/445와 LAN NetBIOS UDP/137-138도 선언적으로 유지한다.
-- Distro package 설치·삭제, native service enable/reload, legacy file 제거는 `prepare`/`activate`/`commit` migration command에서만 실행한다. 비대화형 remote verification도 distro별 admin binary 탐색이 login PATH에 의존하지 않도록 `/usr/local/sbin:/usr/local/bin:/usr/sbin:/usr/bin:/sbin:/bin`을 명시한다.
+- Firewall은 기본적으로 distro-native `iptables.service`/`netfilter-persistent`가 Nix-rendered rules file을 boot에 적재한다. `iptables`, `iptables-save`, `iptables-restore`는 모두 `(nf_tables)`를 보고해야 하는 iptables-nft backend invariant다. Running host에서는 native loader를 restart하지 않고 migration command가 `iptables-restore --noflush`로 rules를 갱신한 뒤 기존 Cilium feeder chain 뒤에 HOMELAB jump를 재삽입한다. Reboot 뒤 Cilium이 feeder chain을 다시 만든 경우에는 `homelab-k3s.service`의 bounded `ExecStartPost` reconciliation이 완료될 때까지 unit activation을 유지하고 같은 ordering을 복구한다. Reboot verification도 K3s service와 Cilium/HOMELAB ordering을 bounded retry로 기다린다. INPUT/FORWARD jump 이동은 새 jump를 먼저 삽입하고 이전 duplicate를 뒤에서부터 제거해 DROP policy 아래에서도 관리 SSH 경로가 한 순간도 사라지지 않게 한다. 실패 시 persistent recovery service가 archive의 runtime ruleset을 복구한다. 예외로 `rock5bp`는 `homelab.firewall.manageRules=false`다. `/etc/iptables/rules.v4`와 runtime chain은 외부 소유이며 Nix와 migration/rollback 명령은 loader를 enable/restart하거나 `iptables-restore`, policy 변경, HOMELAB jump 추가·삭제를 실행하지 않는다. Manifest는 native rules hash와 NAS port runtime rules/listener만 equality 검증한다.
+- Distro package 설치·삭제, native service enable/reload, legacy file 제거는 `prepare`/`activate`/`commit` migration command에서만 실행한다. 비대화형 remote verification도 distro별 admin binary 탐색이 login PATH에 의존하지 않도록 `/usr/local/sbin:/usr/local/bin:/usr/sbin:/usr/bin:/sbin:/bin`을 명시한다. `rock5bp`에서는 package reconciliation과 rollback package restore가 read-only이며 missing generic prerequisite가 있으면 외부에서 먼저 설치하도록 실패한다.
 - iSCSI client는 K3s가 native `iscsid.service`와 `open-iscsi.service`를 직접 wants/after로 참조한다. sshd는 legacy main config가 drop-in을 include하지 않는 host도 있으므로 `/etc/ssh/sshd_config` 전체를 Nix가 소유하고 `/etc/ssh/authorized_keys.d/%u`를 실제 effective config에서 읽는지 검증한다. OpenSSH `StrictModes`가 absolute managed-key path를 거부하지 않도록 systemd-tmpfiles가 SSH reload 전에 `/etc`, `/etc/ssh`, `/etc/ssh/authorized_keys.d`를 모두 `root:root 0755`로 수렴시키며, migration command는 이 ancestor invariant와 managed admin key 존재를 확인한다. 비-root migration SSH 사용자의 NOPASSWD grant도 `/etc/sudoers.d/homelab-admin`으로 선언한다.
 
 iptables frontend가 legacy backend를 보고하면 `prepare`, `activate`, `verify-host`, runtime capture/restore는 ruleset을 건드리기 전에 실패한다. Migration command는 `update-alternatives`를 실행하거나 backend를 자동 전환하지 않는다. x_tables와 nf_tables ruleset은 서로 보이지 않으므로 backend 전환은 이 migration의 범위가 아니다. 필요한 경우 두 backend를 각각 별도 보존하고 독립된 canary 절차로 전환해야 한다.
@@ -128,7 +164,7 @@ nix run .#decommission-host -- <old-node>
 
 K3s version과 순차 rollout은 기존 Rancher `system-upgrade-controller`가 단독 소유한다. Nix topology는 K3s version을 선언하거나 binary를 Nix store에 고정하지 않는다. `homelab-k3s.service`는 install-script layout의 `/usr/local/bin/k3s`를 `exec`하고 `Restart=always`로 실행하므로, Rancher `k3s-upgrade`가 binary를 교체하고 기존 process를 종료하면 systemd가 동일 unit을 새 binary로 다시 시작한다. 기존 `k3s.service`/`k3s-agent.service` unit은 cutover 후 제거하지만 `/usr/local/bin/k3s`와 install helper는 유지한다.
 
-`n2p1`, `n2p2`, `rpi4`, `rpi5`, `rock5bp`는 live iSCSI client dependency를 유지한다. `rock5bp`는 `democratic-csi` uid/gid 1001, `/etc/ssh/authorized_keys.d/democratic-csi`, NOPASSWD sudo와 targetcli를 추가로 유지한다.
+`n2p1`, `n2p2`, `rpi4`, `rpi5`, `rock5bp`는 live iSCSI client dependency를 유지한다. `rock5bp`의 NAS plane은 계속 외부 소유다. Nix는 ZFS pool/dataset/zvol, rtslib/targetcli, Samba/NFS, storage cron, `democratic-csi` uid/gid 1001 identity, `/home/democratic-csi/.ssh/authorized_keys`, `/etc/sudoers.d/democratic-csi`, native firewall file/runtime chain을 선언하거나 쓰지 않는다. Commit generation의 sshd는 기존 home key lookup과 managed admin-key lookup을 함께 유지한다.
 
 ## Ansible ownership boundary
 

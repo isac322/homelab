@@ -10,6 +10,7 @@
 let
   cfg = config.homelab;
   k8sMember = hostConfig.k3sRole != null;
+  preserveNasState = hostConfig.preserveNasState or false;
   sshUser = builtins.head (lib.splitString "@" hostConfig.sshTarget);
   tuning = hostConfig.tuning or { };
   zramEnabled = cfg.zram;
@@ -38,7 +39,9 @@ let
   ];
   democraticCsiKey = builtins.readFile ../../../ssh_pub_keys/democratic-csi.pub;
   authorizedKeysFile =
-    if cfg.allowDestructiveCommit then
+    if preserveNasState then
+      ".ssh/authorized_keys /etc/ssh/authorized_keys.d/%u"
+    else if cfg.allowDestructiveCommit then
       "/etc/ssh/authorized_keys.d/%u"
     else
       ".ssh/authorized_keys /etc/ssh/authorized_keys.d/%u";
@@ -184,7 +187,7 @@ in
         '';
         replaceExisting = true;
       };
-      "sudoers.d/democratic-csi" = lib.mkIf hostConfig.iscsiServer {
+      "sudoers.d/democratic-csi" = lib.mkIf (hostConfig.iscsiServer && !preserveNasState) {
         text = "democratic-csi ALL=(ALL) NOPASSWD: ALL\n";
         mode = "0440";
         replaceExisting = true;
@@ -254,7 +257,7 @@ in
         mode = "0644";
         replaceExisting = true;
       };
-      "ssh/authorized_keys.d/democratic-csi" = lib.mkIf hostConfig.iscsiServer {
+      "ssh/authorized_keys.d/democratic-csi" = lib.mkIf (hostConfig.iscsiServer && !preserveNasState) {
         text = democraticCsiKey;
         mode = "0644";
         replaceExisting = true;
@@ -298,7 +301,7 @@ in
 
     users.groups = lib.mkMerge [
       { bhyoo.gid = 1000; }
-      (lib.mkIf hostConfig.iscsiServer { democratic-csi.gid = 1001; })
+      (lib.mkIf (hostConfig.iscsiServer && !preserveNasState) { democratic-csi.gid = 1001; })
     ];
     users.users = lib.mkMerge [
       {
@@ -312,7 +315,7 @@ in
           extraGroups = [ "sudo" ];
         };
       }
-      (lib.mkIf hostConfig.iscsiServer {
+      (lib.mkIf (hostConfig.iscsiServer && !preserveNasState) {
         democratic-csi = {
           isNormalUser = true;
           uid = 1001;

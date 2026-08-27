@@ -81,6 +81,11 @@ in
     enable = lib.mkEnableOption "homelab firewall" // {
       default = true;
     };
+    manageRules = lib.mkOption {
+      type = lib.types.bool;
+      default = !(hostConfig.preserveNasState or false);
+      description = "Manage homelab firewall rule files and runtime chains.";
+    };
     localNetwork = lib.mkOption {
       type = lib.types.str;
       default = "192.168.219.0/24";
@@ -98,12 +103,12 @@ in
     };
   };
   config = lib.mkIf cfg.enable {
-    environment.etc."homelab/firewall.rules" = {
+    environment.etc."homelab/firewall.rules" = lib.mkIf cfg.manageRules {
       text = liveRules;
       mode = "0600";
       replaceExisting = true;
     };
-    environment.etc.${nativeRulesPath} = {
+    environment.etc.${nativeRulesPath} = lib.mkIf cfg.manageRules {
       text = bootRules;
       mode = "0600";
       replaceExisting = true;

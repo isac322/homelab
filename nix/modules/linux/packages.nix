@@ -7,6 +7,7 @@
 }:
 let
   cfg = config.homelab.distroPackages;
+  preserveNasState = hostConfig.preserveNasState or false;
   aptPresent = [
     "locales"
     "systemd-resolved"
@@ -20,7 +21,7 @@ let
     "sg3-utils"
     "scsitools"
   ];
-  iscsiServerPresent = lib.optionals hostConfig.iscsiServer [ "targetcli-fb" ];
+  iscsiServerPresent = lib.optionals (hostConfig.iscsiServer && !preserveNasState) [ "targetcli-fb" ];
   pacmanAbsent = [
     "networkmanager"
     "networkd-dispatcher"
@@ -35,7 +36,7 @@ let
     "wireguard-tools"
     "iptables"
   ];
-  defaultAbsent =
+  baseAbsent =
     if hostConfig.packageBackend == "pacman" then
       pacmanAbsent
     else
@@ -47,6 +48,11 @@ let
         "snapd"
         "ufw"
       ];
+  defaultAbsent =
+    if preserveNasState then
+      lib.remove (if hostConfig.packageBackend == "pacman" then "cronie" else "cron") baseAbsent
+    else
+      baseAbsent;
   list = lib.concatMapStringsSep " " lib.escapeShellArg;
 in
 {
