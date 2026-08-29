@@ -60,9 +60,14 @@ nix run .#homelab-host -- verify-host n2p1
 nix run .#homelab-host -- verify-legacy-cleanup n2p1
 ```
 
-`rock5bp`도 one-step `reconcile` 대신 표준 guarded lifecycle을 사용한다. `deploy`가 `prepare`를 실행하며, 다음 순서로 migration한다.
+`rock5bp`도 one-step `reconcile` 대신 표준 guarded lifecycle을 사용한다. 먼저 host age identity와 live WireGuard/K3s identity를 host bundle로 import하고, 생성된 ciphertext를 서명한 commit으로 push한다. `reconcile-distro-packages`는 이 NAS host에서 read-only prerequisite check로 동작하므로 missing package가 있으면 host에서 명시적으로 설치한 뒤 다시 실행한다. `deploy`가 `prepare`를 실행하며, 다음 순서로 migration한다.
 
 ```bash
+nix run .#bootstrap-age-identity -- rock5bp
+nix run .#import-wireguard-host -- rock5bp
+nix run .#import-wireguard-host -- rock5bp --write
+# commit and push nix/secrets/wireguard/hosts/node-rock5bp.sops.yaml
+nix run .#reconcile-distro-packages -- rock5bp
 nix run .#adopt-host -- rock5bp
 nix run .#homelab-host -- storage-impact rock5bp
 nix run .#deploy -- rock5bp
