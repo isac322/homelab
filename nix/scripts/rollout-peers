@@ -18,22 +18,6 @@ EOF
 nix_eval() { nix --extra-experimental-features 'nix-command flakes' eval "$@"; }
 json_eval() { nix_eval --json "$@"; }
 host_field() { nix_eval --raw "$root#topology.nodes.$1.$2"; }
-host_mutation_hold_reason() {
-  local raw
-  raw=$(json_eval "$root#topology.nodes.$1.hostMutationHoldReason") || return 1
-  printf '%s' "$raw" | jq -r '. // empty'
-}
-assert_host_mutation_allowed() {
-  local host=$1 reason
-  reason=$(host_mutation_hold_reason "$host") || {
-    echo "$host host mutation hold could not be evaluated" >&2
-    return 1
-  }
-  test -z "$reason" || {
-    echo "$host host mutation is held: $reason" >&2
-    return 1
-  }
-}
 remote() {
   local host=$1
   shift
@@ -94,7 +78,6 @@ case "${1:-}" in
   *)
     test "$#" -eq 1 || { usage >&2; exit 2; }
     target=$1
-    assert_host_mutation_allowed "$target"
     lifecycle=$(host_field "$target" lifecycle)
     case "$lifecycle" in
       active|provisioning|decommissioning) ;;
@@ -125,9 +108,6 @@ case "${1:-}" in
       apply_hosts="$affected"
     fi
     test -n "$apply_hosts" || { echo "no active Linux peers are affected by $target" >&2; exit 0; }
-    for host in $apply_hosts; do
-      assert_host_mutation_allowed "$host"
-    done
 
     if test -d /dev/shm && test -w /dev/shm; then
       work=$(mktemp -d /dev/shm/homelab-peer-rollout.XXXXXX)

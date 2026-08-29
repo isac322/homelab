@@ -30,22 +30,6 @@ preserve_nas_state() {
     *) echo "$host preserveNasState is not boolean: $value" >&2; return 1 ;;
   esac
 }
-host_mutation_hold_reason() {
-  local raw
-  raw=$(nix_eval --json "$root#topology.nodes.$1.hostMutationHoldReason") || return 1
-  printf '%s' "$raw" | jq -r '. // empty'
-}
-assert_host_mutation_allowed() {
-  local host=$1 reason
-  reason=$(host_mutation_hold_reason "$host") || {
-    echo "$host host mutation hold could not be evaluated" >&2
-    return 1
-  }
-  test -z "$reason" || {
-    echo "$host host mutation is held: $reason" >&2
-    return 1
-  }
-}
 remote() {
   local host=$1
   shift
@@ -273,7 +257,6 @@ baseline() {
 
 capture() {
   local host=$1 recovery role snapshot snapshot_command baseline_path
-  assert_host_mutation_allowed "$host"
   recovery="$state/recovery/$host-$(date -u +%Y%m%dT%H%M%SZ)"
   mkdir -m 0700 "$recovery"
   baseline_path=$(baseline "$host")

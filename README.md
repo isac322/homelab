@@ -43,13 +43,11 @@ nix run .#rotate-psk -- --link wg0-n2p1-n2p2
 4. `reboot-verify`: host가 다시 연결되면 완료된 watchdog rollback을 local receipt에 먼저 동기화하고 receipt가 `rebooting`인지 확인한 뒤, 다른 remote receipt/boot 검증보다 먼저 rollback timer를 15분으로 rearm한다. Rearm이 deadline과 경합해 실패하면 즉시 다시 동기화하고 검증을 중단한다. 그 뒤 remote receipt 조건과 pre-reboot boot ID를 검증하고 현재 boot ID가 달라졌는지 확인한다. 새 SSH session과 runtime contract 검증도 내부 armed verification entrypoint가 다시 rearm한 뒤 최대 12분 동안 수행하며, 성공한 경우에만 timer를 disarm한다. 검증 timeout/실패 시 timer를 armed 상태로 둔 채 즉시 restore를 시도하므로 SSH session이 끊겨도 persistent service가 복구를 계속할 수 있다. recovery archive/service는 `commit` 완료 전까지 유지한다.
 5. `commit`: 대상 host가 commit generation을 native build/register한 뒤 persistent timer를 arm하고 destructive activation과 legacy systemd unit/drop-in/tuning wrapper/distro package 제거를 수행한다. 각 armed runtime verification은 시작 전에 timer를 다시 갱신한다. 검증된 terminal receipt를 local receipt directory에 먼저 stage한 뒤 최종 `accept`가 cleanup 전에 다시 rearm하며, `accept` 성공 후 atomic rename으로 receipt를 공개한다. Rancher upgrade가 사용하는 `/usr/local/bin/k3s` install layout은 유지하며, 전체 검증과 `accept`가 성공한 경우에만 rollback artifact와 timer를 삭제한다.
 
-`preserveNasState=true`인 `rock5bp`는 같은 host-plane 전환을 사용하지만 NAS data plane은 전환 대상이 아니다. `prepare`의 baseline/verify는 read-only command만 사용한다. ZFS는 `zpool status -v`, `zpool get -H guid`, `zfs list -Hp -t filesystem,volume -o name,type,mountpoint,volsize` 결과를 기록한다. `zpool status -v`의 scrub/resilver `scan:` block은 진행률·속도·ETA가 바뀌므로 equality manifest에서 제외하지만 다음 labeled section부터 다시 기록해 pool state/status/action/see, remove/checkpoint, device topology, READ/WRITE/CKSUM error counters, 최종 `errors:` 결과는 유지한다. `volsize`는 zvol shrink를 검출하지만 live `used`/free capacity는 제외한다. `targetcli`는 one-shot 조회도 종료 시 auto-save할 수 있으므로 호출하지 않는다. Live target topology는 volatile session/statistics/ACL-info/action/control subtree를 제외한 `/sys/kernel/config/target` configfs path, metadata, readable value hash와 symlink target으로 캡처하고, persistent target state는 기존 `/etc/rtslib-fb-target/saveconfig.json`의 SHA-256 및 원문만 읽는다. Samba effective configuration은 `testparm -s`로 기록한다. 그 밖에 `democratic-csi` access, NFS/firewall/cron 파일의 hash와 stable stat(type/mode/uid/gid, regular-file size), storage service 상태, NAS listener를 `.host-state/baselines/rock5bp-nas-<timestamp>/`에 기록한다. Baseline, mutation phase 전후 verify, rollback verify 어디에서도 `targetcli`, `targetcli saveconfig`, 또는 NAS state writer를 실행하지 않는다.
+`rock5bp`의 NAS 표시는 이 host가 제공하는 device role을 설명하며, migration 전에 전체 pool을 별도로 backup해야 한다는 뜻이 아니다. `preserveNasState=true`는 ZFS pool/dataset/zvol과 data, target/iSCSI, Samba/NFS, 관련 configuration과 users, storage service ownership을 `system-manager` 전환 범위 밖에 둔다. 보존 정책을 평가하지 못하면 migration은 fail-closed한다.
 
-`prepare`는 democratic-csi PV/PVC/pod/VolumeAttachment와 consuming node의 정규화한 iSCSI session inventory도 recovery directory에 저장한다. `storage-impact`는 같은 정보를 변경 없이 출력한다. `activate`, `reboot`, `commit`은 captured PVC를 쓰는 live pod, attached VolumeAttachment, captured target에 남은 iSCSI session, 또는 Samba session이 하나라도 있으면 실패한다. 명령은 workload를 scale, patch, restart하지 않는다. Operator가 dependency 순서와 application-specific flush 절차를 판단해 수동으로 quiesce/resume해야 한다.
+`prepare`는 NAS baseline을 읽기 전용으로 기록한다. ZFS는 `zpool status -v`, `zpool get -H guid`, `zfs list -Hp -t filesystem,volume -o name,type,mountpoint,volsize` 결과를 기록한다. `zpool status -v`의 scrub/resilver `scan:` block은 진행률·속도·ETA가 바뀌므로 equality manifest에서 제외하지만 다음 labeled section부터 다시 기록해 pool state/status/action/see, remove/checkpoint, device topology, READ/WRITE/CKSUM error counters, 최종 `errors:` 결과는 유지한다. `volsize`는 zvol shrink를 검출하지만 live `used`/free capacity는 제외한다. `targetcli`는 one-shot 조회도 종료 시 auto-save할 수 있으므로 호출하지 않는다. Live target topology는 volatile session/statistics/ACL-info/action/control subtree를 제외한 `/sys/kernel/config/target` configfs path, metadata, readable value hash와 symlink target으로 캡처하고, persistent target state는 기존 `/etc/rtslib-fb-target/saveconfig.json`의 SHA-256 및 원문만 읽는다. Samba effective configuration은 `testparm -s`로 기록한다. 그 밖에 `democratic-csi` access, NFS/firewall/cron 파일의 hash와 stable stat(type/mode/uid/gid, regular-file size), storage service 상태, NAS listener를 `.host-state/baselines/rock5bp-nas-<timestamp>/`에 기록한다. Baseline, lifecycle gate, rollback verification은 `targetcli`, `targetcli saveconfig`, 또는 다른 NAS state writer를 실행하지 않는다.
 
-`rock5bp`는 현재 `hostMutationHoldReason`으로 모든 host mutation entrypoint가 fail-closed 상태다. 2026-08-27 read-only audit에서 ZFS snapshot 0개, Kubernetes CSI VolumeSnapshot/VolumeSnapshotClass/VolumeSnapshotContent 0개, 확인 가능한 backup workload 0개, `nas`의 마지막 scrub은 2025-10-06, `hot-data`는 2025-06-26 resilver 이후 scrub 기록 없음, `temporal`은 scan 기록 없음, `smartctl` 미설치를 확인했다. 이 hold는 `bootstrap-host`, adoption capture, `prepare`/`activate`/`reboot`/`reboot-verify`/`commit`, `restore-host`, secret staging, direct handoff `arm`/`rearm`/`disarm`/`accept`/`restore`/`cleanup-restored`, WireGuard peer rollout을 remote mutation 전에 거부한다. Hold 조회 자체가 실패하거나 boolean preservation policy를 평가할 수 없어도 같은 방식으로 거부한다.
-
-Hold 해제는 별도의 signed change로만 수행한다. 그 전에 최소한 독립된 off-host backup, 실제 restore test, 보호 대상 dataset/zvol의 ZFS snapshot과 보존 정책, 세 pool의 완료된 scrub, 모든 물리 디스크의 SMART/NVMe health, 기존 12개 democratic-csi volume의 backup/restore 범위와 application-consistent quiesce 절차를 증명해야 한다. Manifest와 rollback archive는 구성 동등성/host recovery 증거일 뿐 dataset/zvol payload backup이 아니다.
+`prepare`는 democratic-csi PV/PVC/pod/VolumeAttachment와 consuming node의 정규화한 iSCSI session inventory도 recovery directory에 저장한다. `storage-impact`와 lifecycle recovery checks는 Kubernetes resource, PV/PVC, VolumeAttachment, pod, iSCSI session을 관찰하기만 한다. Cluster resource를 scale, patch, restart하거나 다른 방식으로 변경하지 않는다. `activate`, `reboot-verify`, `commit`이 성공 상태를 기록하기 전에 같은 recovery checks를 자동으로 다시 실행하며, NAS 보존 경계나 recovery 상태를 읽기 전용으로 확인할 수 없으면 진행하지 않는다.
 
 ```bash
 nix run .#adopt-host -- n2p1
@@ -62,30 +60,19 @@ nix run .#homelab-host -- verify-host n2p1
 nix run .#homelab-host -- verify-legacy-cleanup n2p1
 ```
 
-`rock5bp`는 one-step `reconcile`을 사용할 수 없다. 현재 hold에서는 다음 read-only 명령만 사용한다.
-
-```bash
-nix run .#adopt-host -- manifest rock5bp
-nix run .#homelab-host -- storage-impact rock5bp
-nix run .#homelab-host -- verify-host rock5bp
-```
-
-위 backup/scrub/device-health 전제와 signed hold 해제가 끝난 뒤에만 다음 guarded lifecycle을 사용한다.
+`rock5bp`도 one-step `reconcile` 대신 표준 guarded lifecycle을 사용한다. `deploy`가 `prepare`를 실행하며, 다음 순서로 migration한다.
 
 ```bash
 nix run .#adopt-host -- rock5bp
 nix run .#homelab-host -- storage-impact rock5bp
 nix run .#deploy -- rock5bp
-# captured storage consumers와 Samba session을 수동으로 quiesce
 nix run .#homelab-host -- activate rock5bp
 nix run .#homelab-host -- reboot rock5bp
 nix run .#homelab-host -- reboot-verify rock5bp
 nix run .#homelab-host -- commit rock5bp
-# commit은 storage-pending에 멈춘다. 원래 consumer를 수동으로 복구
-nix run .#homelab-host -- storage-resume-verify rock5bp
 ```
 
-마지막 명령은 NAS baseline, PV/PVC binding, Running+Ready consumer, attached VolumeAttachment, consuming node의 matching iSCSI session을 읽기 전용으로 확인한다. 모두 복구된 뒤에만 local receipt를 `committed`로 바꾼다.
+`storage-impact`는 변경 전에 Kubernetes/PV/PVC/VolumeAttachment와 storage session 영향을 읽기 전용으로 보여 준다. `activate`, `reboot-verify`, `commit`은 성공 상태를 기록하기 전에 자동 read-only recovery checks를 실행한다. 이 checks는 cluster workload나 storage resource를 변경하지 않으며, `preserveNasState` ownership boundary와 recovery 상태를 확인할 수 있을 때만 다음 phase를 기록한다.
 
 권장 순서: `n2p1` → `n2p2` → `rpi4` → `rock5bp` → `macmini` → `rpi5`. rpi5는 wg0 edge gateway이므로 마지막이다.
 
@@ -106,7 +93,7 @@ nix run .#homelab-host -- rollback n2p1 <system-manager-generation>
 Recovery artifact에는 전체 `/etc`, root/사용자 SSH state, cron spool, reconciliation 전 distro package 설치/미설치 inventory, runtime firewall, K3s install-script binary/helper files, legacy K3s unit, server etcd snapshot과 datastore cold backup을 보관한다. 자동 rollback은 새 K3s/zram을 정지하고 previous secret generation, 이전 system-manager generation 또는 deactivate, recovery archive, native network/SSH/time synchronization, legacy K3s, runtime firewall, migration이 제거한 distro package 재설치와 새로 설치한 package 제거, tuning/iSCSI 순서로 복구한다. `rock5bp`의 full archive는 forensic recovery용으로 그대로 보존하지만 자동 rollback extraction은 ZFS, rtslib/targetcli, Samba/NFS, `democratic-csi` identity/access, native firewall, cron을 제외하며 runtime firewall restore와 firewall loader enable도 건너뛴다. systemd에서 실행되는 rollback script는 `/usr/local/sbin:/usr/local/bin:/usr/sbin:/usr/bin:/sbin:/bin`을 명시적으로 사용한다. Cilium이 재생성하는 nft set을 참조하는 captured ruleset은 legacy K3s가 먼저 시작된 뒤 `iptables-restore --test` bounded retry를 통과할 때만 적용한다. Full snapshot 적용 뒤 node-local Cilium agent container 하나를 재시작해 BPF와 restored nft state를 맞추고 Cilium health가 돌아와야 rollback을 완료한다.
 `rock5bp` rollback artifact에는 hash-verified manifest와 같은 read-only capture script도 복사한다. 수동 restore와 15분 watchdog rollback은 첫 host mutation 전에 이 baseline을 확인하고, 복구 뒤 timer를 해제하기 전에 다시 확인한다. Drift가 있으면 NAS나 host state를 더 변경하지 않고 recovery를 armed 상태로 남긴다.
 
-이 recovery artifact는 ZFS dataset/zvol의 실제 payload를 포함하지 않으며 NAS backup을 대체하지 않는다.
+이 recovery artifact는 host configuration과 rollback을 위한 것이며, `preserveNasState`가 제외한 ZFS dataset/zvol data를 복사하거나 소유하지 않는다.
 
 ## Service ownership
 

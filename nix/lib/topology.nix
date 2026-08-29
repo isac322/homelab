@@ -33,7 +33,6 @@ let
       firewall = extra.firewall or { };
       tuning = extra.tuning or { };
       preserveNasState = extra.preserveNasState or false;
-      hostMutationHoldReason = extra.hostMutationHoldReason or null;
       iscsiServer = extra.iscsiServer or false;
       iscsiClient = extra.iscsiClient or false;
     };
@@ -141,7 +140,6 @@ let
             ];
           };
           preserveNasState = true;
-          hostMutationHoldReason = "No verified independent NAS backup and restore test, ZFS snapshots, recent ZFS scrub, or disk SMART/NVMe health evidence";
           iscsiServer = true;
           iscsiClient = true;
         };

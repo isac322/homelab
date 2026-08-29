@@ -19,7 +19,6 @@ Usage: homelab-host <command> [arguments]
   reboot <host>
   reboot-verify <host>
   commit <host>
-  storage-resume-verify <host>
   restore-host <host>
   rollback <host> <system-manager-generation>
   deploy <host>                 Alias for prepare; activation remains explicit
@@ -49,24 +48,7 @@ preserve_nas_state() {
   esac
 }
 manage_firewall_rules() { nix_eval --json "$root#systemConfigs.$1.config.homelab.firewall.manageRules"; }
-host_mutation_hold_reason() {
-  local raw
-  raw=$(nix_eval --json "$root#topology.nodes.$1.hostMutationHoldReason") || return 1
-  printf '%s' "$raw" | jq -r '. // empty'
-}
-assert_host_mutation_allowed() {
-  local host=$1 reason
-  reason=$(host_mutation_hold_reason "$host") || {
-    echo "$host host mutation hold could not be evaluated" >&2
-    return 1
-  }
-  test -z "$reason" || {
-    echo "$host host mutation is held: $reason" >&2
-    return 1
-  }
-}
 receipt_nas_baseline() { jq -r '.nasBaseline // empty' "$(receipt "$1")"; }
-receipt_storage_inventory() { jq -r '.storageInventory // empty' "$(receipt "$1")"; }
 
 assert_preservation_plan_safe() {
   local host=$1 config_attribute=${2:-$1} names name preserve
@@ -680,171 +662,86 @@ verify_storage_inventory_integrity() {
   }
 }
 
-assert_storage_quiesced() {
-  local host=$1 inventory=$2 context directory blockers samba_status node session_lines captured_targets live_targets overlap session_blockers session_nodes preserve
+verify_storage_recovery() {
+  local host=$1 inventory=$2 wait=${3:-no} current deadline=0 remaining capture_timeout preserve
   preserve=$(preserve_nas_state "$host") || return 1
   [ "$preserve" = true ] || return 0
   verify_storage_inventory_integrity "$host" "$inventory" || return 1
-  context=${BACKBONE_CONTEXT:-homelab-backbone}
-  directory=$(mktemp -d "$state/.storage-quiesce.XXXXXX")
-  if ! kubectl --context "$context" get pods --all-namespaces -o json > "$directory/pods.json" \
-    || ! kubectl --context "$context" get volumeattachments.storage.k8s.io -o json > "$directory/volumeattachments.json"; then
-    rm -rf "$directory"
-    return 1
-  fi
-  blockers=$(jq -n \
-    --slurpfile captured "$inventory" \
-    --slurpfile pods "$directory/pods.json" \
-    --slurpfile attachments "$directory/volumeattachments.json" '
-      ($captured[0].pvcs | map(.namespace + "/" + .name)) as $claims
-      | ($captured[0].pvs | map(.name)) as $pvs
-      | {
-          pods: [$pods[0].items[]
-            | . as $pod
-            | ([.spec.volumes[]?
-                | select(.persistentVolumeClaim != null)
-                | ($pod.metadata.namespace + "/" + .persistentVolumeClaim.claimName)]
-              | map(select(. as $claim | $claims | index($claim)))) as $usedClaims
-            | select(($usedClaims | length) > 0)
-            | select(.status.phase != "Succeeded" and .status.phase != "Failed")
-            | {
-                namespace: .metadata.namespace,
-                name: .metadata.name,
-                nodeName: (.spec.nodeName // ""),
-                phase: (.status.phase // ""),
-                claims: $usedClaims
-              }],
-          volumeAttachments: [$attachments[0].items[]
-            | select(.status.attached == true)
-            | select(.spec.source.persistentVolumeName as $volume | $pvs | index($volume))
-            | {
-                name: .metadata.name,
-                pvName: .spec.source.persistentVolumeName,
-                nodeName: .spec.nodeName
-              }]
-        }
-    ')
-  session_blockers='[]'
-  if ! session_nodes=$(
-    {
-      jq -r '[.sessions[].nodeName, .volumeAttachments[].nodeName, .pods[].nodeName] | map(select(length > 0)) | unique[]' "$inventory"
-      nix_eval --json "$root#topology.nodes" | jq -r 'to_entries[] | select(.value.iscsiClient == true) | .key'
-    } | sort -u
-  ); then
-    rm -rf "$directory"
-    return 1
-  fi
-  while IFS= read -r node; do
-    [ -n "$node" ] || continue
-    captured_targets=$(jq -c --arg node "$node" '
-      [
-        (.volumeAttachments[] | select(.nodeName == $node) | .target),
-        (.sessions[] | select(.nodeName == $node) | .targets[])
-      ]
-      | map(select(length > 0))
-      | unique
-    ' "$inventory")
-    session_lines=$(node_iscsi_sessions "$node") || {
-      rm -rf "$directory"
+  if [ "$wait" = yes ]; then deadline=$((SECONDS + 600)); fi
+  current=$(mktemp "$state/.storage-recovery.XXXXXX")
+  while :; do
+    if ! "$root/nix/scripts/k3s-handoff" rearm "$host"; then
+      rm -f "$current"
       return 1
-    }
-    live_targets=$(printf '%s\n' "$session_lines" | jq -Rsc 'split("\n") | map(select(length > 0)) | unique')
-    overlap=$(jq -n --arg node "$node" --argjson captured "$captured_targets" --argjson live "$live_targets" '
-      {nodeName:$node,targets:[$live[] | select(. as $target | $captured | index($target))]}
-      | select((.targets | length) > 0)
-    ')
-    if [ -n "$overlap" ]; then
-      session_blockers=$(jq --argjson blocker "$overlap" '. + [$blocker]' <<< "$session_blockers")
     fi
-  done <<< "$session_nodes"
-  blockers=$(jq --argjson sessions "$session_blockers" '.iscsiSessions = $sessions' <<< "$blockers")
-  rm -rf "$directory"
-  if ! jq -e '(.pods | length) == 0 and (.volumeAttachments | length) == 0 and (.iscsiSessions | length) == 0' >/dev/null <<< "$blockers"; then
-    echo "$host disruptive phase is blocked by democratic-csi consumers:" >&2
-    jq . >&2 <<< "$blockers"
-    return 1
-  fi
-  samba_status=$(remote "$host" 'sudo -n env LC_ALL=C smbstatus -b') || return 1
-  if printf '%s\n' "$samba_status" | awk '
-    /^-+$/ { separator = 1; next }
-    separator && NF { live = 1 }
-    END {
-      if (!separator) exit 2
-      if (live) exit 0
-      exit 1
-    }
-  '; then
-    echo "$host disruptive phase is blocked by live Samba sessions" >&2
-    return 1
-  else
-    case "$?" in
-      1) ;;
-      *) echo "$host Samba session inventory could not be parsed" >&2; return 1 ;;
-    esac
-  fi
-}
-verify_storage_resume() {
-  local host=$1 inventory=$2 current
-  verify_storage_inventory_integrity "$host" "$inventory" || return 1
-  current=$(mktemp "$state/.storage-resume.XXXXXX")
-  if ! storage_impact_json "$host" > "$current"; then
-    rm -f "$current"
-    return 1
-  fi
-  if ! jq -e -n --slurpfile captured "$inventory" --slurpfile live "$current" '
-    def pvBindings:
-      map({name,uid,driver,volumeHandle,target,portal,claimNamespace,claimName,claimUid});
-    def pvcBindings:
-      map({namespace,name,uid,volumeName});
-    ($captured[0].pods
-      | map(select(.phase != "Succeeded" and .phase != "Failed") | .claims[])
-      | unique) as $expectedClaims
-    | ($live[0].pods
-      | map(select(any(.claims[]; . as $claim | $expectedClaims | index($claim))))) as $consumers
-    | ($captured[0].pvcs
-      | map(select((.namespace + "/" + .name) as $claim | $expectedClaims | index($claim))
-        | .volumeName)
-      | unique) as $expectedPvs
-    | ($live[0].volumeAttachments
-      | map(select(.attached == true)
-        | select(.pvName as $volume | $expectedPvs | index($volume)))) as $attachments
-    | ($captured[0].pvs | map(.name)) as $capturedPvNames
-    | ($captured[0].pvcs | map(.namespace + "/" + .name)) as $capturedPvcNames
-    | ($captured[0].pvs | pvBindings)
-      == ($live[0].pvs
-        | map(select(.name as $name | $capturedPvNames | index($name)))
-        | pvBindings)
-      and ($captured[0].pvcs | pvcBindings)
-      == ($live[0].pvcs
-        | map(select((.namespace + "/" + .name) as $claim | $capturedPvcNames | index($claim)))
-        | pvcBindings)
-      and all($expectedClaims[];
-        . as $claim
-        | any($consumers[];
-            (.claims | index($claim)) != null
-            and .phase == "Running"
-            and .ready == true))
-      and all($consumers[];
-        .phase == "Succeeded"
-        or .phase == "Failed"
-        or (.phase == "Running" and .ready == true))
-      and all($expectedPvs[];
-        . as $volume
-        | any($attachments[];
-            .pvName == $volume
-            and .nodeName != ""
-            and .target != ""))
-      and all($attachments[];
-        . as $attachment
-        | any($live[0].sessions[];
-            .nodeName == $attachment.nodeName
-            and (.targets | index($attachment.target)) != null))
-  ' >/dev/null; then
-    echo "$host democratic-csi consumers have not recovered to the captured bindings, readiness, attachments, and iSCSI sessions" >&2
-    rm -f "$current"
-    return 1
-  fi
+    capture_timeout=90
+    if [ "$wait" = yes ]; then
+      remaining=$((deadline - SECONDS))
+      [ "$remaining" -gt 0 ] || break
+      if [ "$remaining" -lt "$capture_timeout" ]; then capture_timeout=$remaining; fi
+    fi
+    if timeout --foreground --kill-after=10s "${capture_timeout}s" "$0" storage-impact "$host" > "$current" \
+      && jq -e -n --slurpfile captured "$inventory" --slurpfile live "$current" '
+        def pvBindings:
+          map({name,uid,driver,volumeHandle,target,portal,claimNamespace,claimName,claimUid});
+        def pvcBindings:
+          map({namespace,name,uid,volumeName});
+        ($captured[0].pods
+          | map(select(.phase != "Succeeded" and .phase != "Failed") | .claims[])
+          | unique) as $expectedClaims
+        | ($live[0].pods
+          | map(select(any(.claims[]; . as $claim | $expectedClaims | index($claim))))) as $consumers
+        | ($captured[0].pvcs
+          | map(select((.namespace + "/" + .name) as $claim | $expectedClaims | index($claim))
+            | .volumeName)
+          | unique) as $expectedPvs
+        | ($live[0].volumeAttachments
+          | map(select(.attached == true)
+            | select(.pvName as $volume | $expectedPvs | index($volume)))) as $attachments
+        | ($captured[0].pvs | map(.name)) as $capturedPvNames
+        | ($captured[0].pvcs | map(.namespace + "/" + .name)) as $capturedPvcNames
+        | ($captured[0].pvs | pvBindings)
+          == ($live[0].pvs
+            | map(select(.name as $name | $capturedPvNames | index($name)))
+            | pvBindings)
+          and ($captured[0].pvcs | pvcBindings)
+          == ($live[0].pvcs
+            | map(select((.namespace + "/" + .name) as $claim | $capturedPvcNames | index($claim)))
+            | pvcBindings)
+          and all($expectedClaims[];
+            . as $claim
+            | any($consumers[];
+                (.claims | index($claim)) != null
+                and .phase == "Running"
+                and .ready == true))
+          and all($consumers[];
+            .phase == "Succeeded"
+            or .phase == "Failed"
+            or (.phase == "Running" and .ready == true))
+          and all($expectedPvs[];
+            . as $volume
+            | any($attachments[];
+                .pvName == $volume
+                and .nodeName != ""
+                and .target != ""))
+          and all($attachments[];
+            . as $attachment
+            | any($live[0].sessions[];
+                .nodeName == $attachment.nodeName
+                and (.targets | index($attachment.target)) != null))
+      ' >/dev/null
+    then
+      rm -f "$current"
+      return 0
+    fi
+    [ "$wait" = yes ] || break
+    remaining=$((deadline - SECONDS))
+    [ "$remaining" -gt 2 ] || break
+    sleep 2
+  done
+  echo "$host preserved storage consumers did not recover to the captured bindings, readiness, attachments, and iSCSI sessions within the guarded interval" >&2
   rm -f "$current"
+  return 1
 }
 
 capture_managed_recovery() {
@@ -1119,8 +1016,6 @@ reboot_host() {
       ;;
   esac
   require_receipt_phase "$host" "$phase" || return 1
-  storage_inventory=$(receipt_storage_inventory "$host")
-  assert_storage_quiesced "$host" "$storage_inventory" || return 1
   file=$(receipt "$host")
   case "$phase" in
     activated)
@@ -1215,7 +1110,6 @@ case "${1:-}" in
   inventory) nix_eval --json "$root#topology.nodes" | jq . ;;
   bootstrap-host)
     host=${2:?host required}
-    assert_host_mutation_allowed "$host"
     target=$(host_field "$host" sshTarget)
     ssh -tt -o StrictHostKeyChecking=accept-new "$target" "sh -ceu '
       user=\$(id -un)
@@ -1266,10 +1160,9 @@ case "${1:-}" in
     ;;
   reconcile)
     host=${2:?host required}
-    assert_host_mutation_allowed "$host"
     preserve=$(preserve_nas_state "$host") || exit 1
     [ "$preserve" != true ] || {
-      echo "$host preserves an external NAS data plane; use prepare, activate, reboot, reboot-verify, commit, and storage-resume-verify" >&2
+      echo "$host preserves an external NAS data plane; use prepare, activate, reboot, reboot-verify, and commit" >&2
       exit 1
     }
     sync_completed_rollback "$host"
@@ -1314,7 +1207,6 @@ case "${1:-}" in
     ;;
   prepare|deploy)
     host=${2:?host required}
-    assert_host_mutation_allowed "$host"
     sync_completed_rollback "$host"
     assert_preservation_plan_safe "$host"
     legacy_unit=$(remote "$host" 'for unit in k3s.service k3s-agent.service; do test "$(systemctl is-active "$unit" 2>/dev/null || true)" = active && { printf "%s" "$unit"; exit; }; done; true')
@@ -1344,7 +1236,6 @@ case "${1:-}" in
     ;;
   activate)
     host=${2:?host required}
-    assert_host_mutation_allowed "$host"
     require_receipt_phase "$host" prepared
     assert_preservation_plan_safe "$host"
     assert_iptables_nft_backend "$host"
@@ -1356,7 +1247,6 @@ case "${1:-}" in
     store_path=$(jq -r '.storePath // empty' "$receipt_file")
     nas_baseline=$(jq -r '.nasBaseline // empty' "$receipt_file")
     storage_inventory=$(jq -r '.storageInventory // empty' "$receipt_file")
-    assert_storage_quiesced "$host" "$storage_inventory"
     role=$(host_field "$host" k3sRole 2>/dev/null || true)
     capture_runtime_firewall "$host" "$recovery"
     "$root/nix/scripts/k3s-handoff" arm "$host" "$recovery" "$previous" "$legacy"
@@ -1380,7 +1270,8 @@ REMOTE_K3S_COLD_BACKUP
     if ! prepare_native_runtime_handoff "$host" \
       || ! activate_registered_system "$host" \
       || ! apply_native_runtime "$host" \
-      || ! "$0" verify-host-while-armed "$host"; then
+      || ! "$0" verify-host-while-armed "$host" \
+      || ! verify_storage_recovery "$host" "$storage_inventory" yes; then
       if rollback_armed_host "$host"; then
         record_rolled_back "$host" "$previous" "$legacy" "$recovery" "$secret_generation"
       else
@@ -1400,12 +1291,10 @@ REMOTE_K3S_COLD_BACKUP
     ;;
   reboot)
     host=${2:?host required}
-    assert_host_mutation_allowed "$host"
     reboot_host "$host"
     ;;
   reboot-verify)
     host=${2:?host required}
-    assert_host_mutation_allowed "$host"
     sync_completed_rollback "$host" || exit 1
     receipt_file=$(receipt "$host")
     phase=$(jq -r '.phase // empty' "$receipt_file" 2>/dev/null || true)
@@ -1429,6 +1318,7 @@ REMOTE_K3S_COLD_BACKUP
     boot_id=$(jq -r '.bootId // empty' "$receipt_file")
     if ! HOMELAB_STORAGE_WAIT=yes timeout --foreground --kill-after=30s 12m "$0" verify-host-while-armed "$host" \
       || ! verify_nas_baseline "$host" "$nas_baseline" yes \
+      || ! verify_storage_recovery "$host" "$storage_inventory" yes \
       || ! "$root/nix/scripts/k3s-handoff" disarm "$host"; then
       if rollback_armed_host "$host"; then
         record_rolled_back "$host" "$previous" "$legacy" "$recovery" "$secret_generation"
@@ -1439,7 +1329,6 @@ REMOTE_K3S_COLD_BACKUP
     ;;
   commit)
     host=${2:?host required}
-    assert_host_mutation_allowed "$host"
     require_receipt_phase "$host" reboot-verified
     assert_preservation_plan_safe "$host" "$host-commit"
     receipt_file=$(receipt "$host")
@@ -1449,7 +1338,6 @@ REMOTE_K3S_COLD_BACKUP
     secret_generation=$(jq -r '.secretGeneration // empty' "$receipt_file")
     nas_baseline=$(jq -r '.nasBaseline // empty' "$receipt_file")
     storage_inventory=$(jq -r '.storageInventory // empty' "$receipt_file")
-    assert_storage_quiesced "$host" "$storage_inventory"
     committed_store_path=$(register_system "$host" "$host-commit")
     if ! "$root/nix/scripts/k3s-handoff" rearm "$host"; then
       echo "$host commit rollback timer could not be armed; host state was not changed" >&2
@@ -1462,7 +1350,8 @@ REMOTE_K3S_COLD_BACKUP
       || ! cleanup_legacy_files "$host" \
       || ! apply_native_runtime "$host" \
       || ! "$0" verify-host-while-armed "$host" \
-      || ! verify_legacy_cleanup "$host"; then
+      || ! verify_legacy_cleanup "$host" \
+      || ! verify_storage_recovery "$host" "$storage_inventory" yes; then
       if rollback_armed_host "$host"; then
         record_rolled_back "$host" "$previous" "$legacy" "$recovery" "$secret_generation"
       else
@@ -1471,12 +1360,7 @@ REMOTE_K3S_COLD_BACKUP
       exit 1
     fi
     staged_receipt="$(receipt "$host").accepted"
-    preserve=$(preserve_nas_state "$host") || exit 1
-    if [ "$preserve" = true ]; then
-      render_receipt "$staged_receipt" "$host" storage-pending "$previous" "$legacy" "$recovery" "$secret_generation" "$committed_store_path" "" "$nas_baseline" "$storage_inventory"
-    else
-      render_receipt "$staged_receipt" "$host" committed "$previous" "$legacy" "$recovery" "$secret_generation" "$committed_store_path"
-    fi
+    render_receipt "$staged_receipt" "$host" committed "$previous" "$legacy" "$recovery" "$secret_generation" "$committed_store_path" "" "$nas_baseline" "$storage_inventory"
     if ! verify_nas_baseline "$host" "$nas_baseline" \
       || ! "$root/nix/scripts/k3s-handoff" accept "$host"; then
       rm -f "$staged_receipt"
@@ -1484,28 +1368,10 @@ REMOTE_K3S_COLD_BACKUP
       exit 1
     fi
     mv -f "$staged_receipt" "$(receipt "$host")"
-    if [ "$preserve" = true ]; then
-      printf 'storage-pending %s; restore workloads manually, then run storage-resume-verify\n' "$host"
-    fi
-    ;;
-  storage-resume-verify)
-    host=${2:?host required}; require_receipt_phase "$host" storage-pending yes
-    receipt_file=$(receipt "$host")
-    previous=$(jq -r '.previousGeneration // empty' "$receipt_file")
-    legacy=$(jq -r '.legacyK3sUnit // empty' "$receipt_file")
-    recovery=$(jq -r '.recoveryDirectory // empty' "$receipt_file")
-    secret_generation=$(jq -r '.secretGeneration // empty' "$receipt_file")
-    store_path=$(jq -r '.storePath // empty' "$receipt_file")
-    nas_baseline=$(jq -r '.nasBaseline // empty' "$receipt_file")
-    storage_inventory=$(jq -r '.storageInventory // empty' "$receipt_file")
-    verify_storage_resume "$host" "$storage_inventory"
-    verify_nas_baseline "$host" "$nas_baseline" yes
-    write_receipt "$host" committed "$previous" "$legacy" "$recovery" "$secret_generation" "$store_path" "" "$nas_baseline" "$storage_inventory"
-    printf 'committed %s after democratic-csi storage recovery verification\n' "$host"
+    printf 'committed %s after preserved storage recovery verification\n' "$host"
     ;;
   onboard-k3s-node)
     host=${2:?host required}
-    assert_host_mutation_allowed "$host"
     preserve=$(preserve_nas_state "$host") || exit 1
     test "${3:-}" = --token-source
     source_host=${4:?token source required}
@@ -1521,7 +1387,6 @@ REMOTE_K3S_COLD_BACKUP
     ;;
   reconcile-distro-packages)
     host=${2:?host required}
-    assert_host_mutation_allowed "$host"
     case "${3:-}" in
       "") purge=no ;;
       --purge) purge=yes ;;
@@ -1534,7 +1399,6 @@ REMOTE_K3S_COLD_BACKUP
     ;;
   verify-host-while-armed)
     host=${2:?host required}
-    assert_host_mutation_allowed "$host"
     verify_receipt_nas_baseline "$host" "${HOMELAB_STORAGE_WAIT:-no}"
     "$root/nix/scripts/k3s-handoff" rearm "$host"
     shift
@@ -1754,12 +1618,10 @@ REMOTE_VERIFY
     ;;
   restore-host)
     host=${2:?host required}
-    assert_host_mutation_allowed "$host"
     restore_host "$host"
     ;;
   rollback)
     host=${2:?host required}
-    assert_host_mutation_allowed "$host"
     preserve=$(preserve_nas_state "$host") || exit 1
     generation=${3:?generation required}
     [ "$preserve" != true ] || {

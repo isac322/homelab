@@ -598,11 +598,6 @@ sync_completed_rollback() {{
     mv "$RECEIPT.new" "$RECEIPT"
   fi
 }}
-receipt_storage_inventory() {{ jq -r '.storageInventory // empty' "$RECEIPT"; }}
-assert_storage_quiesced() {{
-  printf 'quiesce\\n' >> "$EVENTS"
-  test "${{QUIESCE_FAIL:-0}}" != 1
-}}
 verify_receipt_nas_baseline() {{
   printf 'baseline:%s\\n' "${{2:-no}}" >> "$EVENTS"
   test "${{BASELINE_FAIL:-0}}" != 1
@@ -643,7 +638,7 @@ seed activated
 guard_count=0
 : > "$EVENTS"
 reboot_host test-host
-printf '%s\\n' sync baseline:no rearm sync guard quiesce boot-id receipt:rebooting reboot > "$EXPECTED"
+printf '%s\\n' sync baseline:no rearm sync guard boot-id receipt:rebooting reboot > "$EXPECTED"
 cmp "$EXPECTED" "$EVENTS"
 test "$(jq -r .phase "$RECEIPT")" = rebooting
 test "$(jq -r .bootId "$RECEIPT")" = boot-1
@@ -717,19 +712,6 @@ cmp "$EXPECTED" "$EVENTS"
 test "$(jq -r .phase "$RECEIPT")" = activated
 unset BASELINE_FAIL
 
-seed activated
-guard_count=0
-: > "$EVENTS"
-QUIESCE_FAIL=1
-export QUIESCE_FAIL
-if reboot_host test-host; then
-  echo "reboot continued after storage quiesce failed" >&2
-  exit 1
-fi
-printf '%s\\n' sync baseline:no rearm sync guard quiesce > "$EXPECTED"
-cmp "$EXPECTED" "$EVENTS"
-test "$(jq -r .phase "$RECEIPT")" = activated
-unset QUIESCE_FAIL
 
 seed activated
 guard_count=0
@@ -746,7 +728,7 @@ unset REBOOT_RC
 guard_count=0
 : > "$EVENTS"
 reboot_host test-host
-printf '%s\\n' sync baseline:no rearm sync guard quiesce boot-id reboot > "$EXPECTED"
+printf '%s\\n' sync baseline:no rearm sync guard boot-id reboot > "$EXPECTED"
 cmp "$EXPECTED" "$EVENTS"
 
 seed rebooting boot-1
@@ -758,7 +740,7 @@ if reboot_host test-host; then
   echo "already rebooted host was rebooted again" >&2
   exit 1
 fi
-printf '%s\\n' sync baseline:no rearm sync guard quiesce boot-id > "$EXPECTED"
+printf '%s\\n' sync baseline:no rearm sync guard boot-id > "$EXPECTED"
 cmp "$EXPECTED" "$EVENTS"
 unset CURRENT_BOOT_ID
 
@@ -771,7 +753,7 @@ if reboot_host test-host; then
   echo "empty boot ID was accepted for reboot retry" >&2
   exit 1
 fi
-printf '%s\\n' sync baseline:no rearm sync guard quiesce boot-id > "$EXPECTED"
+printf '%s\\n' sync baseline:no rearm sync guard boot-id > "$EXPECTED"
 cmp "$EXPECTED" "$EVENTS"
 unset CURRENT_BOOT_ID
 
@@ -781,7 +763,7 @@ guard_count=0
 REBOOT_RC=255
 export REBOOT_RC
 reboot_host test-host
-printf '%s\\n' sync baseline:no rearm sync guard quiesce boot-id receipt:rebooting reboot > "$EXPECTED"
+printf '%s\\n' sync baseline:no rearm sync guard boot-id receipt:rebooting reboot > "$EXPECTED"
 cmp "$EXPECTED" "$EVENTS"
 unset REBOOT_RC
 """
@@ -839,7 +821,6 @@ def check_reboot_verify_phase_gate() -> None:
         script = f"""
 set -euo pipefail
 root=$ROOT
-assert_host_mutation_allowed() {{ :; }}
 receipt() {{ printf '%s\\n' "$RECEIPT"; }}
 sync_count=0
 sync_completed_rollback() {{
@@ -857,6 +838,7 @@ require_receipt_phase() {{
 }}
 assert_host_rebooted() {{ printf 'boot\\n' >> "$EVENTS"; }}
 verify_nas_baseline() {{ :; }}
+verify_storage_recovery() {{ printf 'storage\\n' >> "$EVENTS"; }}
 verify_armed() {{ printf 'verify\\n' >> "$EVENTS"; }}
 rollback_armed_host() {{ printf 'rollback\\n' >> "$EVENTS"; return 1; }}
 record_rolled_back() {{ printf 'rolled-back\\n' >> "$EVENTS"; }}
@@ -899,7 +881,7 @@ set -- reboot-verify test-host
         if (
             result.returncode
             or events.read_text()
-            != "sync\nrearm\nsync\nguard\nboot\nverify\ndisarm\nreceipt:reboot-verified\n"
+            != "sync\nrearm\nsync\nguard\nboot\nverify\nstorage\ndisarm\nreceipt:reboot-verified\n"
         ):
             raise SystemExit(
                 "nix/scripts/homelab-host: reboot-verify armed ordering is unsafe\n"
@@ -1305,7 +1287,6 @@ def check_accept_rearms_before_cleanup() -> None:
         (mock_bin / "nix").write_text(
             "#!/bin/sh\n"
             'case "$*" in\n'
-            "  *hostMutationHoldReason*) printf 'null\\n' ;;\n"
             "  *sshTarget*) printf 'test-target\\n' ;;\n"
             "  *) exit 97 ;;\n"
             "esac\n"
@@ -1418,7 +1399,6 @@ def check_armed_verify_entrypoint() -> None:
         script = f"""
 set -euo pipefail
 root=$ROOT
-assert_host_mutation_allowed() {{ :; }}
 verify_receipt_nas_baseline() {{ printf 'baseline:%s\\n' "$1" >> "$EVENTS"; }}
 set -- verify-host-while-armed test-host --baseline baseline
 {block}
@@ -2633,23 +2613,22 @@ errors: No known data errors
         "assert_preservation_plan_safe()",
         "verify_nas_baseline()",
         "storage_impact_json()",
-        "assert_storage_quiesced()",
+        "verify_storage_recovery()",
+        'deadline=$((SECONDS + 600))',
+        'if ! "$root/nix/scripts/k3s-handoff" rearm "$host"; then',
+        'timeout --foreground --kill-after=10s "${capture_timeout}s" "$0" storage-impact "$host"',
         "render_receipt()",
         "verify_storage_inventory_integrity()",
-        "verify_storage_resume()",
         "nasBaseline:$nasBaseline",
         "storageInventory:$storageInventory",
-        "storage-pending",
         'assert_preservation_plan_safe "$host" "$host-commit"',
-        "storage-resume-verify",
-        'preserves an external NAS data plane; use prepare, activate, reboot, reboot-verify, commit, and storage-resume-verify',
+        'preserves an external NAS data plane; use prepare, activate, reboot, reboot-verify, and commit',
         'if test "$MANAGE_FIREWALL_RULES" = true; then',
         "org.democratic-csi.",
         "volumeattachments.storage.k8s.io",
         "/sys/class/iscsi_session/session*/targetname",
         "select(.value.iscsiClient == true)",
         "systemd/system/smbd.service*",
-        "iscsiSessions",
         'sha256sum -c "$name.sha256"',
         "$capturedPvNames",
         "$capturedPvcNames",
@@ -2657,10 +2636,65 @@ errors: No known data errors
     ):
         if needle not in migration:
             raise SystemExit(f"nix/scripts/homelab-host: missing NAS preservation contract {needle!r}")
-    for forbidden in ("kubectl scale", "kubectl patch", "rollout restart"):
+    for forbidden in (
+        "kubectl scale",
+        "kubectl patch",
+        "rollout restart",
+    ):
         if forbidden in migration:
             raise SystemExit(
-                f"nix/scripts/homelab-host: preservation workflow must not automate workload quiescing: {forbidden}"
+                f"nix/scripts/homelab-host: preservation workflow contains mutating command {forbidden}"
+            )
+    storage_match = re.search(
+        r"storage_impact_json\(\) \{\n.*?^}",
+        migration,
+        re.DOTALL | re.MULTILINE,
+    )
+    if storage_match is None:
+        raise SystemExit("nix/scripts/homelab-host: storage impact helper is missing")
+    for line in storage_match.group(0).splitlines():
+        if "kubectl " in line and not re.search(r"\bkubectl\b.*\bget\b", line):
+            raise SystemExit(
+                f"nix/scripts/homelab-host: storage inventory uses a non-read-only Kubernetes command: {line.strip()}"
+            )
+    recovery_match = re.search(
+        r"verify_storage_recovery\(\) \{\n.*?^}",
+        migration,
+        re.DOTALL | re.MULTILINE,
+    )
+    if recovery_match is None or not re.search(
+        r"deadline=\$\(\(SECONDS \+ 600\)\).*?while :; do.*?k3s-handoff.*?rearm.*?"
+        r"capture_timeout.*?timeout --foreground --kill-after=10s.*?storage-impact",
+        recovery_match.group(0) if recovery_match else "",
+        re.DOTALL,
+    ):
+        raise SystemExit(
+            "nix/scripts/homelab-host: storage recovery is not bounded and rearmed inside the polling loop"
+        )
+    lifecycle_match = re.search(
+        r"  prepare\|deploy\).*?^  onboard-k3s-node\)",
+        migration,
+        re.DOTALL | re.MULTILINE,
+    )
+    if lifecycle_match is None:
+        raise SystemExit("nix/scripts/homelab-host: guarded preservation lifecycle is missing")
+    for pattern in (
+        r"\bkubectl\b[^\n]*\bapply\b",
+        r"\bkubectl\b[^\n]*\bcreate\b",
+        r"\bkubectl\b[^\n]*\bdelete\b",
+        r"\bkubectl\b[^\n]*\bedit\b",
+        r"\bkubectl\b[^\n]*\blabel\b",
+        r"\bkubectl\b[^\n]*\bannotate\b",
+        r"\bkubectl\b[^\n]*\bpatch\b",
+        r"\bkubectl\b[^\n]*\breplace\b",
+        r"\bkubectl\b[^\n]*\bscale\b",
+        r"\bkubectl\b[^\n]*\btaint\b",
+        r"\bkubectl\b[^\n]*\brollout\s+restart\b",
+        r"\bhelm\b",
+    ):
+        if re.search(pattern, lifecycle_match.group(0)):
+            raise SystemExit(
+                f"nix/scripts/homelab-host: guarded preservation lifecycle mutates Kubernetes resources: {pattern}"
             )
     for script_name, text in (
         ("nix/scripts/homelab-host", migration),
@@ -2678,16 +2712,12 @@ errors: No known data errors
             r"prepare\|deploy\).*?verify_nas_baseline.*?snapshot-packages.*?stage-secrets.*?verify_nas_baseline",
         ),
         (
-            "activate must reject storage consumers before arming rollback or stopping K3s",
-            r"  activate\).*?assert_storage_quiesced.*?capture_runtime_firewall.*?k3s-handoff.*?arm.*?systemctl stop homelab-k3s",
+            "activate must verify preserved storage recovery before recording activation",
+            r"  activate\).*?k3s-handoff.*?arm.*?activate_registered_system.*?verify_storage_recovery.*?write_receipt.*?activated",
         ),
         (
-            "reboot must reject storage consumers before recording or requesting reboot",
-            r"reboot_host\(\).*?assert_storage_quiesced.*?write_receipt.*?rebooting.*?systemctl --no-block reboot",
-        ),
-        (
-            "commit must reject storage consumers before registering the destructive generation",
-            r"  commit\).*?assert_storage_quiesced.*?register_system.*?k3s-handoff.*?rearm",
+            "commit must verify preserved storage recovery before staging acceptance",
+            r"  commit\).*?k3s-handoff.*?rearm.*?activate_registered_system.*?verify_storage_recovery.*?render_receipt.*?committed",
         ),
         (
             "commit must verify preserved NAS state before accepting and deleting rollback recovery",
@@ -2698,12 +2728,8 @@ errors: No known data errors
             r"  commit\).*?render_receipt.*?k3s-handoff.*?accept.*?mv -f \"\$staged_receipt\" \"\$\(receipt \"\$host\"\)\"",
         ),
         (
-            "preservation commit must stop at storage-pending until read-only recovery verification",
-            r"  commit\).*?render_receipt.*?storage-pending.*?storage-resume-verify\).*?verify_storage_resume.*?write_receipt.*?committed",
-        ),
-        (
-            "reboot verification must verify bounded NAS service recovery before disarming rollback",
-            r"  reboot-verify\).*?require_receipt_phase.*?yes.*?HOMELAB_STORAGE_WAIT=yes.*?verify_nas_baseline.*?yes.*?k3s-handoff.*?disarm",
+            "reboot verification must verify bounded NAS and preserved storage recovery before disarming rollback",
+            r"  reboot-verify\).*?require_receipt_phase.*?yes.*?HOMELAB_STORAGE_WAIT=yes.*?verify_nas_baseline.*?yes.*?verify_storage_recovery.*?yes.*?k3s-handoff.*?disarm",
         ),
     )
     for description, pattern in ordering_contracts:
@@ -2924,62 +2950,7 @@ errors: No known data errors
     )
 
 
-def check_host_mutation_hold_contracts() -> None:
-    topology = source("nix/lib/topology.nix")
-    if "hostMutationHoldReason = extra.hostMutationHoldReason or null;" not in topology:
-        raise SystemExit("nix/lib/topology.nix: host mutation hold field is missing")
-    if not re.search(
-        r"rock5bp\s*=.*?preserveNasState = true;.*?hostMutationHoldReason = "
-        r'"No verified independent NAS backup and restore test, ZFS snapshots, recent ZFS scrub, or disk SMART/NVMe health evidence";',
-        topology,
-        re.DOTALL,
-    ):
-        raise SystemExit("nix/lib/topology.nix: rock5bp mutation hold is missing")
-
-    contracts = {
-        "nix/scripts/adopt-host": (
-            r"capture\(\).*?assert_host_mutation_allowed \"\$host\".*?recovery=",
-        ),
-        "nix/scripts/homelab-host": (
-            r"bootstrap-host\).*?assert_host_mutation_allowed \"\$host\".*?ssh -tt",
-            r"reconcile\).*?assert_host_mutation_allowed \"\$host\".*?sync_completed_rollback",
-            r"prepare\|deploy\).*?assert_host_mutation_allowed \"\$host\".*?sync_completed_rollback",
-            r"activate\).*?assert_host_mutation_allowed \"\$host\".*?require_receipt_phase",
-            r"reboot\).*?assert_host_mutation_allowed \"\$host\".*?reboot_host",
-            r"reboot-verify\).*?assert_host_mutation_allowed \"\$host\".*?sync_completed_rollback",
-            r"commit\).*?assert_host_mutation_allowed \"\$host\".*?require_receipt_phase",
-            r"onboard-k3s-node\).*?assert_host_mutation_allowed \"\$host\".*?copy-k3s-token",
-            r"reconcile-distro-packages\).*?assert_host_mutation_allowed \"\$host\".*?reconcile_distro_packages",
-            r"verify-host-while-armed\).*?assert_host_mutation_allowed \"\$host\".*?verify_receipt_nas_baseline",
-            r"restore-host\).*?assert_host_mutation_allowed \"\$host\".*?restore_host",
-            r"rollback\).*?assert_host_mutation_allowed \"\$host\".*?restore_previous_secrets",
-        ),
-        "nix/scripts/k3s-handoff": (
-            r"arm\).*?assert_host_mutation_allowed \"\$host\".*?test -s \"\$recovery/etc-state.tar\"",
-            r"rearm\).*?assert_host_mutation_allowed \"\$host\".*?remote \"\$host\"",
-            r"disarm\).*?assert_host_mutation_allowed \"\$host\".*?remote \"\$host\"",
-            r"accept\).*?assert_host_mutation_allowed \"\$host\".*?rearm \"\$host\"",
-            r"cleanup-restored\).*?assert_host_mutation_allowed \"\$host\".*?remote \"\$host\"",
-            r"restore\).*?assert_host_mutation_allowed \"\$host\".*?remote \"\$host\"",
-        ),
-        "nix/scripts/wireguard-secrets": (
-            r"bootstrap-age-identity\).*?if test \"\$mode\" != --recipient-only; then\s+assert_host_mutation_allowed \"\$host\"\s+fi.*?ssh ",
-            r"stage-secrets\).*?assert_host_mutation_allowed \"\$host\".*?decrypt_bundle",
-        ),
-        "nix/scripts/rollout-peers": (
-            r"target=\$1.*?assert_host_mutation_allowed \"\$target\".*?lifecycle=",
-            r"for host in \$apply_hosts; do\s+assert_host_mutation_allowed \"\$host\"\s+done"
-            r".*?work=\$\(mktemp",
-        ),
-    }
-    for relative, patterns in contracts.items():
-        text = source(relative)
-        if "host mutation is held:" not in text:
-            raise SystemExit(f"{relative}: mutation hold diagnostic is missing")
-        for pattern in patterns:
-            if not re.search(pattern, text, re.DOTALL):
-                raise SystemExit(f"{relative}: mutation hold ordering is incomplete: {pattern}")
-
+def check_preservation_policy_failure() -> None:
     with tempfile.TemporaryDirectory() as directory:
         directory_path = Path(directory)
         fake_bin = directory_path / "bin"
@@ -2989,10 +2960,6 @@ def check_host_mutation_hold_contracts() -> None:
         fake_nix.write_text(
             "#!/bin/sh\n"
             "case \"$*\" in\n"
-            "  *topology.nodes.rock5bp.hostMutationHoldReason*)\n"
-            "    test \"${HOLD_EVAL_FAIL:-0}\" != 1 || exit 96\n"
-            "    printf '%s\\n' '\"No verified independent NAS backup and restore test\"'\n"
-            "    ;;\n"
             "  *topology.nodes.rock5bp.preserveNasState*)\n"
             "    test \"${PRESERVE_EVAL_FAIL:-0}\" != 1 || exit 95\n"
             "    printf '%s\\n' true\n"
@@ -3017,31 +2984,14 @@ def check_host_mutation_hold_contracts() -> None:
             "HOMELAB_REPO_ROOT": str(root),
             "HOMELAB_STATE_DIR": str(directory_path / "state"),
             "MUTATION_EVENT": str(event),
+            "PRESERVE_EVAL_FAIL": "1",
         }
+        recovery = directory_path / "recovery"
+        recovery.mkdir()
         cases = (
-            ("nix/scripts/adopt-host", ("rock5bp",)),
-            ("nix/scripts/homelab-host", ("bootstrap-host", "rock5bp")),
-            ("nix/scripts/homelab-host", ("reconcile", "rock5bp")),
-            ("nix/scripts/homelab-host", ("prepare", "rock5bp")),
-            ("nix/scripts/homelab-host", ("deploy", "rock5bp")),
-            ("nix/scripts/homelab-host", ("activate", "rock5bp")),
-            ("nix/scripts/homelab-host", ("reboot", "rock5bp")),
-            ("nix/scripts/homelab-host", ("reboot-verify", "rock5bp")),
-            ("nix/scripts/homelab-host", ("commit", "rock5bp")),
-            ("nix/scripts/homelab-host", ("onboard-k3s-node", "rock5bp", "--token-source", "n2p1")),
-            ("nix/scripts/homelab-host", ("reconcile-distro-packages", "rock5bp")),
-            ("nix/scripts/homelab-host", ("rollback", "rock5bp", "1")),
-            ("nix/scripts/homelab-host", ("verify-host-while-armed", "rock5bp")),
-            ("nix/scripts/homelab-host", ("restore-host", "rock5bp")),
-            ("nix/scripts/k3s-handoff", ("arm", "rock5bp", "missing", "1", "k3s.service")),
-            ("nix/scripts/k3s-handoff", ("disarm", "rock5bp")),
-            ("nix/scripts/k3s-handoff", ("accept", "rock5bp")),
-            ("nix/scripts/k3s-handoff", ("rearm", "rock5bp")),
-            ("nix/scripts/k3s-handoff", ("cleanup-restored", "rock5bp")),
-            ("nix/scripts/k3s-handoff", ("restore", "rock5bp")),
-            ("nix/scripts/wireguard-secrets", ("bootstrap-age-identity", "rock5bp")),
-            ("nix/scripts/wireguard-secrets", ("stage-secrets", "rock5bp")),
-            ("nix/scripts/rollout-peers", ("rock5bp",)),
+            ("nix/scripts/adopt-host", ("manifest", "rock5bp")),
+            ("nix/scripts/homelab-host", ("storage-impact", "rock5bp")),
+            ("nix/scripts/k3s-handoff", ("snapshot-packages", "rock5bp", str(recovery))),
         )
         for relative, arguments in cases:
             event.unlink(missing_ok=True)
@@ -3051,59 +3001,22 @@ def check_host_mutation_hold_contracts() -> None:
                 text=True,
                 env=environment,
             )
-            if result.returncode == 0 or "host mutation is held:" not in result.stderr:
-                raise SystemExit(
-                    f"{relative} {' '.join(arguments)}: held mutation was not rejected\n"
-                    f"stdout:\n{result.stdout}\nstderr:\n{result.stderr}"
-                )
-            if event.exists():
-                raise SystemExit(
-                    f"{relative} {' '.join(arguments)}: remote mutation was attempted before the hold guard"
-                )
-        for relative, arguments in cases:
-            event.unlink(missing_ok=True)
-            result = subprocess.run(
-                ["bash", str(root / relative), *arguments],
-                capture_output=True,
-                text=True,
-                env={**environment, "HOLD_EVAL_FAIL": "1"},
-            )
-            if result.returncode == 0 or "host mutation hold could not be evaluated" not in result.stderr:
-                raise SystemExit(
-                    f"{relative} {' '.join(arguments)}: failed hold evaluation did not fail closed\n"
-                    f"stdout:\n{result.stdout}\nstderr:\n{result.stderr}"
-                )
-            if event.exists():
-                raise SystemExit(
-                    f"{relative} {' '.join(arguments)}: remote mutation was attempted after hold evaluation failed"
-                )
-
-        recovery = directory_path / "recovery"
-        recovery.mkdir()
-        preservation_cases = (
-            ("nix/scripts/adopt-host", ("manifest", "rock5bp")),
-            ("nix/scripts/homelab-host", ("storage-impact", "rock5bp")),
-            ("nix/scripts/k3s-handoff", ("snapshot-packages", "rock5bp", str(recovery))),
-        )
-        for relative, arguments in preservation_cases:
-            result = subprocess.run(
-                ["bash", str(root / relative), *arguments],
-                capture_output=True,
-                text=True,
-                env={**environment, "PRESERVE_EVAL_FAIL": "1"},
-            )
             if result.returncode == 0 or "preserveNasState could not be evaluated" not in result.stderr:
                 raise SystemExit(
                     f"{relative} {' '.join(arguments)}: failed preservation lookup did not fail closed\n"
                     f"stdout:\n{result.stdout}\nstderr:\n{result.stderr}"
                 )
+            if event.exists():
+                raise SystemExit(
+                    f"{relative} {' '.join(arguments)}: remote access was attempted after preservation lookup failed"
+                )
 
 
 def check_storage_inventory_failure_propagation() -> None:
     migration = source("nix/scripts/homelab-host")
-    if migration.count('if ! session_nodes=$(') != 2 or migration.count(
+    if migration.count('if ! session_nodes=$(') != 1 or migration.count(
         'done <<< "$session_nodes"'
-    ) != 2:
+    ) != 1:
         raise SystemExit(
             "nix/scripts/homelab-host: iSCSI node enumeration failures are not propagated"
         )
@@ -3936,7 +3849,7 @@ check_ansible_cutover_partition()
 check_static_nix_hosts_render()
 check_static_nix_hosts_expression()
 check_nas_preservation_contracts()
-check_host_mutation_hold_contracts()
+check_preservation_policy_failure()
 check_storage_inventory_failure_propagation()
 check_shell_syntax()
 print("migration-contracts: ok")

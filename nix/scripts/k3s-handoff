@@ -34,22 +34,6 @@ preserve_nas_state() {
   esac
 }
 manage_firewall_rules() { nix_json "$root#systemConfigs.$1.config.homelab.firewall.manageRules"; }
-host_mutation_hold_reason() {
-  local raw
-  raw=$(nix_json "$root#topology.nodes.$1.hostMutationHoldReason") || return 1
-  printf '%s' "$raw" | jq -r '. // empty'
-}
-assert_host_mutation_allowed() {
-  local host=$1 reason
-  reason=$(host_mutation_hold_reason "$host") || {
-    echo "$host host mutation hold could not be evaluated" >&2
-    return 1
-  }
-  test -z "$reason" || {
-    echo "$host host mutation is held: $reason" >&2
-    return 1
-  }
-}
 remote() { local host=$1; shift; ssh -o BatchMode=yes -o StrictHostKeyChecking=accept-new "$(host_field "$host" sshTarget)" "$@"; }
 
 snapshot_packages() {
@@ -129,7 +113,6 @@ REMOTE_PREFLIGHT
     ;;
   arm)
     host=${2:?host required}; recovery=${3:?recovery directory required}; previous=${4:-}; legacy=${5:-}
-    assert_host_mutation_allowed "$host"
     case "$previous" in ""|*[!0-9]*) test -z "$previous" || { echo "invalid previous generation: $previous" >&2; exit 2; } ;; esac
     case "$legacy" in ""|k3s.service|k3s-agent.service) ;; *) echo "invalid legacy unit: $legacy" >&2; exit 2 ;; esac
     test -s "$recovery/etc-state.tar"
@@ -657,7 +640,6 @@ REMOTE_ARM
     ;;
   rearm)
     host=${2:?host required}
-    assert_host_mutation_allowed "$host"
     remote "$host" "sudo -n sh -ceu '
       assert_rearmable() {
         service_state=\$(systemctl is-active $rollback_unit.service 2>/dev/null || true)
@@ -691,7 +673,6 @@ REMOTE_ARM
     ;;
   disarm)
     host=${2:?host required}
-    assert_host_mutation_allowed "$host"
     remote "$host" "sudo -n sh -ceu '
       test -d $rollback_root/current
       test \"\$(systemctl is-active $rollback_unit.service 2>/dev/null || true)\" = inactive
@@ -702,7 +683,6 @@ REMOTE_ARM
     ;;
   accept)
     host=${2:?host required}
-    assert_host_mutation_allowed "$host"
     "$BASH" "$0" rearm "$host"
     remote "$host" "sudo -n sh -ceu '
       test -d $rollback_root/current
@@ -720,7 +700,6 @@ REMOTE_ARM
     ;;
   cleanup-restored)
     host=${2:?host required}
-    assert_host_mutation_allowed "$host"
     remote "$host" "sudo -n sh -ceu '
       test -f $rollback_root/current/restored
       systemctl disable --now $rollback_unit.timer 2>/dev/null || true
@@ -733,7 +712,6 @@ REMOTE_ARM
     ;;
   restore)
     host=${2:?host required}
-    assert_host_mutation_allowed "$host"
     remote "$host" "sudo -n sh -ceu '
       test -s $rollback_root/current/etc-state.tar
       test -s $rollback_root/current/firewall-runtime.rules

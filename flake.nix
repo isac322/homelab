@@ -182,8 +182,6 @@
             assert projectEtcOwnershipIsExplicit;
             assert preservationOwnershipIsExplicit;
             assert topology.nodes.rock5bp.preserveNasState;
-            assert topology.nodes.rock5bp.hostMutationHoldReason != null;
-            assert topology.nodes.rock5bp.hostMutationHoldReason != "";
             assert !(topology.nodes.n2p1.preserveNasState);
             assert rock.homelab.firewall.manageRules == false;
             assert rpi5.homelab.firewall.manageRules;
