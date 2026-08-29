@@ -1,9 +1,12 @@
+[ansible_managed]
+rpi5
+macmini
+
+[nix_managed]
 n2p1
 n2p2
 rpi4
-rpi5
 rock5bp
-macmini
 
 [nas]
 rock5bp
@@ -15,12 +18,6 @@ rpi4
 rpi5
 rock5bp
 
-[homelab]
-n2p1
-n2p2
-rpi4
-rpi5
-rock5bp
-macmini
-
-[prod]
+[homelab:children]
+ansible_managed
+nix_managed

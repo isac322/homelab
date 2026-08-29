@@ -1,0 +1,30 @@
+#!/usr/bin/env bash
+set -euo pipefail
+
+root=${HOMELAB_REPO_ROOT:-$(git rev-parse --show-toplevel 2>/dev/null || pwd)}
+rollout="$root/nix/scripts/rollout-peers"
+
+usage() {
+  cat <<'EOF'
+Usage: decommission-host <host>
+
+Remove a decommissioning node from active Linux WireGuard peers. Cluster
+membership, storage evacuation, and physical shutdown remain explicit
+operator-controlled steps; this command does not destroy node data.
+EOF
+}
+
+case "${1:-}" in
+  -h|--help|'') usage; exit 0 ;;
+  *)
+    test "$#" -eq 1 || { usage >&2; exit 2; }
+    host=$1
+    lifecycle=$(nix --extra-experimental-features 'nix-command flakes' eval --raw "$root#topology.nodes.$host.lifecycle")
+    test "$lifecycle" = decommissioning || {
+      echo "$host must be declared with lifecycle=decommissioning" >&2
+      exit 1
+    }
+    "$rollout" "$host"
+    printf '%s peers removed; drain/delete K3s membership and remove the node from Git topology only after independent checks\n' "$host"
+    ;;
+esac

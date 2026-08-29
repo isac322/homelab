@@ -11,12 +11,6 @@ spec:
     - https://github.com/isac322/homelab.git
     - registry-1.docker.io/bitnamicharts
   destinations:
-    - namespace: prometheus
-      name: prod
-    - namespace: kube-system
-      name: prod
-    - namespace: mimir
-      name: prod
     - namespace: loki
       name: backbone
     - namespace: prometheus

@@ -1,4 +1,4 @@
-.PHONY: help bootstrap
+.PHONY: help bootstrap bootstrap-backbone
 
 ##@ General
 
@@ -19,14 +19,7 @@ help: ## Display this help.
 
 ##@ Boostrap
 
-bootstrap: /tmp/prod-cluster-secrets.yaml /tmp/backbone-cluster-secrets.yaml /tmp/public_ip_map.yaml ## Bootstrap given cluster onto current kubectl context. (Possible CLUSTER_NAME: backbone, prod)
-	make -C cluster-setup argocd
+bootstrap: bootstrap-backbone ## Bootstrap the backbone Argo CD control plane through Nix apps.
 
-
-/tmp/%-cluster-secrets.yaml:
-	@test -r 'terraform/$*' || (echo 'Specify valid cluster name via CLUSTER_NAME'; exit 1)
-	make -C terraform/$* cluster-secrets DEST=$@
-
-
-/tmp/public_ip_map.yaml:
-	make -C terraform/prod public-ip-map DEST=$@
+bootstrap-backbone: ## Install Argo CD through the Nix bootstrap app.
+	nix run .#bootstrap-argocd -- backbone

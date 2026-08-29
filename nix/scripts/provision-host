@@ -1,0 +1,81 @@
+#!/usr/bin/env bash
+set -euo pipefail
+
+root=${HOMELAB_REPO_ROOT:-$(git rev-parse --show-toplevel 2>/dev/null || pwd)}
+host_app="$root/nix/scripts/homelab-host"
+secret_app="$root/nix/scripts/wireguard-secrets"
+
+usage() {
+  cat <<'EOF'
+Usage: provision-host <host> --token-source <existing-server>
+
+Provision a Git-declared node. Topology, public identity, host SOPS bundle, and
+managed WireGuard PSKs must already be present in the committed desired state.
+This command performs only the remote bootstrap and onboarding transaction.
+EOF
+}
+
+nix_eval() { nix --extra-experimental-features 'nix-command flakes' eval "$@"; }
+host_field() { nix_eval --raw "$root#topology.nodes.$1.$2"; }
+remote() {
+  local host=$1
+  shift
+  ssh -o BatchMode=yes -o StrictHostKeyChecking=accept-new "$(host_field "$host" sshTarget)" "$@"
+}
+
+case "${1:-}" in
+  -h|--help|'') usage; exit 0 ;;
+  *)
+    test "$#" -eq 3 && test "$2" = --token-source || { usage >&2; exit 2; }
+    host=$1
+    source_host=$3
+    lifecycle=$(host_field "$host" lifecycle)
+    test "$lifecycle" = provisioning || {
+      echo "$host must be declared with lifecycle=provisioning" >&2
+      exit 1
+    }
+    source_role=$(host_field "$source_host" k3sRole 2>/dev/null || true)
+    test "$source_role" = server || {
+      echo "$source_host must be an existing K3s server" >&2
+      exit 1
+    }
+    role=$(host_field "$host" k3sRole 2>/dev/null || true)
+    test "$role" = server || test "$role" = agent || {
+      echo "$host must have a K3s role for cluster provisioning" >&2
+      exit 1
+    }
+
+    "$host_app" bootstrap-host "$host"
+    "$secret_app" bootstrap-age-identity "$host"
+    "$secret_app" stage-secrets "$host" >/dev/null
+
+    if ! remote "$host" 'sudo -n test -x /usr/local/bin/k3s'; then
+      version=$(remote "$source_host" 'sudo -n /usr/local/bin/k3s --version' | sed -n 's/^k3s version v\([^ ]*\).*/\1/p')
+      test -n "$version" || {
+        echo "could not determine the live K3s version on $source_host" >&2
+        exit 1
+      }
+      printf -v command 'sudo -n env K3S_VERSION=%q sh -s' "v$version"
+      remote "$host" "$command" <<'REMOTE_K3S_INSTALL'
+set -eu
+if test -e /var/lib/rancher/k3s; then
+  echo 'K3s state already exists; refusing first-install bootstrap' >&2
+  exit 1
+fi
+for unit in k3s.service k3s-agent.service homelab-k3s.service; do
+  if systemctl is-active --quiet "$unit"; then
+    echo "K3s service $unit is already active; refusing first-install bootstrap" >&2
+    exit 1
+  fi
+done
+curl --proto '=https' --tlsv1.2 -fsSL https://get.k3s.io \
+  | INSTALL_K3S_SKIP_START=true INSTALL_K3S_VERSION="$K3S_VERSION" sh -s -
+test -x /usr/local/bin/k3s
+test ! -e /var/lib/rancher/k3s
+REMOTE_K3S_INSTALL
+    fi
+
+    "$host_app" onboard-k3s-node "$host" --token-source "$source_host"
+    printf 'provisioned %s; run activate, reboot, reboot-verify, and commit explicitly\n' "$host"
+    ;;
+esac

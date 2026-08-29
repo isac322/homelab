@@ -10,8 +10,6 @@ spec:
   destinations:
     - namespace: system-upgrade
       name: backbone
-    - namespace: system-upgrade
-      name: prod
   clusterResourceWhitelist:
     - group: '*'
       kind: '*'

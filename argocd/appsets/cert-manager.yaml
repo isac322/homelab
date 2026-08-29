@@ -4,13 +4,9 @@ metadata:
   name: cert-manager
 spec:
   generators:
-    - clusters:
-        selector:
-          matchExpressions:
-            - key: gitops.bhyoo.com/profile
-              operator: NotIn
-              values:
-                - oracle4
+    - list:
+        elements:
+          - name: backbone
   template:
     metadata:
       name: '{{name}}-cert-manager'
@@ -52,13 +48,9 @@ metadata:
   name: cluster-issuer-acme
 spec:
   generators:
-    - clusters:
-        selector:
-          matchExpressions:
-            - key: gitops.bhyoo.com/profile
-              operator: NotIn
-              values:
-                - oracle4
+    - list:
+        elements:
+          - name: backbone
   template:
     metadata:
       name: '{{name}}-cert-manager-cluster-issuer'

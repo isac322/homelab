@@ -7,7 +7,6 @@ spec:
     - list:
         elements:
           - cluster: backbone
-#          - cluster: prod
   template:
     metadata:
       name: '{{cluster}}-descheduler'

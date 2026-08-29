@@ -1,0 +1,333 @@
+#!/usr/bin/env bash
+set -euo pipefail
+
+root=${HOMELAB_REPO_ROOT:-$(git rev-parse --show-toplevel 2>/dev/null || pwd)}
+state=${HOMELAB_STATE_DIR:-"$root/.host-state"}
+mkdir -p "$state/baselines" "$state/recovery"
+chmod 0700 "$state" "$state/baselines" "$state/recovery"
+
+usage() {
+  cat <<'EOF'
+Usage: adopt-host <host>
+       adopt-host baseline <host>
+       adopt-host manifest <host>
+
+Capture the pre-Nix state of an existing host. The manifest command prints the
+secret-bearing external NAS inventory; baseline stores it in mode 0600.
+EOF
+}
+
+nix_eval() { nix --extra-experimental-features 'nix-command flakes' eval "$@"; }
+host_field() { nix_eval --raw "$root#topology.nodes.$1.$2"; }
+preserve_nas_state() {
+  local host=$1 value
+  value=$(nix_eval --json "$root#topology.nodes.$host.preserveNasState") || {
+    echo "$host preserveNasState could not be evaluated" >&2
+    return 1
+  }
+  case "$value" in
+    true|false) printf '%s\n' "$value" ;;
+    *) echo "$host preserveNasState is not boolean: $value" >&2; return 1 ;;
+  esac
+}
+remote() {
+  local host=$1
+  shift
+  ssh -o BatchMode=yes -o StrictHostKeyChecking=accept-new "$(host_field "$host" sshTarget)" "$@"
+}
+current_remote_generation() {
+  remote "$1" 'sudo -n sh -ceu '\''
+    profile=/nix/var/nix/profiles/system-manager-profiles/system-manager
+    nix_env=$(command -v nix-env || true)
+    test -n "$nix_env" || nix_env=/nix/var/nix/profiles/default/bin/nix-env
+    test -x "$nix_env"
+    test -e "$profile" || exit 0
+    generations=$("$nix_env" --profile "$profile" --list-generations)
+    printf "%s\n" "$generations" | awk "/\(current\)/ {print}"
+  '\'''
+}
+
+nas_manifest_script() {
+  cat <<'REMOTE_NAS_MANIFEST'
+set -eu
+export PATH=/usr/local/sbin:/usr/local/bin:/usr/sbin:/usr/bin:/sbin:/bin
+export LC_ALL=C
+inventory_tree() {
+  path=$1
+  mode=${2:-all}
+  if ! test -e "$path" && ! test -L "$path"; then
+    printf 'path=%s|state=absent\n' "$path"
+    return
+  fi
+  find "$path" -xdev -print0 | sort -z | while IFS= read -r -d "" item; do
+    if test "$mode" = target-configfs; then
+      case "$item" in
+        */action|*/action/*|*/fabric_statistics|*/fabric_statistics/*|*/pr|*/pr/*|*/statistics|*/statistics/*|*/dynamic_sessions|*/control|*/acls/*/info)
+          continue
+          ;;
+      esac
+    fi
+    case "$item" in
+      /etc/zfs/zpool.cache|/etc/zfs/zfs-list.cache|/etc/zfs/zfs-list.cache/*) continue ;;
+    esac
+    if test -f "$item"; then
+      metadata=$(stat -c 'type=%F|mode=%a|uid=%u|gid=%g|size=%s' "$item")
+      digest=$(sha256sum "$item" | awk '{print $1}')
+    else
+      metadata=$(stat -c 'type=%F|mode=%a|uid=%u|gid=%g' "$item")
+      if test -L "$item"; then
+        digest=$(readlink "$item" | sha256sum | awk '{print $1}')
+      else
+        digest=-
+      fi
+    fi
+    printf 'path=%s|%s|sha256=%s\n' "$item" "$metadata" "$digest"
+  done
+}
+listener_state() {
+  protocol=$1
+  port=$2
+  endpoints=$(ss -H "-ln$protocol" | awk -v port="$port" '$4 ~ (":" port "$") { print $4 }' | sort -u)
+  if test -n "$endpoints"; then
+    state=present
+  else
+    state=absent
+  fi
+  printf 'listener=%s|%s|%s|endpoints=' "$protocol" "$port" "$state"
+  printf '%s\n' "$endpoints" | paste -sd, -
+}
+stable_zpool_status() {
+  awk '
+    /^[[:space:]]*scan:/ { skip_scan = 1; next }
+    skip_scan && /^[[:space:]]*[[:alpha:]_]+:/ { skip_scan = 0 }
+    skip_scan { next }
+    { print }
+  '
+}
+
+
+command -v zpool >/dev/null
+command -v zfs >/dev/null
+command -v iptables-save >/dev/null
+command -v ss >/dev/null
+command -v testparm >/dev/null
+zpool status -v | stable_zpool_status | sed 's/^/zpool-status=/'
+zpool get -H guid | sort | sed 's/^/zpool-guid=/'
+zfs list -Hp -t filesystem,volume -o name,type,mountpoint,volsize | sort | sed 's/^/zfs=/'
+saveconfig=/etc/rtslib-fb-target/saveconfig.json
+if test -f "$saveconfig"; then
+  printf 'target-saveconfig-sha256=%s\n' "$(sha256sum "$saveconfig" | awk '{print $1}')"
+  printf 'target-saveconfig-json-begin\n'
+  cat "$saveconfig"
+  printf '\ntarget-saveconfig-json-end\n'
+else
+  printf 'target-saveconfig-state=absent\n'
+fi
+inventory_tree /sys/kernel/config/target target-configfs
+testparm -s 2>/dev/null | sed 's/^/testparm=/'
+printf 'identity-passwd=%s\n' "$(getent passwd democratic-csi 2>/dev/null || printf absent)"
+printf 'identity-group=%s\n' "$(getent group democratic-csi 2>/dev/null || printf absent)"
+
+for path in \
+  /etc/zfs \
+  /etc/default/zfs \
+  /etc/samba \
+  /etc/exports \
+  /etc/exports.d \
+  /etc/nfs.conf \
+  /etc/idmapd.conf \
+  /etc/default/nfs-common \
+  /etc/default/nfs-kernel-server \
+  /etc/default/samba \
+  /home/democratic-csi/.ssh/authorized_keys \
+  /etc/ssh/authorized_keys.d/democratic-csi \
+  /etc/sudoers.d/democratic-csi \
+  /etc/iptables/rules.v4 \
+  /etc/iptables/iptables.rules \
+  /etc/crontab \
+  /etc/cron.d \
+  /etc/cron.daily \
+  /etc/cron.hourly \
+  /etc/cron.monthly \
+  /etc/cron.weekly \
+  /var/spool/cron
+do
+  inventory_tree "$path"
+done
+
+for unit in \
+  zfs.target \
+  zfs-import-cache.service \
+  zfs-import-scan.service \
+  zfs-mount.service \
+  zfs-volume-wait.service \
+  target.service \
+  targetclid.service \
+  rtslib-fb-targetctl.service \
+  smbd.service \
+  nmbd.service \
+  samba.service \
+  nfs-server.service \
+  nfs-kernel-server.service \
+  cron.service \
+  crond.service \
+  iptables.service \
+  netfilter-persistent.service
+do
+  load=$(systemctl show "$unit" -p LoadState --value 2>/dev/null || true)
+  active=$(systemctl is-active "$unit" 2>/dev/null || true)
+  enabled=$(systemctl is-enabled "$unit" 2>/dev/null || true)
+  printf 'service=%s|load=%s|active=%s|enabled=%s\n' "$unit" "${load:-unknown}" "${active:-unknown}" "${enabled:-unknown}"
+done
+
+iptables-save | awk '
+  /^-A / && /--dport 3260([[:space:]]|$)/ { print "firewall-runtime-rule=" $0; next }
+  /^-A / && /--dport 445([[:space:]]|$)/ { print "firewall-runtime-rule=" $0; next }
+  /^-A / && /--dport 137:138([[:space:]]|$)/ { print "firewall-runtime-rule=" $0; next }
+  /^-A / && /--dports [0-9,:]*137/ { print "firewall-runtime-rule=" $0; next }
+  /^-A / && /--dports [0-9,:]*138/ { print "firewall-runtime-rule=" $0 }
+' | sort
+listener_state t 3260
+listener_state t 445
+listener_state u 137
+listener_state u 138
+REMOTE_NAS_MANIFEST
+}
+
+nas_manifest() {
+  local host=$1
+  nas_manifest_script | remote "$host" 'sudo -n bash -s'
+}
+
+generic_baseline() {
+  local host=$1 stamp file generation
+  stamp=$(date -u +%Y%m%dT%H%M%SZ)
+  file="$state/baselines/$host-$stamp.txt"
+  generation=$(current_remote_generation "$host")
+  remote "$host" '
+    set -u
+    printf "os="; . /etc/os-release; printf "%s:%s\n" "$ID" "${VERSION_ID:-}"
+    printf "arch="; uname -m
+    printf "hostname="; hostname
+    printf "networkd="; systemctl is-enabled systemd-networkd 2>/dev/null || true
+    printf "timesyncd="; systemctl is-active systemd-timesyncd 2>/dev/null || true
+    printf "timesyncd-enabled="; systemctl is-enabled systemd-timesyncd 2>/dev/null || true
+    printf "ntp-synchronized="; timedatectl show -p NTPSynchronized --value 2>/dev/null || true
+    printf "wireguard="; sudo -n wg show interfaces 2>/dev/null || true
+    printf "wireguard-public="; for i in $(sudo -n wg show interfaces 2>/dev/null); do printf "%s:%s " "$i" "$(sudo -n wg show "$i" public-key)"; done; echo
+    printf "iptables-backend="; sudo -n iptables --version 2>/dev/null || true
+    printf "input-policy="; sudo -n iptables -S INPUT | sed -n "1p"
+    printf "forward-policy="; sudo -n iptables -S FORWARD | sed -n "1p"
+    printf "k3s="; systemctl is-active k3s k3s-agent homelab-k3s 2>/dev/null || true
+    etcd=$(sudo -n /usr/local/bin/k3s etcd-snapshot ls 2>/dev/null | sed -n "1p" || true)
+    printf "etcd=%s\n" "$etcd"
+  ' > "$file"
+  printf 'system-manager-generation=%s\n' "$generation" >> "$file"
+  chmod 0600 "$file"
+  printf '%s\n' "$file"
+}
+
+nas_baseline() {
+  local host=$1 stamp directory manifest script
+  stamp=$(date -u +%Y%m%dT%H%M%SZ)
+  directory="$state/baselines/$host-nas-$stamp"
+  mkdir -m 0700 "$directory"
+  manifest="$directory/manifest.txt"
+  script="$directory/manifest-remote"
+  nas_manifest_script > "$script"
+  nas_manifest "$host" > "$manifest"
+  (
+    cd "$directory"
+    sha256sum manifest.txt manifest-remote > manifest.sha256
+  )
+  chmod 0600 "$manifest" "$directory/manifest.sha256"
+  chmod 0700 "$script"
+  printf '%s\n' "$directory"
+}
+
+baseline() {
+  local host=$1 preserve
+  preserve=$(preserve_nas_state "$host") || return 1
+  if [ "$preserve" = true ]; then
+    nas_baseline "$host"
+  else
+    generic_baseline "$host"
+  fi
+}
+
+capture() {
+  local host=$1 recovery role snapshot snapshot_command baseline_path
+  recovery="$state/recovery/$host-$(date -u +%Y%m%dT%H%M%SZ)"
+  mkdir -m 0700 "$recovery"
+  baseline_path=$(baseline "$host")
+  printf '%s\n' "$baseline_path" > "$recovery/baseline-path"
+  chmod 0600 "$recovery/baseline-path"
+  remote "$host" 'sudo -n sh -ceu '\''
+    test -d /etc/systemd/system
+    set --
+    for pattern in \
+      /etc \
+      /root/.ssh \
+      /home/*/.ssh \
+      /var/spool/cron \
+      /usr/local/bin/k3s \
+      /usr/local/bin/kubectl \
+      /usr/local/bin/crictl \
+      /usr/local/bin/ctr \
+      /usr/local/bin/k3s-v* \
+      /usr/local/bin/k3s-killall.sh \
+      /usr/local/bin/k3s-uninstall.sh \
+      /usr/local/bin/k3s-agent-uninstall.sh
+    do
+      test -e "$pattern" || test -L "$pattern" || continue
+      set -- "$@" "${pattern#/}"
+    done
+    test "$#" -gt 0
+    tar -C / -cf - "$@"
+  '\''' > "$recovery/etc-state.tar"
+  role=$(host_field "$host" k3sRole 2>/dev/null || true)
+  if [ "$role" = server ] && remote "$host" 'sudo -n test -d /var/lib/rancher/k3s/server/db'; then
+    snapshot="pre-nix-$(date -u +%Y%m%dT%H%M%SZ)"
+    printf -v snapshot_command 'sudo -n env SNAPSHOT=%q sh -s' "$snapshot"
+    remote "$host" "$snapshot_command" > "$recovery/etcd-snapshot.txt" <<'REMOTE_SNAPSHOT'
+set -eu
+if test -x /usr/local/bin/k3s && test "$(systemctl is-active k3s.service 2>/dev/null || true)" = active; then
+  binary=/usr/local/bin/k3s
+else
+  test "$(systemctl is-active homelab-k3s.service 2>/dev/null || true)" = active
+  pid=$(systemctl show homelab-k3s.service -p MainPID --value)
+  test "$pid" -gt 1
+  binary=$(readlink "/proc/$pid/exe")
+fi
+"$binary" etcd-snapshot save --name "$SNAPSHOT" >&2
+"$binary" etcd-snapshot ls 2>/dev/null | grep -F -- "$SNAPSHOT-"
+REMOTE_SNAPSHOT
+    test -s "$recovery/etcd-snapshot.txt"
+    chmod 0600 "$recovery/etcd-snapshot.txt"
+  fi
+  chmod 0600 "$recovery/etc-state.tar"
+  printf '%s\n' "$recovery"
+}
+
+case "${1:-}" in
+  baseline)
+    test "$#" -eq 2 || { usage >&2; exit 2; }
+    baseline "$2"
+    ;;
+  manifest)
+    test "$#" -eq 2 || { usage >&2; exit 2; }
+    preserve=$(preserve_nas_state "$2") || exit 1
+    test "$preserve" = true || {
+      echo "$2 does not preserve external NAS state" >&2
+      exit 1
+    }
+    nas_manifest "$2"
+    ;;
+  -h|--help|'')
+    usage
+    ;;
+  *)
+    test "$#" -eq 1 || { usage >&2; exit 2; }
+    capture "$1"
+    ;;
+esac

@@ -361,7 +361,7 @@ prometheus:
     ## Allow out-of-order/out-of-bounds samples ingested into Prometheus for a specified duration
     ## See https://prometheus.io/docs/prometheus/latest/configuration/configuration/#tsdb
     tsdb:
-      ## Multi-cluster: prod remote-write can buffer during network partitions
+      ## Allow delayed remote-write samples to arrive after transient network partitions
       outOfOrderTimeWindow: 1h
 
     ## Resource limits & requests

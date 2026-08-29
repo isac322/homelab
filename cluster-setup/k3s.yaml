@@ -1,62 +1,4 @@
-- hosts: prod
-  tasks:
-    - name: Install k3s
-      block:
-        - ansible.builtin.set_fact:
-            k3s_release_version: stable
-            k3s_become: yes
-            k3s_state: installed
-            k3s_control_node: "{{ is_k8s_master }}"
-            # https://github.com/rancher/system-upgrade-controller/issues/90#issuecomment-663850596
-            k3s_install_hard_links: true
-#            k3s_etcd_datastore: true
-            k3s_server:
-              flannel-backend: 'host-gw'  # This needs to be in quotes
-              disable-helm-controller: true
-              disable:
-#                - servicelb
-                - traefik
-                - local-storage
-#                - metrics-server
-              node-ip: "{{ main_private_ip }}"
-              advertise-address: "{{ main_private_ip }}"
-              node-external-ip:
-                - "{{ main_public_ip }}"
-                - "{{ wireguard_ip }}"
-              kubelet-arg:
-                - "image-gc-high-threshold=60"
-                - "image-gc-low-threshold=40"
-                - "feature-gates=NodeSwap=true"
-              node-label: "{{ k8s_node_labels }}"
-              tls-san:
-                - k8s.homelab.bhyoo.com
-              secrets-encryption: true
-        - ansible.builtin.import_role:
-            name: xanmanning.k3s
-
-    - name: Create and download kubeconfig
-      block:
-        - ansible.builtin.set_fact:
-            kubeconfig_path: /etc/rancher/k3s/k3s.yaml
-            api_server_host: k8s.homelab.bhyoo.com:6443
-            cluster_name: "homelab-prod"
-            local_directory: _kubeconfig
-            local_kubeconfig_prefix: prod-
-            cluster_admins:
-              - bhyoo-phone
-              - bhyoo-tablet
-              - bhyoo-desktop
-              - bhyoo-office
-              - bhyoo-laptop
-          when: is_k8s_master
-
-        - ansible.builtin.include_role:
-            name: kubeconfig
-            apply:
-              become: yes
-          when: is_k8s_master
-
-- hosts: backbone
+- hosts: "ansible_managed:&backbone"
   tasks:
     - name: Install k3s
       block:
@@ -134,7 +76,7 @@
 # CNI 없음 상태. 이 play가 Cilium을 helm install하여 CNI 설치 + kubeProxyReplacement 가동.
 # 이후 ArgoCD가 설치되면 backbone-cilium App이 이 Helm release를 adopt하여 GitOps로 관리 이관.
 - name: Group by k8s_master [backbone cilium]
-  hosts: backbone
+  hosts: "ansible_managed:&backbone"
   gather_facts: no
   tasks:
     - name: Group by k8s_master

@@ -1,9 +1,9 @@
 ---
-- hosts: homelab
+- hosts: ansible_managed
   tasks:
     - ansible.builtin.include_vars: "admin_user_info.yaml"
 
-- hosts: homelab
+- hosts: ansible_managed
   become: yes
   gather_facts: yes
   roles:
@@ -12,7 +12,7 @@
     - role: locale-archlinux
       when: ansible_facts['os_family'] == "Archlinux"
 
-- hosts: homelab
+- hosts: ansible_managed
   vars:
     systemd_networkd_network:
       "{{ default_iface }}":
@@ -30,7 +30,7 @@
   roles:
     - role: stackhpc.systemd_networkd
 
-- hosts: homelab
+- hosts: ansible_managed
   become: yes
   roles:
     - role: init-os

@@ -1,0 +1,198 @@
+#!/usr/bin/env bash
+set -euo pipefail
+
+root=${HOMELAB_REPO_ROOT:-$(git rev-parse --show-toplevel 2>/dev/null || pwd)}
+
+usage() {
+  cat <<'EOF'
+Usage: rollout-peers <host>
+
+Reconcile the WireGuard peer set for a node whose lifecycle is active,
+provisioning, or decommissioning. Existing peers are updated by staging their
+encrypted credentials and replacing only the networkd files; no system-manager
+generation switch is performed. Active nodes also update their own networkd
+files.
+EOF
+}
+
+nix_eval() { nix --extra-experimental-features 'nix-command flakes' eval "$@"; }
+json_eval() { nix_eval --json "$@"; }
+host_field() { nix_eval --raw "$root#topology.nodes.$1.$2"; }
+remote() {
+  local host=$1
+  shift
+  ssh -o BatchMode=yes -o StrictHostKeyChecking=accept-new "$(host_field "$host" sshTarget)" "$@"
+}
+
+valid_relative() {
+  case "$1" in
+    systemd/network/99-wg0.netdev|systemd/network/99-wg0.network|systemd/system/systemd-networkd.service.d/50-homelab-wireguard-credentials.conf) return 0 ;;
+    *) return 1 ;;
+  esac
+}
+
+render_file() {
+  local host=$1 key=$2 output=$3 value
+  value=$(json_eval "$root#systemConfigs.$host.config.environment.etc" | jq -er --arg key "$key" '.[$key].text')
+  printf '%s' "$value" > "$output"
+}
+
+restore_secret_active() {
+  local host=$1 old_active=$2 command
+  test -n "$old_active" || return 0
+  printf -v command 'sudo -n env OLD_ACTIVE=%q sh -s' "$old_active"
+  remote "$host" "$command" <<'REMOTE_RESTORE_SECRET'
+set -eu
+base=/var/lib/homelab-secrets
+test "$OLD_ACTIVE" = "generations/${OLD_ACTIVE#generations/}"
+test -d "$base/$OLD_ACTIVE"
+current=$(readlink "$base/active" 2>/dev/null || true)
+ln -s "$OLD_ACTIVE" "$base/active.new"
+mv -Tf "$base/active.new" "$base/active"
+test -z "$current" || test "$current" = "$OLD_ACTIVE" || rm -rf -- "$base/$current"
+rm -f "$base/previous" "$base/previous.new"
+REMOTE_RESTORE_SECRET
+}
+
+restore_host() {
+  local host=$1 host_dir=$2 key path marker old_active
+  old_active=$(cat "$host_dir/active")
+  while IFS=$'\t' read -r key path marker; do
+    if [ "$marker" = present ]; then
+      remote "$host" "sudo -n install -m 0644 /dev/stdin '$path'" < "$host_dir/old-$key"
+    else
+      remote "$host" "sudo -n rm -f '$path'" </dev/null
+    fi
+  done < "$host_dir/files.tsv"
+  restore_secret_active "$host" "$old_active"
+  remote "$host" "sudo -n sh -s" <<'REMOTE_RESTORE_NETWORKD'
+set -eu
+systemctl daemon-reload
+systemctl restart systemd-networkd.service
+networkctl reload
+REMOTE_RESTORE_NETWORKD
+}
+
+case "${1:-}" in
+  -h|--help|'') usage; exit 0 ;;
+  *)
+    test "$#" -eq 1 || { usage >&2; exit 2; }
+    target=$1
+    lifecycle=$(host_field "$target" lifecycle)
+    case "$lifecycle" in
+      active|provisioning|decommissioning) ;;
+      *) echo "$target must have lifecycle=active, provisioning, or decommissioning" >&2; exit 1 ;;
+    esac
+    target_system=$(host_field "$target" system)
+    case "$target_system" in *-linux) ;; *) echo "$target is not a Linux node" >&2; exit 1 ;; esac
+    json_eval "$root#topology.nodes.$target.wireguard" | jq -e 'index("wg0") != null' >/dev/null \
+      || { echo "$target has no wg0 interface" >&2; exit 1; }
+
+
+    hosts=$(json_eval "$root#topology.nodes" | jq -r '
+      to_entries[]
+      | select(.value.lifecycle == "active")
+      | select(.value.system | endswith("-linux"))
+      | select(.value.wireguard | index("wg0") != null)
+      | .key
+    ')
+    affected=
+    while IFS= read -r host; do
+      [ -n "$host" ] || continue
+      [ "$host" = "$target" ] && continue
+      affected="$affected $host"
+    done <<< "$hosts"
+    if [ "$lifecycle" = active ]; then
+      apply_hosts="$target$affected"
+    else
+      apply_hosts="$affected"
+    fi
+    test -n "$apply_hosts" || { echo "no active Linux peers are affected by $target" >&2; exit 0; }
+
+    if test -d /dev/shm && test -w /dev/shm; then
+      work=$(mktemp -d /dev/shm/homelab-peer-rollout.XXXXXX)
+    else
+      work=$(mktemp -d "${TMPDIR:-/tmp}/homelab-peer-rollout.XXXXXX")
+    fi
+    applied="$work/applied"
+    : > "$applied"
+    cleanup() { rm -rf "$work"; }
+    rollback() {
+      local host
+      while IFS= read -r host; do
+        [ -n "$host" ] || continue
+        restore_host "$host" "$work/$host"
+      done < "$applied"
+    }
+    trap 'status=$?; if [ "$status" -ne 0 ]; then rollback || true; fi; cleanup; exit "$status"' EXIT HUP INT TERM
+
+    for host in $apply_hosts; do
+      host_dir="$work/$host"
+      mkdir -m 0700 "$host_dir"
+      old_active=$(remote "$host" 'sudo -n readlink /var/lib/homelab-secrets/active 2>/dev/null || true')
+      printf '%s\n' "$old_active" > "$host_dir/active"
+      : > "$host_dir/files.tsv"
+      for key in \
+        "systemd/network/99-wg0.netdev" \
+        "systemd/network/99-wg0.network"; do
+        valid_relative "$key"
+        path="/etc/$key"
+        name=$(printf '%s' "$key" | tr '/' '_')
+        if remote "$host" "sudo -n test -e '$path'"; then
+          remote "$host" "sudo -n cat '$path'" > "$host_dir/old-$name"
+          printf '%s\t%s\tpresent\n' "$name" "$path" >> "$host_dir/files.tsv"
+        else
+          printf 'absent\n' > "$host_dir/old-$name"
+          printf '%s\t%s\tabsent\n' "$name" "$path" >> "$host_dir/files.tsv"
+        fi
+        render_file "$host" "$key" "$host_dir/new-$name"
+      done
+      key="systemd/system/systemd-networkd.service.d/50-homelab-wireguard-credentials.conf"
+      path="/etc/$key"
+      name=$(printf '%s' "$key" | tr '/' '_')
+      if remote "$host" "sudo -n test -e '$path'"; then
+        remote "$host" "sudo -n cat '$path'" > "$host_dir/old-$name"
+        printf '%s\t%s\tpresent\n' "$name" "$path" >> "$host_dir/files.tsv"
+      else
+        printf 'absent\n' > "$host_dir/old-$name"
+        printf '%s\t%s\tabsent\n' "$name" "$path" >> "$host_dir/files.tsv"
+      fi
+      render_file "$host" "$key" "$host_dir/new-$name"
+    done
+
+    for host in $apply_hosts; do
+      host_dir="$work/$host"
+      stage_result="$($root/nix/scripts/wireguard-secrets stage-secrets "$host")"
+      printf '%s\n' "$stage_result" | grep -Eq "^$host [0-9]{8}T[0-9]{6}Z$"
+      while IFS=$'\t' read -r key path marker; do
+        remote "$host" "sudo -n install -D -m 0644 /dev/stdin '$path'" < "$host_dir/new-$key"
+      done < "$host_dir/files.tsv"
+      remote "$host" "sudo -n sh -s" <<'REMOTE_APPLY_NETWORKD'
+set -eu
+systemctl daemon-reload
+systemctl restart systemd-networkd.service
+networkctl reload
+REMOTE_APPLY_NETWORKD
+      remote "$host" "sudo -n networkctl reconfigure wg0" </dev/null
+      printf '%s\n' "$host" >> "$applied"
+    done
+
+    for host in $affected; do
+      expected=$(nix_eval --raw "$root#topology.wg0.nodes.$target.publicKey")
+      case "$lifecycle" in
+        provisioning|active)
+          remote "$host" "sudo -n wg show wg0 peers | grep -Fx '$expected'"
+          ;;
+        decommissioning)
+          if remote "$host" "sudo -n wg show wg0 peers | grep -Fx '$expected'"; then
+            echo "$host still has decommissioning peer $target on wg0" >&2
+            exit 1
+          fi
+          ;;
+      esac
+    done
+    trap - EXIT HUP INT TERM
+    cleanup
+    printf 'peer-rollout: %s updated on:%s\n' "$target" "$apply_hosts"
+    ;;
+esac
