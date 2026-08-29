@@ -88,7 +88,7 @@ def check_ansible_cutover_partition() -> None:
     groups = inventory_groups("cluster-setup/inventory/hosts")
     nix_managed = groups.get("nix_managed", set())
     ansible_managed = groups.get("ansible_managed", set())
-    migrated_backbone = {"n2p1", "n2p2", "rpi4"}
+    migrated_backbone = {"n2p1", "n2p2", "rpi4", "rock5bp"}
     for host in sorted(migrated_backbone):
         if host not in nix_managed:
             raise SystemExit(
@@ -1639,6 +1639,153 @@ def check_rollback_stage_resume() -> None:
                 "nix/scripts/k3s-handoff: rollback archive fixture was not restored"
             )
 
+def check_nas_manifest_runtime_index_normalization() -> None:
+    manifests = {
+        "baseline": """\
+target-saveconfig-sha256=stable
+target-saveconfig-json-begin
+{"storage_objects":["pvc-a"]}
+target-saveconfig-json-end
+path=/sys/kernel/config/target/core/iblock_0|type=directory|mode=755|uid=0|gid=0|sha256=-
+path=/sys/kernel/config/target/core/iblock_0/hba_info|type=regular file|mode=444|uid=0|gid=0|size=4096|sha256=old-hba
+path=/sys/kernel/config/target/core/iblock_0/pvc-a|type=directory|mode=755|uid=0|gid=0|sha256=-
+path=/sys/kernel/config/target/core/iblock_0/pvc-a/info|type=regular file|mode=444|uid=0|gid=0|size=4096|sha256=old-info
+path=/sys/kernel/config/target/core/iblock_0/pvc-a/attrib/block_size|type=regular file|mode=644|uid=0|gid=0|size=4096|sha256=stable-attribute
+path=/sys/kernel/config/target/core/alua/lu_gps/default_lu_gp/members|type=regular file|mode=444|uid=0|gid=0|size=4096|sha256=old-members
+path=/sys/kernel/config/target/iscsi/iqn.example:pvc-a/tpgt_1/lun/lun_0/link|type=symbolic link|mode=777|uid=0|gid=0|sha256=old-link
+path=/etc/samba/smb.conf|type=regular file|mode=644|uid=0|gid=0|size=20|sha256=stable-samba
+listener=t|3260|present|endpoints=192.0.2.1:3260
+""",
+        "reordered": """\
+target-saveconfig-sha256=stable
+target-saveconfig-json-begin
+{"storage_objects":["pvc-a"]}
+target-saveconfig-json-end
+path=/etc/samba/smb.conf|type=regular file|mode=644|uid=0|gid=0|size=20|sha256=stable-samba
+path=/sys/kernel/config/target/iscsi/iqn.example:pvc-a/tpgt_1/lun/lun_0/link|type=symbolic link|mode=777|uid=0|gid=0|sha256=new-link
+path=/sys/kernel/config/target/core/alua/lu_gps/default_lu_gp/members|type=regular file|mode=444|uid=0|gid=0|size=4096|sha256=new-members
+path=/sys/kernel/config/target/core/iblock_11/pvc-a/attrib/block_size|type=regular file|mode=644|uid=0|gid=0|size=4096|sha256=stable-attribute
+path=/sys/kernel/config/target/core/iblock_11/pvc-a/info|type=regular file|mode=444|uid=0|gid=0|size=4096|sha256=new-info
+path=/sys/kernel/config/target/core/iblock_11/pvc-a|type=directory|mode=755|uid=0|gid=0|sha256=-
+path=/sys/kernel/config/target/core/iblock_11/hba_info|type=regular file|mode=444|uid=0|gid=0|size=4096|sha256=new-hba
+path=/sys/kernel/config/target/core/iblock_11|type=directory|mode=755|uid=0|gid=0|sha256=-
+listener=t|3260|present|endpoints=192.0.2.1:3260
+""",
+        "drifted": """\
+target-saveconfig-sha256=stable
+target-saveconfig-json-begin
+{"storage_objects":["pvc-a"]}
+target-saveconfig-json-end
+path=/etc/samba/smb.conf|type=regular file|mode=644|uid=0|gid=0|size=20|sha256=stable-samba
+path=/sys/kernel/config/target/iscsi/iqn.example:pvc-a/tpgt_1/lun/lun_0/link|type=symbolic link|mode=777|uid=0|gid=0|sha256=new-link
+path=/sys/kernel/config/target/core/alua/lu_gps/default_lu_gp/members|type=regular file|mode=444|uid=0|gid=0|size=4096|sha256=new-members
+path=/sys/kernel/config/target/core/iblock_11/pvc-a/attrib/block_size|type=regular file|mode=644|uid=0|gid=0|size=4096|sha256=changed-attribute
+path=/sys/kernel/config/target/core/iblock_11/pvc-a/info|type=regular file|mode=444|uid=0|gid=0|size=4096|sha256=new-info
+path=/sys/kernel/config/target/core/iblock_11/pvc-a|type=directory|mode=755|uid=0|gid=0|sha256=-
+path=/sys/kernel/config/target/core/iblock_11/hba_info|type=regular file|mode=444|uid=0|gid=0|size=4096|sha256=new-hba
+path=/sys/kernel/config/target/core/iblock_11|type=directory|mode=755|uid=0|gid=0|sha256=-
+listener=t|3260|present|endpoints=192.0.2.1:3260
+""",
+        "ambiguous": """\
+path=/sys/kernel/config/target/core/iblock_0|type=directory|mode=755|uid=0|gid=0|sha256=-
+path=/sys/kernel/config/target/core/iblock_0/pvc-a|type=directory|mode=755|uid=0|gid=0|sha256=-
+path=/sys/kernel/config/target/core/iblock_0/pvc-b|type=directory|mode=755|uid=0|gid=0|sha256=-
+""",
+        "empty": """\
+path=/sys/kernel/config/target/core/iblock_7|type=directory|mode=755|uid=0|gid=0|sha256=-
+path=/sys/kernel/config/target/core/iblock_7/hba_info|type=regular file|mode=444|uid=0|gid=0|size=4096|sha256=empty-hba
+""",
+    }
+    sources = {
+        "nix/scripts/homelab-host": source("nix/scripts/homelab-host"),
+        "nix/scripts/k3s-handoff rollback": source("nix/scripts/k3s-handoff").split(
+            'cat > "$dir/rollback" <<\'ROLLBACK\'\n', 1
+        )[1].split("\nROLLBACK\n", 1)[0],
+    }
+    with tempfile.TemporaryDirectory() as directory:
+        directory_path = Path(directory)
+        for name, content in manifests.items():
+            (directory_path / name).write_text(content)
+        failing_bin = directory_path / "failing-bin"
+        failing_bin.mkdir()
+        failing_sort = failing_bin / "sort"
+        failing_sort.write_text("#!/bin/sh\nexit 43\n")
+        failing_sort.chmod(0o700)
+        for script_name, text in sources.items():
+            match = re.search(
+                r"(normalize_nas_manifest\(\) \{\n.*?^\})",
+                text,
+                re.MULTILINE | re.DOTALL,
+            )
+            if match is None:
+                raise SystemExit(f"{script_name}: NAS manifest normalizer missing")
+            environment = {
+                **os.environ,
+                "BASELINE": str(directory_path / "baseline"),
+                "REORDERED": str(directory_path / "reordered"),
+                "DRIFTED": str(directory_path / "drifted"),
+                "AMBIGUOUS": str(directory_path / "ambiguous"),
+                "EMPTY": str(directory_path / "empty"),
+                "BASELINE_NORMALIZED": str(directory_path / "baseline.normalized"),
+                "REORDERED_NORMALIZED": str(directory_path / "reordered.normalized"),
+                "DRIFTED_NORMALIZED": str(directory_path / "drifted.normalized"),
+                "AMBIGUOUS_NORMALIZED": str(directory_path / "ambiguous.normalized"),
+                "EMPTY_NORMALIZED": str(directory_path / "empty.normalized"),
+            }
+            result = subprocess.run(
+                ["bash", "--noprofile", "--norc", "-ceu", match.group(1) + """
+normalize_nas_manifest "$BASELINE" "$BASELINE_NORMALIZED"
+normalize_nas_manifest "$REORDERED" "$REORDERED_NORMALIZED"
+cmp -s "$BASELINE_NORMALIZED" "$REORDERED_NORMALIZED"
+normalize_nas_manifest "$DRIFTED" "$DRIFTED_NORMALIZED"
+if cmp -s "$BASELINE_NORMALIZED" "$DRIFTED_NORMALIZED"; then
+  exit 41
+fi
+if normalize_nas_manifest "$AMBIGUOUS" "$AMBIGUOUS_NORMALIZED"; then
+  exit 42
+fi
+normalize_nas_manifest "$EMPTY" "$EMPTY_NORMALIZED"
+grep -F 'path=/sys/kernel/config/target/core/iblock_7|' "$EMPTY_NORMALIZED" >/dev/null
+grep -F 'path=/sys/kernel/config/target/core/iblock_7/hba_info|' "$EMPTY_NORMALIZED" >/dev/null
+"""],
+                capture_output=True,
+                text=True,
+                env=environment,
+            )
+            if result.returncode != 0:
+                raise SystemExit(
+                    f"{script_name}: NAS runtime-index normalization contract failed\n"
+                    f"{result.stderr.strip()}"
+                )
+            failure_environment = {
+                **environment,
+                "PATH": f"{failing_bin}:{os.environ.get('PATH', '')}",
+                "SORT_FAILURE_OUTPUT": str(directory_path / "sort-failure.normalized"),
+            }
+            failure_result = subprocess.run(
+                [
+                    "bash",
+                    "--noprofile",
+                    "--norc",
+                    "-ceu",
+                    match.group(1)
+                    + """
+if normalize_nas_manifest "$BASELINE" "$SORT_FAILURE_OUTPUT"; then
+  exit 43
+fi
+""",
+                ],
+                capture_output=True,
+                text=True,
+                env=failure_environment,
+            )
+            if failure_result.returncode != 0:
+                raise SystemExit(
+                    f"{script_name}: NAS normalizer accepted a failed sort\n"
+                    f"{failure_result.stdout}{failure_result.stderr}"
+                )
+
+
 def check_preserved_rollback_manifest_guard() -> None:
     handoff = source("nix/scripts/k3s-handoff")
     delimiter = 'cat > "$dir/rollback" <<\'ROLLBACK\'\n'
@@ -3081,6 +3228,97 @@ def check_storage_inventory_failure_propagation() -> None:
             )
 
 
+
+def check_storage_capture_readiness_guard() -> None:
+    migration = source("nix/scripts/homelab-host")
+    capture_match = re.search(
+        r"capture_storage_impact\(\) \{\n.*?^}",
+        migration,
+        re.DOTALL | re.MULTILINE,
+    )
+    if capture_match is None:
+        raise SystemExit("nix/scripts/homelab-host: storage capture helper is missing")
+    with tempfile.TemporaryDirectory() as directory:
+        directory_path = Path(directory)
+        fixture = directory_path / "fixture.json"
+        output = directory_path / "storage-consumers.json"
+        harness = directory_path / "capture-storage-impact"
+        harness.write_text(
+            "#!/usr/bin/env bash\n"
+            "set -euo pipefail\n"
+            'storage_impact_json() { cat "$FIXTURE"; }\n'
+            f"{capture_match.group(0)}\n"
+            'capture_storage_impact rock5bp "$OUTPUT"\n'
+        )
+        harness.chmod(0o755)
+        environment = {
+            **os.environ,
+            "FIXTURE": str(fixture),
+            "OUTPUT": str(output),
+        }
+        fixture.write_text(
+            json.dumps(
+                {
+                    "pods": [
+                        {
+                            "phase": "Running",
+                            "ready": False,
+                        }
+                    ]
+                }
+            )
+        )
+        result = subprocess.run(
+            ["bash", str(harness)],
+            capture_output=True,
+            text=True,
+            env=environment,
+        )
+        if (
+            result.returncode == 0
+            or "unready democratic-csi storage consumers" not in result.stderr
+            or output.exists()
+            or Path(f"{output}.sha256").exists()
+        ):
+            raise SystemExit(
+                "nix/scripts/homelab-host: prepare did not fail closed on an unready storage consumer\n"
+                f"stdout:\n{result.stdout}\nstderr:\n{result.stderr}"
+            )
+        fixture.write_text(
+            json.dumps(
+                {
+                    "pods": [
+                        {
+                            "phase": "Running",
+                            "ready": True,
+                        },
+                        {
+                            "phase": "Succeeded",
+                            "ready": False,
+                        },
+                    ]
+                }
+            )
+        )
+        result = subprocess.run(
+            ["bash", str(harness)],
+            capture_output=True,
+            text=True,
+            env=environment,
+        )
+        checksum = subprocess.run(
+            ["sha256sum", "-c", output.name + ".sha256"],
+            cwd=directory_path,
+            capture_output=True,
+            text=True,
+        )
+        if result.returncode != 0 or checksum.returncode != 0:
+            raise SystemExit(
+                "nix/scripts/homelab-host: ready storage consumers were rejected or not checksummed\n"
+                f"stdout:\n{result.stdout}\nstderr:\n{result.stderr}"
+                f"checksum:\n{checksum.stdout}{checksum.stderr}"
+            )
+
 require(
     "nix/modules/linux/base.nix",
     "10-homelab-lan.network",
@@ -3833,6 +4071,7 @@ check_accept_rearms_before_cleanup()
 check_armed_verify_entrypoint()
 check_rollback_restore_failure()
 check_rollback_stage_resume()
+check_nas_manifest_runtime_index_normalization()
 check_preserved_rollback_manifest_guard()
 check_authorized_keys_verification()
 check_ssh_strict_modes_guard()
@@ -3851,5 +4090,6 @@ check_static_nix_hosts_expression()
 check_nas_preservation_contracts()
 check_preservation_policy_failure()
 check_storage_inventory_failure_propagation()
+check_storage_capture_readiness_guard()
 check_shell_syntax()
 print("migration-contracts: ok")

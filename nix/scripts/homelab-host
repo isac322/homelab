@@ -95,8 +95,79 @@ assert_preservation_plan_safe() {
   done <<< "$names"
 }
 
+normalize_nas_manifest() {
+  local input=$1 output=$2 work nonpath paths
+  work="${output}.normalize.$$"
+  rm -rf "$work"
+  mkdir -m 0700 "$work"
+  nonpath="$work/nonpath"
+  paths="$work/paths"
+  : > "$nonpath"
+  : > "$paths"
+  chmod 0600 "$nonpath" "$paths"
+  if ! awk -v nonpath="$nonpath" -v paths="$paths" '
+    function fail(message) {
+      print "NAS manifest normalization failed: " message > "/dev/stderr"
+      failed = 1
+      exit 2
+    }
+    /^path=/ {
+      records[++record_count] = $0
+      prefix = "path=/sys/kernel/config/target/core/"
+      if (index($0, prefix) == 1 && $0 ~ /\|type=directory\|/) {
+        remainder = substr($0, length(prefix) + 1)
+        if (remainder ~ /^iblock_[0-9]+\//) {
+          split(remainder, components, "/")
+          hba = components[1]
+          object = components[2]
+          sub(/\|.*/, "", object)
+          if (objects[hba] != "" && objects[hba] != object)
+            fail(hba " contains multiple storage objects")
+          objects[hba] = object
+        }
+      }
+      next
+    }
+    { print >> nonpath }
+    END {
+      if (failed)
+        exit 2
+      for (record_index = 1; record_index <= record_count; record_index++) {
+        line = records[record_index]
+        if (match(line, /\/core\/iblock_[0-9]+(\/|\|)/)) {
+          matched = substr(line, RSTART, RLENGTH)
+          hba = matched
+          sub(/^\/core\//, "", hba)
+          sub(/[\/|]$/, "", hba)
+          if (objects[hba] != "") {
+            separator = substr(matched, length(matched), 1)
+            replacement = "/core/iblock[" objects[hba] "]" separator
+            line = substr(line, 1, RSTART - 1) replacement substr(line, RSTART + RLENGTH)
+          }
+        }
+        if (line ~ /^path=\/sys\/kernel\/config\/target\/core\/alua\/lu_gps\/default_lu_gp\/members\|/ ||
+            line ~ /^path=\/sys\/kernel\/config\/target\/core\/iblock\[[^]]+\]\/hba_info\|/ ||
+            line ~ /^path=\/sys\/kernel\/config\/target\/core\/iblock\[[^]]+\]\/[^\/|]+\/info\|/ ||
+            (line ~ /^path=\/sys\/kernel\/config\/target\/iscsi\// &&
+             line ~ /\/tpgt_[0-9]+\/lun\/lun_[0-9]+\/[^\/|]+\|type=symbolic link\|/))
+          sub(/\|sha256=[^|]*$/, "|sha256=<runtime-index>", line)
+        print line >> paths
+      }
+    }
+  ' "$input"; then
+    rm -rf "$work"
+    return 1
+  fi
+  if ! LC_ALL=C sort "$paths" >> "$nonpath" || ! mv -f "$nonpath" "$output"; then
+    rm -rf "$work"
+    return 1
+  fi
+  rm -rf "$work"
+}
+
+
 verify_nas_baseline() {
-  local host=$1 baseline=$2 wait=${3:-no} manifest script checksum tmp attempt=1 limit=1 preserve
+  local host=$1 baseline=$2 wait=${3:-no} manifest script checksum tmp baseline_normalized current_normalized attempt=1 limit=1 preserve
   preserve=$(preserve_nas_state "$host") || return 1
   [ "$preserve" = true ] || return 0
   [ -n "$baseline" ] || {
@@ -124,9 +195,18 @@ verify_nas_baseline() {
   }
   if [ "$wait" = yes ]; then limit=60; fi
   tmp=$(mktemp "$state/baselines/.$host-live.XXXXXX")
+  baseline_normalized="$tmp.baseline"
+  current_normalized="$tmp.current"
+  if ! normalize_nas_manifest "$manifest" "$baseline_normalized"; then
+    echo "$host stored NAS baseline could not be normalized" >&2
+    rm -f "$tmp" "$baseline_normalized" "$current_normalized"
+    return 1
+  fi
   while [ "$attempt" -le "$limit" ]; do
-    if remote "$host" 'sudo -n bash -s' < "$script" > "$tmp" && cmp -s "$manifest" "$tmp"; then
-      rm -f "$tmp"
+    if remote "$host" 'sudo -n bash -s' < "$script" > "$tmp" \
+      && normalize_nas_manifest "$tmp" "$current_normalized" \
+      && cmp -s "$baseline_normalized" "$current_normalized"; then
+      rm -f "$tmp" "$baseline_normalized" "$current_normalized"
       return 0
     fi
     if [ "$attempt" -lt "$limit" ]; then sleep 2; fi
@@ -136,7 +216,7 @@ verify_nas_baseline() {
   printf 'baseline-sha256=%s current-sha256=%s\n' \
     "$(sha256sum "$manifest" | awk '{print $1}')" \
     "$(sha256sum "$tmp" | awk '{print $1}')" >&2
-  rm -f "$tmp"
+  rm -f "$tmp" "$baseline_normalized" "$current_normalized"
   return 1
 }
 
@@ -636,6 +716,16 @@ storage_impact_json() {
 capture_storage_impact() {
   local host=$1 output=$2 directory name
   storage_impact_json "$host" > "$output"
+  if ! jq -e '
+    all(.pods[];
+      .phase == "Succeeded"
+      or .phase == "Failed"
+      or (.phase == "Running" and .ready == true))
+  ' "$output" >/dev/null; then
+    rm -f "$output"
+    echo "$host has unready democratic-csi storage consumers; recover them before prepare" >&2
+    return 1
+  fi
   directory=$(dirname "$output")
   name=$(basename "$output")
   (

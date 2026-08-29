@@ -222,6 +222,7 @@ cat > "$dir/rollback" <<'ROLLBACK'
 #!/bin/sh
 set -eu
 export PATH="/usr/local/sbin:/usr/local/bin:/usr/sbin:/usr/bin:/sbin:/bin:${PATH:-}"
+umask 077
 dir=/var/lib/homelab-host-rollback/current
 stages="$dir/stages"
 {
@@ -241,6 +242,77 @@ case "$manage_firewall_rules" in true|false) ;; *) exit 2 ;; esac
 if test "$preserve_nas_state" = true; then test "$manage_firewall_rules" = false; fi
 exec >> "$dir/rollback.log" 2>&1
 printf 'rollback started %s\n' "$(date -u +%FT%TZ)"
+normalize_nas_manifest() {
+  normalize_input=$1
+  normalize_output=$2
+  normalize_work="${normalize_output}.normalize.$$"
+  rm -rf "$normalize_work"
+  mkdir -m 0700 "$normalize_work"
+  normalize_nonpath="$normalize_work/nonpath"
+  normalize_paths="$normalize_work/paths"
+  : > "$normalize_nonpath"
+  : > "$normalize_paths"
+  chmod 0600 "$normalize_nonpath" "$normalize_paths"
+  if ! awk -v nonpath="$normalize_nonpath" -v paths="$normalize_paths" '
+    function fail(message) {
+      print "NAS manifest normalization failed: " message > "/dev/stderr"
+      failed = 1
+      exit 2
+    }
+    /^path=/ {
+      records[++record_count] = $0
+      prefix = "path=/sys/kernel/config/target/core/"
+      if (index($0, prefix) == 1 && $0 ~ /\|type=directory\|/) {
+        remainder = substr($0, length(prefix) + 1)
+        if (remainder ~ /^iblock_[0-9]+\//) {
+          split(remainder, components, "/")
+          hba = components[1]
+          object = components[2]
+          sub(/\|.*/, "", object)
+          if (objects[hba] != "" && objects[hba] != object)
+            fail(hba " contains multiple storage objects")
+          objects[hba] = object
+        }
+      }
+      next
+    }
+    { print >> nonpath }
+    END {
+      if (failed)
+        exit 2
+      for (record_index = 1; record_index <= record_count; record_index++) {
+        line = records[record_index]
+        if (match(line, /\/core\/iblock_[0-9]+(\/|\|)/)) {
+          matched = substr(line, RSTART, RLENGTH)
+          hba = matched
+          sub(/^\/core\//, "", hba)
+          sub(/[\/|]$/, "", hba)
+          if (objects[hba] != "") {
+            separator = substr(matched, length(matched), 1)
+            replacement = "/core/iblock[" objects[hba] "]" separator
+            line = substr(line, 1, RSTART - 1) replacement substr(line, RSTART + RLENGTH)
+          }
+        }
+        if (line ~ /^path=\/sys\/kernel\/config\/target\/core\/alua\/lu_gps\/default_lu_gp\/members\|/ ||
+            line ~ /^path=\/sys\/kernel\/config\/target\/core\/iblock\[[^]]+\]\/hba_info\|/ ||
+            line ~ /^path=\/sys\/kernel\/config\/target\/core\/iblock\[[^]]+\]\/[^\/|]+\/info\|/ ||
+            (line ~ /^path=\/sys\/kernel\/config\/target\/iscsi\// &&
+             line ~ /\/tpgt_[0-9]+\/lun\/lun_[0-9]+\/[^\/|]+\|type=symbolic link\|/))
+          sub(/\|sha256=[^|]*$/, "|sha256=<runtime-index>", line)
+        print line >> paths
+      }
+    }
+  ' "$normalize_input"; then
+    rm -rf "$normalize_work"
+    return 1
+  fi
+  if ! LC_ALL=C sort "$normalize_paths" >> "$normalize_nonpath" \
+    || ! mv -f "$normalize_nonpath" "$normalize_output"; then
+    rm -rf "$normalize_work"
+    return 1
+  fi
+  rm -rf "$normalize_work"
+}
 verify_nas_manifest() {
   test -s "$dir/manifest.txt"
   test -s "$dir/manifest.sha256"
@@ -248,15 +320,20 @@ verify_nas_manifest() {
   command -v bash >/dev/null
   (cd "$dir" && sha256sum -c manifest.sha256 >/dev/null)
   current="$dir/manifest.current"
-  if ! bash "$dir/manifest-remote" > "$current" || ! cmp -s "$dir/manifest.txt" "$current"; then
+  expected="$dir/manifest.expected"
+  actual="$dir/manifest.actual"
+  if ! bash "$dir/manifest-remote" > "$current" \
+    || ! normalize_nas_manifest "$dir/manifest.txt" "$expected" \
+    || ! normalize_nas_manifest "$current" "$actual" \
+    || ! cmp -s "$expected" "$actual"; then
     echo "external NAS state changed; refusing rollback mutation" >&2
     printf 'baseline-sha256=%s current-sha256=%s\n' \
       "$(sha256sum "$dir/manifest.txt" | awk '{print $1}')" \
       "$(sha256sum "$current" | awk '{print $1}')" >&2
-    rm -f "$current"
+    rm -f "$current" "$expected" "$actual"
     return 1
   fi
-  rm -f "$current"
+  rm -f "$current" "$expected" "$actual"
 }
 if test "$preserve_nas_state" = true; then verify_nas_manifest; fi
 mkdir -p "$stages"

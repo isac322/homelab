@@ -47,7 +47,9 @@ nix run .#rotate-psk -- --link wg0-n2p1-n2p2
 
 `prepare`는 NAS baseline을 읽기 전용으로 기록한다. ZFS는 `zpool status -v`, `zpool get -H guid`, `zfs list -Hp -t filesystem,volume -o name,type,mountpoint,volsize` 결과를 기록한다. `zpool status -v`의 scrub/resilver `scan:` block은 진행률·속도·ETA가 바뀌므로 equality manifest에서 제외하지만 다음 labeled section부터 다시 기록해 pool state/status/action/see, remove/checkpoint, device topology, READ/WRITE/CKSUM error counters, 최종 `errors:` 결과는 유지한다. `volsize`는 zvol shrink를 검출하지만 live `used`/free capacity는 제외한다. `targetcli`는 one-shot 조회도 종료 시 auto-save할 수 있으므로 호출하지 않는다. Live target topology는 volatile session/statistics/ACL-info/action/control subtree를 제외한 `/sys/kernel/config/target` configfs path, metadata, readable value hash와 symlink target으로 캡처하고, persistent target state는 기존 `/etc/rtslib-fb-target/saveconfig.json`의 SHA-256 및 원문만 읽는다. Samba effective configuration은 `testparm -s`로 기록한다. 그 밖에 `democratic-csi` access, NFS/firewall/cron 파일의 hash와 stable stat(type/mode/uid/gid, regular-file size), storage service 상태, NAS listener를 `.host-state/baselines/rock5bp-nas-<timestamp>/`에 기록한다. Baseline, lifecycle gate, rollback verification은 `targetcli`, `targetcli saveconfig`, 또는 다른 NAS state writer를 실행하지 않는다.
 
-`prepare`는 democratic-csi PV/PVC/pod/VolumeAttachment와 consuming node의 정규화한 iSCSI session inventory도 recovery directory에 저장한다. `storage-impact`와 lifecycle recovery checks는 Kubernetes resource, PV/PVC, VolumeAttachment, pod, iSCSI session을 관찰하기만 한다. Cluster resource를 scale, patch, restart하거나 다른 방식으로 변경하지 않는다. `activate`, `reboot-verify`, `commit`이 성공 상태를 기록하기 전에 같은 recovery checks를 자동으로 다시 실행하며, NAS 보존 경계나 recovery 상태를 읽기 전용으로 확인할 수 없으면 진행하지 않는다.
+configfs의 `iblock_N` 번호는 target service 재시작마다 같은 storage object에 다르게 배정될 수 있으므로 baseline 비교에서 object 이름으로 정규화한다. 이 번호만 반영하는 HBA/object info, default LU group members, LUN symlink hash는 runtime-index marker로 비교하지만, storage object/LUN path set, persistent `saveconfig.json`, target attribute, ZFS, service, listener, Samba/NFS와 다른 file hash는 그대로 exact-match한다.
+
+`prepare`는 democratic-csi PV/PVC/pod/VolumeAttachment와 consuming node의 정규화한 iSCSI session inventory도 recovery directory에 저장한다. 현재 active storage consumer pod가 `Running/Ready`가 아니면 host state를 변경하기 전에 fail-closed하며, 먼저 workload를 복구해야 한다. `storage-impact`와 lifecycle recovery checks는 Kubernetes resource, PV/PVC, VolumeAttachment, pod, iSCSI session을 관찰하기만 한다. Cluster resource를 scale, patch, restart하거나 다른 방식으로 변경하지 않는다. `activate`, `reboot-verify`, `commit`이 성공 상태를 기록하기 전에 같은 recovery checks를 자동으로 다시 실행하며, NAS 보존 경계나 recovery 상태를 읽기 전용으로 확인할 수 없으면 진행하지 않는다.
 
 ```bash
 nix run .#adopt-host -- n2p1
@@ -161,7 +163,7 @@ K3s version과 순차 rollout은 기존 Rancher `system-upgrade-controller`가 �
 ## Ansible ownership boundary
 
 Legacy host-management playbook은 `[ansible_managed]`만 target으로 삼는다. Commit까지
-끝난 호스트는 `[nix_managed]`로 옮기며, 현재 `n2p1`, `n2p2`, `rpi4`가 여기에 속한다.
+끝난 호스트는 `[nix_managed]`로 옮기며, 현재 `n2p1`, `n2p2`, `rpi4`, `rock5bp`가 여기에 속한다.
 두 ownership group은 `homelab`의 child로 남고 `backbone` 같은 topology group도
 유지하지만, Nix-managed host에는 Ansible SSH 연결이나 remote task를 실행하지 않는다.
 
