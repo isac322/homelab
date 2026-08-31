@@ -5,10 +5,10 @@ metadata:
 spec:
   image:
     repository: nousresearch/hermes-agent
-    tag: v2026.8.19
+    tag: v2026.8.27
   initContainers:
     - name: install-hermes-lcm
-      image: nousresearch/hermes-agent:v2026.8.19
+      image: nousresearch/hermes-agent:v2026.8.27
       command:
         - /bin/sh
         - -ec
@@ -23,7 +23,7 @@ spec:
         - name: hermes-lcm
           mountPath: /lcm
     - name: install-default-skills
-      image: nousresearch/hermes-agent:v2026.8.19
+      image: nousresearch/hermes-agent:v2026.8.27
       command:
         - /bin/sh
         - -e
@@ -64,7 +64,7 @@ spec:
         - name: hermes-default-skills
           mountPath: /skills
     - name: patch-openai-native-web-search
-      image: nousresearch/hermes-agent:v2026.8.19
+      image: nousresearch/hermes-agent:v2026.8.27
       command:
         - /opt/hermes/.venv/bin/python
         - /patch/patch.py
@@ -86,7 +86,7 @@ spec:
         - name: hermes-patched-files
           mountPath: /patched
     - name: prepare-camofox-home
-      image: ghcr.io/jo-inc/camofox-browser:1.13.0
+      image: ghcr.io/jo-inc/camofox-browser:1.14.0
       command:
         - /bin/sh
         - -ec
@@ -160,7 +160,7 @@ spec:
       readOnly: true
   sidecars:
     - name: camofox
-      image: ghcr.io/jo-inc/camofox-browser:1.13.0
+      image: ghcr.io/jo-inc/camofox-browser:1.14.0
       imagePullPolicy: IfNotPresent
       env:
         - name: HOME
@@ -272,7 +272,7 @@ spec:
           readOnly: true
   config:
     raw:
-      _config_version: 37
+      _config_version: 39
       approvals:
         mode: "off"
       agent:
