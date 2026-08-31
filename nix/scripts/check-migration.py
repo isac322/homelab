@@ -3531,8 +3531,13 @@ require(
     'cmp -s "$work/expected-peers" "$work/actual-peers"',
     'cmp -s "$work/expected-allowed" "$work/actual-allowed"',
     'cmp -s "$work/expected-keepalive" "$work/actual-keepalive"',
+    'awk \'{ print $1 "\\t" $2 }\' "$work/actual-keepalive.raw"',
     'cmp -s "$work/expected-endpoint-peers" "$work/actual-endpoint-peers"',
     'wg show "$interface" preshared-keys',
+)
+forbid(
+    "nix/scripts/sync-wireguard-runtime",
+    "$(NF - 1)",
 )
 require(
     "nix/scripts/homelab-host",

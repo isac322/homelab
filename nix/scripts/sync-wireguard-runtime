@@ -131,7 +131,7 @@ awk '
   END { flush() }
 ' "$configuration" | LC_ALL=C sort > "$work/expected-keepalive"
 wg show "$interface" persistent-keepalive > "$work/actual-keepalive.raw"
-awk '{ value=($2 == "off" ? "off" : $(NF - 1)); print $1 "\t" value }' "$work/actual-keepalive.raw" \
+awk '{ print $1 "\t" $2 }' "$work/actual-keepalive.raw" \
   | LC_ALL=C sort > "$work/actual-keepalive"
 cmp -s "$work/expected-keepalive" "$work/actual-keepalive" || {
   echo "$interface persistent keepalive settings differ after in-place synchronization" >&2
