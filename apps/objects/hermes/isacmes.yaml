@@ -309,6 +309,12 @@ spec:
       platforms:
         telegram:
           enabled: true
+          allow_from:
+            - "5286349319"
+          require_mention: true
+          extra:
+            exclusive_bot_mentions: true
+          reply_to_mode: all
           home_channel:
             platform: telegram
             chat_id: "5286349319"
@@ -445,8 +451,6 @@ spec:
       value: /opt/data/.cache/deno
     - name: DENO_INSTALL
       value: /opt/data/.local
-    - name: TELEGRAM_ALLOWED_USERS
-      value: "5286349319"
     - name: OPENAI_API_KEY
       valueFrom:
         secretKeyRef:
