@@ -2842,6 +2842,7 @@ errors: No known data errors
         "verify_nas_baseline()",
         "storage_impact_json()",
         "verify_storage_recovery()",
+        "storage_recovery_required()",
         'deadline=$((SECONDS + 600))',
         'if ! "$root/nix/scripts/k3s-handoff" rearm "$host"; then',
         'timeout --foreground --kill-after=10s "${capture_timeout}s" "$0" storage-impact "$host"',
@@ -2899,6 +2900,14 @@ errors: No known data errors
         raise SystemExit(
             "nix/scripts/homelab-host: storage recovery is not bounded and rearmed inside the polling loop"
         )
+    for function_name, function_match in (
+        ("storage_impact_json", storage_match),
+        ("verify_storage_recovery", recovery_match),
+    ):
+        if "storage_recovery_required" not in function_match.group(0):
+            raise SystemExit(
+                f"nix/scripts/homelab-host: {function_name} does not cover iSCSI client recovery"
+            )
     lifecycle_match = re.search(
         r"  prepare\|deploy\).*?^  onboard-k3s-node\)",
         migration,
@@ -2906,6 +2915,15 @@ errors: No known data errors
     )
     if lifecycle_match is None:
         raise SystemExit("nix/scripts/homelab-host: guarded preservation lifecycle is missing")
+    if not re.search(
+        r"prepare\|deploy\).*?storage_required=\$\(storage_recovery_required.*?"
+        r'if \[ "\$storage_required" = true \]; then.*?capture_storage_impact',
+        lifecycle_match.group(0),
+        re.DOTALL,
+    ):
+        raise SystemExit(
+            "nix/scripts/homelab-host: prepare does not capture storage recovery for iSCSI clients"
+        )
     for pattern in (
         r"\bkubectl\b[^\n]*\bapply\b",
         r"\bkubectl\b[^\n]*\bcreate\b",

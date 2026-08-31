@@ -61,7 +61,7 @@ nix run .#rotate-psk -- --link wg0-n2p1-n2p2
 
 configfs의 `iblock_N` 번호는 target service 재시작마다 같은 storage object에 다르게 배정될 수 있으므로 baseline 비교에서 object 이름으로 정규화한다. 이 번호만 반영하는 HBA/object info, default LU group members, LUN symlink hash는 runtime-index marker로 비교하지만, storage object/LUN path set, persistent `saveconfig.json`, target attribute, ZFS, service, listener, Samba/NFS와 다른 file hash는 그대로 exact-match한다.
 
-`prepare`는 democratic-csi PV/PVC/pod/VolumeAttachment와 consuming node의 정규화한 iSCSI session inventory도 recovery directory에 저장한다. 현재 active storage consumer pod가 `Running/Ready`가 아니면 host state를 변경하기 전에 fail-closed하며, 먼저 workload를 복구해야 한다. `storage-impact`와 lifecycle recovery checks는 Kubernetes resource, PV/PVC, VolumeAttachment, pod, iSCSI session을 관찰하기만 한다. Cluster resource를 scale, patch, restart하거나 다른 방식으로 변경하지 않는다. `activate`, `reboot-verify`, `commit`이 성공 상태를 기록하기 전에 같은 recovery checks를 자동으로 다시 실행하며, NAS 보존 경계나 recovery 상태를 읽기 전용으로 확인할 수 없으면 진행하지 않는다.
+`prepare`는 `preserveNasState=true`인 NAS host와 `iscsiClient=true`인 storage consumer host에서 democratic-csi PV/PVC/pod/VolumeAttachment와 consuming node의 정규화한 iSCSI session inventory를 recovery directory에 저장한다. 현재 active storage consumer pod가 `Running/Ready`가 아니면 host state를 변경하기 전에 fail-closed하며, 먼저 workload를 복구해야 한다. `storage-impact`와 lifecycle recovery checks는 Kubernetes resource, PV/PVC, VolumeAttachment, pod, iSCSI session을 관찰하기만 한다. Cluster resource를 scale, patch, restart하거나 다른 방식으로 변경하지 않는다. `activate`, `reboot-verify`, `commit`이 성공 상태를 기록하기 전에 같은 recovery checks를 자동으로 다시 실행하며, NAS 보존 경계나 recovery 상태를 읽기 전용으로 확인할 수 없으면 진행하지 않는다.
 
 ```bash
 nix run .#adopt-host -- n2p1
