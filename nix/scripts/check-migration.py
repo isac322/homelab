@@ -89,7 +89,8 @@ def check_ansible_cutover_partition() -> None:
     nix_managed = groups.get("nix_managed", set())
     ansible_managed = groups.get("ansible_managed", set())
     migrated_backbone = {"n2p1", "n2p2", "rpi4", "rock5bp"}
-    for host in sorted(migrated_backbone):
+    migrated_hosts = migrated_backbone | {"macmini"}
+    for host in sorted(migrated_hosts):
         if host not in nix_managed:
             raise SystemExit(
                 f"cluster-setup/inventory/hosts: migrated host {host} is not nix_managed"
