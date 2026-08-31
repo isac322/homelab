@@ -33,6 +33,17 @@ nix run .#rotate-psk -- --link wg0-n2p1-n2p2
 `bootstrap-host`는 기존 SSH identity로 접속하며, 비-root host에서는 현재 sudo 암호를 TTY로 한 번 요구해 `/etc/sudoers.d/homelab-admin`을 검증·설치한다. 이후 migration command는 `sudo -n`만 사용하고 암호 prompt가 발생하면 실패한다.
 복호화 workspace와 machine-bound credential staging tree는 Linux에서는 runtime tmpfs를 우선 사용하고, `/dev/shm`이 없는 macOS에서는 권한이 제한된 `${TMPDIR:-/tmp}` workspace를 사용한 뒤 trap으로 즉시 제거한다. 원격 host는 generation을 검증한 뒤 `systemd-creds encrypt --with-key=host`로 `/var/lib/homelab-secrets/generations/<generation>/*.cred`를 만들고 `active`/`previous` symlink를 원자 교체한다. systemd는 unit별 `LoadCredentialEncrypted=`로 `/run/credentials/<unit>/`에만 plaintext를 제공한다. Migration receipt는 Git revision, secret generation, 등록된 system-manager store path를 함께 고정한다.
 
+## Migration progress
+
+2026-08-31 기준 Linux host migration 진행 상태:
+
+- Nix 관리 완료: `n2p1`, `n2p2`, `rpi4`, `rock5bp`
+- Ansible host 관리 잔여: `macmini`, `rpi5`
+- `macmini` preflight: base/commit generation evaluation과 migration contract는 통과했다. Operator가 macOS이므로 `aarch64-linux` exact generation은 target host의 native `prepare`에서 build한다. 현재 operator의 `ssh_pub_keys/laptop.pub`가 legacy authorized keys에 없어 public-key SSH가 거부되므로 host mutation은 시작하지 않는다. 기존 console 또는 이미 허용된 key session에서 해당 public key를 `/home/bhyoo/.ssh/authorized_keys`에 추가하고 `bhyoo@192.168.219.8` public-key login을 확인한 뒤 host age identity와 `node-macmini.sops.yaml`을 생성한다.
+- 다음 순서: `macmini`를 guarded lifecycle로 전환한 뒤 `rpi5`를 마지막에 전환한다. `rpi5`는 K3s server이자 `wg0` edge gateway이므로 다른 host가 안정화되기 전에는 이주하지 않는다.
+- `rock5bp`는 host plane만 Nix가 관리한다. `[nas]` 역할과 ZFS, LIO/rtslib/targetcli, Samba/NFS, storage cron/listener, `democratic-csi` identity/access, native NAS firewall은 기존 외부 관리 경계에 남긴다.
+- 각 host는 `prepare -> activate -> reboot -> reboot-verify -> commit`이 terminal receipt로 끝나고 live verification이 통과한 뒤에만 `[ansible_managed]`에서 `[nix_managed]`로 옮긴다.
+
 ## Linux migration
 
 일반 activation은 다음 다섯 단계다. K3s version과 rolling upgrade는 기존 Rancher `system-upgrade-controller`, `server-plan`, `agent-plan`, `backbone-k3s-upgrade` Application이 계속 소유한다. Host migration 중에는 Plan version을 변경하거나 별도 rollout을 시작하지 않는다.

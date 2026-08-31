@@ -2481,7 +2481,10 @@ def check_legacy_cleanup_path_verification() -> None:
         "/etc/systemd/system", "${TEST_SYSTEMD}"
     )
     verify_match = re.search(
-        r'(    assert_path_absent\(\) \{\n'
+        r'(    if test "\$REQUIRE_K3S_BINARY" = true; then\n'
+        r'      test -x /usr/local/bin/k3s\n'
+        r'    fi\n'
+        r'    assert_path_absent\(\) \{\n'
         r'      test ! -e "\$1"\n'
         r'      test ! -L "\$1"\n'
         r'    \}\n'
@@ -2494,8 +2497,10 @@ def check_legacy_cleanup_path_verification() -> None:
     )
     if verify_match is None:
         raise SystemExit("nix/scripts/homelab-host: legacy path verification block missing")
-    verify_block = verify_match.group(1).replace(
-        "/etc/systemd/system", "${TEST_SYSTEMD}"
+    verify_block = (
+        verify_match.group(1)
+        .replace("/etc/systemd/system", "${TEST_SYSTEMD}")
+        .replace("/usr/local/bin/k3s", "${TEST_K3S}")
     )
     with tempfile.TemporaryDirectory() as directory:
         directory_path = Path(directory)
@@ -2512,10 +2517,13 @@ def check_legacy_cleanup_path_verification() -> None:
             "esac\n"
         )
         systemctl.chmod(0o755)
+        k3s_binary = directory_path / "k3s"
         environment = {
             **os.environ,
             "PATH": f"{mock_bin}:{os.environ['PATH']}",
             "TEST_SYSTEMD": str(systemd),
+            "TEST_K3S": str(k3s_binary),
+            "REQUIRE_K3S_BINARY": "false",
         }
         cleanup_script = f"set -eu\n{cleanup_block}\n"
         verify_script = f"set -eu\n{verify_block}\n"
@@ -2570,6 +2578,26 @@ def check_legacy_cleanup_path_verification() -> None:
         )
         if result.returncode != 0:
             raise SystemExit("nix/scripts/homelab-host: clean legacy paths were rejected")
+        result = subprocess.run(
+            ["sh"],
+            input=verify_script,
+            text=True,
+            capture_output=True,
+            env={**environment, "REQUIRE_K3S_BINARY": "true"},
+        )
+        if result.returncode == 0:
+            raise SystemExit("nix/scripts/homelab-host: missing K3s binary was accepted for a K3s host")
+        k3s_binary.write_text("#!/bin/sh\nexit 0\n")
+        k3s_binary.chmod(0o755)
+        result = subprocess.run(
+            ["sh"],
+            input=verify_script,
+            text=True,
+            capture_output=True,
+            env={**environment, "REQUIRE_K3S_BINARY": "true"},
+        )
+        if result.returncode != 0:
+            raise SystemExit("nix/scripts/homelab-host: retained K3s binary was rejected for a K3s host")
 
         regular = systemd / "k3s.service.env"
         regular.write_text("fixture\n")
@@ -3819,8 +3847,26 @@ for pattern in (
         raise SystemExit(f"nix/scripts/homelab-host: legacy enablement verification is missing: {pattern}")
 if 'assert_path_absent "$link"' not in verify_cleanup_block:
     raise SystemExit("nix/scripts/homelab-host: legacy enablement link removal is not verified")
-if 'test -x /usr/local/bin/k3s' not in host_migration:
-    raise SystemExit("nix/scripts/homelab-host: K3s install layout retention is not verified")
+for needle in (
+    'role=$(nix_eval --json "$root#topology.nodes.$host.k3sRole") || return 1',
+    '\'"server"\'|\'"agent"\') require_k3s_binary=true',
+    'null) ;;',
+    'REQUIRE_K3S_BINARY=$require_k3s_binary',
+):
+    if needle not in verify_cleanup_block:
+        raise SystemExit(
+            "nix/scripts/homelab-host: K3s cleanup role mapping is incomplete: "
+            f"{needle}"
+        )
+if (
+    'if test "$REQUIRE_K3S_BINARY" = true; then\n'
+    "      test -x /usr/local/bin/k3s\n"
+    "    fi"
+    not in verify_cleanup_block
+):
+    raise SystemExit(
+        "nix/scripts/homelab-host: K3s install layout retention must be role-aware"
+    )
 require(
     "nix/scripts/wireguard-secrets",
     "unmanaged link has no repository-owned endpoint bundle",

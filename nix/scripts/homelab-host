@@ -888,9 +888,20 @@ cleanup_legacy_files() {
   '\'''
 }
 verify_legacy_cleanup() {
-  local host=$1
-  remote "$host" 'sudo -n sh -ceu '\''
-    test -x /usr/local/bin/k3s
+  local host=$1 role require_k3s_binary=false
+  role=$(nix_eval --json "$root#topology.nodes.$host.k3sRole") || return 1
+  case "$role" in
+    '"server"'|'"agent"') require_k3s_binary=true ;;
+    null) ;;
+    *)
+      echo "$host has invalid k3sRole: $role" >&2
+      return 1
+      ;;
+  esac
+  remote "$host" "sudo -n env REQUIRE_K3S_BINARY=$require_k3s_binary sh -seu" <<'REMOTE_VERIFY_LEGACY_CLEANUP'
+    if test "$REQUIRE_K3S_BINARY" = true; then
+      test -x /usr/local/bin/k3s
+    fi
     assert_path_absent() {
       test ! -e "$1"
       test ! -L "$1"
@@ -907,7 +918,7 @@ verify_legacy_cleanup() {
         assert_path_absent "$link"
       done
     done
-  '\'''
+REMOTE_VERIFY_LEGACY_CLEANUP
 }
 rollback_state() {
   "$root/nix/scripts/k3s-handoff" state "$1"
