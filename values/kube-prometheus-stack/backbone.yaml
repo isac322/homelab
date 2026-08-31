@@ -21,6 +21,430 @@ grafana:
     userKey: admin-user
     passwordKey: admin-password
 
+  envValueFrom:
+    TELEGRAM_BOT_TOKEN:
+      secretKeyRef:
+        name: grafana-telegram-credentials
+        key: bot-token
+    TELEGRAM_CHAT_ID:
+      secretKeyRef:
+        name: grafana-telegram-credentials
+        key: chat-id
+
+  alerting:
+    contactpoints.yaml:
+      secret:
+        apiVersion: 1
+        contactPoints:
+          - orgId: 1
+            name: Telegram infrastructure
+            receivers:
+              - uid: telegram-infrastructure
+                type: telegram
+                disableResolveMessage: false
+                settings:
+                  bottoken: |-
+                    $TELEGRAM_BOT_TOKEN
+                  chatid: |-
+                    $TELEGRAM_CHAT_ID
+                  disable_web_page_preview: true
+    policies.yaml:
+      apiVersion: 1
+      policies:
+        - orgId: 1
+          receiver: Telegram infrastructure
+          group_by:
+            - grafana_folder
+            - alertname
+          group_wait: 30s
+          group_interval: 5m
+          repeat_interval: 4h
+    rules.yaml:
+      apiVersion: 1
+      groups:
+        - orgId: 1
+          name: Backbone infrastructure
+          folder: Infrastructure
+          interval: 1m
+          rules:
+            - uid: infra-node-down
+              title: Node exporter unavailable
+              condition: B
+              data:
+                - refId: A
+                  relativeTimeRange:
+                    from: 600
+                    to: 0
+                  datasourceUid: prometheus
+                  model:
+                    datasource:
+                      type: prometheus
+                      uid: prometheus
+                    editorMode: code
+                    expr: >-
+                      1 - max by (cluster, instance)
+                      (up{cluster="backbone", job="node-exporter"})
+                    instant: true
+                    intervalMs: 60000
+                    legendFormat: __auto
+                    maxDataPoints: 43200
+                    range: false
+                    refId: A
+                - refId: B
+                  relativeTimeRange:
+                    from: 0
+                    to: 0
+                  datasourceUid: __expr__
+                  model:
+                    conditions:
+                      - evaluator:
+                          params:
+                            - 0.5
+                          type: gt
+                        operator:
+                          type: and
+                        query:
+                          params:
+                            - B
+                        reducer:
+                          params: []
+                          type: last
+                        type:
+                          type: query
+                    datasource:
+                      type: __expr__
+                      uid: __expr__
+                    expression: A
+                    intervalMs: 60000
+                    maxDataPoints: 43200
+                    refId: B
+                    type: threshold
+              noDataState: Alerting
+              execErrState: Error
+              for: 5m
+              annotations:
+                description: Prometheus has been unable to scrape a node exporter for five minutes.
+                summary: A backbone node is unavailable to monitoring.
+              labels:
+                severity: critical
+                managed_by: gitops
+              isPaused: false
+            - uid: infra-node-cpu-high
+              title: Node CPU usage high
+              condition: B
+              data:
+                - refId: A
+                  relativeTimeRange:
+                    from: 600
+                    to: 0
+                  datasourceUid: prometheus
+                  model:
+                    datasource:
+                      type: prometheus
+                      uid: prometheus
+                    editorMode: code
+                    expr: >-
+                      100 * (1 - avg by (cluster, instance)
+                      (rate(node_cpu_seconds_total{cluster="backbone", mode="idle"}[5m])))
+                    instant: true
+                    intervalMs: 60000
+                    legendFormat: __auto
+                    maxDataPoints: 43200
+                    range: false
+                    refId: A
+                - refId: B
+                  relativeTimeRange:
+                    from: 0
+                    to: 0
+                  datasourceUid: __expr__
+                  model:
+                    conditions:
+                      - evaluator:
+                          params:
+                            - 90
+                          type: gt
+                        operator:
+                          type: and
+                        query:
+                          params:
+                            - B
+                        reducer:
+                          params: []
+                          type: last
+                        type:
+                          type: query
+                    datasource:
+                      type: __expr__
+                      uid: __expr__
+                    expression: A
+                    intervalMs: 60000
+                    maxDataPoints: 43200
+                    refId: B
+                    type: threshold
+              noDataState: NoData
+              execErrState: Error
+              for: 15m
+              annotations:
+                description: Average node CPU usage has exceeded 90 percent for fifteen minutes.
+                summary: CPU pressure is sustained on a backbone node.
+              labels:
+                severity: warning
+                managed_by: gitops
+              isPaused: false
+            - uid: infra-node-memory-high
+              title: Node memory usage high
+              condition: B
+              data:
+                - refId: A
+                  relativeTimeRange:
+                    from: 600
+                    to: 0
+                  datasourceUid: prometheus
+                  model:
+                    datasource:
+                      type: prometheus
+                      uid: prometheus
+                    editorMode: code
+                    expr: >-
+                      100 * (1 -
+                      node_memory_MemAvailable_bytes{cluster="backbone"} /
+                      node_memory_MemTotal_bytes{cluster="backbone"})
+                    instant: true
+                    intervalMs: 60000
+                    legendFormat: __auto
+                    maxDataPoints: 43200
+                    range: false
+                    refId: A
+                - refId: B
+                  relativeTimeRange:
+                    from: 0
+                    to: 0
+                  datasourceUid: __expr__
+                  model:
+                    conditions:
+                      - evaluator:
+                          params:
+                            - 90
+                          type: gt
+                        operator:
+                          type: and
+                        query:
+                          params:
+                            - B
+                        reducer:
+                          params: []
+                          type: last
+                        type:
+                          type: query
+                    datasource:
+                      type: __expr__
+                      uid: __expr__
+                    expression: A
+                    intervalMs: 60000
+                    maxDataPoints: 43200
+                    refId: B
+                    type: threshold
+              noDataState: NoData
+              execErrState: Error
+              for: 15m
+              annotations:
+                description: Available memory has remained below 10 percent for fifteen minutes.
+                summary: Memory pressure is sustained on a backbone node.
+              labels:
+                severity: warning
+                managed_by: gitops
+              isPaused: false
+            - uid: infra-node-filesystem-high
+              title: Node filesystem usage high
+              condition: B
+              data:
+                - refId: A
+                  relativeTimeRange:
+                    from: 600
+                    to: 0
+                  datasourceUid: prometheus
+                  model:
+                    datasource:
+                      type: prometheus
+                      uid: prometheus
+                    editorMode: code
+                    expr: >-
+                      100 * (1 -
+                      node_filesystem_avail_bytes{cluster="backbone",
+                      fstype!~"rootfs|tmpfs|overlay", mountpoint!~"/boot.*"} /
+                      node_filesystem_size_bytes{cluster="backbone",
+                      fstype!~"rootfs|tmpfs|overlay", mountpoint!~"/boot.*"})
+                    instant: true
+                    intervalMs: 60000
+                    legendFormat: __auto
+                    maxDataPoints: 43200
+                    range: false
+                    refId: A
+                - refId: B
+                  relativeTimeRange:
+                    from: 0
+                    to: 0
+                  datasourceUid: __expr__
+                  model:
+                    conditions:
+                      - evaluator:
+                          params:
+                            - 90
+                          type: gt
+                        operator:
+                          type: and
+                        query:
+                          params:
+                            - B
+                        reducer:
+                          params: []
+                          type: last
+                        type:
+                          type: query
+                    datasource:
+                      type: __expr__
+                      uid: __expr__
+                    expression: A
+                    intervalMs: 60000
+                    maxDataPoints: 43200
+                    refId: B
+                    type: threshold
+              noDataState: NoData
+              execErrState: Error
+              for: 10m
+              annotations:
+                description: A persistent node filesystem has exceeded 90 percent usage for ten minutes.
+                summary: A backbone node filesystem is nearly full.
+              labels:
+                severity: critical
+                managed_by: gitops
+              isPaused: false
+            - uid: infra-pod-restarting
+              title: Pod container restarting frequently
+              condition: B
+              data:
+                - refId: A
+                  relativeTimeRange:
+                    from: 1200
+                    to: 0
+                  datasourceUid: prometheus
+                  model:
+                    datasource:
+                      type: prometheus
+                      uid: prometheus
+                    editorMode: code
+                    expr: >-
+                      sum by (cluster, namespace, pod, container)
+                      (increase(kube_pod_container_status_restarts_total{
+                      cluster="backbone"}[15m]))
+                    instant: true
+                    intervalMs: 60000
+                    legendFormat: __auto
+                    maxDataPoints: 43200
+                    range: false
+                    refId: A
+                - refId: B
+                  relativeTimeRange:
+                    from: 0
+                    to: 0
+                  datasourceUid: __expr__
+                  model:
+                    conditions:
+                      - evaluator:
+                          params:
+                            - 3
+                          type: gt
+                        operator:
+                          type: and
+                        query:
+                          params:
+                            - B
+                        reducer:
+                          params: []
+                          type: last
+                        type:
+                          type: query
+                    datasource:
+                      type: __expr__
+                      uid: __expr__
+                    expression: A
+                    intervalMs: 60000
+                    maxDataPoints: 43200
+                    refId: B
+                    type: threshold
+              noDataState: OK
+              execErrState: Error
+              for: 5m
+              annotations:
+                description: A container has restarted more than three times within fifteen minutes.
+                summary: A Kubernetes workload is restarting repeatedly.
+              labels:
+                severity: warning
+                managed_by: gitops
+              isPaused: false
+            - uid: infra-certificate-expiring
+              title: Certificate expiring soon
+              condition: B
+              data:
+                - refId: A
+                  relativeTimeRange:
+                    from: 600
+                    to: 0
+                  datasourceUid: prometheus
+                  model:
+                    datasource:
+                      type: prometheus
+                      uid: prometheus
+                    editorMode: code
+                    expr: >-
+                      (certmanager_certificate_expiration_timestamp_seconds{
+                      cluster="backbone"} - time()) / 86400
+                    instant: true
+                    intervalMs: 60000
+                    legendFormat: __auto
+                    maxDataPoints: 43200
+                    range: false
+                    refId: A
+                - refId: B
+                  relativeTimeRange:
+                    from: 0
+                    to: 0
+                  datasourceUid: __expr__
+                  model:
+                    conditions:
+                      - evaluator:
+                          params:
+                            - 14
+                          type: lt
+                        operator:
+                          type: and
+                        query:
+                          params:
+                            - B
+                        reducer:
+                          params: []
+                          type: last
+                        type:
+                          type: query
+                    datasource:
+                      type: __expr__
+                      uid: __expr__
+                    expression: A
+                    intervalMs: 60000
+                    maxDataPoints: 43200
+                    refId: B
+                    type: threshold
+              noDataState: NoData
+              execErrState: Error
+              for: 1h
+              annotations:
+                description: A cert-manager certificate will expire within fourteen days.
+                summary: A managed certificate is approaching expiration.
+              labels:
+                severity: warning
+                managed_by: gitops
+              isPaused: false
+
   grafana.ini:
     date_formats:
       default_timezone: Asia/Seoul
