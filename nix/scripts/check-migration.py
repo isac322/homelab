@@ -3996,8 +3996,15 @@ require(
     "findutils",
     "gnutar",
     "opentofu",
+    "darwinNativeSsh",
+    'exec /usr/bin/ssh "$@"',
+    "pkgs.lib.optionals pkgs.stdenv.isDarwin [ darwinNativeSsh ]",
     "bootstrap-host",
 )
+package_apps = source("nix/packages.nix")
+runtime_input_expression = package_apps.split("runtimeInputs =", 1)[1].split("]);", 1)[0]
+if runtime_input_expression.index("darwinNativeSsh") > runtime_input_expression.index("openssh"):
+    raise SystemExit("nix/packages.nix: Darwin native ssh must precede packaged OpenSSH")
 for relative in (
     "nix/scripts/wireguard-secrets",
     "nix/scripts/sync-bootstrap-secret",
