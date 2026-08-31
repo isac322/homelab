@@ -4092,6 +4092,11 @@ forbid("nix/secrets/README", "/run/homelab-secrets")
 require("values/cilium/backbone.yaml", "prependIptablesChains: true")
 require("README.md", "iptables-nft backend invariant", "backend 전환은 이 migration의 범위가 아니다")
 require(
+    "README.md",
+    "set -o pipefail",
+    "nix run .#bootstrap-host -- macmini 2>&1 | tee /tmp/macmini-bootstrap.log",
+)
+require(
     "nix/packages.nix",
     "kubernetes-helmPlugins.helm-diff",
     "findutils",

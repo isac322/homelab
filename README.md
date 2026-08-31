@@ -39,7 +39,13 @@ nix run .#rotate-psk -- --link wg0-n2p1-n2p2
 
 - Nix 관리 완료: `n2p1`, `n2p2`, `rpi4`, `rock5bp`
 - Ansible host 관리 잔여: `macmini`, `rpi5`
-- `macmini` preflight(2026-08-31 재확인): base/commit generation evaluation, topology/migration contract, shell syntax, all-system evaluation이 통과했고 `bhyoo@192.168.219.8` public-key SSH도 정상이다. Live OS는 `ID=archarm`, `aarch64`, interface `end0`, K3s/NAS/iSCSI 비관리 host다. Passwordless sudo, `age-keygen`, Nix는 아직 없고 root SSH도 비활성화되어 있다. 따라서 TTY에서 기존 sudo password를 한 번 입력하는 `nix run .#bootstrap-host -- macmini`만 operator가 수행해야 한다. 이 command는 `/etc/sudoers.d/homelab-admin`, 필수 package, Nix만 설치한다.
+- `macmini` preflight(2026-08-31 재확인): base/commit generation evaluation, topology/migration contract, shell syntax, all-system evaluation이 통과했고 `bhyoo@192.168.219.8` public-key SSH도 정상이다. Live OS는 `ID=archarm`, `aarch64`, interface `end0`, K3s/NAS/iSCSI 비관리 host다. Passwordless sudo, `age-keygen`, Nix는 아직 없고 root SSH도 비활성화되어 있다. 따라서 operator는 repository root의 TTY에서 기존 sudo password를 한 번 입력해 다음 command를 실행해야 한다. `pipefail`은 bootstrap 실패를 `tee` 성공으로 숨기지 않으며, `/tmp/macmini-bootstrap.log`는 성공 여부와 부분 실패 지점을 남긴다. 이 command는 `/etc/sudoers.d/homelab-admin`, 필수 package, Nix만 설치한다.
+
+  ```bash
+  set -o pipefail
+  nix run .#bootstrap-host -- macmini 2>&1 | tee /tmp/macmini-bootstrap.log
+  ```
+
 - `macmini` 후속 계획: bootstrap 직후 `bootstrap-age-identity`와 `import-wireguard-host` check/write로 `node-macmini.sops.yaml`을 만들고 서명 commit/push한다. 이어 `deploy`(`prepare`) → `activate` → `reboot` → `reboot-verify` → `commit`을 순서대로 실행하고, `verify-host`와 `verify-legacy-cleanup`을 통과한 뒤에만 Ansible ownership을 제거한다.
 - 다음 host 순서: `macmini`를 guarded lifecycle로 전환한 뒤 `rpi5`를 마지막에 전환한다. `rpi5`는 K3s server이자 `wg0` edge gateway이므로 다른 host가 안정화되기 전에는 이주하지 않는다.
 - `rock5bp`는 host plane만 Nix가 관리한다. `[nas]` 역할과 ZFS, LIO/rtslib/targetcli, Samba/NFS, storage cron/listener, `democratic-csi` identity/access, native NAS firewall은 기존 외부 관리 경계에 남긴다.
