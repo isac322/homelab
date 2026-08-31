@@ -39,7 +39,7 @@ nix run .#rotate-psk -- --link wg0-n2p1-n2p2
 
 - Nix 관리 완료: `n2p1`, `n2p2`, `rpi4`, `rock5bp`
 - Ansible host 관리 잔여: `macmini`, `rpi5`
-- `macmini` preflight: base/commit generation evaluation과 migration contract는 통과했다. Operator가 macOS이므로 `aarch64-linux` exact generation은 target host의 native `prepare`에서 build한다. 현재 operator의 `ssh_pub_keys/laptop.pub`가 legacy authorized keys에 없어 public-key SSH가 거부되므로 host mutation은 시작하지 않는다. 기존 console 또는 이미 허용된 key session에서 해당 public key를 `/home/bhyoo/.ssh/authorized_keys`에 추가하고 `bhyoo@192.168.219.8` public-key login을 확인한 뒤 host age identity와 `node-macmini.sops.yaml`을 생성한다.
+- `macmini` preflight: base/commit generation evaluation과 migration contract는 통과했다. Operator가 macOS이므로 `aarch64-linux` exact generation은 target host의 native `prepare`에서 build한다. 남은 Ansible host의 SSH authority는 root/admin 모두 현재 MacBook key인 `../ssh_pub_keys/laptop.pub`와 기존 Latitude key인 `./ssh_pub_keys/laptop.pub`를 포함한다. 기존 허용 key를 가진 Ansible controller에서 `cd cluster-setup && make ansible-install && ansible-playbook ssh-hardening.yaml`로 role/collection을 설치하고 이 policy를 `macmini`와 `rpi5`에 적용한다. `bhyoo@192.168.219.8` public-key login을 확인한 뒤 host age identity와 `node-macmini.sops.yaml`을 생성한다. Console에서 `authorized_keys`만 단독 수정하는 것을 정상 절차로 삼지 않는다.
 - 다음 순서: `macmini`를 guarded lifecycle로 전환한 뒤 `rpi5`를 마지막에 전환한다. `rpi5`는 K3s server이자 `wg0` edge gateway이므로 다른 host가 안정화되기 전에는 이주하지 않는다.
 - `rock5bp`는 host plane만 Nix가 관리한다. `[nas]` 역할과 ZFS, LIO/rtslib/targetcli, Samba/NFS, storage cron/listener, `democratic-csi` identity/access, native NAS firewall은 기존 외부 관리 경계에 남긴다.
 - 각 host는 `prepare -> activate -> reboot -> reboot-verify -> commit`이 terminal receipt로 끝나고 live verification이 통과한 뒤에만 `[ansible_managed]`에서 `[nix_managed]`로 옮긴다.

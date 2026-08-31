@@ -141,6 +141,58 @@ def check_ansible_cutover_partition() -> None:
                 f"{relative}: play host ownership differs: expected {expected}, got {actual}"
             )
 
+    ssh_hardening = source("cluster-setup/ssh-hardening.yaml")
+    expected_authorized_key_paths = [
+        "./ssh_pub_keys/desktop.pub",
+        "../ssh_pub_keys/laptop.pub",
+        "./ssh_pub_keys/laptop.pub",
+        "./ssh_pub_keys/mobile.pub",
+        "./ssh_pub_keys/tablet.pub",
+        "./ssh_pub_keys/office.pub",
+    ]
+    laptop_key_identities: dict[str, tuple[str, str]] = {}
+    for relative, expected_comment in {
+        "ssh_pub_keys/laptop.pub": "bhyoo@bhyoo-macbook-pro",
+        "cluster-setup/ssh_pub_keys/laptop.pub": "bhyoo@latitude7490-manjaro",
+    }.items():
+        try:
+            algorithm, material, comment = source(relative).strip().split(maxsplit=2)
+        except ValueError as error:
+            raise SystemExit(f"{relative}: malformed SSH public key") from error
+        if algorithm != "ssh-ed25519" or comment != expected_comment:
+            raise SystemExit(
+                f"{relative}: expected ssh-ed25519 identity {expected_comment}, "
+                f"got {algorithm} {comment}"
+            )
+        laptop_key_identities[relative] = (algorithm, material)
+    if len(set(laptop_key_identities.values())) != len(laptop_key_identities):
+        raise SystemExit(
+            "legacy and current laptop SSH public keys must remain distinct"
+        )
+
+    for principal in ("root", '"{{ admin_user }}"'):
+        match = re.search(
+            rf"^        - name: {re.escape(principal)}\n"
+            r"          authorized_keys:\n"
+            r"(?P<body>(?:            - key: .*\n)+)",
+            ssh_hardening,
+            re.MULTILINE,
+        )
+        if match is None:
+            raise SystemExit(
+                f"cluster-setup/ssh-hardening.yaml: {principal} authorized keys are missing"
+            )
+        actual = re.findall(
+            r"lookup\('file', '([^']+)'\)",
+            match.group("body"),
+        )
+        if actual != expected_authorized_key_paths:
+            raise SystemExit(
+                "cluster-setup/ssh-hardening.yaml: "
+                f"{principal} authorized keys differ: "
+                f"expected {expected_authorized_key_paths}, got {actual}"
+            )
+
     require(
         "cluster-setup/etc-hosts.yaml",
         "any_errors_fatal: true",
