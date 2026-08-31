@@ -3572,6 +3572,41 @@ require(
     "networkctl reconfigure wg0",
     "wg show wg0 peers",
 )
+rollout_peers = source("nix/scripts/rollout-peers")
+apply_loops = re.findall(
+    r"for host in \$apply_hosts; do\n(.*?)\n    done",
+    rollout_peers,
+    re.DOTALL,
+)
+apply_loop = next((body for body in apply_loops if "stage_result=" in body), None)
+if apply_loop is None:
+    raise SystemExit("nix/scripts/rollout-peers: mutating apply loop missing")
+secret_stage = 'stage_result="$($root/nix/scripts/wireguard-secrets stage-secrets "$host")"'
+record_mutation = 'printf \'%s\\n\' "$host" >> "$applied"'
+install_networkd = 'remote "$host" "sudo -n install -D -m 0644'
+restart_networkd = "systemctl restart systemd-networkd.service"
+sync_wireguard = 'sync_wireguard_runtime "$host" wg0'
+for fragment in (
+    secret_stage,
+    record_mutation,
+    install_networkd,
+    restart_networkd,
+    sync_wireguard,
+):
+    if fragment not in apply_loop:
+        raise SystemExit(
+            f"nix/scripts/rollout-peers: apply loop missing {fragment}"
+        )
+if not (
+    apply_loop.index(secret_stage)
+    < apply_loop.index(record_mutation)
+    < apply_loop.index(install_networkd)
+    < apply_loop.index(restart_networkd)
+    < apply_loop.index(sync_wireguard)
+):
+    raise SystemExit(
+        "nix/scripts/rollout-peers: mutation must be recorded before networkd files, restart, and runtime sync"
+    )
 require(
     "nix/scripts/adopt-host",
     "/root/.ssh",

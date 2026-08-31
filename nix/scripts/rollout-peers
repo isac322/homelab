@@ -29,7 +29,6 @@ sync_wireguard_runtime() {
   remote "$host" "$command" < "$root/nix/scripts/sync-wireguard-runtime"
 }
 
-
 valid_relative() {
   case "$1" in
     systemd/network/99-wg0.netdev|systemd/network/99-wg0.network|systemd/system/systemd-networkd.service.d/50-homelab-wireguard-credentials.conf) return 0 ;;
@@ -171,6 +170,7 @@ case "${1:-}" in
       host_dir="$work/$host"
       stage_result="$($root/nix/scripts/wireguard-secrets stage-secrets "$host")"
       printf '%s\n' "$stage_result" | grep -Eq "^$host [0-9]{8}T[0-9]{6}Z$"
+      printf '%s\n' "$host" >> "$applied"
       while IFS=$'\t' read -r key path marker; do
         remote "$host" "sudo -n install -D -m 0644 /dev/stdin '$path'" < "$host_dir/new-$key"
       done < "$host_dir/files.tsv"
@@ -182,7 +182,6 @@ networkctl reload
 REMOTE_APPLY_NETWORKD
       remote "$host" "sudo -n networkctl reconfigure wg0" </dev/null
       sync_wireguard_runtime "$host" wg0
-      printf '%s\n' "$host" >> "$applied"
     done
 
     for host in $affected; do
