@@ -87,33 +87,6 @@ spec:
           readOnly: true
         - name: hermes-patched-files
           mountPath: /patched
-    - name: fetch-agent-vault-ca
-      image: infisical/agent-vault:0.22.0
-      command:
-        - /bin/sh
-        - -ec
-      args:
-        - |
-          until wget -q -O /ca/agent-vault-ca.pem \
-            http://agent-vault.agent-vault.svc.cluster.local:14321/v1/mitm/ca.pem; do
-            sleep 2
-          done
-          test -s /ca/agent-vault-ca.pem
-          test -s /etc/ssl/certs/ca-certificates.crt
-          cat /etc/ssl/certs/ca-certificates.crt /ca/agent-vault-ca.pem \
-            > /ca/ca.pem
-      securityContext:
-        allowPrivilegeEscalation: false
-        capabilities:
-          drop:
-            - ALL
-        readOnlyRootFilesystem: true
-        runAsGroup: 65532
-        runAsNonRoot: true
-        runAsUser: 65532
-      volumeMounts:
-        - name: agent-vault-ca
-          mountPath: /ca
     - name: prepare-camofox-home
       image: ghcr.io/jo-inc/camofox-browser:1.14.0
       command:
@@ -150,11 +123,6 @@ spec:
     - name: hermes-native-web-search-patch
       configMap:
         name: hermes-native-web-search-patch
-    - name: agent-vault-ca
-      emptyDir: {}
-    - name: agent-vault-skill
-      configMap:
-        name: agent-vault-skill
     - name: camofox-runtime
       configMap:
         name: camofox-runtime
@@ -191,15 +159,6 @@ spec:
     - name: hermes-patched-files
       mountPath: /opt/hermes/agent/transports/codex.py
       subPath: codex.py
-      readOnly: true
-    - name: agent-vault-ca
-      mountPath: /etc/agent-vault
-      readOnly: true
-    - name: agent-vault-skill
-      mountPath: /opt/data/skills/agent-vault
-      readOnly: true
-    - name: agent-vault-skill
-      mountPath: /etc/agent-vault-client
       readOnly: true
   sidecars:
     - name: camofox
@@ -355,39 +314,6 @@ spec:
             chat_id: "5286349319"
             name: bhyoo
             user_id: "5286349319"
-#      platform_hints:
-#        telegram:
-#          append: |
-#            Never ask for or accept credential values in Telegram chat. Direct
-#            the user to the Agent Vault approval page returned by a proposal;
-#            the value must be submitted there without passing through Hermes.
-#            If a credential is pasted into chat, do not repeat or use it and
-#            advise the user to rotate it. Browser API authentication is
-#            brokered transparently; do not retrieve or type credential values.
-#            Interactive website logins reuse the persistent Camofox profile.
-#            Do not change whether or when a VNC URL is presented. If a Camofox
-#            VNC URL would otherwise be included in a response, replace only its
-#            origin with https://isacmes-vnc.bhyoo.com while preserving its path,
-#            query, and fragment; never expose the internal VNC origin. Install
-#            user-requested CLI tools and libraries only in the persistent
-#            user/XDG locations, never in system prefixes.
-      terminal:
-        env_passthrough:
-          - AGENT_VAULT_ADDR
-          - AGENT_VAULT_TOKEN
-          - AGENT_VAULT_VAULT
-          - HTTPS_PROXY
-          - HTTP_PROXY
-          - NO_PROXY
-          - NODE_USE_ENV_PROXY
-          - SSL_CERT_FILE
-          - NODE_EXTRA_CA_CERTS
-          - REQUESTS_CA_BUNDLE
-          - CURL_CA_BUNDLE
-          - CURL_HOME
-          - GIT_SSL_CAINFO
-          - GIT_CONFIG_GLOBAL
-          - DENO_CERT
       memory:
         provider: hindsight
       auxiliary:
@@ -549,39 +475,6 @@ spec:
         secretKeyRef:
           name: isacmes-camofox-credentials
           key: camofoxApiKey
-    - name: AGENT_VAULT_ADDR
-      value: http://agent-vault.agent-vault.svc.cluster.local:14321
-    - name: AGENT_VAULT_TOKEN
-      valueFrom:
-        secretKeyRef:
-          name: agent-vault-isacmes-bhyoo-token
-          key: token
-    - name: AGENT_VAULT_VAULT
-      value: bhyoo
-    - name: HTTPS_PROXY
-      value: https://$(AGENT_VAULT_TOKEN):bhyoo@agent-vault.agent-vault.svc.cluster.local:14322
-    - name: HTTP_PROXY
-      value: https://$(AGENT_VAULT_TOKEN):bhyoo@agent-vault.agent-vault.svc.cluster.local:14322
-    - name: NO_PROXY
-      value: localhost,127.0.0.1,::1,.svc,.svc.cluster.local,api.telegram.org,cliproxyapi.runbear.io,generativelanguage.googleapis.com
-    - name: NODE_USE_ENV_PROXY
-      value: "1"
-    - name: SSL_CERT_FILE
-      value: /etc/agent-vault/ca.pem
-    - name: NODE_EXTRA_CA_CERTS
-      value: /etc/agent-vault/ca.pem
-    - name: REQUESTS_CA_BUNDLE
-      value: /etc/agent-vault/ca.pem
-    - name: CURL_CA_BUNDLE
-      value: /etc/agent-vault/ca.pem
-    - name: CURL_HOME
-      value: /etc/agent-vault-client
-    - name: GIT_SSL_CAINFO
-      value: /etc/agent-vault/ca.pem
-    - name: GIT_CONFIG_GLOBAL
-      value: /etc/agent-vault-client/.gitconfig
-    - name: DENO_CERT
-      value: /etc/agent-vault/ca.pem
     - name: HINDSIGHT_MODE
       value: local_external
     - name: HINDSIGHT_API_URL
