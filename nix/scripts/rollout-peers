@@ -23,6 +23,12 @@ remote() {
   shift
   ssh -o BatchMode=yes -o StrictHostKeyChecking=accept-new "$(host_field "$host" sshTarget)" "$@"
 }
+sync_wireguard_runtime() {
+  local host=$1 interface=$2 command
+  printf -v command 'sudo -n sh -s -- %q' "$interface"
+  remote "$host" "$command" < "$root/nix/scripts/sync-wireguard-runtime"
+}
+
 
 valid_relative() {
   case "$1" in
@@ -71,6 +77,7 @@ systemctl daemon-reload
 systemctl restart systemd-networkd.service
 networkctl reload
 REMOTE_RESTORE_NETWORKD
+  sync_wireguard_runtime "$host" wg0
 }
 
 case "${1:-}" in
@@ -174,6 +181,7 @@ systemctl restart systemd-networkd.service
 networkctl reload
 REMOTE_APPLY_NETWORKD
       remote "$host" "sudo -n networkctl reconfigure wg0" </dev/null
+      sync_wireguard_runtime "$host" wg0
       printf '%s\n' "$host" >> "$applied"
     done
 

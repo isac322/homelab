@@ -3517,6 +3517,38 @@ forbid(
     "/run/homelab-wireguard-",
     "PersistentKeepaliveSec=",
 )
+wireguard_runtime = source("nix/scripts/sync-wireguard-runtime")
+if not wireguard_runtime.isascii():
+    raise SystemExit(
+        "nix/scripts/sync-wireguard-runtime: shell source must remain ASCII-only"
+    )
+require(
+    "nix/scripts/sync-wireguard-runtime",
+    "wg syncconf",
+    "--check",
+    "PrivateKeyFile=",
+    "PresharedKeyFile=",
+    'cmp -s "$work/expected-peers" "$work/actual-peers"',
+    'cmp -s "$work/expected-allowed" "$work/actual-allowed"',
+    'cmp -s "$work/expected-keepalive" "$work/actual-keepalive"',
+    'cmp -s "$work/expected-endpoint-peers" "$work/actual-endpoint-peers"',
+    'wg show "$interface" preshared-keys',
+)
+require(
+    "nix/scripts/homelab-host",
+    'sync_wireguard_runtime "$host" "$interface"',
+    'verify_wireguard_runtime "$host" "$interface"',
+    "sudo -n sh -s -- --check",
+)
+require(
+    "nix/scripts/rollout-peers",
+    'sync_wireguard_runtime "$host" wg0',
+)
+require(
+    "nix/scripts/k3s-handoff",
+    "$rollback_root/.staging/sync-wireguard-runtime",
+    '"$dir/sync-wireguard-runtime" "$interface"',
+)
 require(
     "nix/modules/darwin/base.nix",
     "peerCount = builtins.length",

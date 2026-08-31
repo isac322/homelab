@@ -116,6 +116,7 @@ REMOTE_PREFLIGHT
     case "$previous" in ""|*[!0-9]*) test -z "$previous" || { echo "invalid previous generation: $previous" >&2; exit 2; } ;; esac
     case "$legacy" in ""|k3s.service|k3s-agent.service) ;; *) echo "invalid legacy unit: $legacy" >&2; exit 2 ;; esac
     test -s "$recovery/etc-state.tar"
+    test -x "$root/nix/scripts/sync-wireguard-runtime"
     test -s "$recovery/firewall-runtime.rules"
     backend=$(host_field "$host" packageBackend)
     default_interface=$(host_field "$host" defaultInterface)
@@ -155,7 +156,8 @@ REMOTE_PREFLIGHT
     if ! remote "$host" "sudo -n tee '$rollback_root/.staging/etc-state.tar' >/dev/null" < "$recovery/etc-state.tar" \
       || ! remote "$host" "sudo -n tee '$rollback_root/.staging/firewall-runtime.rules' >/dev/null" < "$recovery/firewall-runtime.rules" \
       || ! remote "$host" "sudo -n tee '$rollback_root/.staging/distro-packages.txt' >/dev/null" < "$recovery/distro-packages.txt" \
-      || ! remote "$host" "sudo -n tee '$rollback_root/.staging/distro-packages-remove.txt' >/dev/null" < "$recovery/distro-packages-remove.txt"; then
+      || ! remote "$host" "sudo -n tee '$rollback_root/.staging/distro-packages-remove.txt' >/dev/null" < "$recovery/distro-packages-remove.txt" \
+      || ! remote "$host" "sudo -n tee '$rollback_root/.staging/sync-wireguard-runtime' >/dev/null" < "$root/nix/scripts/sync-wireguard-runtime"; then
       remote "$host" "sudo -n rm -rf '$rollback_root/.staging'" || true
       exit 1
     fi
@@ -191,6 +193,7 @@ if test "$ROLE" = server || test "$ROLE" = agent; then
   test -s /var/lib/homelab-secrets/active/k3s-token.cred
 fi
 test -s "$staging/etc-state.tar"
+test -s "$staging/sync-wireguard-runtime"
 test -s "$staging/firewall-runtime.rules"
 test -e "$staging/distro-packages.txt"
 test -e "$staging/distro-packages-remove.txt"
@@ -201,6 +204,7 @@ if test "$PRESERVE_NAS_STATE" = true; then
 fi
 mv "$staging" "$dir"
 chmod 0600 "$dir/etc-state.tar" "$dir/firewall-runtime.rules" "$dir/distro-packages.txt" "$dir/distro-packages-remove.txt"
+chmod 0700 "$dir/sync-wireguard-runtime"
 if test "$PRESERVE_NAS_STATE" = true; then
   chmod 0600 "$dir/manifest.txt" "$dir/manifest.sha256"
   chmod 0700 "$dir/manifest-remote"
@@ -480,6 +484,7 @@ networkctl reconfigure "$default_interface"
 for interface in $wg_interfaces; do
   if ip link show "$interface" >/dev/null 2>&1; then
     networkctl reconfigure "$interface"
+    "$dir/sync-wireguard-runtime" "$interface"
   fi
 done
 systemctl restart systemd-timesyncd.service
