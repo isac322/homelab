@@ -4,30 +4,38 @@
   topology,
 }:
 let
-  runtimeInputs = with pkgs; [
-    age
-    bash
-    coreutils
-    curl
-    git
-    gawk
-    findutils
-    gnugrep
-    gnused
-    gnutar
-    jq
-    kubectl
-    kubernetes-helm
-    kubernetes-helmPlugins.helm-diff
-    nix
-    openssh
-    openssl
-    python3
-    sops
-    opentofu
-    wireguard-tools
-    yq-go
-  ];
+  # macOS can reject LAN connections from Nix OpenSSH while allowing /usr/bin/ssh.
+  # Prefer the native client for operator sessions, while retaining packaged
+  # OpenSSH for Linux and companion utilities.
+  darwinNativeSsh = pkgs.writeShellScriptBin "ssh" ''
+    exec /usr/bin/ssh "$@"
+  '';
+  runtimeInputs =
+    pkgs.lib.optionals pkgs.stdenv.isDarwin [ darwinNativeSsh ]
+    ++ (with pkgs; [
+      age
+      bash
+      coreutils
+      curl
+      git
+      gawk
+      findutils
+      gnugrep
+      gnused
+      gnutar
+      jq
+      kubectl
+      kubernetes-helm
+      kubernetes-helmPlugins.helm-diff
+      nix
+      openssh
+      openssl
+      python3
+      sops
+      opentofu
+      wireguard-tools
+      yq-go
+    ]);
   mkApp =
     name: description: script: prefix:
     pkgs.writeShellApplication {
@@ -55,8 +63,7 @@ in
       "bootstrap-host";
   homelab-host = hostApp "homelab-host" "Manage declarative homelab hosts" "";
   adopt-host =
-    mkApp "adopt-host" "Capture the pre-Nix state of an existing Linux host"
-      ./scripts/adopt-host
+    mkApp "adopt-host" "Capture the pre-Nix state of an existing Linux host" ./scripts/adopt-host
       "";
   reconcile-host =
     hostApp "reconcile-host" "Idempotently converge an active Nix-owned Linux host"
@@ -66,7 +73,8 @@ in
       ./scripts/rollout-peers
       "";
   provision-host =
-    mkApp "provision-host" "Provision a Git-declared new Linux host" ./scripts/provision-host "";
+    mkApp "provision-host" "Provision a Git-declared new Linux host" ./scripts/provision-host
+      "";
   decommission-host =
     mkApp "decommission-host" "Remove a declared decommissioning host from active peers"
       ./scripts/decommission-host
