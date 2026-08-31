@@ -39,14 +39,8 @@ nix run .#rotate-psk -- --link wg0-n2p1-n2p2
 
 - Nix 관리 완료: `n2p1`, `n2p2`, `rpi4`, `rock5bp`
 - Ansible host 관리 잔여: `macmini`, `rpi5`
-- `macmini` preflight(2026-08-31 재확인): base/commit generation evaluation, topology/migration contract, shell syntax, all-system evaluation이 통과했고 `bhyoo@192.168.219.8` public-key SSH도 정상이다. Live OS는 `ID=archarm`, `aarch64`, interface `end0`, K3s/NAS/iSCSI 비관리 host다. Passwordless sudo, `age-keygen`, Nix는 아직 없고 root SSH도 비활성화되어 있다. Repository에 남은 legacy n2p1 credential을 사용한 자동화 시도는 macmini sudo에서 거부됐고 host state는 변경되지 않았다. Encrypted admin credential의 기존 git-crypt recipient private key도 이 workstation에 없어 복호화할 수 없다. 따라서 operator는 repository root의 TTY에서 실제 macmini sudo password를 한 번 입력해 다음 command를 실행해야 한다. `pipefail`은 bootstrap 실패를 `tee` 성공으로 숨기지 않으며, `/tmp/macmini-bootstrap.log`는 성공 여부와 부분 실패 지점을 남긴다. 이 command는 `/etc/sudoers.d/homelab-admin`, 필수 package, Nix만 설치한다.
-
-  ```bash
-  set -o pipefail
-  nix run .#bootstrap-host -- macmini 2>&1 | tee /tmp/macmini-bootstrap.log
-  ```
-
-- `macmini` 후속 계획: bootstrap 직후 `bootstrap-age-identity`와 `import-wireguard-host` check/write로 `node-macmini.sops.yaml`을 만들고 서명 commit/push한다. 이어 `deploy`(`prepare`) → `activate` → `reboot` → `reboot-verify` → `commit`을 순서대로 실행하고, `verify-host`와 `verify-legacy-cleanup`을 통과한 뒤에만 Ansible ownership을 제거한다.
+- `macmini` preflight/bootstrap/identity import(2026-08-31): base/commit generation evaluation, topology/migration contract, shell syntax, all-system evaluation이 통과했고 `bhyoo@192.168.219.8` public-key SSH도 정상이다. Live OS는 `ID=archarm`, `aarch64`, interface `end0`, K3s/NAS/iSCSI 비관리 host다. Bootstrap으로 `/etc/sudoers.d/homelab-admin`, 필수 package, Nix를 설치했고 `sudo -n`, `age-keygen`, `git`, Nix, `visudo` 검증과 single-use helper 제거를 확인했다. Host-local age identity 생성과 기존 WireGuard identity import check/write도 통과해 `nix/secrets/wireguard/hosts/node-macmini.sops.yaml`을 만들었고 operator decrypt 검증을 완료했다. 아직 activation은 수행하지 않았으며 host ownership은 계속 Ansible에 있다.
+- `macmini` 후속 계획: encrypted identity bundle과 진행 기록을 서명 commit/push한 뒤 `deploy`(`prepare`) → `activate` → `reboot` → `reboot-verify` → `commit`을 순서대로 실행한다. `verify-host`와 `verify-legacy-cleanup`을 통과한 뒤에만 Ansible ownership을 제거한다.
 - 다음 host 순서: `macmini`를 guarded lifecycle로 전환한 뒤 `rpi5`를 마지막에 전환한다. `rpi5`는 K3s server이자 `wg0` edge gateway이므로 다른 host가 안정화되기 전에는 이주하지 않는다.
 - `rock5bp`는 host plane만 Nix가 관리한다. `[nas]` 역할과 ZFS, LIO/rtslib/targetcli, Samba/NFS, storage cron/listener, `democratic-csi` identity/access, native NAS firewall은 기존 외부 관리 경계에 남긴다.
 - `rock5bp` migration 전후 live 검증에서 NAS baseline, ZFS pool health, democratic-csi PV/PVC binding, VolumeAttachment, iSCSI session이 모두 일치했다. Production restore는 필요하지 않았고, 2026-08-31에 migration 전용 off-host ZFS stream backup 약 226 GiB와 `pre-nix-migration-20260827T091229Z` snapshot/hold를 제거했다. 삭제 후 보존된 manifest를 기준으로 별도 read-only completeness audit을 수행해 17개 zvol stream을 live PV/PVC 및 kubelet mount 또는 VolumeAttachment/iSCSI session에 일대일 대응했고, root stream의 17개 child dataset도 모두 확인했다(18/18 PASS). 삭제 경로와 receipt-pinned recovery/baseline/storage inventory 및 NAS evidence 경로의 disjointness도 검증했다.
