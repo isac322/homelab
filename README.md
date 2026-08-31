@@ -39,7 +39,7 @@ nix run .#rotate-psk -- --link wg0-n2p1-n2p2
 
 - Nix 관리 완료: `n2p1`, `n2p2`, `rpi4`, `rock5bp`
 - Ansible host 관리 잔여: `macmini`, `rpi5`
-- `macmini` preflight(2026-08-31 재확인): base/commit generation evaluation, topology/migration contract, shell syntax, all-system evaluation이 통과했고 `bhyoo@192.168.219.8` public-key SSH도 정상이다. Live OS는 `ID=archarm`, `aarch64`, interface `end0`, K3s/NAS/iSCSI 비관리 host다. Passwordless sudo, `age-keygen`, Nix는 아직 없고 root SSH도 비활성화되어 있다. 따라서 operator는 repository root의 TTY에서 기존 sudo password를 한 번 입력해 다음 command를 실행해야 한다. `pipefail`은 bootstrap 실패를 `tee` 성공으로 숨기지 않으며, `/tmp/macmini-bootstrap.log`는 성공 여부와 부분 실패 지점을 남긴다. 이 command는 `/etc/sudoers.d/homelab-admin`, 필수 package, Nix만 설치한다.
+- `macmini` preflight(2026-08-31 재확인): base/commit generation evaluation, topology/migration contract, shell syntax, all-system evaluation이 통과했고 `bhyoo@192.168.219.8` public-key SSH도 정상이다. Live OS는 `ID=archarm`, `aarch64`, interface `end0`, K3s/NAS/iSCSI 비관리 host다. Passwordless sudo, `age-keygen`, Nix는 아직 없고 root SSH도 비활성화되어 있다. Repository에 남은 legacy n2p1 credential을 사용한 자동화 시도는 macmini sudo에서 거부됐고 host state는 변경되지 않았다. Encrypted admin credential의 기존 git-crypt recipient private key도 이 workstation에 없어 복호화할 수 없다. 따라서 operator는 repository root의 TTY에서 실제 macmini sudo password를 한 번 입력해 다음 command를 실행해야 한다. `pipefail`은 bootstrap 실패를 `tee` 성공으로 숨기지 않으며, `/tmp/macmini-bootstrap.log`는 성공 여부와 부분 실패 지점을 남긴다. 이 command는 `/etc/sudoers.d/homelab-admin`, 필수 package, Nix만 설치한다.
 
   ```bash
   set -o pipefail
