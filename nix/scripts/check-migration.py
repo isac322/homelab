@@ -3539,11 +3539,14 @@ require(
     'test -x "$nix_env"',
     'generations=$("$nix_env" --profile "$profile" --list-generations)',
     'generation=$(current_remote_generation "$host")',
+    "uname -n",
 )
 require(
     "nix/scripts/homelab-host",
     "bootstrap-host",
     r"user=\$(id -un)",
+    "arch|archarm)",
+    'test "$(uname -n)" = "$HOST_NAME"',
     r'trap \"rm -f -- \$tmp\"',
     "secretGeneration",
     "different Git revision",

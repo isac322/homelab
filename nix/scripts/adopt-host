@@ -208,7 +208,7 @@ generic_baseline() {
     set -u
     printf "os="; . /etc/os-release; printf "%s:%s\n" "$ID" "${VERSION_ID:-}"
     printf "arch="; uname -m
-    printf "hostname="; hostname
+    printf "hostname="; uname -n
     printf "networkd="; systemctl is-enabled systemd-networkd 2>/dev/null || true
     printf "timesyncd="; systemctl is-active systemd-timesyncd 2>/dev/null || true
     printf "timesyncd-enabled="; systemctl is-enabled systemd-timesyncd 2>/dev/null || true

@@ -1230,7 +1230,7 @@ case "${1:-}" in
       fi
       . /etc/os-release
       case \"\$ID\" in
-        arch)
+        arch|archarm)
           \$SUDO pacman --noconfirm --needed -S age curl git sudo xz
           ;;
         debian|ubuntu|raspbian)
@@ -1564,7 +1564,7 @@ REMOTE_K3S_COLD_BACKUP
 set -eu
 stage=core-services
 trap 'rc=$?; test "$rc" -eq 0 || echo "host verification failed during $stage" >&2' EXIT
-test "$(hostname)" = "$HOST_NAME"
+test "$(uname -n)" = "$HOST_NAME"
 systemctl is-active systemd-networkd systemd-resolved systemd-timesyncd "$SSH_SERVICE"
 systemctl is-enabled systemd-networkd systemd-resolved systemd-timesyncd
 if test "$MANAGE_FIREWALL_RULES" = true; then systemctl is-enabled "$FIREWALL_SERVICE"; fi
