@@ -88,7 +88,7 @@ def check_ansible_cutover_partition() -> None:
     groups = inventory_groups("cluster-setup/inventory/hosts")
     nix_managed = groups.get("nix_managed", set())
     ansible_managed = groups.get("ansible_managed", set())
-    migrated_backbone = {"n2p1", "n2p2", "rpi4", "rock5bp"}
+    migrated_backbone = {"n2p1", "n2p2", "rpi4", "rpi5", "rock5bp"}
     migrated_hosts = migrated_backbone | {"macmini"}
     for host in sorted(migrated_hosts):
         if host not in nix_managed:
@@ -240,6 +240,14 @@ def check_static_nix_hosts_render() -> None:
                 "check-migration.py: Jinja2 is required for the hosts render contract"
             )
         return
+    expected = {
+        host: inventory_host_value(host, "ansible_host")
+        for host in sorted(
+            inventory_groups("cluster-setup/inventory/hosts").get(
+                "nix_managed", set()
+            )
+        )
+    }
     environment = Environment(undefined=StrictUndefined)
     environment.filters["regex_search"] = lambda value, pattern: re.search(
         pattern, value
@@ -250,26 +258,27 @@ def check_static_nix_hosts_render() -> None:
     )
     rendered = template.render(
         ansible_managed="managed by Ansible",
-        inventory_hostname="rpi4",
-        inventory_hostname_short="rpi4",
-        hosts_ipv4_address="192.168.219.7",
+        inventory_hostname="fixture",
+        inventory_hostname_short="fixture",
+        hosts_ipv4_address="192.0.2.1",
         ansible_lo={},
         hosts_ipv6=False,
-        ansible_play_batch=["rpi4"],
-        hostvars={"rpi4": {"ansible_interfaces": []}},
+        ansible_play_batch=[],
+        hostvars={},
         hosts_excludes_interfaces=[],
         hosts_all_private=True,
         hosts_all_public=False,
         hosts_dns_hostname=[
-            {"address": "192.168.219.3", "hostname": "n2p1"},
-            {"address": "192.168.219.4", "hostname": "n2p2"},
+            {"address": address, "hostname": host}
+            for host, address in expected.items()
         ],
     )
-    for expected in ("192.168.219.3 n2p1", "192.168.219.4 n2p2"):
-        if rendered.splitlines().count(expected) != 1:
+    for host, address in expected.items():
+        expected_line = f"{address} {host}"
+        if rendered.splitlines().count(expected_line) != 1:
             raise SystemExit(
                 "cluster-setup/etc-hosts.yaml: static Nix-managed host render "
-                f"differs for {expected!r}"
+                f"differs for {expected_line!r}"
             )
 
 def check_static_nix_hosts_expression() -> None:
@@ -287,7 +296,11 @@ def check_static_nix_hosts_expression() -> None:
     )
     expected = {
         host: inventory_host_value(host, "ansible_host")
-        for host in ("n2p1", "n2p2")
+        for host in sorted(
+            inventory_groups("cluster-setup/inventory/hosts").get(
+                "nix_managed", set()
+            )
+        )
     }
     assertions = "\n".join(
         f'          - \'{{"address": "{address}", '
@@ -346,6 +359,7 @@ def check_shell_syntax() -> None:
         "nix/scripts/provision-host",
         "nix/scripts/render-macbook-wireguard",
         "nix/scripts/rollout-peers",
+        "nix/scripts/sync-wireguard-runtime",
         "nix/scripts/sync-bootstrap-secret",
         "nix/scripts/verify-cluster",
         "nix/scripts/wireguard-secrets",

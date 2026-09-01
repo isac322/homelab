@@ -344,6 +344,7 @@
                   ${./nix/scripts/provision-host} \
                   ${./nix/scripts/render-macbook-wireguard} \
                   ${./nix/scripts/rollout-peers} \
+                  ${./nix/scripts/sync-wireguard-runtime} \
                   ${./nix/scripts/sync-bootstrap-secret} \
                   ${./nix/scripts/verify-cluster} \
                   ${./nix/scripts/wireguard-secrets}; do
