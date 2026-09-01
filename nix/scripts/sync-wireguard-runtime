@@ -1,0 +1,158 @@
+#!/bin/sh
+set -eu
+
+usage() {
+  echo "Usage: sync-wireguard-runtime [--check] <interface>" >&2
+  exit 2
+}
+
+apply=true
+case "$#" in
+  1) interface=$1 ;;
+  2) test "$1" = --check || usage; apply=false; interface=$2 ;;
+  *) usage ;;
+esac
+case "$interface" in
+  ""|*[!A-Za-z0-9_.-]*) usage ;;
+esac
+
+netdev="/etc/systemd/network/99-$interface.netdev"
+test -r "$netdev"
+command -v wg >/dev/null 2>&1
+command -v ip >/dev/null 2>&1
+ip link show "$interface" >/dev/null
+
+umask 077
+work=$(mktemp -d "/run/homelab-wireguard-$interface.XXXXXX")
+trap 'rm -rf "$work"' EXIT HUP INT TERM
+configuration="$work/config"
+private_file=
+section=
+peer_count=0
+psk_count=0
+
+{
+  while IFS= read -r line || test -n "$line"; do
+    case "$line" in
+      '[NetDev]') section=netdev; continue ;;
+      '[WireGuard]') section=interface; printf '[Interface]\n'; continue ;;
+      '[WireGuardPeer]') section=peer; peer_count=$((peer_count + 1)); printf '[Peer]\n'; continue ;;
+      '') test "$section" = netdev || printf '\n'; continue ;;
+      \#*|\;*) test "$section" = netdev || printf '%s\n' "$line"; continue ;;
+    esac
+    case "$section:$line" in
+      netdev:*) continue ;;
+      interface:PrivateKeyFile=*)
+        private_file=${line#*=}
+        case "$private_file" in /*) ;; *) echo "$netdev contains a non-absolute private key path" >&2; exit 1 ;; esac
+        test -s "$private_file"
+        printf 'PrivateKey = '
+        tr -d '\r\n' < "$private_file"
+        printf '\n'
+        ;;
+      interface:ListenPort=*) printf 'ListenPort = %s\n' "${line#*=}" ;;
+      peer:PublicKey=*) printf 'PublicKey = %s\n' "${line#*=}" ;;
+      peer:PresharedKeyFile=*)
+        psk_file=${line#*=}
+        case "$psk_file" in /*) ;; *) echo "$netdev contains a non-absolute preshared key path" >&2; exit 1 ;; esac
+        test -s "$psk_file"
+        printf 'PresharedKey = '
+        tr -d '\r\n' < "$psk_file"
+        printf '\n'
+        psk_count=$((psk_count + 1))
+        ;;
+      peer:AllowedIPs=*) printf 'AllowedIPs = %s\n' "${line#*=}" ;;
+      peer:Endpoint=*) printf 'Endpoint = %s\n' "${line#*=}" ;;
+      peer:PersistentKeepalive=*) printf 'PersistentKeepalive = %s\n' "${line#*=}" ;;
+      *) echo "$netdev contains an unsupported WireGuard directive: $line" >&2; exit 1 ;;
+    esac
+  done < "$netdev"
+} > "$configuration"
+
+chmod 0600 "$configuration"
+test -n "$private_file"
+test "$peer_count" -gt 0
+test "$psk_count" -eq "$peer_count"
+if test "$apply" = true; then
+  wg syncconf "$interface" "$configuration"
+  action="synchronized in place"
+else
+  action=verified
+fi
+
+expected_public=$(wg pubkey < "$private_file")
+actual_public=$(wg show "$interface" public-key)
+test "$actual_public" = "$expected_public"
+expected_port=$(awk '/^ListenPort[[:space:]]*=/ { line=$0; sub(/^[^=]*=[[:space:]]*/, "", line); print line; exit }' "$configuration")
+actual_port=$(wg show "$interface" listen-port)
+test -n "$expected_port"
+test "$actual_port" = "$expected_port"
+
+awk '/^PublicKey[[:space:]]*=/ { line=$0; sub(/^[^=]*=[[:space:]]*/, "", line); print line }' "$configuration" \
+  | LC_ALL=C sort > "$work/expected-peers"
+wg show "$interface" peers | LC_ALL=C sort > "$work/actual-peers"
+cmp -s "$work/expected-peers" "$work/actual-peers" || {
+  echo "$interface peer set differs after in-place synchronization" >&2
+  exit 1
+}
+test "$(wc -l < "$work/expected-peers" | tr -d ' ')" -eq "$peer_count"
+
+awk '
+  /^PublicKey[[:space:]]*=/ {
+    key=$0
+    sub(/^[^=]*=[[:space:]]*/, "", key)
+  }
+  /^AllowedIPs[[:space:]]*=/ {
+    values=$0
+    sub(/^[^=]*=[[:space:]]*/, "", values)
+    gsub(/,/, " ", values)
+    count=split(values, allowed, /[[:space:]]+/)
+    for (i=1; i<=count; i++) if (allowed[i] != "") print key "\t" allowed[i]
+  }
+' "$configuration" | LC_ALL=C sort > "$work/expected-allowed"
+wg show "$interface" allowed-ips > "$work/actual-allowed.raw"
+awk '{
+  key=$1
+  for (field=2; field<=NF; field++) {
+    count=split($field, allowed, ",")
+    for (i=1; i<=count; i++) if (allowed[i] != "") print key "\t" allowed[i]
+  }
+}' "$work/actual-allowed.raw" | LC_ALL=C sort > "$work/actual-allowed"
+cmp -s "$work/expected-allowed" "$work/actual-allowed" || {
+  echo "$interface AllowedIPs differ after in-place synchronization" >&2
+  exit 1
+}
+
+awk '
+  function flush() { if (key != "") print key "\t" (keep == "" ? "off" : keep) }
+  /^\[Peer\]$/ { flush(); key=""; keep=""; next }
+  /^PublicKey[[:space:]]*=/ { key=$0; sub(/^[^=]*=[[:space:]]*/, "", key) }
+  /^PersistentKeepalive[[:space:]]*=/ { keep=$0; sub(/^[^=]*=[[:space:]]*/, "", keep) }
+  END { flush() }
+' "$configuration" | LC_ALL=C sort > "$work/expected-keepalive"
+wg show "$interface" persistent-keepalive > "$work/actual-keepalive.raw"
+awk '{ print $1 "\t" $2 }' "$work/actual-keepalive.raw" \
+  | LC_ALL=C sort > "$work/actual-keepalive"
+cmp -s "$work/expected-keepalive" "$work/actual-keepalive" || {
+  echo "$interface persistent keepalive settings differ after in-place synchronization" >&2
+  exit 1
+}
+
+awk '
+  /^PublicKey[[:space:]]*=/ { key=$0; sub(/^[^=]*=[[:space:]]*/, "", key) }
+  /^Endpoint[[:space:]]*=/ { print key }
+' "$configuration" | LC_ALL=C sort > "$work/expected-endpoint-peers"
+wg show "$interface" endpoints > "$work/actual-endpoints.raw"
+awk 'NR == FNR { wanted[$1]=1; next } ($1 in wanted) && $2 != "(none)" { print $1 }' \
+  "$work/expected-endpoint-peers" "$work/actual-endpoints.raw" \
+  | LC_ALL=C sort > "$work/actual-endpoint-peers"
+cmp -s "$work/expected-endpoint-peers" "$work/actual-endpoint-peers" || {
+  echo "$interface configured peers are missing runtime endpoints after in-place synchronization" >&2
+  exit 1
+}
+
+wg show "$interface" preshared-keys > "$work/actual-psks"
+actual_psk_state=$(awk '$2 == "(none)" { missing++ } END { print NR ":" missing + 0 }' "$work/actual-psks")
+test "$actual_psk_state" = "$peer_count:0"
+
+printf 'wireguard-runtime: %s %s with %s peers\n' "$interface" "$action" "$peer_count"

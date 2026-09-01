@@ -10,12 +10,16 @@
         - name: root
           authorized_keys:
             - key: "{{ lookup('file', './ssh_pub_keys/desktop.pub') }}"
+            - key: "{{ lookup('file', '../ssh_pub_keys/laptop.pub') }}"
+            - key: "{{ lookup('file', './ssh_pub_keys/laptop.pub') }}"
             - key: "{{ lookup('file', './ssh_pub_keys/mobile.pub') }}"
             - key: "{{ lookup('file', './ssh_pub_keys/tablet.pub') }}"
             - key: "{{ lookup('file', './ssh_pub_keys/office.pub') }}"
         - name: "{{ admin_user }}"
           authorized_keys:
             - key: "{{ lookup('file', './ssh_pub_keys/desktop.pub') }}"
+            - key: "{{ lookup('file', '../ssh_pub_keys/laptop.pub') }}"
+            - key: "{{ lookup('file', './ssh_pub_keys/laptop.pub') }}"
             - key: "{{ lookup('file', './ssh_pub_keys/mobile.pub') }}"
             - key: "{{ lookup('file', './ssh_pub_keys/tablet.pub') }}"
             - key: "{{ lookup('file', './ssh_pub_keys/office.pub') }}"

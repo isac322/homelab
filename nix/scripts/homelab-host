@@ -47,6 +47,23 @@ preserve_nas_state() {
     *) echo "$host preserveNasState is not boolean: $value" >&2; return 1 ;;
   esac
 }
+storage_recovery_required() {
+  local host=$1 preserve iscsi_client
+  preserve=$(preserve_nas_state "$host") || return 1
+  iscsi_client=$(nix_eval --json "$root#topology.nodes.$host.iscsiClient") || {
+    echo "$host iscsiClient could not be evaluated" >&2
+    return 1
+  }
+  case "$iscsi_client" in
+    true|false) ;;
+    *) echo "$host iscsiClient is not boolean: $iscsi_client" >&2; return 1 ;;
+  esac
+  if [ "$preserve" = true ] || [ "$iscsi_client" = true ]; then
+    printf 'true\n'
+  else
+    printf 'false\n'
+  fi
+}
 manage_firewall_rules() { nix_eval --json "$root#systemConfigs.$1.config.homelab.firewall.manageRules"; }
 receipt_nas_baseline() { jq -r '.nasBaseline // empty' "$(receipt "$1")"; }
 
@@ -408,8 +425,20 @@ fi
 REMOTE_NATIVE_HANDOFF
 }
 
+sync_wireguard_runtime() {
+  local host=$1 interface=$2 command
+  printf -v command 'sudo -n sh -s -- %q' "$interface"
+  remote "$host" "$command" < "$root/nix/scripts/sync-wireguard-runtime"
+}
+
+verify_wireguard_runtime() {
+  local host=$1 interface=$2 command
+  printf -v command 'sudo -n sh -s -- --check %q' "$interface"
+  remote "$host" "$command" < "$root/nix/scripts/sync-wireguard-runtime"
+}
+
 apply_native_runtime() {
-  local host=$1 default_interface lan_address zram interfaces backend firewall_service ssh_service role manage_rules command
+  local host=$1 default_interface lan_address zram interfaces interface backend firewall_service ssh_service role manage_rules command
   assert_iptables_nft_backend "$host"
   default_interface=$(host_field "$host" defaultInterface 2>/dev/null || true)
   lan_address=$(host_field "$host" lanAddress 2>/dev/null || true)
@@ -552,6 +581,9 @@ if test "$ROLE" = server || test "$ROLE" = agent; then
   fi
 fi
 REMOTE_NATIVE_RUNTIME
+  for interface in $interfaces; do
+    sync_wireguard_runtime "$host" "$interface"
+  done
 }
 capture_runtime_firewall() {
   local host=$1 recovery=$2
@@ -571,10 +603,10 @@ REMOTE_ISCSI_SESSIONS
 
 
 storage_impact_json() {
-  local host=$1 context directory inventory next node session_lines sessions session_nodes preserve
-  preserve=$(preserve_nas_state "$host") || return 1
-  [ "$preserve" = true ] || {
-    echo "$host does not use the external NAS preservation workflow" >&2
+  local host=$1 context directory inventory next node session_lines sessions session_nodes required
+  required=$(storage_recovery_required "$host") || return 1
+  [ "$required" = true ] || {
+    echo "$host has no preserved NAS or iSCSI client recovery scope" >&2
     return 1
   }
   context=${BACKBONE_CONTEXT:-homelab-backbone}
@@ -753,9 +785,9 @@ verify_storage_inventory_integrity() {
 }
 
 verify_storage_recovery() {
-  local host=$1 inventory=$2 wait=${3:-no} current deadline=0 remaining capture_timeout preserve
-  preserve=$(preserve_nas_state "$host") || return 1
-  [ "$preserve" = true ] || return 0
+  local host=$1 inventory=$2 wait=${3:-no} current deadline=0 remaining capture_timeout required
+  required=$(storage_recovery_required "$host") || return 1
+  [ "$required" = true ] || return 0
   verify_storage_inventory_integrity "$host" "$inventory" || return 1
   if [ "$wait" = yes ]; then deadline=$((SECONDS + 600)); fi
   current=$(mktemp "$state/.storage-recovery.XXXXXX")
@@ -888,9 +920,20 @@ cleanup_legacy_files() {
   '\'''
 }
 verify_legacy_cleanup() {
-  local host=$1
-  remote "$host" 'sudo -n sh -ceu '\''
-    test -x /usr/local/bin/k3s
+  local host=$1 role require_k3s_binary=false
+  role=$(nix_eval --json "$root#topology.nodes.$host.k3sRole") || return 1
+  case "$role" in
+    '"server"'|'"agent"') require_k3s_binary=true ;;
+    null) ;;
+    *)
+      echo "$host has invalid k3sRole: $role" >&2
+      return 1
+      ;;
+  esac
+  remote "$host" "sudo -n env REQUIRE_K3S_BINARY=$require_k3s_binary sh -seu" <<'REMOTE_VERIFY_LEGACY_CLEANUP'
+    if test "$REQUIRE_K3S_BINARY" = true; then
+      test -x /usr/local/bin/k3s
+    fi
     assert_path_absent() {
       test ! -e "$1"
       test ! -L "$1"
@@ -907,7 +950,7 @@ verify_legacy_cleanup() {
         assert_path_absent "$link"
       done
     done
-  '\'''
+REMOTE_VERIFY_LEGACY_CLEANUP
 }
 rollback_state() {
   "$root/nix/scripts/k3s-handoff" state "$1"
@@ -1219,7 +1262,7 @@ case "${1:-}" in
       fi
       . /etc/os-release
       case \"\$ID\" in
-        arch)
+        arch|archarm)
           \$SUDO pacman --noconfirm --needed -S age curl git sudo xz
           ;;
         debian|ubuntu|raspbian)
@@ -1303,13 +1346,17 @@ case "${1:-}" in
     "$root/nix/scripts/k3s-handoff" preflight "$host" "$legacy_unit"
     recovery=$("$root/nix/scripts/adopt-host" "$host")
     preserve=$(preserve_nas_state "$host") || exit 1
+    storage_required=$(storage_recovery_required "$host") || exit 1
     if [ "$preserve" = true ]; then
       nas_baseline=$(cat "$recovery/baseline-path")
-      storage_inventory="$recovery/storage-consumers.json"
-      capture_storage_impact "$host" "$storage_inventory"
       verify_nas_baseline "$host" "$nas_baseline"
     else
       nas_baseline=
+    fi
+    if [ "$storage_required" = true ]; then
+      storage_inventory="$recovery/storage-consumers.json"
+      capture_storage_impact "$host" "$storage_inventory"
+    else
       storage_inventory=
     fi
     "$root/nix/scripts/k3s-handoff" snapshot-packages "$host" "$recovery"
@@ -1553,7 +1600,7 @@ REMOTE_K3S_COLD_BACKUP
 set -eu
 stage=core-services
 trap 'rc=$?; test "$rc" -eq 0 || echo "host verification failed during $stage" >&2' EXIT
-test "$(hostname)" = "$HOST_NAME"
+test "$(uname -n)" = "$HOST_NAME"
 systemctl is-active systemd-networkd systemd-resolved systemd-timesyncd "$SSH_SERVICE"
 systemctl is-enabled systemd-networkd systemd-resolved systemd-timesyncd
 if test "$MANAGE_FIREWALL_RULES" = true; then systemctl is-enabled "$FIREWALL_SERVICE"; fi
@@ -1691,6 +1738,7 @@ REMOTE_VERIFY
       expected_public=$(nix_eval --raw "$root#topology.$interface.nodes.$host.publicKey")
       expected_address=$(nix_eval --raw "$root#topology.$interface.nodes.$host.address")
       remote "$host" "sudo -n sh -ceu 'test -s \"/run/credentials/systemd-networkd.service/$interface-private\"; test \"\$(wg show \"$interface\" public-key)\" = \"$expected_public\"; ip -o -4 address show dev \"$interface\" | awk \"{print \\\$4}\" | grep -Fx \"$expected_address\"'"
+      verify_wireguard_runtime "$host" "$interface"
       while IFS= read -r peer; do
         peer_public=$(nix_eval --raw "$root#topology.$interface.nodes.$peer.publicKey")
         peer_address=$(nix_eval --raw "$root#topology.$interface.nodes.$peer.address")

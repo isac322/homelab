@@ -33,6 +33,18 @@ nix run .#rotate-psk -- --link wg0-n2p1-n2p2
 `bootstrap-host`는 기존 SSH identity로 접속하며, 비-root host에서는 현재 sudo 암호를 TTY로 한 번 요구해 `/etc/sudoers.d/homelab-admin`을 검증·설치한다. 이후 migration command는 `sudo -n`만 사용하고 암호 prompt가 발생하면 실패한다.
 복호화 workspace와 machine-bound credential staging tree는 Linux에서는 runtime tmpfs를 우선 사용하고, `/dev/shm`이 없는 macOS에서는 권한이 제한된 `${TMPDIR:-/tmp}` workspace를 사용한 뒤 trap으로 즉시 제거한다. 원격 host는 generation을 검증한 뒤 `systemd-creds encrypt --with-key=host`로 `/var/lib/homelab-secrets/generations/<generation>/*.cred`를 만들고 `active`/`previous` symlink를 원자 교체한다. systemd는 unit별 `LoadCredentialEncrypted=`로 `/run/credentials/<unit>/`에만 plaintext를 제공한다. Migration receipt는 Git revision, secret generation, 등록된 system-manager store path를 함께 고정한다.
 
+## Migration progress
+
+2026-09-01 기준 Linux host migration 진행 상태:
+
+- Nix 관리 완료: `n2p1`, `n2p2`, `rpi4`, `rock5bp`, `macmini`, `rpi5`
+- Ansible host 관리 잔여: 없음
+- `macmini` migration 완료(2026-08-31): revision `17d97f8e32142e876b82d7c8634fb212947bfafa`에서 bootstrap, host-local age identity와 encrypted WireGuard bundle import, native aarch64 generation build/register, `prepare -> activate -> reboot -> reboot-verify -> commit` terminal receipt를 완료했다. 재부팅 후 `verify-host`와 `verify-legacy-cleanup`이 통과했고 systemd-networkd/resolved/sshd, native `iptables.service`, `wg0` 주소·public key·peer set을 확인했다. K3s/NAS/iSCSI 비관리 경계는 유지되며 rollback timer와 current recovery artifact는 제거됐다. 따라서 `macmini`는 `[nix_managed]`에 속한다.
+- `rpi5` migration 완료(2026-09-01): revision `778c4c5447c1a60417ad97b033a8569fbcd2e8ff`에서 K3s server와 `wg0` edge gateway를 guarded `prepare -> activate -> reboot -> reboot-verify -> commit` 순서로 전환했다. 첫 activation은 WireGuard persistent keepalive 검증 파서 오류를 감지했고 watchdog가 legacy K3s와 network 상태를 자동 복구했다. 파서를 수정한 뒤 재실행한 전체 sequence는 성공했다. 재부팅 후 `verify-host`와 `verify-legacy-cleanup`이 통과했고 backbone node와 workload가 Ready 상태임을 확인했다. Migration 전후 storage inventory도 12개 PV, 12개 PVC, 10개 consumer pod, 12개 attached VolumeAttachment, 5개 iSCSI session으로 동일했다. `wg0`는 20개 peer와 최근 handshake를 유지했고 rollback artifact와 timer는 commit 후 제거됐다. 따라서 `rpi5`는 `[nix_managed]`에 속하며 `[ansible_managed]`에는 host가 남아 있지 않다.
+- `rock5bp`는 host plane만 Nix가 관리한다. `[nas]` 역할과 ZFS, LIO/rtslib/targetcli, Samba/NFS, storage cron/listener, `democratic-csi` identity/access, native NAS firewall은 기존 외부 관리 경계에 남긴다.
+- `rock5bp` migration 전후 live 검증에서 NAS baseline, ZFS pool health, democratic-csi PV/PVC binding, VolumeAttachment, iSCSI session이 모두 일치했다. Production restore는 필요하지 않았고, 2026-08-31에 migration 전용 off-host ZFS stream backup 약 226 GiB와 `pre-nix-migration-20260827T091229Z` snapshot/hold를 제거했다. 삭제 후 보존된 manifest를 기준으로 별도 read-only completeness audit을 수행해 17개 zvol stream을 live PV/PVC 및 kubelet mount 또는 VolumeAttachment/iSCSI session에 일대일 대응했고, root stream의 17개 child dataset도 모두 확인했다(18/18 PASS). 삭제 경로와 receipt-pinned recovery/baseline/storage inventory 및 NAS evidence 경로의 disjointness도 검증했다.
+- 각 host는 `prepare -> activate -> reboot -> reboot-verify -> commit`이 terminal receipt로 끝나고 live verification이 통과한 뒤에만 `[ansible_managed]`에서 `[nix_managed]`로 옮긴다.
+
 ## Linux migration
 
 일반 activation은 다음 다섯 단계다. K3s version과 rolling upgrade는 기존 Rancher `system-upgrade-controller`, `server-plan`, `agent-plan`, `backbone-k3s-upgrade` Application이 계속 소유한다. Host migration 중에는 Plan version을 변경하거나 별도 rollout을 시작하지 않는다.
@@ -49,7 +61,7 @@ nix run .#rotate-psk -- --link wg0-n2p1-n2p2
 
 configfs의 `iblock_N` 번호는 target service 재시작마다 같은 storage object에 다르게 배정될 수 있으므로 baseline 비교에서 object 이름으로 정규화한다. 이 번호만 반영하는 HBA/object info, default LU group members, LUN symlink hash는 runtime-index marker로 비교하지만, storage object/LUN path set, persistent `saveconfig.json`, target attribute, ZFS, service, listener, Samba/NFS와 다른 file hash는 그대로 exact-match한다.
 
-`prepare`는 democratic-csi PV/PVC/pod/VolumeAttachment와 consuming node의 정규화한 iSCSI session inventory도 recovery directory에 저장한다. 현재 active storage consumer pod가 `Running/Ready`가 아니면 host state를 변경하기 전에 fail-closed하며, 먼저 workload를 복구해야 한다. `storage-impact`와 lifecycle recovery checks는 Kubernetes resource, PV/PVC, VolumeAttachment, pod, iSCSI session을 관찰하기만 한다. Cluster resource를 scale, patch, restart하거나 다른 방식으로 변경하지 않는다. `activate`, `reboot-verify`, `commit`이 성공 상태를 기록하기 전에 같은 recovery checks를 자동으로 다시 실행하며, NAS 보존 경계나 recovery 상태를 읽기 전용으로 확인할 수 없으면 진행하지 않는다.
+`prepare`는 `preserveNasState=true`인 NAS host와 `iscsiClient=true`인 storage consumer host에서 democratic-csi PV/PVC/pod/VolumeAttachment와 consuming node의 정규화한 iSCSI session inventory를 recovery directory에 저장한다. 현재 active storage consumer pod가 `Running/Ready`가 아니면 host state를 변경하기 전에 fail-closed하며, 먼저 workload를 복구해야 한다. `storage-impact`와 lifecycle recovery checks는 Kubernetes resource, PV/PVC, VolumeAttachment, pod, iSCSI session을 관찰하기만 한다. Cluster resource를 scale, patch, restart하거나 다른 방식으로 변경하지 않는다. `activate`, `reboot-verify`, `commit`이 성공 상태를 기록하기 전에 같은 recovery checks를 자동으로 다시 실행하며, NAS 보존 경계나 recovery 상태를 읽기 전용으로 확인할 수 없으면 진행하지 않는다.
 
 ```bash
 nix run .#adopt-host -- n2p1
@@ -163,7 +175,7 @@ K3s version과 순차 rollout은 기존 Rancher `system-upgrade-controller`가 �
 ## Ansible ownership boundary
 
 Legacy host-management playbook은 `[ansible_managed]`만 target으로 삼는다. Commit까지
-끝난 호스트는 `[nix_managed]`로 옮기며, 현재 `n2p1`, `n2p2`, `rpi4`, `rock5bp`가 여기에 속한다.
+끝난 호스트는 `[nix_managed]`로 옮기며, 현재 `n2p1`, `n2p2`, `rpi4`, `rock5bp`, `macmini`, `rpi5`가 여기에 속한다.
 두 ownership group은 `homelab`의 child로 남고 `backbone` 같은 topology group도
 유지하지만, Nix-managed host에는 Ansible SSH 연결이나 remote task를 실행하지 않는다.
 

@@ -88,8 +88,9 @@ def check_ansible_cutover_partition() -> None:
     groups = inventory_groups("cluster-setup/inventory/hosts")
     nix_managed = groups.get("nix_managed", set())
     ansible_managed = groups.get("ansible_managed", set())
-    migrated_backbone = {"n2p1", "n2p2", "rpi4", "rock5bp"}
-    for host in sorted(migrated_backbone):
+    migrated_backbone = {"n2p1", "n2p2", "rpi4", "rpi5", "rock5bp"}
+    migrated_hosts = migrated_backbone | {"macmini"}
+    for host in sorted(migrated_hosts):
         if host not in nix_managed:
             raise SystemExit(
                 f"cluster-setup/inventory/hosts: migrated host {host} is not nix_managed"
@@ -141,6 +142,58 @@ def check_ansible_cutover_partition() -> None:
                 f"{relative}: play host ownership differs: expected {expected}, got {actual}"
             )
 
+    ssh_hardening = source("cluster-setup/ssh-hardening.yaml")
+    expected_authorized_key_paths = [
+        "./ssh_pub_keys/desktop.pub",
+        "../ssh_pub_keys/laptop.pub",
+        "./ssh_pub_keys/laptop.pub",
+        "./ssh_pub_keys/mobile.pub",
+        "./ssh_pub_keys/tablet.pub",
+        "./ssh_pub_keys/office.pub",
+    ]
+    laptop_key_identities: dict[str, tuple[str, str]] = {}
+    for relative, expected_comment in {
+        "ssh_pub_keys/laptop.pub": "bhyoo@bhyoo-macbook-pro",
+        "cluster-setup/ssh_pub_keys/laptop.pub": "bhyoo@latitude7490-manjaro",
+    }.items():
+        try:
+            algorithm, material, comment = source(relative).strip().split(maxsplit=2)
+        except ValueError as error:
+            raise SystemExit(f"{relative}: malformed SSH public key") from error
+        if algorithm != "ssh-ed25519" or comment != expected_comment:
+            raise SystemExit(
+                f"{relative}: expected ssh-ed25519 identity {expected_comment}, "
+                f"got {algorithm} {comment}"
+            )
+        laptop_key_identities[relative] = (algorithm, material)
+    if len(set(laptop_key_identities.values())) != len(laptop_key_identities):
+        raise SystemExit(
+            "legacy and current laptop SSH public keys must remain distinct"
+        )
+
+    for principal in ("root", '"{{ admin_user }}"'):
+        match = re.search(
+            rf"^        - name: {re.escape(principal)}\n"
+            r"          authorized_keys:\n"
+            r"(?P<body>(?:            - key: .*\n)+)",
+            ssh_hardening,
+            re.MULTILINE,
+        )
+        if match is None:
+            raise SystemExit(
+                f"cluster-setup/ssh-hardening.yaml: {principal} authorized keys are missing"
+            )
+        actual = re.findall(
+            r"lookup\('file', '([^']+)'\)",
+            match.group("body"),
+        )
+        if actual != expected_authorized_key_paths:
+            raise SystemExit(
+                "cluster-setup/ssh-hardening.yaml: "
+                f"{principal} authorized keys differ: "
+                f"expected {expected_authorized_key_paths}, got {actual}"
+            )
+
     require(
         "cluster-setup/etc-hosts.yaml",
         "any_errors_fatal: true",
@@ -187,6 +240,14 @@ def check_static_nix_hosts_render() -> None:
                 "check-migration.py: Jinja2 is required for the hosts render contract"
             )
         return
+    expected = {
+        host: inventory_host_value(host, "ansible_host")
+        for host in sorted(
+            inventory_groups("cluster-setup/inventory/hosts").get(
+                "nix_managed", set()
+            )
+        )
+    }
     environment = Environment(undefined=StrictUndefined)
     environment.filters["regex_search"] = lambda value, pattern: re.search(
         pattern, value
@@ -197,26 +258,27 @@ def check_static_nix_hosts_render() -> None:
     )
     rendered = template.render(
         ansible_managed="managed by Ansible",
-        inventory_hostname="rpi4",
-        inventory_hostname_short="rpi4",
-        hosts_ipv4_address="192.168.219.7",
+        inventory_hostname="fixture",
+        inventory_hostname_short="fixture",
+        hosts_ipv4_address="192.0.2.1",
         ansible_lo={},
         hosts_ipv6=False,
-        ansible_play_batch=["rpi4"],
-        hostvars={"rpi4": {"ansible_interfaces": []}},
+        ansible_play_batch=[],
+        hostvars={},
         hosts_excludes_interfaces=[],
         hosts_all_private=True,
         hosts_all_public=False,
         hosts_dns_hostname=[
-            {"address": "192.168.219.3", "hostname": "n2p1"},
-            {"address": "192.168.219.4", "hostname": "n2p2"},
+            {"address": address, "hostname": host}
+            for host, address in expected.items()
         ],
     )
-    for expected in ("192.168.219.3 n2p1", "192.168.219.4 n2p2"):
-        if rendered.splitlines().count(expected) != 1:
+    for host, address in expected.items():
+        expected_line = f"{address} {host}"
+        if rendered.splitlines().count(expected_line) != 1:
             raise SystemExit(
                 "cluster-setup/etc-hosts.yaml: static Nix-managed host render "
-                f"differs for {expected!r}"
+                f"differs for {expected_line!r}"
             )
 
 def check_static_nix_hosts_expression() -> None:
@@ -234,7 +296,11 @@ def check_static_nix_hosts_expression() -> None:
     )
     expected = {
         host: inventory_host_value(host, "ansible_host")
-        for host in ("n2p1", "n2p2")
+        for host in sorted(
+            inventory_groups("cluster-setup/inventory/hosts").get(
+                "nix_managed", set()
+            )
+        )
     }
     assertions = "\n".join(
         f'          - \'{{"address": "{address}", '
@@ -293,6 +359,7 @@ def check_shell_syntax() -> None:
         "nix/scripts/provision-host",
         "nix/scripts/render-macbook-wireguard",
         "nix/scripts/rollout-peers",
+        "nix/scripts/sync-wireguard-runtime",
         "nix/scripts/sync-bootstrap-secret",
         "nix/scripts/verify-cluster",
         "nix/scripts/wireguard-secrets",
@@ -2481,7 +2548,10 @@ def check_legacy_cleanup_path_verification() -> None:
         "/etc/systemd/system", "${TEST_SYSTEMD}"
     )
     verify_match = re.search(
-        r'(    assert_path_absent\(\) \{\n'
+        r'(    if test "\$REQUIRE_K3S_BINARY" = true; then\n'
+        r'      test -x /usr/local/bin/k3s\n'
+        r'    fi\n'
+        r'    assert_path_absent\(\) \{\n'
         r'      test ! -e "\$1"\n'
         r'      test ! -L "\$1"\n'
         r'    \}\n'
@@ -2494,8 +2564,10 @@ def check_legacy_cleanup_path_verification() -> None:
     )
     if verify_match is None:
         raise SystemExit("nix/scripts/homelab-host: legacy path verification block missing")
-    verify_block = verify_match.group(1).replace(
-        "/etc/systemd/system", "${TEST_SYSTEMD}"
+    verify_block = (
+        verify_match.group(1)
+        .replace("/etc/systemd/system", "${TEST_SYSTEMD}")
+        .replace("/usr/local/bin/k3s", "${TEST_K3S}")
     )
     with tempfile.TemporaryDirectory() as directory:
         directory_path = Path(directory)
@@ -2512,10 +2584,13 @@ def check_legacy_cleanup_path_verification() -> None:
             "esac\n"
         )
         systemctl.chmod(0o755)
+        k3s_binary = directory_path / "k3s"
         environment = {
             **os.environ,
             "PATH": f"{mock_bin}:{os.environ['PATH']}",
             "TEST_SYSTEMD": str(systemd),
+            "TEST_K3S": str(k3s_binary),
+            "REQUIRE_K3S_BINARY": "false",
         }
         cleanup_script = f"set -eu\n{cleanup_block}\n"
         verify_script = f"set -eu\n{verify_block}\n"
@@ -2570,6 +2645,26 @@ def check_legacy_cleanup_path_verification() -> None:
         )
         if result.returncode != 0:
             raise SystemExit("nix/scripts/homelab-host: clean legacy paths were rejected")
+        result = subprocess.run(
+            ["sh"],
+            input=verify_script,
+            text=True,
+            capture_output=True,
+            env={**environment, "REQUIRE_K3S_BINARY": "true"},
+        )
+        if result.returncode == 0:
+            raise SystemExit("nix/scripts/homelab-host: missing K3s binary was accepted for a K3s host")
+        k3s_binary.write_text("#!/bin/sh\nexit 0\n")
+        k3s_binary.chmod(0o755)
+        result = subprocess.run(
+            ["sh"],
+            input=verify_script,
+            text=True,
+            capture_output=True,
+            env={**environment, "REQUIRE_K3S_BINARY": "true"},
+        )
+        if result.returncode != 0:
+            raise SystemExit("nix/scripts/homelab-host: retained K3s binary was rejected for a K3s host")
 
         regular = systemd / "k3s.service.env"
         regular.write_text("fixture\n")
@@ -2761,6 +2856,7 @@ errors: No known data errors
         "verify_nas_baseline()",
         "storage_impact_json()",
         "verify_storage_recovery()",
+        "storage_recovery_required()",
         'deadline=$((SECONDS + 600))',
         'if ! "$root/nix/scripts/k3s-handoff" rearm "$host"; then',
         'timeout --foreground --kill-after=10s "${capture_timeout}s" "$0" storage-impact "$host"',
@@ -2818,6 +2914,14 @@ errors: No known data errors
         raise SystemExit(
             "nix/scripts/homelab-host: storage recovery is not bounded and rearmed inside the polling loop"
         )
+    for function_name, function_match in (
+        ("storage_impact_json", storage_match),
+        ("verify_storage_recovery", recovery_match),
+    ):
+        if "storage_recovery_required" not in function_match.group(0):
+            raise SystemExit(
+                f"nix/scripts/homelab-host: {function_name} does not cover iSCSI client recovery"
+            )
     lifecycle_match = re.search(
         r"  prepare\|deploy\).*?^  onboard-k3s-node\)",
         migration,
@@ -2825,6 +2929,15 @@ errors: No known data errors
     )
     if lifecycle_match is None:
         raise SystemExit("nix/scripts/homelab-host: guarded preservation lifecycle is missing")
+    if not re.search(
+        r"prepare\|deploy\).*?storage_required=\$\(storage_recovery_required.*?"
+        r'if \[ "\$storage_required" = true \]; then.*?capture_storage_impact',
+        lifecycle_match.group(0),
+        re.DOTALL,
+    ):
+        raise SystemExit(
+            "nix/scripts/homelab-host: prepare does not capture storage recovery for iSCSI clients"
+        )
     for pattern in (
         r"\bkubectl\b[^\n]*\bapply\b",
         r"\bkubectl\b[^\n]*\bcreate\b",
@@ -3418,6 +3531,43 @@ forbid(
     "/run/homelab-wireguard-",
     "PersistentKeepaliveSec=",
 )
+wireguard_runtime = source("nix/scripts/sync-wireguard-runtime")
+if not wireguard_runtime.isascii():
+    raise SystemExit(
+        "nix/scripts/sync-wireguard-runtime: shell source must remain ASCII-only"
+    )
+require(
+    "nix/scripts/sync-wireguard-runtime",
+    "wg syncconf",
+    "--check",
+    "PrivateKeyFile=",
+    "PresharedKeyFile=",
+    'cmp -s "$work/expected-peers" "$work/actual-peers"',
+    'cmp -s "$work/expected-allowed" "$work/actual-allowed"',
+    'cmp -s "$work/expected-keepalive" "$work/actual-keepalive"',
+    'awk \'{ print $1 "\\t" $2 }\' "$work/actual-keepalive.raw"',
+    'cmp -s "$work/expected-endpoint-peers" "$work/actual-endpoint-peers"',
+    'wg show "$interface" preshared-keys',
+)
+forbid(
+    "nix/scripts/sync-wireguard-runtime",
+    "$(NF - 1)",
+)
+require(
+    "nix/scripts/homelab-host",
+    'sync_wireguard_runtime "$host" "$interface"',
+    'verify_wireguard_runtime "$host" "$interface"',
+    "sudo -n sh -s -- --check",
+)
+require(
+    "nix/scripts/rollout-peers",
+    'sync_wireguard_runtime "$host" wg0',
+)
+require(
+    "nix/scripts/k3s-handoff",
+    "$rollback_root/.staging/sync-wireguard-runtime",
+    '"$dir/sync-wireguard-runtime" "$interface"',
+)
 require(
     "nix/modules/darwin/base.nix",
     "peerCount = builtins.length",
@@ -3436,6 +3586,41 @@ require(
     "networkctl reconfigure wg0",
     "wg show wg0 peers",
 )
+rollout_peers = source("nix/scripts/rollout-peers")
+apply_loops = re.findall(
+    r"for host in \$apply_hosts; do\n(.*?)\n    done",
+    rollout_peers,
+    re.DOTALL,
+)
+apply_loop = next((body for body in apply_loops if "stage_result=" in body), None)
+if apply_loop is None:
+    raise SystemExit("nix/scripts/rollout-peers: mutating apply loop missing")
+secret_stage = 'stage_result="$($root/nix/scripts/wireguard-secrets stage-secrets "$host")"'
+record_mutation = 'printf \'%s\\n\' "$host" >> "$applied"'
+install_networkd = 'remote "$host" "sudo -n install -D -m 0644'
+restart_networkd = "systemctl restart systemd-networkd.service"
+sync_wireguard = 'sync_wireguard_runtime "$host" wg0'
+for fragment in (
+    secret_stage,
+    record_mutation,
+    install_networkd,
+    restart_networkd,
+    sync_wireguard,
+):
+    if fragment not in apply_loop:
+        raise SystemExit(
+            f"nix/scripts/rollout-peers: apply loop missing {fragment}"
+        )
+if not (
+    apply_loop.index(secret_stage)
+    < apply_loop.index(record_mutation)
+    < apply_loop.index(install_networkd)
+    < apply_loop.index(restart_networkd)
+    < apply_loop.index(sync_wireguard)
+):
+    raise SystemExit(
+        "nix/scripts/rollout-peers: mutation must be recorded before networkd files, restart, and runtime sync"
+    )
 require(
     "nix/scripts/adopt-host",
     "/root/.ssh",
@@ -3459,11 +3644,14 @@ require(
     'test -x "$nix_env"',
     'generations=$("$nix_env" --profile "$profile" --list-generations)',
     'generation=$(current_remote_generation "$host")',
+    "uname -n",
 )
 require(
     "nix/scripts/homelab-host",
     "bootstrap-host",
     r"user=\$(id -un)",
+    "arch|archarm)",
+    'test "$(uname -n)" = "$HOST_NAME"',
     r'trap \"rm -f -- \$tmp\"',
     "secretGeneration",
     "different Git revision",
@@ -3819,8 +4007,26 @@ for pattern in (
         raise SystemExit(f"nix/scripts/homelab-host: legacy enablement verification is missing: {pattern}")
 if 'assert_path_absent "$link"' not in verify_cleanup_block:
     raise SystemExit("nix/scripts/homelab-host: legacy enablement link removal is not verified")
-if 'test -x /usr/local/bin/k3s' not in host_migration:
-    raise SystemExit("nix/scripts/homelab-host: K3s install layout retention is not verified")
+for needle in (
+    'role=$(nix_eval --json "$root#topology.nodes.$host.k3sRole") || return 1',
+    '\'"server"\'|\'"agent"\') require_k3s_binary=true',
+    'null) ;;',
+    'REQUIRE_K3S_BINARY=$require_k3s_binary',
+):
+    if needle not in verify_cleanup_block:
+        raise SystemExit(
+            "nix/scripts/homelab-host: K3s cleanup role mapping is incomplete: "
+            f"{needle}"
+        )
+if (
+    'if test "$REQUIRE_K3S_BINARY" = true; then\n'
+    "      test -x /usr/local/bin/k3s\n"
+    "    fi"
+    not in verify_cleanup_block
+):
+    raise SystemExit(
+        "nix/scripts/homelab-host: K3s install layout retention must be role-aware"
+    )
 require(
     "nix/scripts/wireguard-secrets",
     "unmanaged link has no repository-owned endpoint bundle",
