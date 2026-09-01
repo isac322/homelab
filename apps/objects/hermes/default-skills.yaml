@@ -19,19 +19,13 @@ data:
     mkdir -p "$HOME/.claude" "$TMPDIR"
     cp /installer/skillfish.json "$HOME/skillfish.json"
 
-    if ! npm exec --yes --package=skillfish@1.0.31 -- \
+    if ! npm exec --yes --package=skillfish@1.0.39 -- \
       skillfish install --global --yes --json > "$result_file"; then
       cat "$result_file" >&2
       exit 1
     fi
     node -e '
       const result = require(process.argv[1]);
-      const allowedErrors = new Set([
-        "humanizer: Skipped symlink: SKILL.md",
-      ]);
-      const unexpectedErrors = result.errors.filter(
-        (error) => !allowedErrors.has(error),
-      );
       const installed = new Set(result.installed.map(({ skill }) => skill));
       const expected = [
         "humanizer",
@@ -40,7 +34,7 @@ data:
       ];
       if (
         result.exit_code !== 0 ||
-        unexpectedErrors.length !== 0 ||
+        result.errors.length !== 0 ||
         expected.some((skill) => !installed.has(skill))
       ) {
         console.error(JSON.stringify(result));
@@ -72,8 +66,8 @@ data:
     {
       "version": 1,
       "skills": [
-        "blader/humanizer@ebf637bdae86b62a7b006c447bb98cfa0ccc979d",
-        "softaworks/agent-toolkit@3027f20f3181758385a1bb8c022d4041dfb4de84/skills/writing-clearly-and-concisely",
-        "Gentleman-Programming/gentle-ai@301fb2ad7f3f3bda71f516d6e2848ef3fa6fe9bb/skills/comment-writer"
+        "blader/humanizer@e2e92e7b4b8229253ed5c8e81dc65463fdeddda5",
+        "softaworks/agent-toolkit@32d7e8aad4f452b9865f5d1b2443d14038fdb2a2/skills/writing-clearly-and-concisely",
+        "Gentleman-Programming/gentle-ai@55a5bfe43594d6409307c4bcdf3a1d22a8c42560/skills/comment-writer"
       ]
     }
