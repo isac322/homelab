@@ -50,13 +50,18 @@ variable "gcp_vertex_ai_sa_key" {
 variable "grafana_telegram_bot_token" {
   type      = string
   sensitive = true
+  default   = null
 }
 
 variable "grafana_telegram_chat_id" {
-  type = string
+  type    = string
+  default = null
 
   validation {
-    condition     = can(regex("^-[0-9]+$", var.grafana_telegram_chat_id))
+    condition = (
+      var.grafana_telegram_chat_id == null
+      || can(regex("^-[0-9]+$", var.grafana_telegram_chat_id))
+    )
     error_message = "grafana_telegram_chat_id must be a negative Telegram group or supergroup chat ID."
   }
 }
