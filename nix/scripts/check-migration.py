@@ -2203,6 +2203,64 @@ def check_time_sync_waits() -> None:
 
 
 
+def check_wireguard_rollback_failure_continuation() -> None:
+    handoff = source("nix/scripts/k3s-handoff")
+    match = re.search(
+        r'(wireguard_restore_failed=false\nfor interface in \$wg_interfaces; do\n.*?^done)',
+        handoff,
+        re.DOTALL | re.MULTILINE,
+    )
+    if match is None:
+        raise SystemExit(
+            "nix/scripts/k3s-handoff: best-effort WireGuard rollback restoration missing"
+        )
+    if not re.search(
+        r'for unit in systemd-networkd\.service systemd-resolved\.service '
+        r'systemd-timesyncd\.service "\$ssh_service"; do'
+        r'.*?systemctl is-active "\$unit".*?verify_nas_manifest; fi'
+        r'.*?if test "\$wireguard_restore_failed" = true; then'
+        r'.*?rollback remains armed.*?exit 1.*?^fi'
+        r'.*?systemctl disable homelab-host-rollback\.timer',
+        handoff,
+        re.DOTALL | re.MULTILINE,
+    ):
+        raise SystemExit(
+            "nix/scripts/k3s-handoff: WireGuard restore failure must not block service recovery or disarm rollback"
+        )
+    with tempfile.TemporaryDirectory() as directory:
+        directory_path = Path(directory)
+        for command in ("ip", "networkctl"):
+            path = directory_path / command
+            path.write_text("#!/bin/sh\nexit 0\n")
+            path.chmod(0o755)
+        helper = directory_path / "sync-wireguard-runtime"
+        helper.write_text("#!/bin/sh\nexit 1\n")
+        helper.chmod(0o755)
+        result = subprocess.run(
+            ["sh"],
+            input=(
+                "set -eu\n"
+                f'PATH="{directory}:{os.environ["PATH"]}"\n'
+                f'dir="{directory}"\n'
+                "wg_interfaces=wg0\n"
+                f"{match.group(1)}\n"
+                'test "$wireguard_restore_failed" = true\n'
+                "printf 'service-recovery-continued\\n'\n"
+            ),
+            text=True,
+            capture_output=True,
+        )
+        if (
+            result.returncode
+            or result.stdout.strip() != "service-recovery-continued"
+            or "WireGuard runtime restoration failed" not in result.stderr
+        ):
+            raise SystemExit(
+                "nix/scripts/k3s-handoff: WireGuard failure aborted rollback before service recovery\n"
+                f"{result.stderr.strip()}"
+            )
+
+
 def check_firewall_restore_waits() -> None:
     handoff = source("nix/scripts/k3s-handoff")
     match = re.search(
@@ -4291,6 +4349,7 @@ check_ssh_strict_modes_guard()
 check_wireguard_handshake_probe()
 check_register_system_failure()
 check_time_sync_waits()
+check_wireguard_rollback_failure_continuation()
 check_firewall_restore_waits()
 check_cilium_restart_waits()
 check_provision_active_service_guard()

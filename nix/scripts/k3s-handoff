@@ -481,10 +481,14 @@ sysctl --system
 systemctl restart systemd-networkd.service
 networkctl reload
 networkctl reconfigure "$default_interface"
+wireguard_restore_failed=false
 for interface in $wg_interfaces; do
   if ip link show "$interface" >/dev/null 2>&1; then
-    networkctl reconfigure "$interface"
-    "$dir/sync-wireguard-runtime" "$interface"
+    if ! networkctl reconfigure "$interface" \
+      || ! "$dir/sync-wireguard-runtime" "$interface"; then
+      echo "rollback continued after $interface WireGuard runtime restoration failed" >&2
+      wireguard_restore_failed=true
+    fi
   fi
 done
 systemctl restart systemd-timesyncd.service
@@ -644,6 +648,10 @@ if test "$package_restore_blocked" = true; then
   exit 1
 fi
 if test "$preserve_nas_state" = true; then verify_nas_manifest; fi
+if test "$wireguard_restore_failed" = true; then
+  echo "legacy services and firewall restored, but WireGuard runtime restoration failed; rollback remains armed" >&2
+  exit 1
+fi
 systemctl disable homelab-host-rollback.timer >/dev/null 2>&1 || true
 touch "$dir/restored"
 printf 'rollback completed %s\n' "$(date -u +%FT%TZ)"
