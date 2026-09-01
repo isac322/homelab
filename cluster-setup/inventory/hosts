@@ -1,5 +1,4 @@
 [ansible_managed]
-rpi5
 
 [nix_managed]
 n2p1
@@ -7,6 +6,7 @@ n2p2
 rpi4
 rock5bp
 macmini
+rpi5
 
 [nas]
 rock5bp
