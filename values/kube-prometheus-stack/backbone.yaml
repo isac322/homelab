@@ -21,44 +21,7 @@ grafana:
     userKey: admin-user
     passwordKey: admin-password
 
-  envValueFrom:
-    TELEGRAM_BOT_TOKEN:
-      secretKeyRef:
-        name: grafana-telegram-credentials
-        key: bot-token
-    TELEGRAM_CHAT_ID:
-      secretKeyRef:
-        name: grafana-telegram-credentials
-        key: chat-id
-
   alerting:
-    contactpoints.yaml:
-      secret:
-        apiVersion: 1
-        contactPoints:
-          - orgId: 1
-            name: Telegram infrastructure
-            receivers:
-              - uid: telegram-infrastructure
-                type: telegram
-                disableResolveMessage: false
-                settings:
-                  bottoken: |-
-                    $TELEGRAM_BOT_TOKEN
-                  chatid: |-
-                    $TELEGRAM_CHAT_ID
-                  disable_web_page_preview: true
-    policies.yaml:
-      apiVersion: 1
-      policies:
-        - orgId: 1
-          receiver: Telegram infrastructure
-          group_by:
-            - grafana_folder
-            - alertname
-          group_wait: 30s
-          group_interval: 5m
-          repeat_interval: 4h
     rules.yaml:
       apiVersion: 1
       groups:
@@ -502,6 +465,11 @@ grafana:
       limits:
         cpu: 100m
         memory: 192Mi
+    alerts:
+      enabled: true
+      label: grafana_alert
+      labelValue: "1"
+      resource: secret
     dashboards:
       enabled: true
       label: grafana_dashboard

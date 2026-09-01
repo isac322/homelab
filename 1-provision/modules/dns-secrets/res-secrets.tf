@@ -93,6 +93,22 @@ resource "aws_ssm_parameter" "hermes_gemini_api_key" {
   value       = var.gemini_api_key
 }
 
+resource "aws_ssm_parameter" "grafana_telegram_bot_token" {
+  count       = var.grafana_telegram_bot_token == null ? 0 : 1
+  name        = "/homelab/cluster/${var.k8s_cluster_name}/token/telegram/grafana"
+  description = "Telegram bot token for Grafana-managed alerts"
+  type        = "SecureString"
+  value       = var.grafana_telegram_bot_token
+}
+
+resource "aws_ssm_parameter" "grafana_telegram_chat_id" {
+  count       = var.grafana_telegram_chat_id == null ? 0 : 1
+  name        = "/homelab/cluster/${var.k8s_cluster_name}/chat-id/telegram/grafana-alerts"
+  description = "Telegram group chat ID for Grafana-managed alerts"
+  type        = "String"
+  value       = var.grafana_telegram_chat_id
+}
+
 resource "aws_ssm_parameter" "hermes_isacmes_telegram_token" {
   count       = var.hermes_isacmes_telegram_token == null ? 0 : 1
   name        = "/homelab/cluster/${var.k8s_cluster_name}/token/telegram/isacmes"
@@ -138,6 +154,8 @@ data "aws_iam_policy_document" "secret_read" {
       var.gemini_api_key == null ? [] : [aws_ssm_parameter.hindsight_gemini_api_key[0].arn],
       var.openai_proxy == null ? [] : [aws_ssm_parameter.hermes_openai_proxy[0].arn],
       var.gemini_api_key == null ? [] : [aws_ssm_parameter.hermes_gemini_api_key[0].arn],
+      var.grafana_telegram_bot_token == null ? [] : [aws_ssm_parameter.grafana_telegram_bot_token[0].arn],
+      var.grafana_telegram_chat_id == null ? [] : [aws_ssm_parameter.grafana_telegram_chat_id[0].arn],
       var.hermes_isacmes_telegram_token == null ? [] : [aws_ssm_parameter.hermes_isacmes_telegram_token[0].arn],
       var.hermes_isacmes_jay_telegram_token == null ? [] : [aws_ssm_parameter.hermes_isacmes_jay_telegram_token[0].arn],
     )

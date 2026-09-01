@@ -219,6 +219,21 @@ resource "tfe_variable" "gcp_vertex_ai_sa_key" {
   }
 }
 
+resource "tfe_variable" "grafana_telegram_bot_token" {
+  key          = "grafana_telegram_bot_token"
+  value        = var.grafana_telegram_bot_token
+  category     = "terraform"
+  sensitive    = true
+  workspace_id = tfe_workspace.backbone.id
+}
+
+resource "tfe_variable" "grafana_telegram_chat_id" {
+  key          = "grafana_telegram_chat_id"
+  value        = var.grafana_telegram_chat_id
+  category     = "terraform"
+  workspace_id = tfe_workspace.backbone.id
+}
+
 resource "tfe_variable" "hermes_isacmes_telegram_token" {
   key          = "hermes_isacmes_telegram_token"
   value        = var.hermes_isacmes_telegram_token

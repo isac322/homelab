@@ -47,6 +47,8 @@ module "saas" {
   openai_proxy                      = var.openai_proxy
   gemini_api_key                    = var.gemini_api_key
   gcp_vertex_ai_sa_key              = var.gcp_vertex_ai_sa_key
+  grafana_telegram_bot_token        = var.grafana_telegram_bot_token
+  grafana_telegram_chat_id          = var.grafana_telegram_chat_id
   hermes_isacmes_telegram_token     = var.hermes_isacmes_telegram_token
   hermes_isacmes_jay_telegram_token = var.hermes_isacmes_jay_telegram_token
 

@@ -2,6 +2,14 @@
 
 This requires user interaction that preparing access credentials for external SaaS.
 
+Provide local values through an ignored `.tfvars` file. Grafana-managed
+Telegram alerts require both values:
+
+```hcl
+grafana_telegram_bot_token = "<BotFather token>"
+grafana_telegram_chat_id   = "-1001234567890"
+```
+
 ## Get credential
 
 ### AWS
