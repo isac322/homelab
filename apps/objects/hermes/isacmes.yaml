@@ -294,6 +294,17 @@ spec:
           tools:
             resources: false
             prompts: false
+        vanta:
+          url: https://mcp.vanta.com/mcp
+          auth: oauth
+          trust: full
+          oauth:
+            # Use the same paste-back flow as Linear so OAuth can complete
+            # through the colocated Camofox browser without callback races.
+            redirect_uri: http://127.0.0.1:65535/callback
+          tools:
+            resources: false
+            prompts: false
       plugins:
         enabled:
           - hermes-lcm
