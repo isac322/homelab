@@ -86,8 +86,12 @@ grafana:
               execErrState: Error
               for: 5m
               annotations:
-                description: Prometheus has been unable to scrape a node exporter for five minutes.
-                summary: A backbone node is unavailable to monitoring.
+                display_name: 노드 메트릭 수집 중단
+                target: '{{`{{ $labels.instance }}`}}'
+                current_value: 메트릭 수집 불가
+                threshold: 5분간 node-exporter 메트릭 수집 실패
+                description: 노드 연결 상태와 node-exporter 상태를 확인하세요.
+                summary: backbone 노드의 메트릭 수집이 중단되었습니다.
               labels:
                 severity: critical
                 managed_by: gitops
@@ -148,8 +152,12 @@ grafana:
               execErrState: Error
               for: 15m
               annotations:
-                description: Average node CPU usage has exceeded 90 percent for fifteen minutes.
-                summary: CPU pressure is sustained on a backbone node.
+                display_name: CPU 사용률 높음
+                target: '{{`{{ $labels.instance }}`}}'
+                current_value: '{{`{{ with $values.A }}{{ printf "%.1f%%" .Value }}{{ else }}값 없음{{ end }}`}}'
+                threshold: 90% 초과 상태가 15분간 지속됨
+                description: CPU를 많이 사용하는 프로세스와 워크로드를 확인하세요.
+                summary: backbone 노드의 CPU 사용률이 지속적으로 높습니다.
               labels:
                 severity: warning
                 managed_by: gitops
@@ -211,8 +219,12 @@ grafana:
               execErrState: Error
               for: 15m
               annotations:
-                description: Available memory has remained below 10 percent for fifteen minutes.
-                summary: Memory pressure is sustained on a backbone node.
+                display_name: 메모리 사용률 높음
+                target: '{{`{{ $labels.instance }}`}}'
+                current_value: '{{`{{ with $values.A }}{{ printf "%.1f%%" .Value }}{{ else }}값 없음{{ end }}`}}'
+                threshold: 90% 초과 상태가 15분간 지속됨
+                description: 메모리를 많이 사용하는 프로세스와 OOM 발생 여부를 확인하세요.
+                summary: backbone 노드의 메모리 사용률이 지속적으로 높습니다.
               labels:
                 severity: warning
                 managed_by: gitops
@@ -276,8 +288,12 @@ grafana:
               execErrState: Error
               for: 10m
               annotations:
-                description: A persistent node filesystem has exceeded 90 percent usage for ten minutes.
-                summary: A backbone node filesystem is nearly full.
+                display_name: 디스크 사용률 높음
+                target: '{{`{{ $labels.instance }} · {{ $labels.mountpoint }}`}}'
+                current_value: '{{`{{ with $values.A }}{{ printf "%.1f%%" .Value }}{{ else }}값 없음{{ end }}`}}'
+                threshold: 90% 초과 상태가 10분간 지속됨
+                description: 불필요한 파일, 로그 증가 및 볼륨 사용 현황을 확인하세요.
+                summary: backbone 노드의 파일시스템이 거의 가득 찼습니다.
               labels:
                 severity: critical
                 managed_by: gitops
@@ -339,8 +355,12 @@ grafana:
               execErrState: Error
               for: 5m
               annotations:
-                description: A container has restarted more than three times within fifteen minutes.
-                summary: A Kubernetes workload is restarting repeatedly.
+                display_name: 컨테이너 반복 재시작
+                target: '{{`{{ $labels.namespace }}/{{ $labels.pod }} · {{ $labels.container }}`}}'
+                current_value: '{{`{{ with $values.A }}{{ printf "%.0f회" .Value }}{{ else }}값 없음{{ end }}`}}'
+                threshold: 최근 15분 동안 3회 초과 재시작 후 5분간 지속됨
+                description: Pod 이벤트와 이전 컨테이너 로그를 확인하세요.
+                summary: Kubernetes 컨테이너가 반복해서 재시작하고 있습니다.
               labels:
                 severity: warning
                 managed_by: gitops
@@ -401,12 +421,88 @@ grafana:
               execErrState: Error
               for: 1h
               annotations:
-                description: A cert-manager certificate will expire within fourteen days.
-                summary: A managed certificate is approaching expiration.
+                display_name: 인증서 만료 임박
+                target: '{{`{{ $labels.namespace }}/{{ $labels.name }}`}}'
+                current_value: '{{`{{ with $values.A }}{{ printf "%.1f일" .Value }}{{ else }}값 없음{{ end }}`}}'
+                threshold: 남은 유효기간이 14일 미만인 상태가 1시간 지속됨
+                description: Certificate와 CertificateRequest의 발급 상태를 확인하세요.
+                summary: cert-manager 인증서의 만료일이 가까워졌습니다.
               labels:
                 severity: warning
                 managed_by: gitops
               isPaused: false
+
+    templates.yaml:
+      apiVersion: 1
+      templates:
+        - orgId: 1
+          name: telegram-korean
+          template: |
+            {{`{{ define "telegram.message.ko" }}
+            {{ if gt (len .Alerts.Firing) 0 }}
+            {{ $first := index .Alerts.Firing 0 }}
+            {{ $name := or (index $first.Annotations "display_name") (index $first.Labels "alertname") }}
+            {{ $severity := index $first.Labels "severity" }}
+            {{ if eq (index $first.Labels "test_alert") "true" }}🧪 <b>테스트 · {{ html $name }}</b>
+            {{ else if eq $severity "critical" }}🚨 <b>심각 · {{ html $name }}</b>
+            {{ else if eq $severity "warning" }}⚠️ <b>경고 · {{ html $name }}</b>
+            {{ else }}ℹ️ <b>알림 · {{ html $name }}</b>
+            {{ end }}
+            {{ if gt (len .Alerts.Firing) 1 }}발생 대상: <b>{{ len .Alerts.Firing }}개</b>
+            {{ end }}
+            {{ range $index, $alert := .Alerts.Firing }}
+            {{ if ge $index 5 }}{{ break }}{{ end }}
+            {{ if gt $index 0 }}
+            {{ end }}<b>대상</b>
+            <code>{{ html (or (index $alert.Annotations "target") "대상 미확인") }}</code>
+
+            <b>현재 상태</b>
+            {{ html (or (index $alert.Annotations "current_value") "값 없음") }}
+
+            <b>발생 기준</b>
+            {{ html (or (index $alert.Annotations "threshold") "기준 정보 없음") }}
+
+            <b>설명</b>
+            {{ html (or (index $alert.Annotations "description") (index $alert.Annotations "summary") "설명 없음") }}
+
+            <b>발생 시각</b>
+            {{ $alert.StartsAt | tz "Asia/Seoul" | date "2006-01-02 15:04 MST" }}
+            {{ end }}
+            {{ if gt (len .Alerts.Firing) 5 }}
+            총 {{ len .Alerts.Firing }}건 중 상위 5건만 표시했습니다.
+            {{ end }}
+            {{ if $first.GeneratorURL }}<a href="{{ html $first.GeneratorURL }}">Grafana에서 보기</a>{{ end }}{{ if $first.SilenceURL }} · <a href="{{ html $first.SilenceURL }}">알림 일시 중지</a>{{ end }}
+            {{ end }}
+
+            {{ if gt (len .Alerts.Resolved) 0 }}
+            {{ $first := index .Alerts.Resolved 0 }}
+            {{ $name := or (index $first.Annotations "display_name") (index $first.Labels "alertname") }}
+            {{ if eq (index $first.Labels "test_alert") "true" }}🧪 <b>테스트 정상화 · {{ html $name }}</b>
+            {{ else }}✅ <b>정상화 · {{ html $name }}</b>
+            {{ end }}
+            {{ if gt (len .Alerts.Resolved) 1 }}정상화 대상: <b>{{ len .Alerts.Resolved }}개</b>
+            {{ end }}
+            {{ range $index, $alert := .Alerts.Resolved }}
+            {{ if ge $index 5 }}{{ break }}{{ end }}
+            {{ if gt $index 0 }}
+            {{ end }}<b>대상</b>
+            <code>{{ html (or (index $alert.Annotations "target") "대상 미확인") }}</code>
+
+            <b>현재 상태</b>
+            {{ html (or (index $alert.Annotations "current_value") "정상 범위") }}
+
+            <b>발생 시각</b>
+            {{ $alert.StartsAt | tz "Asia/Seoul" | date "2006-01-02 15:04 MST" }}
+
+            <b>정상화 시각</b>
+            {{ $alert.EndsAt | tz "Asia/Seoul" | date "2006-01-02 15:04 MST" }}
+            {{ end }}
+            {{ if gt (len .Alerts.Resolved) 5 }}
+            총 {{ len .Alerts.Resolved }}건 중 상위 5건만 표시했습니다.
+            {{ end }}
+            {{ if $first.GeneratorURL }}<a href="{{ html $first.GeneratorURL }}">Grafana에서 보기</a>{{ end }}
+            {{ end }}
+            {{ end }}`}}
 
   grafana.ini:
     date_formats:
