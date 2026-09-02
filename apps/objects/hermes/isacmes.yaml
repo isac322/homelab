@@ -299,8 +299,9 @@ spec:
           auth: oauth
           trust: full
           oauth:
-            # Use the same paste-back flow as Linear so OAuth can complete
-            # through the colocated Camofox browser without callback races.
+            # Pin the callback listener to the advertised paste-back URI.
+            # Without this, Hermes allocates a separate ephemeral listener.
+            redirect_port: 65535
             redirect_uri: http://127.0.0.1:65535/callback
           tools:
             resources: false
