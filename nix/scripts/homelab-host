@@ -1653,6 +1653,7 @@ REMOTE_K3S_INSTALL
     netbios=$(nix_eval --json "$root#systemConfigs.$host.config.homelab.firewall.netbios")
     local_network=$(nix_eval --raw "$root#systemConfigs.$host.config.homelab.firewall.localNetwork")
     localtime_source=$(nix_eval --raw "$root#systemConfigs.$host.config.environment.etc.localtime.source")
+    resolved_dns_over_tls=$(host_field "$host" resolvedDnsOverTls)
     if [ "$backend" = pacman ]; then
       firewall_rules=/etc/iptables/iptables.rules
       firewall_service=iptables.service
@@ -1669,10 +1670,10 @@ REMOTE_K3S_INSTALL
       democratic_csi_key_sha=$(sha256sum "$root/ssh_pub_keys/democratic-csi.pub" | awk '{print $1}')
     fi
     printf -v verify_command \
-      'env PATH=/usr/local/sbin:/usr/local/bin:/usr/sbin:/usr/bin:/sbin:/bin HOST_NAME=%q ROLE=%q ISCSI_CLIENT=%q ISCSI_LOGIN_SERVICE=%q ISCSI_SERVER=%q PRESERVE_NAS_STATE=%q MANAGE_FIREWALL_RULES=%q ZRAM=%q DEMOCRATIC_CSI_KEY_SHA=%q LAN_ADDRESS=%q GATEWAY_ADDRESS=%q DEFAULT_INTERFACE=%q FIREWALL_RULES=%q FIREWALL_SERVICE=%q SSH_SERVICE=%q ADMIN_USER=%q SAMBA_CLIENTS=%q NETBIOS=%q LOCAL_NETWORK=%q LOCALTIME_SOURCE=%q sh -s' \
+      'env PATH=/usr/local/sbin:/usr/local/bin:/usr/sbin:/usr/bin:/sbin:/bin HOST_NAME=%q ROLE=%q ISCSI_CLIENT=%q ISCSI_LOGIN_SERVICE=%q ISCSI_SERVER=%q PRESERVE_NAS_STATE=%q MANAGE_FIREWALL_RULES=%q ZRAM=%q DEMOCRATIC_CSI_KEY_SHA=%q LAN_ADDRESS=%q GATEWAY_ADDRESS=%q DEFAULT_INTERFACE=%q FIREWALL_RULES=%q FIREWALL_SERVICE=%q SSH_SERVICE=%q ADMIN_USER=%q SAMBA_CLIENTS=%q NETBIOS=%q LOCAL_NETWORK=%q LOCALTIME_SOURCE=%q RESOLVED_DNS_OVER_TLS=%q sh -s' \
       "$host" "$role" "$iscsi_client" "$iscsi_login_service" "$iscsi_server" "$preserve" "$manage_rules" "$zram" "$democratic_csi_key_sha" \
       "$lan_address" "$gateway_address" "$default_interface" "$firewall_rules" "$firewall_service" "$ssh_service" \
-      "$admin_user" "$samba_clients" "$netbios" "$local_network" "$localtime_source"
+      "$admin_user" "$samba_clients" "$netbios" "$local_network" "$localtime_source" "$resolved_dns_over_tls"
     remote "$host" "$verify_command" <<'REMOTE_VERIFY'
 set -eu
 stage=core-services
@@ -1711,7 +1712,7 @@ locale -a | grep -qi '^ko_KR\.utf8$' || {
   echo "ko_KR.UTF-8 locale was not generated" >&2
   exit 1
 }
-for setting in DNSSEC=yes DNSOverTLS=yes MulticastDNS=yes LLMNR=no; do
+for setting in DNSSEC=yes "DNSOverTLS=$RESOLVED_DNS_OVER_TLS" MulticastDNS=yes LLMNR=no; do
   grep -qx "$setting" /etc/systemd/resolved.conf || {
     echo "/etc/systemd/resolved.conf is missing $setting" >&2
     exit 1
