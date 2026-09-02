@@ -298,13 +298,6 @@ spec:
           url: https://mcp.vanta.com/mcp
           auth: oauth
           trust: full
-          oauth:
-            # Use paste-back auth so the colocated headless browser does not
-            # need to reach a callback listener inside the Hermes container.
-            redirect_uri: http://127.0.0.1:65535/callback
-          tools:
-            resources: false
-            prompts: false
       plugins:
         enabled:
           - hermes-lcm
