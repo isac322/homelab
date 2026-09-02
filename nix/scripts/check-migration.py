@@ -1630,7 +1630,7 @@ def check_rollback_stage_resume() -> None:
         for path in (current, secrets, profile / "bin", test_root, mock_bin):
             path.mkdir(parents=True, exist_ok=True)
         (current / "config").write_text(
-            "\n\niptables.service\nsshd.service\neth0\n\nagent\napt\nfalse\ntrue\n"
+            "\n\niptables.service\nsshd.service\neth0\n\nagent\napt\nfalse\ntrue\nfalse\nfalse\n"
         )
         payload = directory_path / "payload"
         payload.write_text("restored\n")
@@ -1878,7 +1878,7 @@ def check_preserved_rollback_manifest_guard() -> None:
         current.mkdir()
         test_bin.mkdir()
         (current / "config").write_text(
-            "\n\niptables.service\nsshd.service\neth0\n\nagent\napt\ntrue\nfalse\n"
+            "\n\niptables.service\nsshd.service\neth0\n\nagent\napt\ntrue\nfalse\ntrue\ntrue\n"
         )
         secret = "chap_password=must-not-enter-rollback-log"
         expected_manifest = f"expected\n{secret}\n"
@@ -2200,6 +2200,219 @@ def check_time_sync_waits() -> None:
                 "nix/scripts/k3s-handoff: NTP timeout aborted rollback before service recovery\n"
                 f"{result.stderr.strip()}"
             )
+
+
+
+def check_new_node_rollback_managed_k3s_state() -> None:
+    handoff = source("nix/scripts/k3s-handoff")
+    match = re.search(
+        r'(if test -n "\$legacy_unit"; then\n.*?'
+        r'elif test "\$role" = server \|\| test "\$role" = agent; then\n'
+        r'.*?^fi)',
+        handoff,
+        re.DOTALL | re.MULTILINE,
+    )
+    if match is None:
+        raise SystemExit(
+            "nix/scripts/k3s-handoff: restored managed K3s service verification missing"
+        )
+    with tempfile.TemporaryDirectory() as directory:
+        directory_path = Path(directory)
+        unit = directory_path / "unit"
+        state = directory_path / "state"
+        systemctl = directory_path / "systemctl"
+        systemctl.write_text(
+            """#!/bin/sh
+case "$1:$2" in
+  cat:homelab-k3s.service)
+    test "$(cat "$TEST_UNIT")" = present
+    ;;
+  is-active:homelab-k3s.service)
+    state=$(cat "$TEST_STATE")
+    printf '%s\n' "$state"
+    test "$state" = active
+    ;;
+  *)
+    exit 2
+    ;;
+esac
+"""
+        )
+        systemctl.chmod(0o755)
+        for unit_state, service_state, expected_success in (
+            ("absent", "inactive", True),
+            ("present", "active", True),
+            ("present", "inactive", False),
+        ):
+            unit.write_text(f"{unit_state}\n")
+            state.write_text(f"{service_state}\n")
+            result = subprocess.run(
+                ["sh"],
+                input=(
+                    "set -eu\n"
+                    "legacy_unit=\n"
+                    "role=agent\n"
+                    f"{match.group(1)}\n"
+                ),
+                text=True,
+                capture_output=True,
+                env={
+                    **os.environ,
+                    "PATH": f"{directory}:{os.environ['PATH']}",
+                    "TEST_UNIT": str(unit),
+                    "TEST_STATE": str(state),
+                },
+            )
+            if (result.returncode == 0) != expected_success:
+                raise SystemExit(
+                    "nix/scripts/k3s-handoff: restored managed K3s state was misclassified\n"
+                    f"unit={unit_state} state={service_state}\n"
+                    f"{result.stderr.strip()}"
+                )
+
+
+def check_new_node_rollback_cleanup() -> None:
+    handoff = source("nix/scripts/k3s-handoff")
+    host_migration = source("nix/scripts/homelab-host")
+    for needle in (
+        "K3S_BINARY_PRESENT=%q",
+        'case "$K3S_BINARY_PRESENT" in true|false)',
+        'printf \'%s\\n\' "$K3S_STATE_PRESENT"',
+        'printf \'%s\\n\' "$K3S_BINARY_PRESENT"',
+        "IFS= read -r k3s_state_present",
+        "IFS= read -r k3s_binary_present",
+    ):
+        if needle not in handoff:
+            raise SystemExit(
+                f"nix/scripts/k3s-handoff: rollback state capture missing {needle!r}"
+            )
+    for needle in (
+        "HOMELAB_K3S_BINARY_PRESENT",
+        'printf \'%s\\n\' "$HOMELAB_K3S_BINARY_PRESENT" > "$recovery/k3s-binary-present"',
+        "binary_present=false",
+    ):
+        if needle not in host_migration:
+            raise SystemExit(
+                f"nix/scripts/homelab-host: K3s onboarding baseline capture missing {needle!r}"
+            )
+    match = re.search(
+        r'(if test "\$k3s_state_present" = false; then\n.*?^fi\n'
+        r'if test "\$k3s_binary_present" = false; then\n.*?^fi)',
+        handoff,
+        re.DOTALL | re.MULTILINE,
+    )
+    if match is None:
+        raise SystemExit(
+            "nix/scripts/k3s-handoff: new-node K3s rollback cleanup missing"
+        )
+    with tempfile.TemporaryDirectory() as directory:
+        directory_path = Path(directory)
+        k3s_state = directory_path / "k3s"
+        bin_directory = directory_path / "bin"
+        mountinfo = directory_path / "mountinfo"
+        systemctl = directory_path / "systemctl"
+        systemctl.write_text(
+            "#!/bin/sh\n"
+            'test "$1" = is-active\n'
+            "printf 'inactive\\n'\n"
+            "exit 3\n"
+        )
+        systemctl.chmod(0o755)
+        block = (
+            match.group(1)
+            .replace("/var/lib/rancher/k3s", str(k3s_state))
+            .replace("/usr/local/bin", str(bin_directory))
+            .replace("/proc/self/mountinfo", str(mountinfo))
+        )
+        k3s_state.mkdir()
+        bin_directory.mkdir()
+        binary_names = (
+            "k3s",
+            "kubectl",
+            "crictl",
+            "ctr",
+            "k3s-killall.sh",
+            "k3s-uninstall.sh",
+            "k3s-agent-uninstall.sh",
+        )
+        for name in binary_names:
+            (bin_directory / name).write_text(name)
+        mountinfo.write_text("")
+        result = subprocess.run(
+            ["sh"],
+            input=(
+                "set -eu\n"
+                "k3s_state_present=false\n"
+                "k3s_binary_present=false\n"
+                f"{block}\n"
+            ),
+            text=True,
+            capture_output=True,
+            env={**os.environ, "PATH": f"{directory}:{os.environ['PATH']}"},
+        )
+        if (
+            result.returncode
+            or k3s_state.exists()
+            or any((bin_directory / name).exists() for name in binary_names)
+        ):
+            raise SystemExit(
+                "nix/scripts/k3s-handoff: new-node rollback left K3s state or binaries\n"
+                f"{result.stderr.strip()}"
+            )
+        k3s_state.mkdir()
+        (k3s_state / "preexisting").write_text("keep")
+        for name in binary_names:
+            (bin_directory / name).write_text(name)
+        result = subprocess.run(
+            ["sh"],
+            input=(
+                "set -eu\n"
+                "k3s_state_present=true\n"
+                "k3s_binary_present=true\n"
+                f"{block}\n"
+            ),
+            text=True,
+            capture_output=True,
+            env={**os.environ, "PATH": f"{directory}:{os.environ['PATH']}"},
+        )
+        if (
+            result.returncode
+            or not (k3s_state / "preexisting").exists()
+            or any(not (bin_directory / name).exists() for name in binary_names)
+        ):
+            raise SystemExit(
+                "nix/scripts/k3s-handoff: rollback removed preexisting K3s state or binaries\n"
+                f"{result.stderr.strip()}"
+            )
+        shutil.rmtree(k3s_state)
+
+
+        k3s_state.mkdir()
+        (k3s_state / "agent").mkdir()
+        mountinfo.write_text(
+            f"1 0 0:1 / {k3s_state} rw - tmpfs tmpfs rw\n"
+        )
+        result = subprocess.run(
+            ["sh"],
+            input=(
+                "set -eu\n"
+                "k3s_state_present=false\n"
+                "k3s_binary_present=true\n"
+                f"{block}\n"
+            ),
+            text=True,
+            capture_output=True,
+            env={**os.environ, "PATH": f"{directory}:{os.environ['PATH']}"},
+        )
+        if (
+            result.returncode == 0
+            or not k3s_state.exists()
+            or "K3s state remains mounted during rollback" not in result.stderr
+        ):
+            raise SystemExit(
+                "nix/scripts/k3s-handoff: mounted K3s state cleanup was not blocked"
+            )
+        shutil.rmtree(k3s_state)
 
 
 
@@ -4121,6 +4334,16 @@ for description, pattern in (
         r"apply_native_runtime\(\).*?systemctl restart systemd-timesyncd\.service"
         r".*?NTPSynchronized.*?systemctl restart homelab-k3s\.service",
     ),
+    (
+        "native handoff must defer firewall reconciliation during system-manager activation",
+        r"prepare_native_runtime_handoff\(\).*?install -m 0600 /dev/null "
+        r"/run/homelab-k3s-firewall-reconcile\.defer",
+    ),
+    (
+        "system-manager activation must clear the firewall deferral before runtime convergence",
+        r"activate_registered_system\(\).*?system-manager/bin/activate"
+        r".*?rm -f /run/homelab-k3s-firewall-reconcile\.defer",
+    ),
 ):
     if not re.search(pattern, host_migration, re.DOTALL):
         raise SystemExit(f"nix/scripts/homelab-host: {description}")
@@ -4267,10 +4490,15 @@ require(
     "/usr/local/bin/k3s",
     'Type = "exec";',
     "homelab-k3s-firewall-reconcile",
+    "/run/homelab-k3s-firewall-reconcile.defer",
     "if manageRules then",
     "Cilium and HOMELAB firewall ordering did not stabilize after K3s start",
     'ExecStartPost = "-${firewallReconcile}";',
     'Restart = "always";',
+)
+require(
+    "nix/scripts/k3s-handoff",
+    "rm -f /run/homelab-k3s-firewall-reconcile.defer",
 )
 forbid("nix/modules/linux/k3s-host.nix", '${firewallReconcile} &')
 forbid("nix/modules/linux/k3s-host.nix", "Externally managed HOMELAB firewall ordering")
@@ -4489,6 +4717,8 @@ check_ssh_strict_modes_guard()
 check_wireguard_handshake_probe()
 check_register_system_failure()
 check_time_sync_waits()
+check_new_node_rollback_managed_k3s_state()
+check_new_node_rollback_cleanup()
 check_wireguard_rollback_failure_continuation()
 check_firewall_restore_waits()
 check_cilium_restart_waits()

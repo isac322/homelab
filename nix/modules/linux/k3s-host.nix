@@ -29,6 +29,9 @@ let
     if manageRules then
       ''
         set -u
+        if test -e /run/homelab-k3s-firewall-reconcile.defer; then
+          exit 0
+        fi
         exec 9>/run/homelab-k3s-firewall-reconcile.lock
         ${pkgs.util-linux}/bin/flock -n 9 || exit 0
         iptables=${pkgs.iptables}/bin/iptables

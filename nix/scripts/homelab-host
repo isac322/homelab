@@ -294,7 +294,12 @@ register_system() {
   remote "$host" 'sudo -n readlink -f /nix/var/nix/profiles/system-manager-profiles/system-manager'
 }
 activate_registered_system() {
-  remote "$1" 'sudo -n /nix/var/nix/profiles/system-manager-profiles/system-manager/bin/activate'
+  local host=$1 rc=0
+  remote "$host" 'sudo -n /nix/var/nix/profiles/system-manager-profiles/system-manager/bin/activate' || rc=$?
+  if ! remote "$host" 'sudo -n rm -f /run/homelab-k3s-firewall-reconcile.defer'; then
+    test "$rc" -ne 0 || return 1
+  fi
+  return "$rc"
 }
 assert_iptables_nft_backend() {
   local host=$1
@@ -399,9 +404,14 @@ esac
 REMOTE_PACKAGE_RECONCILE
 }
 prepare_native_runtime_handoff() {
-  local host=$1
-  remote "$host" 'sudo -n sh -s' <<'REMOTE_NATIVE_HANDOFF'
+  local host=$1 role command
+  role=$(host_field "$host" k3sRole 2>/dev/null || true)
+  printf -v command 'sudo -n env ROLE=%q sh -s' "$role"
+  remote "$host" "$command" <<'REMOTE_NATIVE_HANDOFF'
 set -eu
+if test "$ROLE" = server || test "$ROLE" = agent; then
+  install -m 0600 /dev/null /run/homelab-k3s-firewall-reconcile.defer
+fi
 legacy_zram=false
 for unit in zram-swap.service ksm.service thp-madvise.service; do
   fragment=$(systemctl show -p FragmentPath --value "$unit" 2>/dev/null || true)
@@ -1347,11 +1357,19 @@ case "${1:-}" in
     ;;
   prepare|deploy)
     host=${2:?host required}
+    case "${HOMELAB_K3S_BINARY_PRESENT:-}" in
+      ""|true|false) ;;
+      *) echo "invalid K3s binary baseline override" >&2; exit 2 ;;
+    esac
     sync_completed_rollback "$host"
     assert_preservation_plan_safe "$host"
     legacy_unit=$(remote "$host" 'for unit in k3s.service k3s-agent.service; do test "$(systemctl is-active "$unit" 2>/dev/null || true)" = active && { printf "%s" "$unit"; exit; }; done; true')
     "$root/nix/scripts/k3s-handoff" preflight "$host" "$legacy_unit"
     recovery=$("$root/nix/scripts/adopt-host" "$host")
+    if [ -n "${HOMELAB_K3S_BINARY_PRESENT:-}" ]; then
+      printf '%s\n' "$HOMELAB_K3S_BINARY_PRESENT" > "$recovery/k3s-binary-present"
+      chmod 0600 "$recovery/k3s-binary-present"
+    fi
     preserve=$(preserve_nas_state "$host") || exit 1
     storage_required=$(storage_recovery_required "$host") || exit 1
     if [ "$preserve" = true ]; then
@@ -1534,7 +1552,9 @@ REMOTE_K3S_COLD_BACKUP
       exit 1
     }
     remote "$host" 'test ! -e /var/lib/rancher/k3s && for unit in k3s.service k3s-agent.service homelab-k3s.service; do test "$(systemctl is-active "$unit" 2>/dev/null || true)" != active && test "$(systemctl is-enabled "$unit" 2>/dev/null || true)" != enabled; done'
+    binary_present=true
     if ! remote "$host" 'test -x /usr/local/bin/k3s'; then
+      binary_present=false
       version=$(remote "$source_host" 'sudo -n /usr/local/bin/k3s --version' | sed -n 's/^k3s version v\([^ ]*\).*/\1/p')
       test -n "$version" || {
         echo "could not determine the live K3s version on $source_host" >&2
@@ -1566,10 +1586,16 @@ for unit in k3s.service k3s-agent.service homelab-k3s.service; do
 done
 REMOTE_K3S_INSTALL
     fi
+    cleanup_onboard_binary() {
+      [ "$binary_present" != false ] || remote "$host" \
+        'sudo -n rm -f -- /usr/local/bin/k3s /usr/local/bin/kubectl /usr/local/bin/crictl /usr/local/bin/ctr /usr/local/bin/k3s-killall.sh /usr/local/bin/k3s-uninstall.sh /usr/local/bin/k3s-agent-uninstall.sh'
+    }
+    trap cleanup_onboard_binary EXIT HUP INT TERM
     if ! "$root/nix/scripts/wireguard-secrets" copy-k3s-token --from "$source_host" --to "$host" --check >/dev/null 2>&1; then
       "$root/nix/scripts/wireguard-secrets" copy-k3s-token --from "$source_host" --to "$host" --write
     fi
-    "$0" prepare "$host"
+    HOMELAB_K3S_BINARY_PRESENT="$binary_present" "$0" prepare "$host"
+    trap - EXIT HUP INT TERM
     ;;
   reconcile-distro-packages)
     host=${2:?host required}
