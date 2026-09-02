@@ -36,6 +36,14 @@ nix_eval() { nix --extra-experimental-features 'nix-command flakes' eval "$@"; }
 system_manager_source=github:numtide/system-manager/48d47346e0c6ad05b6c869ea92649c47723d1cfc
 host_field() { nix_eval --raw "$root#topology.nodes.$1.$2"; }
 remote() { local host=$1; shift; ssh -o BatchMode=yes -o StrictHostKeyChecking=accept-new "$(host_field "$host" sshTarget)" "$@"; }
+remote_k3s_binary_present() {
+  local host=$1 value
+  value=$(remote "$host" 'if test -x /usr/local/bin/k3s; then printf "true\n"; else printf "false\n"; fi') || return 1
+  case "$value" in
+    true|false) printf '%s\n' "$value" ;;
+    *) echo "$host returned an invalid K3s binary state: $value" >&2; return 1 ;;
+  esac
+}
 preserve_nas_state() {
   local host=$1 value
   value=$(nix_eval --json "$root#topology.nodes.$host.preserveNasState") || {
@@ -1552,9 +1560,8 @@ REMOTE_K3S_COLD_BACKUP
       exit 1
     }
     remote "$host" 'set -eu; test ! -e /var/lib/rancher/k3s; for unit in k3s.service k3s-agent.service homelab-k3s.service; do test "$(systemctl is-active "$unit" 2>/dev/null || true)" != active; test "$(systemctl is-enabled "$unit" 2>/dev/null || true)" != enabled; done'
-    binary_present=true
-    if ! remote "$host" 'test -x /usr/local/bin/k3s'; then
-      binary_present=false
+    binary_present=$(remote_k3s_binary_present "$host")
+    if [ "$binary_present" = false ]; then
       version=$(remote "$source_host" 'sudo -n /usr/local/bin/k3s --version' | sed -n 's/^k3s version v\([^ ]*\).*/\1/p')
       test -n "$version" || {
         echo "could not determine the live K3s version on $source_host" >&2
@@ -1569,26 +1576,47 @@ for unit in k3s.service k3s-agent.service homelab-k3s.service; do
   test "$(systemctl is-enabled "$unit" 2>/dev/null || true)" != enabled
 done
 installer=$(mktemp /tmp/k3s-install.XXXXXX)
-cleanup_installer() { rm -f -- "$installer"; }
+service_dir=
+install_complete=false
+cleanup_installer() {
+  rm -f -- "$installer"
+  test -z "$service_dir" || rm -rf -- "$service_dir"
+  if [ "$install_complete" != true ]; then
+    rm -f -- \
+      /usr/local/bin/k3s \
+      /usr/local/bin/kubectl \
+      /usr/local/bin/crictl \
+      /usr/local/bin/ctr \
+      /usr/local/bin/k3s-killall.sh \
+      /usr/local/bin/k3s-uninstall.sh \
+      /usr/local/bin/k3s-agent-uninstall.sh \
+      /usr/local/bin/k3s-homelab-bootstrap-uninstall.sh
+  fi
+}
 trap cleanup_installer EXIT HUP INT TERM
+service_dir=$(mktemp -d /tmp/k3s-systemd.XXXXXX)
 curl --proto '=https' --tlsv1.2 -fsSL -o "$installer" https://get.k3s.io
 test -s "$installer"
 INSTALL_K3S_SKIP_ENABLE=true \
   INSTALL_K3S_SKIP_START=true \
+  INSTALL_K3S_SYSTEMD_DIR="$service_dir" \
+  INSTALL_K3S_NAME=homelab-bootstrap \
   INSTALL_K3S_VERSION="$K3S_VERSION" \
   INSTALL_K3S_EXEC="$K3S_ROLE" \
   sh "$installer"
+rm -f -- /usr/local/bin/k3s-homelab-bootstrap-uninstall.sh
 test -x /usr/local/bin/k3s
 test ! -e /var/lib/rancher/k3s
 for unit in k3s.service k3s-agent.service homelab-k3s.service; do
   test "$(systemctl is-active "$unit" 2>/dev/null || true)" != active
   test "$(systemctl is-enabled "$unit" 2>/dev/null || true)" != enabled
 done
+install_complete=true
 REMOTE_K3S_INSTALL
     fi
     cleanup_onboard_binary() {
       [ "$binary_present" != false ] || remote "$host" \
-        'sudo -n rm -f -- /usr/local/bin/k3s /usr/local/bin/kubectl /usr/local/bin/crictl /usr/local/bin/ctr /usr/local/bin/k3s-killall.sh /usr/local/bin/k3s-uninstall.sh /usr/local/bin/k3s-agent-uninstall.sh'
+        'sudo -n rm -f -- /usr/local/bin/k3s /usr/local/bin/kubectl /usr/local/bin/crictl /usr/local/bin/ctr /usr/local/bin/k3s-killall.sh /usr/local/bin/k3s-uninstall.sh /usr/local/bin/k3s-agent-uninstall.sh /usr/local/bin/k3s-homelab-bootstrap-uninstall.sh'
     }
     trap cleanup_onboard_binary EXIT HUP INT TERM
     if ! "$root/nix/scripts/wireguard-secrets" copy-k3s-token --from "$source_host" --to "$host" --check >/dev/null 2>&1; then

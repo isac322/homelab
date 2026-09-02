@@ -2289,7 +2289,8 @@ def check_new_node_rollback_cleanup() -> None:
     for needle in (
         "HOMELAB_K3S_BINARY_PRESENT",
         'printf \'%s\\n\' "$HOMELAB_K3S_BINARY_PRESENT" > "$recovery/k3s-binary-present"',
-        "binary_present=false",
+        "remote_k3s_binary_present",
+        'binary_present=$(remote_k3s_binary_present "$host")',
     ):
         if needle not in host_migration:
             raise SystemExit(
@@ -2334,6 +2335,7 @@ def check_new_node_rollback_cleanup() -> None:
             "k3s-killall.sh",
             "k3s-uninstall.sh",
             "k3s-agent-uninstall.sh",
+            "k3s-homelab-bootstrap-uninstall.sh",
         )
         for name in binary_names:
             (bin_directory / name).write_text(name)
@@ -2676,6 +2678,15 @@ def check_cilium_restart_waits() -> None:
 
 def check_onboard_k3s_install_guard() -> None:
     migration = source("nix/scripts/homelab-host")
+    binary_probe_match = re.search(
+        r"(remote_k3s_binary_present\(\) \{\n.*?^\})",
+        migration,
+        re.DOTALL | re.MULTILINE,
+    )
+    if binary_probe_match is None:
+        raise SystemExit(
+            "nix/scripts/homelab-host: fail-closed K3s binary detection is missing"
+        )
     try:
         onboard = migration.split("  onboard-k3s-node)", 1)[1].split(
             "\n  reconcile-distro-packages)", 1
@@ -2693,13 +2704,18 @@ def check_onboard_k3s_install_guard() -> None:
         "test ! -e /var/lib/rancher/k3s",
         "systemctl is-active",
         "systemctl is-enabled",
+        "install_complete=false",
         "INSTALL_K3S_SKIP_ENABLE=true",
         "INSTALL_K3S_SKIP_START=true",
+        'INSTALL_K3S_SYSTEMD_DIR="$service_dir"',
+        "INSTALL_K3S_NAME=homelab-bootstrap",
         'INSTALL_K3S_VERSION="$K3S_VERSION"',
         'INSTALL_K3S_EXEC="$K3S_ROLE"',
         'curl --proto \'=https\' --tlsv1.2 -fsSL -o "$installer" https://get.k3s.io',
+        'rm -f -- /usr/local/bin/k3s-homelab-bootstrap-uninstall.sh',
         'test -s "$installer"',
         "test -x /usr/local/bin/k3s",
+        "install_complete=true",
     ):
         if needle not in install:
             raise SystemExit(
@@ -2707,6 +2723,14 @@ def check_onboard_k3s_install_guard() -> None:
             )
     if "| INSTALL_K3S_" in install:
         raise SystemExit("nix/scripts/homelab-host: K3s installer download failure may be masked by a pipe")
+    if not (
+        install.index("install_complete=false")
+        < install.index('sh "$installer"')
+        < install.index("install_complete=true")
+    ):
+        raise SystemExit(
+            "nix/scripts/homelab-host: partial K3s installation cleanup is not armed"
+        )
 
     token_check = (
         'if ! "$root/nix/scripts/wireguard-secrets" copy-k3s-token '
@@ -2732,6 +2756,39 @@ def check_onboard_k3s_install_guard() -> None:
         raise SystemExit("nix/scripts/provision-host: K3s installation ownership is duplicated")
     if '"$host_app" onboard-k3s-node "$host" --token-source "$source_host"' not in provision:
         raise SystemExit("nix/scripts/provision-host: onboarding delegation is missing")
+    binary_probe = binary_probe_match.group(1)
+    for mode, expected_output, expected_success in (
+        ("present", "true", True),
+        ("absent", "false", True),
+        ("transport", "", False),
+        ("invalid", "", False),
+    ):
+        result = subprocess.run(
+            ["bash"],
+            input=(
+                "set -euo pipefail\n"
+                "remote() {\n"
+                '  case "$TEST_BINARY_MODE" in\n'
+                '    present) printf "true\\n" ;;\n'
+                '    absent) printf "false\\n" ;;\n'
+                "    transport) return 255 ;;\n"
+                '    invalid) printf "unknown\\n" ;;\n'
+                "  esac\n"
+                "}\n"
+                f"{binary_probe}\n"
+                "remote_k3s_binary_present node\n"
+            ),
+            text=True,
+            capture_output=True,
+            env={**os.environ, "TEST_BINARY_MODE": mode},
+        )
+        if (result.returncode == 0) != expected_success or (
+            expected_success and result.stdout.strip() != expected_output
+        ):
+            raise SystemExit(
+                "nix/scripts/homelab-host: K3s binary detection did not fail closed\n"
+                f"mode={mode} rc={result.returncode} output={result.stdout.strip()!r}"
+            )
 
     with tempfile.TemporaryDirectory() as directory:
         directory_path = Path(directory)
@@ -2793,6 +2850,74 @@ def check_onboard_k3s_install_guard() -> None:
                 "nix/scripts/homelab-host: active legacy K3s service was accepted before installation"
             )
 
+        installer_source = directory_path / "installer-source"
+        installer_source.write_text(
+            "#!/bin/sh\n"
+            "set -eu\n"
+            'mkdir -p "$INSTALL_K3S_SYSTEMD_DIR" "$TEST_BIN"\n'
+            ': > "$INSTALL_K3S_SYSTEMD_DIR/k3s-homelab-bootstrap.service"\n'
+            ': > "$INSTALL_K3S_SYSTEMD_DIR/k3s-homelab-bootstrap.service.env"\n'
+            "for name in k3s kubectl crictl ctr k3s-killall.sh "
+            "k3s-uninstall.sh k3s-agent-uninstall.sh "
+            "k3s-homelab-bootstrap-uninstall.sh; do\n"
+            '  : > "$TEST_BIN/$name"\n'
+            "done\n"
+            'chmod 0755 "$TEST_BIN/k3s"\n'
+            'exit "${TEST_INSTALL_EXIT:-0}"\n'
+        )
+        installer_source.chmod(0o755)
+        bin_directory = directory_path / "install-bin"
+        state_path = directory_path / "install-state"
+        sandboxed_install = (
+            install.replace("/var/lib/rancher/k3s", str(state_path))
+            .replace("/usr/local/bin", str(bin_directory))
+            .replace("/tmp/k3s-install.XXXXXX", str(directory_path / "k3s-install.XXXXXX"))
+            .replace("/tmp/k3s-systemd.XXXXXX", str(directory_path / "k3s-systemd.XXXXXX"))
+            .replace(
+                'curl --proto \'=https\' --tlsv1.2 -fsSL -o "$installer" https://get.k3s.io',
+                'cp "$TEST_INSTALLER" "$installer"',
+            )
+        )
+        install_environment = {
+            **environment,
+            "TEST_LEGACY_MODE": "absent",
+            "TEST_INSTALLER": str(installer_source),
+            "TEST_BIN": str(bin_directory),
+        }
+        result = subprocess.run(
+            ["sh"],
+            input=f"set -eu\nK3S_VERSION=v1.2.3 K3S_ROLE=agent\n{sandboxed_install}\n",
+            text=True,
+            capture_output=True,
+            env=install_environment,
+        )
+        if (
+            result.returncode
+            or not (bin_directory / "k3s").exists()
+            or (bin_directory / "k3s-homelab-bootstrap-uninstall.sh").exists()
+            or list(directory_path.glob("k3s-systemd.*"))
+        ):
+            raise SystemExit(
+                "nix/scripts/homelab-host: successful onboarding left bootstrap service artifacts\n"
+                f"{result.stderr.strip()}"
+            )
+        shutil.rmtree(bin_directory)
+        result = subprocess.run(
+            ["sh"],
+            input=f"set -eu\nK3S_VERSION=v1.2.3 K3S_ROLE=agent\n{sandboxed_install}\n",
+            text=True,
+            capture_output=True,
+            env={**install_environment, "TEST_INSTALL_EXIT": "1"},
+        )
+        if (
+            result.returncode == 0
+            or (bin_directory.exists() and any(bin_directory.iterdir()))
+            or list(directory_path.glob("k3s-systemd.*"))
+        ):
+            raise SystemExit(
+                "nix/scripts/homelab-host: failed onboarding left installer artifacts\n"
+                f"{result.stderr.strip()}"
+            )
 def check_iscsi_service_verification() -> None:
     migration = source("nix/scripts/homelab-host")
     try:

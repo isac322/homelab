@@ -678,7 +678,8 @@ if test "$k3s_binary_present" = false; then
     /usr/local/bin/ctr \
     /usr/local/bin/k3s-killall.sh \
     /usr/local/bin/k3s-uninstall.sh \
-    /usr/local/bin/k3s-agent-uninstall.sh
+    /usr/local/bin/k3s-agent-uninstall.sh \
+    /usr/local/bin/k3s-homelab-bootstrap-uninstall.sh
   do
     rm -f -- "$path"
   done
