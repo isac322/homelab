@@ -1578,15 +1578,21 @@ done
 installer=$(mktemp /tmp/k3s-install.XXXXXX)
 service_dir=
 install_complete=false
+remove_installed_command_links() {
+  for name in kubectl crictl ctr; do
+    path=/usr/local/bin/$name
+    if test -L "$path" && test "$(readlink "$path")" = k3s; then
+      rm -f -- "$path"
+    fi
+  done
+}
 cleanup_installer() {
   rm -f -- "$installer"
   test -z "$service_dir" || rm -rf -- "$service_dir"
   if [ "$install_complete" != true ]; then
+    remove_installed_command_links
     rm -f -- \
       /usr/local/bin/k3s \
-      /usr/local/bin/kubectl \
-      /usr/local/bin/crictl \
-      /usr/local/bin/ctr \
       /usr/local/bin/k3s-killall.sh \
       /usr/local/bin/k3s-uninstall.sh \
       /usr/local/bin/k3s-agent-uninstall.sh \
@@ -1615,8 +1621,21 @@ install_complete=true
 REMOTE_K3S_INSTALL
     fi
     cleanup_onboard_binary() {
-      [ "$binary_present" != false ] || remote "$host" \
-        'sudo -n rm -f -- /usr/local/bin/k3s /usr/local/bin/kubectl /usr/local/bin/crictl /usr/local/bin/ctr /usr/local/bin/k3s-killall.sh /usr/local/bin/k3s-uninstall.sh /usr/local/bin/k3s-agent-uninstall.sh /usr/local/bin/k3s-homelab-bootstrap-uninstall.sh'
+      [ "$binary_present" != false ] || remote "$host" 'sudo -n sh -s' <<'REMOTE_K3S_CLEANUP'
+set -eu
+for name in kubectl crictl ctr; do
+  path=/usr/local/bin/$name
+  if test -L "$path" && test "$(readlink "$path")" = k3s; then
+    rm -f -- "$path"
+  fi
+done
+rm -f -- \
+  /usr/local/bin/k3s \
+  /usr/local/bin/k3s-killall.sh \
+  /usr/local/bin/k3s-uninstall.sh \
+  /usr/local/bin/k3s-agent-uninstall.sh \
+  /usr/local/bin/k3s-homelab-bootstrap-uninstall.sh
+REMOTE_K3S_CLEANUP
     }
     trap cleanup_onboard_binary EXIT HUP INT TERM
     if ! "$root/nix/scripts/wireguard-secrets" copy-k3s-token --from "$source_host" --to "$host" --check >/dev/null 2>&1; then

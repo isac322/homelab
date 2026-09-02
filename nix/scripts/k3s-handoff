@@ -671,11 +671,14 @@ if test "$k3s_state_present" = false; then
   rm -rf -- /var/lib/rancher/k3s
 fi
 if test "$k3s_binary_present" = false; then
+  for name in kubectl crictl ctr; do
+    path=/usr/local/bin/$name
+    if test -L "$path" && test "$(readlink "$path")" = k3s; then
+      rm -f -- "$path"
+    fi
+  done
   for path in \
     /usr/local/bin/k3s \
-    /usr/local/bin/kubectl \
-    /usr/local/bin/crictl \
-    /usr/local/bin/ctr \
     /usr/local/bin/k3s-killall.sh \
     /usr/local/bin/k3s-uninstall.sh \
     /usr/local/bin/k3s-agent-uninstall.sh \

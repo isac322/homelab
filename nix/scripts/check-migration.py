@@ -2296,6 +2296,11 @@ def check_new_node_rollback_cleanup() -> None:
             raise SystemExit(
                 f"nix/scripts/homelab-host: K3s onboarding baseline capture missing {needle!r}"
             )
+    link_guard = 'test "$(readlink "$path")" = k3s'
+    if link_guard not in handoff or host_migration.count(link_guard) < 2:
+        raise SystemExit(
+            "K3s cleanup may remove preexisting kubectl, crictl, or ctr commands"
+        )
     match = re.search(
         r'(if test "\$k3s_state_present" = false; then\n.*?^fi\n'
         r'if test "\$k3s_binary_present" = false; then\n.*?^fi)',
@@ -2327,18 +2332,19 @@ def check_new_node_rollback_cleanup() -> None:
         )
         k3s_state.mkdir()
         bin_directory.mkdir()
-        binary_names = (
+        command_names = ("kubectl", "crictl", "ctr")
+        owned_names = (
             "k3s",
-            "kubectl",
-            "crictl",
-            "ctr",
             "k3s-killall.sh",
             "k3s-uninstall.sh",
             "k3s-agent-uninstall.sh",
             "k3s-homelab-bootstrap-uninstall.sh",
         )
-        for name in binary_names:
+        binary_names = owned_names + command_names
+        for name in owned_names:
             (bin_directory / name).write_text(name)
+        for name in command_names:
+            (bin_directory / name).symlink_to("k3s")
         mountinfo.write_text("")
         result = subprocess.run(
             ["sh"],
@@ -2355,15 +2361,44 @@ def check_new_node_rollback_cleanup() -> None:
         if (
             result.returncode
             or k3s_state.exists()
-            or any((bin_directory / name).exists() for name in binary_names)
+            or any(os.path.lexists(bin_directory / name) for name in binary_names)
         ):
             raise SystemExit(
                 "nix/scripts/k3s-handoff: new-node rollback left K3s state or binaries\n"
                 f"{result.stderr.strip()}"
             )
+
+        k3s_state.mkdir()
+        for name in owned_names:
+            (bin_directory / name).write_text(name)
+        for name in command_names:
+            (bin_directory / name).write_text("admin")
+        result = subprocess.run(
+            ["sh"],
+            input=(
+                "set -eu\n"
+                "k3s_state_present=false\n"
+                "k3s_binary_present=false\n"
+                f"{block}\n"
+            ),
+            text=True,
+            capture_output=True,
+            env={**os.environ, "PATH": f"{directory}:{os.environ['PATH']}"},
+        )
+        if (
+            result.returncode
+            or k3s_state.exists()
+            or any((bin_directory / name).exists() for name in owned_names)
+            or any((bin_directory / name).read_text() != "admin" for name in command_names)
+        ):
+            raise SystemExit(
+                "nix/scripts/k3s-handoff: rollback removed preexisting admin commands\n"
+                f"{result.stderr.strip()}"
+            )
+
         k3s_state.mkdir()
         (k3s_state / "preexisting").write_text("keep")
-        for name in binary_names:
+        for name in owned_names:
             (bin_directory / name).write_text(name)
         result = subprocess.run(
             ["sh"],
@@ -2857,10 +2892,12 @@ def check_onboard_k3s_install_guard() -> None:
             'mkdir -p "$INSTALL_K3S_SYSTEMD_DIR" "$TEST_BIN"\n'
             ': > "$INSTALL_K3S_SYSTEMD_DIR/k3s-homelab-bootstrap.service"\n'
             ': > "$INSTALL_K3S_SYSTEMD_DIR/k3s-homelab-bootstrap.service.env"\n'
-            "for name in k3s kubectl crictl ctr k3s-killall.sh "
-            "k3s-uninstall.sh k3s-agent-uninstall.sh "
-            "k3s-homelab-bootstrap-uninstall.sh; do\n"
+            "for name in k3s k3s-killall.sh k3s-uninstall.sh "
+            "k3s-agent-uninstall.sh k3s-homelab-bootstrap-uninstall.sh; do\n"
             '  : > "$TEST_BIN/$name"\n'
+            "done\n"
+            "for name in kubectl crictl ctr; do\n"
+            '  test -e "$TEST_BIN/$name" || ln -s k3s "$TEST_BIN/$name"\n'
             "done\n"
             'chmod 0755 "$TEST_BIN/k3s"\n'
             'exit "${TEST_INSTALL_EXIT:-0}"\n'
@@ -2902,6 +2939,9 @@ def check_onboard_k3s_install_guard() -> None:
                 f"{result.stderr.strip()}"
             )
         shutil.rmtree(bin_directory)
+        bin_directory.mkdir()
+        admin_command = bin_directory / "kubectl"
+        admin_command.write_text("admin")
         result = subprocess.run(
             ["sh"],
             input=f"set -eu\nK3S_VERSION=v1.2.3 K3S_ROLE=agent\n{sandboxed_install}\n",
@@ -2909,15 +2949,20 @@ def check_onboard_k3s_install_guard() -> None:
             capture_output=True,
             env={**install_environment, "TEST_INSTALL_EXIT": "1"},
         )
+        unexpected = [
+            path.name for path in bin_directory.iterdir() if path.name != admin_command.name
+        ]
         if (
             result.returncode == 0
-            or (bin_directory.exists() and any(bin_directory.iterdir()))
+            or admin_command.read_text() != "admin"
+            or unexpected
             or list(directory_path.glob("k3s-systemd.*"))
         ):
             raise SystemExit(
                 "nix/scripts/homelab-host: failed onboarding left installer artifacts\n"
                 f"{result.stderr.strip()}"
             )
+
 def check_iscsi_service_verification() -> None:
     migration = source("nix/scripts/homelab-host")
     try:
