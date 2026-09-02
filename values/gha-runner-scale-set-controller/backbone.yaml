@@ -1,0 +1,16 @@
+fullnameOverride: arc-gha-rs-controller
+
+image:
+  repository: ghcr.io/actions/gha-runner-scale-set-controller
+  tag: 0.14.2@sha256:1b4c7f62e971ab259a4b8798e48e2adaad4af747f45990f474ea5feefa03531d
+  pullPolicy: IfNotPresent
+
+serviceAccount:
+  create: true
+  name: arc-gha-rs-controller
+
+flags:
+  logLevel: info
+  logFormat: text
+  excludeLabelPropagationPrefixes:
+    - argocd.argoproj.io/instance

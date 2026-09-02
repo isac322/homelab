@@ -147,3 +147,16 @@ variable "hermes_isacmes_jay_telegram_token" {
   type      = string
   sensitive = true
 }
+
+variable "github_app_id_arc_cc_lb" {
+  type = string
+}
+
+variable "github_app_installation_id_arc_cc_lb" {
+  type = string
+}
+
+variable "github_app_private_key_arc_cc_lb" {
+  type      = string
+  sensitive = true
+}

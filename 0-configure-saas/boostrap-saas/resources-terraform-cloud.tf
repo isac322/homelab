@@ -249,3 +249,25 @@ resource "tfe_variable" "hermes_isacmes_jay_telegram_token" {
   sensitive    = true
   workspace_id = tfe_workspace.backbone.id
 }
+
+resource "tfe_variable" "github_app_id_arc_cc_lb" {
+  key          = "github_app_id_arc_cc_lb"
+  value        = var.github_app_id_arc_cc_lb
+  category     = "terraform"
+  workspace_id = tfe_workspace.backbone.id
+}
+
+resource "tfe_variable" "github_app_installation_id_arc_cc_lb" {
+  key          = "github_app_installation_id_arc_cc_lb"
+  value        = var.github_app_installation_id_arc_cc_lb
+  category     = "terraform"
+  workspace_id = tfe_workspace.backbone.id
+}
+
+resource "tfe_variable" "github_app_private_key_arc_cc_lb" {
+  key          = "github_app_private_key_arc_cc_lb"
+  value        = var.github_app_private_key_arc_cc_lb
+  category     = "terraform"
+  sensitive    = true
+  workspace_id = tfe_workspace.backbone.id
+}

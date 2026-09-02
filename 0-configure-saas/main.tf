@@ -38,19 +38,22 @@ provider "cloudflare" {
 module "saas" {
   source = "./boostrap-saas"
 
-  cloudflare_email                  = var.cloudflare_email
-  cloudflare_global_api_key         = var.cloudflare_global_api_key
-  cloudflare_origin_ca_key          = var.cloudflare_origin_ca_key
-  vultr_personal_access_token       = var.vultr_personal_access_token
-  postmark_account_token            = var.postmark_account_token
-  openai_api_key                    = var.openai_api_key
-  openai_proxy                      = var.openai_proxy
-  gemini_api_key                    = var.gemini_api_key
-  gcp_vertex_ai_sa_key              = var.gcp_vertex_ai_sa_key
-  grafana_telegram_bot_token        = var.grafana_telegram_bot_token
-  grafana_telegram_chat_id          = var.grafana_telegram_chat_id
-  hermes_isacmes_telegram_token     = var.hermes_isacmes_telegram_token
-  hermes_isacmes_jay_telegram_token = var.hermes_isacmes_jay_telegram_token
+  cloudflare_email                     = var.cloudflare_email
+  cloudflare_global_api_key            = var.cloudflare_global_api_key
+  cloudflare_origin_ca_key             = var.cloudflare_origin_ca_key
+  vultr_personal_access_token          = var.vultr_personal_access_token
+  postmark_account_token               = var.postmark_account_token
+  openai_api_key                       = var.openai_api_key
+  openai_proxy                         = var.openai_proxy
+  gemini_api_key                       = var.gemini_api_key
+  gcp_vertex_ai_sa_key                 = var.gcp_vertex_ai_sa_key
+  grafana_telegram_bot_token           = var.grafana_telegram_bot_token
+  grafana_telegram_chat_id             = var.grafana_telegram_chat_id
+  hermes_isacmes_telegram_token        = var.hermes_isacmes_telegram_token
+  hermes_isacmes_jay_telegram_token    = var.hermes_isacmes_jay_telegram_token
+  github_app_id_arc_cc_lb              = var.github_app_id_arc_cc_lb
+  github_app_installation_id_arc_cc_lb = var.github_app_installation_id_arc_cc_lb
+  github_app_private_key_arc_cc_lb     = var.github_app_private_key_arc_cc_lb
 
   aws_admin_account_id  = 825808295984
   aws_admin_family_name = "Yoo"

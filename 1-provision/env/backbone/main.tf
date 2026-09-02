@@ -63,6 +63,9 @@ module "dns_secrets" {
   grafana_telegram_chat_id                    = var.grafana_telegram_chat_id
   hermes_isacmes_telegram_token               = var.hermes_isacmes_telegram_token
   hermes_isacmes_jay_telegram_token           = var.hermes_isacmes_jay_telegram_token
+  github_app_id_arc_cc_lb                     = var.github_app_id_arc_cc_lb
+  github_app_installation_id_arc_cc_lb        = var.github_app_installation_id_arc_cc_lb
+  github_app_private_key_arc_cc_lb            = var.github_app_private_key_arc_cc_lb
 
   providers = {
     aws        = aws

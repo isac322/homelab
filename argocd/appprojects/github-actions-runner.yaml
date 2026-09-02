@@ -1,0 +1,17 @@
+apiVersion: argoproj.io/v1alpha1
+kind: AppProject
+metadata:
+  name: github-actions-runner
+spec:
+  description: Actions Runner Controller and cc-lb runner scale set
+  sourceRepos:
+    - https://github.com/isac322/homelab.git
+    - ghcr.io/actions/actions-runner-controller-charts
+  destinations:
+    - namespace: arc-systems
+      name: backbone
+    - namespace: arc-runners
+      name: backbone
+  clusterResourceWhitelist:
+    - group: '*'
+      kind: '*'

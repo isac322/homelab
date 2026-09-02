@@ -10,6 +10,19 @@ grafana_telegram_bot_token = "<BotFather token>"
 grafana_telegram_chat_id   = "-1001234567890"
 ```
 
+ARC runners for `isac322/cc-lb` use a GitHub App. After creating and
+installing the app on that repository, provide:
+
+```hcl
+github_app_id_arc_cc_lb              = "123456"
+github_app_installation_id_arc_cc_lb = "12345678"
+github_app_private_key_arc_cc_lb     = <<-EOT
+-----BEGIN RSA PRIVATE KEY-----
+...
+-----END RSA PRIVATE KEY-----
+EOT
+```
+
 ## Get credential
 
 ### AWS
