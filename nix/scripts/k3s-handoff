@@ -546,7 +546,7 @@ if ! test -e "$stages/firewall-restored"; then
     printf 'rollback failed while restoring the runtime firewall (exit %s)\n' "$rc" >&2
     exit "$rc"
   }
-  if grep -q 'CILIUM_' "$dir/firewall-runtime.rules"; then
+  if test "$k3s_state_present" = true && grep -q 'CILIUM_' "$dir/firewall-runtime.rules"; then
     crictl=/usr/local/bin/crictl
     runtime_endpoint=unix:///run/k3s/containerd/containerd.sock
     test -x "$crictl"
@@ -695,7 +695,7 @@ if test "$wireguard_restore_failed" = true; then
   echo "legacy services and firewall restored, but WireGuard runtime restoration failed; rollback remains armed" >&2
   exit 1
 fi
-systemctl disable homelab-host-rollback.timer >/dev/null 2>&1 || true
+systemctl disable --now homelab-host-rollback.timer >/dev/null 2>&1 || true
 touch "$dir/restored"
 printf 'rollback completed %s\n' "$(date -u +%FT%TZ)"
 ROLLBACK

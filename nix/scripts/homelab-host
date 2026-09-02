@@ -1694,16 +1694,39 @@ while test "$(timedatectl show -p NTPSynchronized --value)" != yes; do
   fi
   sleep 2
 done
-test "$(readlink /etc/localtime)" = "$LOCALTIME_SOURCE"
-grep -qx "Asia/Seoul" /etc/timezone
-grep -qx "LANG=ko_KR.UTF-8" /etc/locale.conf
-locale -a | grep -qi '^ko_KR\.utf8$'
-grep -qx "DNSSEC=yes" /etc/systemd/resolved.conf
-grep -qx "DNSOverTLS=yes" /etc/systemd/resolved.conf
-grep -qx "MulticastDNS=yes" /etc/systemd/resolved.conf
-grep -qx "LLMNR=no" /etc/systemd/resolved.conf
-test "$(readlink /etc/resolv.conf)" = /run/systemd/resolve/stub-resolv.conf
-test "$(getent passwd root | cut -d: -f7)" = /bin/bash
+actual=$(readlink /etc/localtime 2>/dev/null || true)
+test "$actual" = "$LOCALTIME_SOURCE" || {
+  printf 'unexpected /etc/localtime target: %s (expected %s)\n' "${actual:-missing}" "$LOCALTIME_SOURCE" >&2
+  exit 1
+}
+grep -qx "Asia/Seoul" /etc/timezone || {
+  echo "/etc/timezone is not Asia/Seoul" >&2
+  exit 1
+}
+grep -qx "LANG=ko_KR.UTF-8" /etc/locale.conf || {
+  echo "/etc/locale.conf is not ko_KR.UTF-8" >&2
+  exit 1
+}
+locale -a | grep -qi '^ko_KR\.utf8$' || {
+  echo "ko_KR.UTF-8 locale was not generated" >&2
+  exit 1
+}
+for setting in DNSSEC=yes DNSOverTLS=yes MulticastDNS=yes LLMNR=no; do
+  grep -qx "$setting" /etc/systemd/resolved.conf || {
+    echo "/etc/systemd/resolved.conf is missing $setting" >&2
+    exit 1
+  }
+done
+actual=$(readlink /etc/resolv.conf 2>/dev/null || true)
+test "$actual" = /run/systemd/resolve/stub-resolv.conf || {
+  printf 'unexpected /etc/resolv.conf target: %s\n' "${actual:-missing}" >&2
+  exit 1
+}
+actual=$(getent passwd root | cut -d: -f7)
+test "$actual" = /bin/bash || {
+  printf 'unexpected root login shell: %s\n' "${actual:-missing}" >&2
+  exit 1
+}
 stage=ssh
 for path in /etc /etc/ssh /etc/ssh/authorized_keys.d; do
   test "$(stat -c '%a %u %g' "$path")" = "755 0 0"

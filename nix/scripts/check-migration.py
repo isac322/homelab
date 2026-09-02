@@ -2433,7 +2433,7 @@ def check_wireguard_rollback_failure_continuation() -> None:
         r'.*?systemctl is-active "\$unit".*?verify_nas_manifest; fi'
         r'.*?if test "\$wireguard_restore_failed" = true; then'
         r'.*?rollback remains armed.*?exit 1.*?^fi'
-        r'.*?systemctl disable homelab-host-rollback\.timer',
+        r'.*?systemctl disable --now homelab-host-rollback\.timer',
         handoff,
         re.DOTALL | re.MULTILINE,
     ):
@@ -2554,7 +2554,10 @@ def check_firewall_restore_waits() -> None:
 
 def check_cilium_restart_waits() -> None:
     handoff = source("nix/scripts/k3s-handoff")
-    start = "if grep -q 'CILIUM_' \"$dir/firewall-runtime.rules\"; then"
+    start = (
+        'if test "$k3s_state_present" = true && '
+        "grep -q 'CILIUM_' \"$dir/firewall-runtime.rules\"; then"
+    )
     end = '\n  touch "$stages/firewall-restored"'
     if start not in handoff or end not in handoff:
         raise SystemExit("nix/scripts/k3s-handoff: cilium-agent restart wait missing")
@@ -2619,7 +2622,7 @@ def check_cilium_restart_waits() -> None:
         }
         result = subprocess.run(
             ["sh"],
-            input=f'set -eu\ndir="$DIR"\n{block}\n',
+            input=f'set -eu\ndir="$DIR"\nk3s_state_present=true\n{block}\n',
             text=True,
             capture_output=True,
             env=environment,
@@ -2640,7 +2643,7 @@ def check_cilium_restart_waits() -> None:
         environment["CRICTL_RESTART"] = "0"
         result = subprocess.run(
             ["sh"],
-            input=f'set -eu\ndir="$DIR"\n{block}\n',
+            input=f'set -eu\ndir="$DIR"\nk3s_state_present=true\n{block}\n',
             text=True,
             capture_output=True,
             env=environment,
@@ -2654,6 +2657,21 @@ def check_cilium_restart_waits() -> None:
         ):
             raise SystemExit(
                 "nix/scripts/k3s-handoff: cilium-agent restart timeout is unsafe"
+            )
+
+        for path in (state, stopped, healthy):
+            path.unlink(missing_ok=True)
+        result = subprocess.run(
+            ["sh"],
+            input=f'set -eu\ndir="$DIR"\nk3s_state_present=false\n{block}\n',
+            text=True,
+            capture_output=True,
+            env=environment,
+        )
+        if result.returncode or state.exists() or stopped.exists() or healthy.exists():
+            raise SystemExit(
+                "nix/scripts/k3s-handoff: rollback touched Cilium for a host without baseline K3s state\n"
+                f"{result.stderr.strip()}"
             )
 
 def check_onboard_k3s_install_guard() -> None:
@@ -3564,7 +3582,7 @@ errors: No known data errors
         r'if test "\$preserve_nas_state" = true; then verify_nas_manifest; fi'
         r'.*?mkdir -p "\$stages".*?systemctl stop homelab-k3s\.service'
         r'.*?if test "\$preserve_nas_state" = true; then verify_nas_manifest; fi'
-        r".*?systemctl disable homelab-host-rollback\.timer",
+        r".*?systemctl disable --now homelab-host-rollback\.timer",
         handoff,
         re.DOTALL,
     ):
@@ -4096,7 +4114,7 @@ require(
     "FIREWALL_SERVICE",
     "locale -a",
     "LOCALTIME_SOURCE",
-    'test "$(readlink /etc/localtime)" = "$LOCALTIME_SOURCE"',
+    'test "$actual" = "$LOCALTIME_SOURCE"',
     'grep -qx "Asia/Seoul" /etc/timezone',
     "DNSSEC=yes",
     "DNSOverTLS=yes",
@@ -4579,7 +4597,7 @@ if not re.search(
     r'for unit in systemd-networkd\.service systemd-resolved\.service '
     r'systemd-timesyncd\.service "\$ssh_service"; do'
     r'.*?systemctl is-active "\$unit"'
-    r".*?systemctl disable homelab-host-rollback\.timer",
+    r".*?systemctl disable --now homelab-host-rollback\.timer",
     handoff,
     re.DOTALL,
 ):
