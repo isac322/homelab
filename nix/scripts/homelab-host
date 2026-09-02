@@ -1551,7 +1551,7 @@ REMOTE_K3S_COLD_BACKUP
       echo "$source_host must be an existing K3s server" >&2
       exit 1
     }
-    remote "$host" 'test ! -e /var/lib/rancher/k3s && for unit in k3s.service k3s-agent.service homelab-k3s.service; do test "$(systemctl is-active "$unit" 2>/dev/null || true)" != active && test "$(systemctl is-enabled "$unit" 2>/dev/null || true)" != enabled; done'
+    remote "$host" 'set -eu; test ! -e /var/lib/rancher/k3s; for unit in k3s.service k3s-agent.service homelab-k3s.service; do test "$(systemctl is-active "$unit" 2>/dev/null || true)" != active; test "$(systemctl is-enabled "$unit" 2>/dev/null || true)" != enabled; done'
     binary_present=true
     if ! remote "$host" 'test -x /usr/local/bin/k3s'; then
       binary_present=false

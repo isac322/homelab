@@ -2680,6 +2680,9 @@ def check_onboard_k3s_install_guard() -> None:
         onboard = migration.split("  onboard-k3s-node)", 1)[1].split(
             "\n  reconcile-distro-packages)", 1
         )[0]
+        preflight = onboard.split('    remote "$host" \'', 1)[1].split(
+            "'\n    binary_present=", 1
+        )[0]
         install = onboard.split("<<'REMOTE_K3S_INSTALL'\n", 1)[1].split(
             "\nREMOTE_K3S_INSTALL", 1
         )[0]
@@ -2731,25 +2734,59 @@ def check_onboard_k3s_install_guard() -> None:
         raise SystemExit("nix/scripts/provision-host: onboarding delegation is missing")
 
     with tempfile.TemporaryDirectory() as directory:
-        mock_bin = Path(directory) / "bin"
+        directory_path = Path(directory)
+        mock_bin = directory_path / "bin"
         mock_bin.mkdir()
         systemctl = mock_bin / "systemctl"
         systemctl.write_text(
             "#!/bin/sh\n"
-            'case "$1:$2" in\n'
-            '  is-active:k3s-agent.service) printf "active\\n" ;;\n'
-            '  is-active:*) printf "inactive\\n"; exit 3 ;;\n'
-            '  is-enabled:*) printf "disabled\\n"; exit 1 ;;\n'
+            'case "${TEST_LEGACY_MODE:-}:$1:$2" in\n'
+            '  active:is-active:k3s-agent.service) printf "active\\n" ;;\n'
+            '  enabled:is-enabled:k3s.service) printf "enabled\\n" ;;\n'
+            '  *:is-active:*) printf "inactive\\n"; exit 3 ;;\n'
+            '  *:is-enabled:*) printf "disabled\\n"; exit 1 ;;\n'
             "  *) exit 2 ;;\n"
             "esac\n"
         )
         systemctl.chmod(0o755)
+        environment = {
+            **os.environ,
+            "PATH": f"{mock_bin}:{os.environ['PATH']}",
+        }
+        preflight = preflight.replace(
+            "/var/lib/rancher/k3s", f'"{directory_path / "k3s-state"}"'
+        )
+        for legacy_mode in ("active", "enabled"):
+            result = subprocess.run(
+                ["sh", "-c", preflight],
+                text=True,
+                capture_output=True,
+                env={**environment, "TEST_LEGACY_MODE": legacy_mode},
+            )
+            if result.returncode == 0:
+                raise SystemExit(
+                    "nix/scripts/homelab-host: "
+                    f"{legacy_mode} legacy K3s service was accepted before onboarding"
+                )
+
+        result = subprocess.run(
+            ["sh", "-c", preflight],
+            text=True,
+            capture_output=True,
+            env={**environment, "TEST_LEGACY_MODE": "absent"},
+        )
+        if result.returncode:
+            raise SystemExit(
+                "nix/scripts/homelab-host: clean K3s onboarding target was rejected\n"
+                f"{result.stderr.strip()}"
+            )
+
         result = subprocess.run(
             ["sh"],
             input=f"set -eu\nK3S_VERSION=v1.2.3 K3S_ROLE=agent\n{install}\n",
             text=True,
             capture_output=True,
-            env={**os.environ, "PATH": f"{mock_bin}:{os.environ['PATH']}"},
+            env={**environment, "TEST_LEGACY_MODE": "active"},
         )
         if result.returncode == 0:
             raise SystemExit(
