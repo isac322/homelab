@@ -67,3 +67,8 @@ variable "hermes_isacmes_jay_telegram_token" {
   type      = string
   sensitive = true
 }
+
+variable "github_actions_pat_cc_lb" {
+  type      = string
+  sensitive = true
+}

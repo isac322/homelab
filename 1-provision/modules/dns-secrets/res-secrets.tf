@@ -125,6 +125,14 @@ resource "aws_ssm_parameter" "hermes_isacmes_jay_telegram_token" {
   value       = var.hermes_isacmes_jay_telegram_token
 }
 
+resource "aws_ssm_parameter" "github_actions_pat_cc_lb" {
+  count       = var.github_actions_pat_cc_lb == null ? 0 : 1
+  name        = "/homelab/cluster/${var.k8s_cluster_name}/token/github/arc-cc-lb"
+  description = "GitHub token for ARC runners registered to isac322/cc-lb"
+  type        = "SecureString"
+  value       = var.github_actions_pat_cc_lb
+}
+
 # --- External Secrets IAM ---
 
 resource "aws_iam_user" "external_secrets" {
@@ -158,6 +166,7 @@ data "aws_iam_policy_document" "secret_read" {
       var.grafana_telegram_chat_id == null ? [] : [aws_ssm_parameter.grafana_telegram_chat_id[0].arn],
       var.hermes_isacmes_telegram_token == null ? [] : [aws_ssm_parameter.hermes_isacmes_telegram_token[0].arn],
       var.hermes_isacmes_jay_telegram_token == null ? [] : [aws_ssm_parameter.hermes_isacmes_jay_telegram_token[0].arn],
+      var.github_actions_pat_cc_lb == null ? [] : [aws_ssm_parameter.github_actions_pat_cc_lb[0].arn],
     )
   }
 }

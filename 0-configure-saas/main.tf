@@ -51,6 +51,7 @@ module "saas" {
   grafana_telegram_chat_id          = var.grafana_telegram_chat_id
   hermes_isacmes_telegram_token     = var.hermes_isacmes_telegram_token
   hermes_isacmes_jay_telegram_token = var.hermes_isacmes_jay_telegram_token
+  github_actions_pat_cc_lb          = var.github_actions_pat_cc_lb
 
   aws_admin_account_id  = 825808295984
   aws_admin_family_name = "Yoo"

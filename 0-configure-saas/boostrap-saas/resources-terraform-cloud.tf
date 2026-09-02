@@ -249,3 +249,11 @@ resource "tfe_variable" "hermes_isacmes_jay_telegram_token" {
   sensitive    = true
   workspace_id = tfe_workspace.backbone.id
 }
+
+resource "tfe_variable" "github_actions_pat_cc_lb" {
+  key          = "github_actions_pat_cc_lb"
+  value        = var.github_actions_pat_cc_lb
+  category     = "terraform"
+  sensitive    = true
+  workspace_id = tfe_workspace.backbone.id
+}

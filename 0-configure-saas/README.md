@@ -10,6 +10,13 @@ grafana_telegram_bot_token = "<BotFather token>"
 grafana_telegram_chat_id   = "-1001234567890"
 ```
 
+ARC runners for `isac322/cc-lb` need a GitHub token with repository
+Administration read/write (fine-grained) or classic `repo` scope:
+
+```hcl
+github_actions_pat_cc_lb = "<github token>"
+```
+
 ## Get credential
 
 ### AWS
