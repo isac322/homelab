@@ -299,9 +299,8 @@ spec:
           auth: oauth
           trust: full
           oauth:
-            # Pin the callback listener to the advertised paste-back URI.
-            # Without this, Hermes allocates a separate ephemeral listener.
-            redirect_port: 65535
+            # Use paste-back auth so the colocated headless browser does not
+            # need to reach a callback listener inside the Hermes container.
             redirect_uri: http://127.0.0.1:65535/callback
           tools:
             resources: false
