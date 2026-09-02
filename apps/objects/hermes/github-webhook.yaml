@@ -1,0 +1,120 @@
+apiVersion: v1
+kind: ConfigMap
+metadata:
+  name: isacmes-github-webhook-route
+  annotations:
+    argocd.argoproj.io/sync-wave: "0"
+data:
+  github_event.py: |
+    #!/usr/bin/env python3
+    """Normalize GitHub webhooks and persist delivery-level deduplication."""
+
+    from __future__ import annotations
+
+    import json
+    import sqlite3
+    import sys
+    from datetime import UTC, datetime
+    from pathlib import Path
+
+
+    DB_PATH = Path("/opt/data/request-inbox/github-webhook.sqlite3")
+
+
+    def value(data: dict, *keys: str, default: str = "") -> str:
+        current: object = data
+        for key in keys:
+            if not isinstance(current, dict):
+                return default
+            current = current.get(key)
+        return str(current) if current is not None else default
+
+
+    def classify(payload: dict) -> tuple[str, dict]:
+        if "issue" in payload:
+            issue = payload["issue"]
+            return ("pull_request" if "pull_request" in issue else "issue", issue)
+        if "pull_request" in payload:
+            return "pull_request", payload["pull_request"]
+        if "discussion" in payload:
+            return "discussion", payload["discussion"]
+        return "github_event", payload
+
+
+    def event_key(payload: dict, resource: dict, resource_kind: str) -> str:
+        comment = payload.get("comment", {})
+        review = payload.get("review", {})
+        thread = payload.get("thread", {})
+        action = value(payload, "action", default="unknown")
+        for prefix, item in (("comment", comment), ("review", review), ("thread", thread)):
+            identifier = value(item, "id")
+            if identifier:
+                return f"github:{prefix}:{identifier}"
+        identifier = value(resource, "id")
+        reviewer = value(payload, "requested_reviewer", "login")
+        return f"github:{resource_kind}:{identifier}:{action}:{reviewer}"
+
+
+    def main() -> int:
+        payload = json.load(sys.stdin)
+        if not isinstance(payload, dict):
+            print("[SILENT]")
+            return 0
+
+        repository = value(payload, "repository", "full_name", default="unknown-repository")
+        resource_kind, resource = classify(payload)
+        resource_id = value(resource, "id", default="unknown-resource")
+        resource_number = value(resource, "number")
+        resource_key = f"github:{repository}:{resource_kind}:{resource_id}"
+        delivery_key = event_key(payload, resource, resource_kind)
+
+        DB_PATH.parent.mkdir(parents=True, exist_ok=True)
+        with sqlite3.connect(DB_PATH) as conn:
+            conn.execute(
+                """
+                CREATE TABLE IF NOT EXISTS deliveries (
+                    delivery_key TEXT PRIMARY KEY,
+                    resource_key TEXT NOT NULL,
+                    received_at TEXT NOT NULL
+                )
+                """
+            )
+            inserted = conn.execute(
+                """
+                INSERT INTO deliveries(delivery_key, resource_key, received_at)
+                VALUES (?, ?, ?)
+                ON CONFLICT(delivery_key) DO NOTHING
+                """,
+                (delivery_key, resource_key, datetime.now(UTC).isoformat()),
+            ).rowcount
+
+        if not inserted:
+            print("[SILENT]")
+            return 0
+
+        title = value(resource, "title", default=f"GitHub {resource_kind}")
+        url = value(resource, "html_url", default=value(payload, "repository", "html_url"))
+        actor = value(payload, "sender", "login", default=value(resource, "user", "login"))
+        normalized = {
+            "github": {
+                "event_action": value(payload, "action", default="unknown"),
+                "event_key": delivery_key,
+                "repository": repository,
+                "resource_kind": resource_kind,
+                "resource_number": resource_number,
+                "resource_title": title,
+                "resource_url": url,
+                "sender": actor,
+            },
+            "linear": {
+                "resource_key": resource_key,
+                "title": f"[GitHub] {repository}{'#' + resource_number if resource_number else ''} — {title}",
+            },
+            "payload": payload,
+        }
+        print(json.dumps(normalized))
+        return 0
+
+
+    if __name__ == "__main__":
+        raise SystemExit(main())
