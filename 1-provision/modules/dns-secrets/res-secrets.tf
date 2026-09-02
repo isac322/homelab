@@ -125,12 +125,28 @@ resource "aws_ssm_parameter" "hermes_isacmes_jay_telegram_token" {
   value       = var.hermes_isacmes_jay_telegram_token
 }
 
-resource "aws_ssm_parameter" "github_actions_pat_cc_lb" {
-  count       = var.github_actions_pat_cc_lb == null ? 0 : 1
-  name        = "/homelab/cluster/${var.k8s_cluster_name}/token/github/arc-cc-lb"
-  description = "GitHub token for ARC runners registered to isac322/cc-lb"
+resource "aws_ssm_parameter" "github_app_id_arc_cc_lb" {
+  count       = var.github_app_id_arc_cc_lb == null ? 0 : 1
+  name        = "/homelab/cluster/${var.k8s_cluster_name}/github-app/arc-cc-lb/id"
+  description = "GitHub App id for ARC runners on isac322/cc-lb"
+  type        = "String"
+  value       = var.github_app_id_arc_cc_lb
+}
+
+resource "aws_ssm_parameter" "github_app_installation_id_arc_cc_lb" {
+  count       = var.github_app_installation_id_arc_cc_lb == null ? 0 : 1
+  name        = "/homelab/cluster/${var.k8s_cluster_name}/github-app/arc-cc-lb/installation-id"
+  description = "GitHub App installation id for ARC runners on isac322/cc-lb"
+  type        = "String"
+  value       = var.github_app_installation_id_arc_cc_lb
+}
+
+resource "aws_ssm_parameter" "github_app_private_key_arc_cc_lb" {
+  count       = var.github_app_private_key_arc_cc_lb == null ? 0 : 1
+  name        = "/homelab/cluster/${var.k8s_cluster_name}/github-app/arc-cc-lb/private-key"
+  description = "GitHub App private key for ARC runners on isac322/cc-lb"
   type        = "SecureString"
-  value       = var.github_actions_pat_cc_lb
+  value       = var.github_app_private_key_arc_cc_lb
 }
 
 # --- External Secrets IAM ---
@@ -166,7 +182,9 @@ data "aws_iam_policy_document" "secret_read" {
       var.grafana_telegram_chat_id == null ? [] : [aws_ssm_parameter.grafana_telegram_chat_id[0].arn],
       var.hermes_isacmes_telegram_token == null ? [] : [aws_ssm_parameter.hermes_isacmes_telegram_token[0].arn],
       var.hermes_isacmes_jay_telegram_token == null ? [] : [aws_ssm_parameter.hermes_isacmes_jay_telegram_token[0].arn],
-      var.github_actions_pat_cc_lb == null ? [] : [aws_ssm_parameter.github_actions_pat_cc_lb[0].arn],
+      var.github_app_id_arc_cc_lb == null ? [] : [aws_ssm_parameter.github_app_id_arc_cc_lb[0].arn],
+      var.github_app_installation_id_arc_cc_lb == null ? [] : [aws_ssm_parameter.github_app_installation_id_arc_cc_lb[0].arn],
+      var.github_app_private_key_arc_cc_lb == null ? [] : [aws_ssm_parameter.github_app_private_key_arc_cc_lb[0].arn],
     )
   }
 }

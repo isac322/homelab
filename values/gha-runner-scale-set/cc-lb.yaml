@@ -48,7 +48,6 @@ template:
             value: "123"
         securityContext:
           privileged: true
-        restartPolicy: Always
         startupProbe:
           exec:
             command:
