@@ -47,33 +47,6 @@ case "${1:-}" in
 
     "$host_app" bootstrap-host "$host"
     "$secret_app" bootstrap-age-identity "$host"
-    "$secret_app" stage-secrets "$host" >/dev/null
-
-    if ! remote "$host" 'sudo -n test -x /usr/local/bin/k3s'; then
-      version=$(remote "$source_host" 'sudo -n /usr/local/bin/k3s --version' | sed -n 's/^k3s version v\([^ ]*\).*/\1/p')
-      test -n "$version" || {
-        echo "could not determine the live K3s version on $source_host" >&2
-        exit 1
-      }
-      printf -v command 'sudo -n env K3S_VERSION=%q sh -s' "v$version"
-      remote "$host" "$command" <<'REMOTE_K3S_INSTALL'
-set -eu
-if test -e /var/lib/rancher/k3s; then
-  echo 'K3s state already exists; refusing first-install bootstrap' >&2
-  exit 1
-fi
-for unit in k3s.service k3s-agent.service homelab-k3s.service; do
-  if systemctl is-active --quiet "$unit"; then
-    echo "K3s service $unit is already active; refusing first-install bootstrap" >&2
-    exit 1
-  fi
-done
-curl --proto '=https' --tlsv1.2 -fsSL https://get.k3s.io \
-  | INSTALL_K3S_SKIP_START=true INSTALL_K3S_VERSION="$K3S_VERSION" sh -s -
-test -x /usr/local/bin/k3s
-test ! -e /var/lib/rancher/k3s
-REMOTE_K3S_INSTALL
-    fi
 
     "$host_app" onboard-k3s-node "$host" --token-source "$source_host"
     printf 'provisioned %s; run activate, reboot, reboot-verify, and commit explicitly\n' "$host"

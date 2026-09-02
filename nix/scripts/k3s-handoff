@@ -124,6 +124,12 @@ REMOTE_PREFLIGHT
     role=$(host_field "$host" k3sRole 2>/dev/null || true)
     preserve=$(preserve_nas_state "$host") || exit 1
     manage_rules=$(manage_firewall_rules "$host")
+    if [ -e "$recovery/k3s-binary-present" ]; then
+      k3s_binary_present=$(cat "$recovery/k3s-binary-present")
+    else
+      k3s_binary_present=$(remote "$host" 'if test -x /usr/local/bin/k3s; then printf true; else printf false; fi')
+    fi
+    case "$k3s_binary_present" in true|false) ;; *) echo "invalid K3s binary baseline" >&2; exit 2 ;; esac
     if [ "$preserve" = true ] && [ "$manage_rules" != false ]; then
       echo "$host preservation rollback requires homelab.firewall.manageRules=false" >&2
       exit 1
@@ -170,8 +176,8 @@ REMOTE_PREFLIGHT
       fi
     fi
     printf -v command \
-      'sudo -n env PREVIOUS_GENERATION=%q LEGACY_UNIT=%q FIREWALL_SERVICE=%q SSH_SERVICE=%q DEFAULT_INTERFACE=%q WG_INTERFACES=%q ROLE=%q PACKAGE_BACKEND=%q PRESERVE_NAS_STATE=%q MANAGE_FIREWALL_RULES=%q sh -s' \
-      "$previous" "$legacy" "$firewall_service" "$ssh_service" "$default_interface" "$interfaces" "$role" "$backend" "$preserve" "$manage_rules"
+      'sudo -n env PREVIOUS_GENERATION=%q LEGACY_UNIT=%q FIREWALL_SERVICE=%q SSH_SERVICE=%q DEFAULT_INTERFACE=%q WG_INTERFACES=%q ROLE=%q PACKAGE_BACKEND=%q PRESERVE_NAS_STATE=%q MANAGE_FIREWALL_RULES=%q K3S_BINARY_PRESENT=%q sh -s' \
+      "$previous" "$legacy" "$firewall_service" "$ssh_service" "$default_interface" "$interfaces" "$role" "$backend" "$preserve" "$manage_rules" "$k3s_binary_present"
     remote "$host" "$command" <<'REMOTE_ARM'
 set -eu
 base=/var/lib/homelab-host-rollback
@@ -187,7 +193,9 @@ for interface in $WG_INTERFACES; do case "$interface" in *[!A-Za-z0-9_.-]*) exit
 case "$PACKAGE_BACKEND" in apt|pacman) ;; *) exit 2 ;; esac
 case "$PRESERVE_NAS_STATE" in true|false) ;; *) exit 2 ;; esac
 case "$MANAGE_FIREWALL_RULES" in true|false) ;; *) exit 2 ;; esac
+case "$K3S_BINARY_PRESENT" in true|false) ;; *) exit 2 ;; esac
 if test "$PRESERVE_NAS_STATE" = true; then test "$MANAGE_FIREWALL_RULES" = false; fi
+if test -e /var/lib/rancher/k3s; then K3S_STATE_PRESENT=true; else K3S_STATE_PRESENT=false; fi
 if test "$ROLE" = server || test "$ROLE" = agent; then
   test -L /var/lib/homelab-secrets/active
   test -s /var/lib/homelab-secrets/active/k3s-token.cred
@@ -220,6 +228,8 @@ fi
   printf '%s\n' "$PACKAGE_BACKEND"
   printf '%s\n' "$PRESERVE_NAS_STATE"
   printf '%s\n' "$MANAGE_FIREWALL_RULES"
+  printf '%s\n' "$K3S_STATE_PRESENT"
+  printf '%s\n' "$K3S_BINARY_PRESENT"
 } > "$dir/config"
 chmod 0600 "$dir/config"
 cat > "$dir/rollback" <<'ROLLBACK'
@@ -240,9 +250,13 @@ stages="$dir/stages"
   IFS= read -r package_backend
   IFS= read -r preserve_nas_state
   IFS= read -r manage_firewall_rules
+  IFS= read -r k3s_state_present
+  IFS= read -r k3s_binary_present
 } < "$dir/config"
 case "$preserve_nas_state" in true|false) ;; *) exit 2 ;; esac
 case "$manage_firewall_rules" in true|false) ;; *) exit 2 ;; esac
+case "$k3s_state_present" in true|false) ;; *) exit 2 ;; esac
+case "$k3s_binary_present" in true|false) ;; *) exit 2 ;; esac
 if test "$preserve_nas_state" = true; then test "$manage_firewall_rules" = false; fi
 exec >> "$dir/rollback.log" 2>&1
 printf 'rollback started %s\n' "$(date -u +%FT%TZ)"
@@ -346,6 +360,7 @@ if systemctl is-active homelab-k3s.service >/dev/null 2>&1; then
 fi
 test "$(systemctl is-active homelab-k3s.service 2>/dev/null || true)" != active
 systemctl disable homelab-k3s.service >/dev/null 2>&1 || true
+rm -f /run/homelab-k3s-firewall-reconcile.defer
 systemctl stop dev-zram0.swap systemd-zram-setup@zram0.service >/dev/null 2>&1 || true
 base=/var/lib/homelab-secrets
 if ! test -e "$stages/secrets-restored"; then
@@ -511,7 +526,9 @@ if test -n "$legacy_unit"; then
   systemctl enable --now "$legacy_unit"
   test "$(systemctl is-active "$legacy_unit" 2>/dev/null || true)" = active
 elif test "$role" = server || test "$role" = agent; then
-  systemctl is-active homelab-k3s.service
+  if systemctl cat homelab-k3s.service >/dev/null 2>&1; then
+    systemctl is-active homelab-k3s.service
+  fi
 fi
 if ! test -e "$stages/firewall-restored"; then
   if test "$manage_firewall_rules" = true; then
@@ -529,7 +546,7 @@ if ! test -e "$stages/firewall-restored"; then
     printf 'rollback failed while restoring the runtime firewall (exit %s)\n' "$rc" >&2
     exit "$rc"
   }
-  if grep -q 'CILIUM_' "$dir/firewall-runtime.rules"; then
+  if test "$k3s_state_present" = true && grep -q 'CILIUM_' "$dir/firewall-runtime.rules"; then
     crictl=/usr/local/bin/crictl
     runtime_endpoint=unix:///run/k3s/containerd/containerd.sock
     test -x "$crictl"
@@ -640,6 +657,36 @@ if test "$preserve_nas_state" != true; then
     if systemctl is-enabled "$unit" >/dev/null 2>&1; then systemctl start "$unit"; fi
   done
 fi
+if test "$k3s_state_present" = false; then
+  for unit in k3s.service k3s-agent.service homelab-k3s.service; do
+    test "$(systemctl is-active "$unit" 2>/dev/null || true)" != active
+  done
+  if awk -v root=/var/lib/rancher/k3s '
+    $5 == root || index($5, root "/") == 1 { found=1 }
+    END { exit found ? 0 : 1 }
+  ' /proc/self/mountinfo; then
+    echo "K3s state remains mounted during rollback; refusing cleanup" >&2
+    exit 1
+  fi
+  rm -rf -- /var/lib/rancher/k3s
+fi
+if test "$k3s_binary_present" = false; then
+  for name in kubectl crictl ctr; do
+    path=/usr/local/bin/$name
+    if test -L "$path" && test "$(readlink "$path")" = k3s; then
+      rm -f -- "$path"
+    fi
+  done
+  for path in \
+    /usr/local/bin/k3s \
+    /usr/local/bin/k3s-killall.sh \
+    /usr/local/bin/k3s-uninstall.sh \
+    /usr/local/bin/k3s-agent-uninstall.sh \
+    /usr/local/bin/k3s-homelab-bootstrap-uninstall.sh
+  do
+    rm -f -- "$path"
+  done
+fi
 for unit in systemd-networkd.service systemd-resolved.service systemd-timesyncd.service "$ssh_service"; do
   systemctl is-active "$unit"
 done
@@ -652,7 +699,7 @@ if test "$wireguard_restore_failed" = true; then
   echo "legacy services and firewall restored, but WireGuard runtime restoration failed; rollback remains armed" >&2
   exit 1
 fi
-systemctl disable homelab-host-rollback.timer >/dev/null 2>&1 || true
+systemctl disable --now homelab-host-rollback.timer >/dev/null 2>&1 || true
 touch "$dir/restored"
 printf 'rollback completed %s\n' "$(date -u +%FT%TZ)"
 ROLLBACK

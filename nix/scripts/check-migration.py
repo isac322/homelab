@@ -88,8 +88,8 @@ def check_ansible_cutover_partition() -> None:
     groups = inventory_groups("cluster-setup/inventory/hosts")
     nix_managed = groups.get("nix_managed", set())
     ansible_managed = groups.get("ansible_managed", set())
-    migrated_backbone = {"n2p1", "n2p2", "rpi4", "rpi5", "rock5bp"}
-    migrated_hosts = migrated_backbone | {"macmini"}
+    migrated_backbone = {"n2p1", "n2p2", "rpi4", "rpi5", "rock5bp", "macmini"}
+    migrated_hosts = migrated_backbone
     for host in sorted(migrated_hosts):
         if host not in nix_managed:
             raise SystemExit(
@@ -1630,7 +1630,7 @@ def check_rollback_stage_resume() -> None:
         for path in (current, secrets, profile / "bin", test_root, mock_bin):
             path.mkdir(parents=True, exist_ok=True)
         (current / "config").write_text(
-            "\n\niptables.service\nsshd.service\neth0\n\nagent\napt\nfalse\ntrue\n"
+            "\n\niptables.service\nsshd.service\neth0\n\nagent\napt\nfalse\ntrue\nfalse\nfalse\n"
         )
         payload = directory_path / "payload"
         payload.write_text("restored\n")
@@ -1878,7 +1878,7 @@ def check_preserved_rollback_manifest_guard() -> None:
         current.mkdir()
         test_bin.mkdir()
         (current / "config").write_text(
-            "\n\niptables.service\nsshd.service\neth0\n\nagent\napt\ntrue\nfalse\n"
+            "\n\niptables.service\nsshd.service\neth0\n\nagent\napt\ntrue\nfalse\ntrue\ntrue\n"
         )
         secret = "chap_password=must-not-enter-rollback-log"
         expected_manifest = f"expected\n{secret}\n"
@@ -2203,6 +2203,256 @@ def check_time_sync_waits() -> None:
 
 
 
+def check_new_node_rollback_managed_k3s_state() -> None:
+    handoff = source("nix/scripts/k3s-handoff")
+    match = re.search(
+        r'(if test -n "\$legacy_unit"; then\n.*?'
+        r'elif test "\$role" = server \|\| test "\$role" = agent; then\n'
+        r'.*?^fi)',
+        handoff,
+        re.DOTALL | re.MULTILINE,
+    )
+    if match is None:
+        raise SystemExit(
+            "nix/scripts/k3s-handoff: restored managed K3s service verification missing"
+        )
+    with tempfile.TemporaryDirectory() as directory:
+        directory_path = Path(directory)
+        unit = directory_path / "unit"
+        state = directory_path / "state"
+        systemctl = directory_path / "systemctl"
+        systemctl.write_text(
+            """#!/bin/sh
+case "$1:$2" in
+  cat:homelab-k3s.service)
+    test "$(cat "$TEST_UNIT")" = present
+    ;;
+  is-active:homelab-k3s.service)
+    state=$(cat "$TEST_STATE")
+    printf '%s\n' "$state"
+    test "$state" = active
+    ;;
+  *)
+    exit 2
+    ;;
+esac
+"""
+        )
+        systemctl.chmod(0o755)
+        for unit_state, service_state, expected_success in (
+            ("absent", "inactive", True),
+            ("present", "active", True),
+            ("present", "inactive", False),
+        ):
+            unit.write_text(f"{unit_state}\n")
+            state.write_text(f"{service_state}\n")
+            result = subprocess.run(
+                ["sh"],
+                input=(
+                    "set -eu\n"
+                    "legacy_unit=\n"
+                    "role=agent\n"
+                    f"{match.group(1)}\n"
+                ),
+                text=True,
+                capture_output=True,
+                env={
+                    **os.environ,
+                    "PATH": f"{directory}:{os.environ['PATH']}",
+                    "TEST_UNIT": str(unit),
+                    "TEST_STATE": str(state),
+                },
+            )
+            if (result.returncode == 0) != expected_success:
+                raise SystemExit(
+                    "nix/scripts/k3s-handoff: restored managed K3s state was misclassified\n"
+                    f"unit={unit_state} state={service_state}\n"
+                    f"{result.stderr.strip()}"
+                )
+
+
+def check_new_node_rollback_cleanup() -> None:
+    handoff = source("nix/scripts/k3s-handoff")
+    host_migration = source("nix/scripts/homelab-host")
+    for needle in (
+        "K3S_BINARY_PRESENT=%q",
+        'case "$K3S_BINARY_PRESENT" in true|false)',
+        'printf \'%s\\n\' "$K3S_STATE_PRESENT"',
+        'printf \'%s\\n\' "$K3S_BINARY_PRESENT"',
+        "IFS= read -r k3s_state_present",
+        "IFS= read -r k3s_binary_present",
+    ):
+        if needle not in handoff:
+            raise SystemExit(
+                f"nix/scripts/k3s-handoff: rollback state capture missing {needle!r}"
+            )
+    for needle in (
+        "HOMELAB_K3S_BINARY_PRESENT",
+        'printf \'%s\\n\' "$HOMELAB_K3S_BINARY_PRESENT" > "$recovery/k3s-binary-present"',
+        "remote_k3s_binary_present",
+        'binary_present=$(remote_k3s_binary_present "$host")',
+    ):
+        if needle not in host_migration:
+            raise SystemExit(
+                f"nix/scripts/homelab-host: K3s onboarding baseline capture missing {needle!r}"
+            )
+    link_guard = 'test "$(readlink "$path")" = k3s'
+    if link_guard not in handoff or host_migration.count(link_guard) < 2:
+        raise SystemExit(
+            "K3s cleanup may remove preexisting kubectl, crictl, or ctr commands"
+        )
+    match = re.search(
+        r'(if test "\$k3s_state_present" = false; then\n.*?^fi\n'
+        r'if test "\$k3s_binary_present" = false; then\n.*?^fi)',
+        handoff,
+        re.DOTALL | re.MULTILINE,
+    )
+    if match is None:
+        raise SystemExit(
+            "nix/scripts/k3s-handoff: new-node K3s rollback cleanup missing"
+        )
+    with tempfile.TemporaryDirectory() as directory:
+        directory_path = Path(directory)
+        k3s_state = directory_path / "k3s"
+        bin_directory = directory_path / "bin"
+        mountinfo = directory_path / "mountinfo"
+        systemctl = directory_path / "systemctl"
+        systemctl.write_text(
+            "#!/bin/sh\n"
+            'test "$1" = is-active\n'
+            "printf 'inactive\\n'\n"
+            "exit 3\n"
+        )
+        systemctl.chmod(0o755)
+        block = (
+            match.group(1)
+            .replace("/var/lib/rancher/k3s", str(k3s_state))
+            .replace("/usr/local/bin", str(bin_directory))
+            .replace("/proc/self/mountinfo", str(mountinfo))
+        )
+        k3s_state.mkdir()
+        bin_directory.mkdir()
+        command_names = ("kubectl", "crictl", "ctr")
+        owned_names = (
+            "k3s",
+            "k3s-killall.sh",
+            "k3s-uninstall.sh",
+            "k3s-agent-uninstall.sh",
+            "k3s-homelab-bootstrap-uninstall.sh",
+        )
+        binary_names = owned_names + command_names
+        for name in owned_names:
+            (bin_directory / name).write_text(name)
+        for name in command_names:
+            (bin_directory / name).symlink_to("k3s")
+        mountinfo.write_text("")
+        result = subprocess.run(
+            ["sh"],
+            input=(
+                "set -eu\n"
+                "k3s_state_present=false\n"
+                "k3s_binary_present=false\n"
+                f"{block}\n"
+            ),
+            text=True,
+            capture_output=True,
+            env={**os.environ, "PATH": f"{directory}:{os.environ['PATH']}"},
+        )
+        if (
+            result.returncode
+            or k3s_state.exists()
+            or any(os.path.lexists(bin_directory / name) for name in binary_names)
+        ):
+            raise SystemExit(
+                "nix/scripts/k3s-handoff: new-node rollback left K3s state or binaries\n"
+                f"{result.stderr.strip()}"
+            )
+
+        k3s_state.mkdir()
+        for name in owned_names:
+            (bin_directory / name).write_text(name)
+        for name in command_names:
+            (bin_directory / name).write_text("admin")
+        result = subprocess.run(
+            ["sh"],
+            input=(
+                "set -eu\n"
+                "k3s_state_present=false\n"
+                "k3s_binary_present=false\n"
+                f"{block}\n"
+            ),
+            text=True,
+            capture_output=True,
+            env={**os.environ, "PATH": f"{directory}:{os.environ['PATH']}"},
+        )
+        if (
+            result.returncode
+            or k3s_state.exists()
+            or any((bin_directory / name).exists() for name in owned_names)
+            or any((bin_directory / name).read_text() != "admin" for name in command_names)
+        ):
+            raise SystemExit(
+                "nix/scripts/k3s-handoff: rollback removed preexisting admin commands\n"
+                f"{result.stderr.strip()}"
+            )
+
+        k3s_state.mkdir()
+        (k3s_state / "preexisting").write_text("keep")
+        for name in owned_names:
+            (bin_directory / name).write_text(name)
+        result = subprocess.run(
+            ["sh"],
+            input=(
+                "set -eu\n"
+                "k3s_state_present=true\n"
+                "k3s_binary_present=true\n"
+                f"{block}\n"
+            ),
+            text=True,
+            capture_output=True,
+            env={**os.environ, "PATH": f"{directory}:{os.environ['PATH']}"},
+        )
+        if (
+            result.returncode
+            or not (k3s_state / "preexisting").exists()
+            or any(not (bin_directory / name).exists() for name in binary_names)
+        ):
+            raise SystemExit(
+                "nix/scripts/k3s-handoff: rollback removed preexisting K3s state or binaries\n"
+                f"{result.stderr.strip()}"
+            )
+        shutil.rmtree(k3s_state)
+
+
+        k3s_state.mkdir()
+        (k3s_state / "agent").mkdir()
+        mountinfo.write_text(
+            f"1 0 0:1 / {k3s_state} rw - tmpfs tmpfs rw\n"
+        )
+        result = subprocess.run(
+            ["sh"],
+            input=(
+                "set -eu\n"
+                "k3s_state_present=false\n"
+                "k3s_binary_present=true\n"
+                f"{block}\n"
+            ),
+            text=True,
+            capture_output=True,
+            env={**os.environ, "PATH": f"{directory}:{os.environ['PATH']}"},
+        )
+        if (
+            result.returncode == 0
+            or not k3s_state.exists()
+            or "K3s state remains mounted during rollback" not in result.stderr
+        ):
+            raise SystemExit(
+                "nix/scripts/k3s-handoff: mounted K3s state cleanup was not blocked"
+            )
+        shutil.rmtree(k3s_state)
+
+
+
 def check_wireguard_rollback_failure_continuation() -> None:
     handoff = source("nix/scripts/k3s-handoff")
     match = re.search(
@@ -2220,7 +2470,7 @@ def check_wireguard_rollback_failure_continuation() -> None:
         r'.*?systemctl is-active "\$unit".*?verify_nas_manifest; fi'
         r'.*?if test "\$wireguard_restore_failed" = true; then'
         r'.*?rollback remains armed.*?exit 1.*?^fi'
-        r'.*?systemctl disable homelab-host-rollback\.timer',
+        r'.*?systemctl disable --now homelab-host-rollback\.timer',
         handoff,
         re.DOTALL | re.MULTILINE,
     ):
@@ -2341,7 +2591,10 @@ def check_firewall_restore_waits() -> None:
 
 def check_cilium_restart_waits() -> None:
     handoff = source("nix/scripts/k3s-handoff")
-    start = "if grep -q 'CILIUM_' \"$dir/firewall-runtime.rules\"; then"
+    start = (
+        'if test "$k3s_state_present" = true && '
+        "grep -q 'CILIUM_' \"$dir/firewall-runtime.rules\"; then"
+    )
     end = '\n  touch "$stages/firewall-restored"'
     if start not in handoff or end not in handoff:
         raise SystemExit("nix/scripts/k3s-handoff: cilium-agent restart wait missing")
@@ -2406,7 +2659,7 @@ def check_cilium_restart_waits() -> None:
         }
         result = subprocess.run(
             ["sh"],
-            input=f'set -eu\ndir="$DIR"\n{block}\n',
+            input=f'set -eu\ndir="$DIR"\nk3s_state_present=true\n{block}\n',
             text=True,
             capture_output=True,
             env=environment,
@@ -2427,7 +2680,7 @@ def check_cilium_restart_waits() -> None:
         environment["CRICTL_RESTART"] = "0"
         result = subprocess.run(
             ["sh"],
-            input=f'set -eu\ndir="$DIR"\n{block}\n',
+            input=f'set -eu\ndir="$DIR"\nk3s_state_present=true\n{block}\n',
             text=True,
             capture_output=True,
             env=environment,
@@ -2443,43 +2696,284 @@ def check_cilium_restart_waits() -> None:
                 "nix/scripts/k3s-handoff: cilium-agent restart timeout is unsafe"
             )
 
-def check_provision_active_service_guard() -> None:
-    provision = source("nix/scripts/provision-host")
-    match = re.search(
-        r"(for unit in k3s\.service k3s-agent\.service homelab-k3s\.service; do.*?\ndone)\ncurl",
-        provision,
-        re.DOTALL,
-    )
-    if match is None:
-        raise SystemExit("nix/scripts/provision-host: active K3s service guard missing")
-    with tempfile.TemporaryDirectory() as directory:
-        systemctl = Path(directory) / "systemctl"
-        systemctl.write_text(
-            "#!/bin/sh\n"
-            "test \"$1\" = is-active || exit 2\n"
-            "shift\n"
-            "test \"$1\" = --quiet || exit 2\n"
-            "shift\n"
-            "test \"$1\" = k3s-agent.service\n"
-        )
-        systemctl.chmod(0o755)
+        for path in (state, stopped, healthy):
+            path.unlink(missing_ok=True)
         result = subprocess.run(
             ["sh"],
-            input=f"set -eu\n{match.group(1)}\n",
+            input=f'set -eu\ndir="$DIR"\nk3s_state_present=false\n{block}\n',
             text=True,
             capture_output=True,
-            env={**os.environ, "PATH": f"{directory}:{os.environ['PATH']}"},
+            env=environment,
         )
-        if result.returncode == 0 or "k3s-agent.service is already active" not in result.stderr:
+        if result.returncode or state.exists() or stopped.exists() or healthy.exists():
             raise SystemExit(
-                "nix/scripts/provision-host: middle active K3s service was not rejected"
+                "nix/scripts/k3s-handoff: rollback touched Cilium for a host without baseline K3s state\n"
+                f"{result.stderr.strip()}"
+            )
+
+def check_onboard_k3s_install_guard() -> None:
+    migration = source("nix/scripts/homelab-host")
+    binary_probe_match = re.search(
+        r"(remote_k3s_binary_present\(\) \{\n.*?^\})",
+        migration,
+        re.DOTALL | re.MULTILINE,
+    )
+    if binary_probe_match is None:
+        raise SystemExit(
+            "nix/scripts/homelab-host: fail-closed K3s binary detection is missing"
+        )
+    try:
+        onboard = migration.split("  onboard-k3s-node)", 1)[1].split(
+            "\n  reconcile-distro-packages)", 1
+        )[0]
+        preflight = onboard.split('    remote "$host" \'', 1)[1].split(
+            "'\n    binary_present=", 1
+        )[0]
+        install = onboard.split("<<'REMOTE_K3S_INSTALL'\n", 1)[1].split(
+            "\nREMOTE_K3S_INSTALL", 1
+        )[0]
+    except IndexError as error:
+        raise SystemExit("nix/scripts/homelab-host: K3s onboarding installer is missing") from error
+
+    for needle in (
+        "test ! -e /var/lib/rancher/k3s",
+        "systemctl is-active",
+        "systemctl is-enabled",
+        "install_complete=false",
+        "INSTALL_K3S_SKIP_ENABLE=true",
+        "INSTALL_K3S_SKIP_START=true",
+        'INSTALL_K3S_SYSTEMD_DIR="$service_dir"',
+        "INSTALL_K3S_NAME=homelab-bootstrap",
+        'INSTALL_K3S_VERSION="$K3S_VERSION"',
+        'INSTALL_K3S_EXEC="$K3S_ROLE"',
+        'curl --proto \'=https\' --tlsv1.2 -fsSL -o "$installer" https://get.k3s.io',
+        'rm -f -- /usr/local/bin/k3s-homelab-bootstrap-uninstall.sh',
+        'test -s "$installer"',
+        "test -x /usr/local/bin/k3s",
+        "install_complete=true",
+    ):
+        if needle not in install:
+            raise SystemExit(
+                f"nix/scripts/homelab-host: K3s onboarding install contract missing {needle!r}"
+            )
+    if "| INSTALL_K3S_" in install:
+        raise SystemExit("nix/scripts/homelab-host: K3s installer download failure may be masked by a pipe")
+    if not (
+        install.index("install_complete=false")
+        < install.index('sh "$installer"')
+        < install.index("install_complete=true")
+    ):
+        raise SystemExit(
+            "nix/scripts/homelab-host: partial K3s installation cleanup is not armed"
+        )
+
+    token_check = (
+        'if ! "$root/nix/scripts/wireguard-secrets" copy-k3s-token '
+        '--from "$source_host" --to "$host" --check'
+    )
+    token_write = (
+        '"$root/nix/scripts/wireguard-secrets" copy-k3s-token '
+        '--from "$source_host" --to "$host" --write'
+    )
+    prepare = '"$0" prepare "$host"'
+    if not (
+        onboard.index("REMOTE_K3S_INSTALL")
+        < onboard.index(token_check)
+        < onboard.index(token_write)
+        < onboard.index(prepare)
+    ):
+        raise SystemExit(
+            "nix/scripts/homelab-host: install, token check/write, and guarded prepare order changed"
+        )
+
+    provision = source("nix/scripts/provision-host")
+    if "INSTALL_K3S_" in provision or "https://get.k3s.io" in provision:
+        raise SystemExit("nix/scripts/provision-host: K3s installation ownership is duplicated")
+    if '"$host_app" onboard-k3s-node "$host" --token-source "$source_host"' not in provision:
+        raise SystemExit("nix/scripts/provision-host: onboarding delegation is missing")
+    binary_probe = binary_probe_match.group(1)
+    for mode, expected_output, expected_success in (
+        ("present", "true", True),
+        ("absent", "false", True),
+        ("transport", "", False),
+        ("invalid", "", False),
+    ):
+        result = subprocess.run(
+            ["bash"],
+            input=(
+                "set -euo pipefail\n"
+                "remote() {\n"
+                '  case "$TEST_BINARY_MODE" in\n'
+                '    present) printf "true\\n" ;;\n'
+                '    absent) printf "false\\n" ;;\n'
+                "    transport) return 255 ;;\n"
+                '    invalid) printf "unknown\\n" ;;\n'
+                "  esac\n"
+                "}\n"
+                f"{binary_probe}\n"
+                "remote_k3s_binary_present node\n"
+            ),
+            text=True,
+            capture_output=True,
+            env={**os.environ, "TEST_BINARY_MODE": mode},
+        )
+        if (result.returncode == 0) != expected_success or (
+            expected_success and result.stdout.strip() != expected_output
+        ):
+            raise SystemExit(
+                "nix/scripts/homelab-host: K3s binary detection did not fail closed\n"
+                f"mode={mode} rc={result.returncode} output={result.stdout.strip()!r}"
+            )
+
+    with tempfile.TemporaryDirectory() as directory:
+        directory_path = Path(directory)
+        mock_bin = directory_path / "bin"
+        mock_bin.mkdir()
+        systemctl = mock_bin / "systemctl"
+        systemctl.write_text(
+            "#!/bin/sh\n"
+            'case "${TEST_LEGACY_MODE:-}:$1:$2" in\n'
+            '  active:is-active:k3s-agent.service) printf "active\\n" ;;\n'
+            '  enabled:is-enabled:k3s.service) printf "enabled\\n" ;;\n'
+            '  *:is-active:*) printf "inactive\\n"; exit 3 ;;\n'
+            '  *:is-enabled:*) printf "disabled\\n"; exit 1 ;;\n'
+            "  *) exit 2 ;;\n"
+            "esac\n"
+        )
+        systemctl.chmod(0o755)
+        environment = {
+            **os.environ,
+            "PATH": f"{mock_bin}:{os.environ['PATH']}",
+        }
+        preflight = preflight.replace(
+            "/var/lib/rancher/k3s", f'"{directory_path / "k3s-state"}"'
+        )
+        for legacy_mode in ("active", "enabled"):
+            result = subprocess.run(
+                ["sh", "-c", preflight],
+                text=True,
+                capture_output=True,
+                env={**environment, "TEST_LEGACY_MODE": legacy_mode},
+            )
+            if result.returncode == 0:
+                raise SystemExit(
+                    "nix/scripts/homelab-host: "
+                    f"{legacy_mode} legacy K3s service was accepted before onboarding"
+                )
+
+        result = subprocess.run(
+            ["sh", "-c", preflight],
+            text=True,
+            capture_output=True,
+            env={**environment, "TEST_LEGACY_MODE": "absent"},
+        )
+        if result.returncode:
+            raise SystemExit(
+                "nix/scripts/homelab-host: clean K3s onboarding target was rejected\n"
+                f"{result.stderr.strip()}"
+            )
+
+        result = subprocess.run(
+            ["sh"],
+            input=f"set -eu\nK3S_VERSION=v1.2.3 K3S_ROLE=agent\n{install}\n",
+            text=True,
+            capture_output=True,
+            env={**environment, "TEST_LEGACY_MODE": "active"},
+        )
+        if result.returncode == 0:
+            raise SystemExit(
+                "nix/scripts/homelab-host: active legacy K3s service was accepted before installation"
+            )
+
+        installer_source = directory_path / "installer-source"
+        installer_source.write_text(
+            "#!/bin/sh\n"
+            "set -eu\n"
+            'mkdir -p "$INSTALL_K3S_SYSTEMD_DIR" "$TEST_BIN"\n'
+            ': > "$INSTALL_K3S_SYSTEMD_DIR/k3s-homelab-bootstrap.service"\n'
+            ': > "$INSTALL_K3S_SYSTEMD_DIR/k3s-homelab-bootstrap.service.env"\n'
+            "for name in k3s k3s-killall.sh k3s-uninstall.sh "
+            "k3s-agent-uninstall.sh k3s-homelab-bootstrap-uninstall.sh; do\n"
+            '  : > "$TEST_BIN/$name"\n'
+            "done\n"
+            "for name in kubectl crictl ctr; do\n"
+            '  test -e "$TEST_BIN/$name" || ln -s k3s "$TEST_BIN/$name"\n'
+            "done\n"
+            'chmod 0755 "$TEST_BIN/k3s"\n'
+            'exit "${TEST_INSTALL_EXIT:-0}"\n'
+        )
+        installer_source.chmod(0o755)
+        bin_directory = directory_path / "install-bin"
+        state_path = directory_path / "install-state"
+        sandboxed_install = (
+            install.replace("/var/lib/rancher/k3s", str(state_path))
+            .replace("/usr/local/bin", str(bin_directory))
+            .replace("/tmp/k3s-install.XXXXXX", str(directory_path / "k3s-install.XXXXXX"))
+            .replace("/tmp/k3s-systemd.XXXXXX", str(directory_path / "k3s-systemd.XXXXXX"))
+            .replace(
+                'curl --proto \'=https\' --tlsv1.2 -fsSL -o "$installer" https://get.k3s.io',
+                'cp "$TEST_INSTALLER" "$installer"',
+            )
+        )
+        install_environment = {
+            **environment,
+            "TEST_LEGACY_MODE": "absent",
+            "TEST_INSTALLER": str(installer_source),
+            "TEST_BIN": str(bin_directory),
+        }
+        result = subprocess.run(
+            ["sh"],
+            input=f"set -eu\nK3S_VERSION=v1.2.3 K3S_ROLE=agent\n{sandboxed_install}\n",
+            text=True,
+            capture_output=True,
+            env=install_environment,
+        )
+        if (
+            result.returncode
+            or not (bin_directory / "k3s").exists()
+            or (bin_directory / "k3s-homelab-bootstrap-uninstall.sh").exists()
+            or list(directory_path.glob("k3s-systemd.*"))
+        ):
+            raise SystemExit(
+                "nix/scripts/homelab-host: successful onboarding left bootstrap service artifacts\n"
+                f"{result.stderr.strip()}"
+            )
+        shutil.rmtree(bin_directory)
+        bin_directory.mkdir()
+        admin_command = bin_directory / "kubectl"
+        admin_command.write_text("admin")
+        result = subprocess.run(
+            ["sh"],
+            input=f"set -eu\nK3S_VERSION=v1.2.3 K3S_ROLE=agent\n{sandboxed_install}\n",
+            text=True,
+            capture_output=True,
+            env={**install_environment, "TEST_INSTALL_EXIT": "1"},
+        )
+        unexpected = [
+            path.name for path in bin_directory.iterdir() if path.name != admin_command.name
+        ]
+        if (
+            result.returncode == 0
+            or admin_command.read_text() != "admin"
+            or unexpected
+            or list(directory_path.glob("k3s-systemd.*"))
+        ):
+            raise SystemExit(
+                "nix/scripts/homelab-host: failed onboarding left installer artifacts\n"
+                f"{result.stderr.strip()}"
             )
 
 def check_iscsi_service_verification() -> None:
     migration = source("nix/scripts/homelab-host")
+    try:
+        section = migration.split("stage=iscsi-client", 1)[1].split(
+            "stage=iscsi-server", 1
+        )[0]
+    except IndexError as error:
+        raise SystemExit("nix/scripts/homelab-host: iSCSI service verification missing") from error
     match = re.search(
         r'(if test "\$ISCSI_CLIENT" = true; then\n.*?^fi)',
-        migration,
+        section,
         re.DOTALL | re.MULTILINE,
     )
     if match is None:
@@ -2496,12 +2990,15 @@ def check_iscsi_service_verification() -> None:
         systemctl.write_text(
             "#!/bin/sh\n"
             'printf "%s\\n" "$*" >> "$EVENTS"\n'
-            'case "$1:$2" in\n'
-            '  is-active:iscsid.service) test "$ISCSID_ACTIVE" = yes ;;\n'
-            '  is-enabled:open-iscsi.service) test "$OPEN_ISCSI_ENABLED" = yes ;;\n'
-            '  is-active:open-iscsi.service) test "$OPEN_ISCSI_ACTIVE" = yes ;;\n'
-            "  *) exit 2 ;;\n"
-            "esac\n"
+            'if test "$1:$2" = "is-active:iscsid.service"; then\n'
+            '  test "$ISCSID_ACTIVE" = yes\n'
+            'elif test "$1:$2" = "is-enabled:$LOGIN_SERVICE"; then\n'
+            '  test "$LOGIN_ENABLED" = yes\n'
+            'elif test "$1:$2" = "is-active:$LOGIN_SERVICE"; then\n'
+            '  test "$LOGIN_ACTIVE" = yes\n'
+            "else\n"
+            "  exit 2\n"
+            "fi\n"
         )
         systemctl.chmod(0o755)
         environment = {
@@ -2511,7 +3008,14 @@ def check_iscsi_service_verification() -> None:
             "EVENTS": str(events),
         }
 
-        def run(*, has_nodes: bool, iscsid: str, enabled: str, active: str) -> subprocess.CompletedProcess[str]:
+        def run(
+            login_service: str,
+            *,
+            has_nodes: bool,
+            iscsid: str,
+            enabled: str,
+            active: str,
+        ) -> subprocess.CompletedProcess[str]:
             shutil.rmtree(nodes)
             nodes.mkdir()
             if has_nodes:
@@ -2519,30 +3023,89 @@ def check_iscsi_service_verification() -> None:
             events.unlink(missing_ok=True)
             return subprocess.run(
                 ["sh"],
-                input=f"set -eu\nISCSI_CLIENT=true\n{block}\n",
+                input=(
+                    "set -eu\n"
+                    "ISCSI_CLIENT=true\n"
+                    f"ISCSI_LOGIN_SERVICE={login_service}\n"
+                    f"{block}\n"
+                ),
                 text=True,
                 capture_output=True,
                 env={
                     **environment,
+                    "LOGIN_SERVICE": login_service,
                     "ISCSID_ACTIVE": iscsid,
-                    "OPEN_ISCSI_ENABLED": enabled,
-                    "OPEN_ISCSI_ACTIVE": active,
+                    "LOGIN_ENABLED": enabled,
+                    "LOGIN_ACTIVE": active,
                 },
             )
 
-        result = run(has_nodes=False, iscsid="yes", enabled="yes", active="no")
-        if result.returncode != 0:
-            raise SystemExit("nix/scripts/homelab-host: target-free iSCSI client was rejected")
-        if "is-active open-iscsi.service" in events.read_text():
-            raise SystemExit("nix/scripts/homelab-host: target-free open-iscsi was required active")
-        if run(has_nodes=True, iscsid="yes", enabled="yes", active="no").returncode == 0:
-            raise SystemExit("nix/scripts/homelab-host: configured open-iscsi target may be inactive")
-        if run(has_nodes=True, iscsid="yes", enabled="yes", active="yes").returncode != 0:
-            raise SystemExit("nix/scripts/homelab-host: active configured iSCSI client was rejected")
-        if run(has_nodes=False, iscsid="no", enabled="yes", active="no").returncode == 0:
-            raise SystemExit("nix/scripts/homelab-host: inactive iscsid was accepted")
-        if run(has_nodes=False, iscsid="yes", enabled="no", active="no").returncode == 0:
-            raise SystemExit("nix/scripts/homelab-host: disabled open-iscsi was accepted")
+        for login_service in ("open-iscsi.service", "iscsi.service"):
+            result = run(
+                login_service,
+                has_nodes=False,
+                iscsid="yes",
+                enabled="yes",
+                active="no",
+            )
+            if result.returncode != 0:
+                raise SystemExit(
+                    f"nix/scripts/homelab-host: target-free {login_service} client was rejected"
+                )
+            if f"is-active {login_service}" in events.read_text():
+                raise SystemExit(
+                    f"nix/scripts/homelab-host: target-free {login_service} was required active"
+                )
+            if (
+                run(
+                    login_service,
+                    has_nodes=True,
+                    iscsid="yes",
+                    enabled="yes",
+                    active="no",
+                ).returncode
+                == 0
+            ):
+                raise SystemExit(
+                    f"nix/scripts/homelab-host: configured {login_service} target may be inactive"
+                )
+            if (
+                run(
+                    login_service,
+                    has_nodes=True,
+                    iscsid="yes",
+                    enabled="yes",
+                    active="yes",
+                ).returncode
+                != 0
+            ):
+                raise SystemExit(
+                    f"nix/scripts/homelab-host: active configured {login_service} client was rejected"
+                )
+            if (
+                run(
+                    login_service,
+                    has_nodes=False,
+                    iscsid="no",
+                    enabled="yes",
+                    active="no",
+                ).returncode
+                == 0
+            ):
+                raise SystemExit("nix/scripts/homelab-host: inactive iscsid was accepted")
+            if (
+                run(
+                    login_service,
+                    has_nodes=False,
+                    iscsid="yes",
+                    enabled="no",
+                    active="no",
+                ).returncode
+                == 0
+            ):
+                raise SystemExit(
+                    f"nix/scripts/homelab-host: disabled {login_service} was accepted"
+                )
 
 
 def check_rollback_restored_services() -> None:
@@ -3226,7 +3789,7 @@ errors: No known data errors
         r'if test "\$preserve_nas_state" = true; then verify_nas_manifest; fi'
         r'.*?mkdir -p "\$stages".*?systemctl stop homelab-k3s\.service'
         r'.*?if test "\$preserve_nas_state" = true; then verify_nas_manifest; fi'
-        r".*?systemctl disable homelab-host-rollback\.timer",
+        r".*?systemctl disable --now homelab-host-rollback\.timer",
         handoff,
         re.DOTALL,
     ):
@@ -3704,6 +4267,18 @@ require(
     'generation=$(current_remote_generation "$host")',
     "uname -n",
 )
+adopt = source("nix/scripts/adopt-host")
+generic_baseline = adopt.split("generic_baseline() {", 1)[1].split(
+    "\nnas_baseline() {", 1
+)[0]
+if not re.search(
+    r"if sudo -n test -d /var/lib/rancher/k3s/server/db; then\s+"
+    r'etcd=\$\(sudo -n /usr/local/bin/k3s etcd-snapshot ls',
+    generic_baseline,
+):
+    raise SystemExit(
+        "nix/scripts/adopt-host: agent baseline may create K3s server state"
+    )
 require(
     "nix/scripts/homelab-host",
     "bootstrap-host",
@@ -3737,6 +4312,8 @@ require(
     "/var/lib/homelab-secrets/active/k3s-token.cred",
     "PATH=/usr/local/sbin:/usr/local/bin:/usr/sbin:/usr/bin:/sbin:/bin HOST_NAME=",
     'iptables --wait -D "$chain" "$index"',
+    'systemctl enable iscsid.service "$ISCSI_LOGIN_SERVICE"',
+    'systemctl start iscsid.service "$ISCSI_LOGIN_SERVICE"',
     "reconcile_distro_packages",
     "--version 1.20.0",
     "etc-state.tar",
@@ -3744,10 +4321,11 @@ require(
     "FIREWALL_SERVICE",
     "locale -a",
     "LOCALTIME_SOURCE",
-    'test "$(readlink /etc/localtime)" = "$LOCALTIME_SOURCE"',
+    'test "$actual" = "$LOCALTIME_SOURCE"',
     'grep -qx "Asia/Seoul" /etc/timezone',
-    "DNSSEC=yes",
-    "DNSOverTLS=yes",
+    "resolvedDnsOverTls",
+    "RESOLVED_DNS_OVER_TLS=%q",
+    'DNSOverTLS=$RESOLVED_DNS_OVER_TLS',
     "verify_legacy_cleanup",
     '"(nf_tables)"',
     "reconcile)",
@@ -3801,12 +4379,13 @@ require(
     "BOOTSTRAP_CONTEXT:-homelab-backbone",
 )
 require(
-    "nix/scripts/provision-host",
+    "nix/scripts/homelab-host",
     'for unit in k3s.service k3s-agent.service homelab-k3s.service; do',
-    'systemctl is-active --quiet "$unit"',
+    'systemctl is-active "$unit"',
+    'systemctl is-enabled "$unit"',
 )
 forbid(
-    "nix/scripts/provision-host",
+    "nix/scripts/homelab-host",
     "systemctl is-active k3s.service k3s-agent.service homelab-k3s.service",
 )
 require(
@@ -3823,9 +4402,9 @@ forbid(
 require(
     "nix/scripts/homelab-host",
     "systemctl is-active iscsid.service",
-    "systemctl is-enabled open-iscsi.service",
+    'systemctl is-enabled "$ISCSI_LOGIN_SERVICE"',
     "find /etc/iscsi/nodes -mindepth 1 -print -quit",
-    "systemctl is-active open-iscsi.service",
+    'systemctl is-active "$ISCSI_LOGIN_SERVICE"',
 )
 forbid(
     "nix/scripts/homelab-host",
@@ -3981,6 +4560,16 @@ for description, pattern in (
         r"apply_native_runtime\(\).*?systemctl restart systemd-timesyncd\.service"
         r".*?NTPSynchronized.*?systemctl restart homelab-k3s\.service",
     ),
+    (
+        "native handoff must defer firewall reconciliation during system-manager activation",
+        r"prepare_native_runtime_handoff\(\).*?install -m 0600 /dev/null "
+        r"/run/homelab-k3s-firewall-reconcile\.defer",
+    ),
+    (
+        "system-manager activation must clear the firewall deferral before runtime convergence",
+        r"activate_registered_system\(\).*?system-manager/bin/activate"
+        r".*?rm -f /run/homelab-k3s-firewall-reconcile\.defer",
+    ),
 ):
     if not re.search(pattern, host_migration, re.DOTALL):
         raise SystemExit(f"nix/scripts/homelab-host: {description}")
@@ -4127,10 +4716,15 @@ require(
     "/usr/local/bin/k3s",
     'Type = "exec";',
     "homelab-k3s-firewall-reconcile",
+    "/run/homelab-k3s-firewall-reconcile.defer",
     "if manageRules then",
     "Cilium and HOMELAB firewall ordering did not stabilize after K3s start",
     'ExecStartPost = "-${firewallReconcile}";',
     'Restart = "always";',
+)
+require(
+    "nix/scripts/k3s-handoff",
+    "rm -f /run/homelab-k3s-firewall-reconcile.defer",
 )
 forbid("nix/modules/linux/k3s-host.nix", '${firewallReconcile} &')
 forbid("nix/modules/linux/k3s-host.nix", "Externally managed HOMELAB firewall ordering")
@@ -4211,7 +4805,7 @@ if not re.search(
     r'for unit in systemd-networkd\.service systemd-resolved\.service '
     r'systemd-timesyncd\.service "\$ssh_service"; do'
     r'.*?systemctl is-active "\$unit"'
-    r".*?systemctl disable homelab-host-rollback\.timer",
+    r".*?systemctl disable --now homelab-host-rollback\.timer",
     handoff,
     re.DOTALL,
 ):
@@ -4349,10 +4943,12 @@ check_ssh_strict_modes_guard()
 check_wireguard_handshake_probe()
 check_register_system_failure()
 check_time_sync_waits()
+check_new_node_rollback_managed_k3s_state()
+check_new_node_rollback_cleanup()
 check_wireguard_rollback_failure_continuation()
 check_firewall_restore_waits()
 check_cilium_restart_waits()
-check_provision_active_service_guard()
+check_onboard_k3s_install_guard()
 check_iscsi_service_verification()
 check_rollback_restored_services()
 check_legacy_cleanup_path_verification()

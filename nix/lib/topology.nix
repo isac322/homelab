@@ -5,11 +5,17 @@ let
     nodeId: displayName: system: osFamily: packageBackend: sshTarget: lanAddress: gatewayAddress: defaultInterface: memoryMiB: extra:
     let
       lifecycle = extra.lifecycle or "active";
+      resolvedDnsOverTls = extra.resolvedDnsOverTls or "yes";
     in
     assert lib.elem lifecycle [
       "provisioning"
       "active"
       "decommissioning"
+    ];
+    assert lib.elem resolvedDnsOverTls [
+      "yes"
+      "no"
+      "opportunistic"
     ];
     {
       inherit
@@ -24,6 +30,7 @@ let
         defaultInterface
         memoryMiB
         lifecycle
+        resolvedDnsOverTls
         ;
       wireguardEndpointHost = extra.wireguardEndpointHost or null;
       k3sRole = extra.k3sRole or null;
@@ -150,8 +157,12 @@ let
         "end0"
         16384
         {
+          resolvedDnsOverTls = "opportunistic";
           wireguardEndpointHost = "backbone.bhyoo.com";
           wireguard = [ "wg0" ];
+          k3sRole = "agent";
+          k3sServer = "https://k8s.backbone.homelab.bhyoo.com:6443";
+          iscsiClient = true;
         };
     bhyoo-macbook-pro =
       mkNode "node-bhyoo-macbook-pro" "bhyoo-macbook-pro" "aarch64-darwin" "darwin" "darwin" null null

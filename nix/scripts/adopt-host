@@ -219,7 +219,10 @@ generic_baseline() {
     printf "input-policy="; sudo -n iptables -S INPUT | sed -n "1p"
     printf "forward-policy="; sudo -n iptables -S FORWARD | sed -n "1p"
     printf "k3s="; systemctl is-active k3s k3s-agent homelab-k3s 2>/dev/null || true
-    etcd=$(sudo -n /usr/local/bin/k3s etcd-snapshot ls 2>/dev/null | sed -n "1p" || true)
+    etcd=
+    if sudo -n test -d /var/lib/rancher/k3s/server/db; then
+      etcd=$(sudo -n /usr/local/bin/k3s etcd-snapshot ls 2>/dev/null | sed -n "1p" || true)
+    fi
     printf "etcd=%s\n" "$etcd"
   ' > "$file"
   printf 'system-manager-generation=%s\n' "$generation" >> "$file"

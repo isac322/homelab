@@ -17,6 +17,7 @@ n2p2
 rpi4
 rpi5
 rock5bp
+macmini
 
 [homelab:children]
 ansible_managed
