@@ -15,12 +15,21 @@ let
     "systemd-zram-generator"
   ];
   archPresent = [ "zram-generator" ];
-  iscsiClientPresent = lib.optionals hostConfig.iscsiClient [
-    "open-iscsi"
-    "lsscsi"
-    "sg3-utils"
-    "scsitools"
-  ];
+  iscsiClientPresent = lib.optionals hostConfig.iscsiClient (
+    if hostConfig.packageBackend == "pacman" then
+      [
+        "open-iscsi"
+        "lsscsi"
+        "sg3_utils"
+      ]
+    else
+      [
+        "open-iscsi"
+        "lsscsi"
+        "sg3-utils"
+        "scsitools"
+      ]
+  );
   iscsiServerPresent = lib.optionals (hostConfig.iscsiServer && !preserveNasState) [ "targetcli-fb" ];
   pacmanAbsent = [
     "networkmanager"

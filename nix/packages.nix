@@ -106,7 +106,7 @@ in
       ./scripts/k3s-handoff
       "";
   onboard-k3s-node =
-    hostApp "onboard-k3s-node" "Stage a cluster token and prepare a new declarative K3s node"
+    hostApp "onboard-k3s-node" "Install the live K3s layout, stage its token, and prepare the node"
       "onboard-k3s-node";
   bootstrap-k3s =
     hostApp "bootstrap-k3s" "Bootstrap Cilium only for an explicitly new K3s cluster"

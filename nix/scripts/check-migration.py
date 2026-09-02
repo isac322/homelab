@@ -88,8 +88,8 @@ def check_ansible_cutover_partition() -> None:
     groups = inventory_groups("cluster-setup/inventory/hosts")
     nix_managed = groups.get("nix_managed", set())
     ansible_managed = groups.get("ansible_managed", set())
-    migrated_backbone = {"n2p1", "n2p2", "rpi4", "rpi5", "rock5bp"}
-    migrated_hosts = migrated_backbone | {"macmini"}
+    migrated_backbone = {"n2p1", "n2p2", "rpi4", "rpi5", "rock5bp", "macmini"}
+    migrated_hosts = migrated_backbone
     for host in sorted(migrated_hosts):
         if host not in nix_managed:
             raise SystemExit(
@@ -2443,43 +2443,99 @@ def check_cilium_restart_waits() -> None:
                 "nix/scripts/k3s-handoff: cilium-agent restart timeout is unsafe"
             )
 
-def check_provision_active_service_guard() -> None:
-    provision = source("nix/scripts/provision-host")
-    match = re.search(
-        r"(for unit in k3s\.service k3s-agent\.service homelab-k3s\.service; do.*?\ndone)\ncurl",
-        provision,
-        re.DOTALL,
+def check_onboard_k3s_install_guard() -> None:
+    migration = source("nix/scripts/homelab-host")
+    try:
+        onboard = migration.split("  onboard-k3s-node)", 1)[1].split(
+            "\n  reconcile-distro-packages)", 1
+        )[0]
+        install = onboard.split("<<'REMOTE_K3S_INSTALL'\n", 1)[1].split(
+            "\nREMOTE_K3S_INSTALL", 1
+        )[0]
+    except IndexError as error:
+        raise SystemExit("nix/scripts/homelab-host: K3s onboarding installer is missing") from error
+
+    for needle in (
+        "test ! -e /var/lib/rancher/k3s",
+        "systemctl is-active",
+        "systemctl is-enabled",
+        "INSTALL_K3S_SKIP_ENABLE=true",
+        "INSTALL_K3S_SKIP_START=true",
+        'INSTALL_K3S_VERSION="$K3S_VERSION"',
+        'INSTALL_K3S_EXEC="$K3S_ROLE"',
+        'curl --proto \'=https\' --tlsv1.2 -fsSL -o "$installer" https://get.k3s.io',
+        'test -s "$installer"',
+        "test -x /usr/local/bin/k3s",
+    ):
+        if needle not in install:
+            raise SystemExit(
+                f"nix/scripts/homelab-host: K3s onboarding install contract missing {needle!r}"
+            )
+    if "| INSTALL_K3S_" in install:
+        raise SystemExit("nix/scripts/homelab-host: K3s installer download failure may be masked by a pipe")
+
+    token_check = (
+        'if ! "$root/nix/scripts/wireguard-secrets" copy-k3s-token '
+        '--from "$source_host" --to "$host" --check'
     )
-    if match is None:
-        raise SystemExit("nix/scripts/provision-host: active K3s service guard missing")
+    token_write = (
+        '"$root/nix/scripts/wireguard-secrets" copy-k3s-token '
+        '--from "$source_host" --to "$host" --write'
+    )
+    prepare = '"$0" prepare "$host"'
+    if not (
+        onboard.index("REMOTE_K3S_INSTALL")
+        < onboard.index(token_check)
+        < onboard.index(token_write)
+        < onboard.index(prepare)
+    ):
+        raise SystemExit(
+            "nix/scripts/homelab-host: install, token check/write, and guarded prepare order changed"
+        )
+
+    provision = source("nix/scripts/provision-host")
+    if "INSTALL_K3S_" in provision or "https://get.k3s.io" in provision:
+        raise SystemExit("nix/scripts/provision-host: K3s installation ownership is duplicated")
+    if '"$host_app" onboard-k3s-node "$host" --token-source "$source_host"' not in provision:
+        raise SystemExit("nix/scripts/provision-host: onboarding delegation is missing")
+
     with tempfile.TemporaryDirectory() as directory:
-        systemctl = Path(directory) / "systemctl"
+        mock_bin = Path(directory) / "bin"
+        mock_bin.mkdir()
+        systemctl = mock_bin / "systemctl"
         systemctl.write_text(
             "#!/bin/sh\n"
-            "test \"$1\" = is-active || exit 2\n"
-            "shift\n"
-            "test \"$1\" = --quiet || exit 2\n"
-            "shift\n"
-            "test \"$1\" = k3s-agent.service\n"
+            'case "$1:$2" in\n'
+            '  is-active:k3s-agent.service) printf "active\\n" ;;\n'
+            '  is-active:*) printf "inactive\\n"; exit 3 ;;\n'
+            '  is-enabled:*) printf "disabled\\n"; exit 1 ;;\n'
+            "  *) exit 2 ;;\n"
+            "esac\n"
         )
         systemctl.chmod(0o755)
         result = subprocess.run(
             ["sh"],
-            input=f"set -eu\n{match.group(1)}\n",
+            input=f"set -eu\nK3S_VERSION=v1.2.3 K3S_ROLE=agent\n{install}\n",
             text=True,
             capture_output=True,
-            env={**os.environ, "PATH": f"{directory}:{os.environ['PATH']}"},
+            env={**os.environ, "PATH": f"{mock_bin}:{os.environ['PATH']}"},
         )
-        if result.returncode == 0 or "k3s-agent.service is already active" not in result.stderr:
+        if result.returncode == 0:
             raise SystemExit(
-                "nix/scripts/provision-host: middle active K3s service was not rejected"
+                "nix/scripts/homelab-host: active legacy K3s service was accepted before installation"
             )
 
 def check_iscsi_service_verification() -> None:
     migration = source("nix/scripts/homelab-host")
+    try:
+        section = migration.split("stage=iscsi-client", 1)[1].split(
+            "stage=iscsi-server", 1
+        )[0]
+    except IndexError as error:
+        raise SystemExit("nix/scripts/homelab-host: iSCSI service verification missing") from error
     match = re.search(
         r'(if test "\$ISCSI_CLIENT" = true; then\n.*?^fi)',
-        migration,
+        section,
         re.DOTALL | re.MULTILINE,
     )
     if match is None:
@@ -2496,12 +2552,15 @@ def check_iscsi_service_verification() -> None:
         systemctl.write_text(
             "#!/bin/sh\n"
             'printf "%s\\n" "$*" >> "$EVENTS"\n'
-            'case "$1:$2" in\n'
-            '  is-active:iscsid.service) test "$ISCSID_ACTIVE" = yes ;;\n'
-            '  is-enabled:open-iscsi.service) test "$OPEN_ISCSI_ENABLED" = yes ;;\n'
-            '  is-active:open-iscsi.service) test "$OPEN_ISCSI_ACTIVE" = yes ;;\n'
-            "  *) exit 2 ;;\n"
-            "esac\n"
+            'if test "$1:$2" = "is-active:iscsid.service"; then\n'
+            '  test "$ISCSID_ACTIVE" = yes\n'
+            'elif test "$1:$2" = "is-enabled:$LOGIN_SERVICE"; then\n'
+            '  test "$LOGIN_ENABLED" = yes\n'
+            'elif test "$1:$2" = "is-active:$LOGIN_SERVICE"; then\n'
+            '  test "$LOGIN_ACTIVE" = yes\n'
+            "else\n"
+            "  exit 2\n"
+            "fi\n"
         )
         systemctl.chmod(0o755)
         environment = {
@@ -2511,7 +2570,14 @@ def check_iscsi_service_verification() -> None:
             "EVENTS": str(events),
         }
 
-        def run(*, has_nodes: bool, iscsid: str, enabled: str, active: str) -> subprocess.CompletedProcess[str]:
+        def run(
+            login_service: str,
+            *,
+            has_nodes: bool,
+            iscsid: str,
+            enabled: str,
+            active: str,
+        ) -> subprocess.CompletedProcess[str]:
             shutil.rmtree(nodes)
             nodes.mkdir()
             if has_nodes:
@@ -2519,30 +2585,89 @@ def check_iscsi_service_verification() -> None:
             events.unlink(missing_ok=True)
             return subprocess.run(
                 ["sh"],
-                input=f"set -eu\nISCSI_CLIENT=true\n{block}\n",
+                input=(
+                    "set -eu\n"
+                    "ISCSI_CLIENT=true\n"
+                    f"ISCSI_LOGIN_SERVICE={login_service}\n"
+                    f"{block}\n"
+                ),
                 text=True,
                 capture_output=True,
                 env={
                     **environment,
+                    "LOGIN_SERVICE": login_service,
                     "ISCSID_ACTIVE": iscsid,
-                    "OPEN_ISCSI_ENABLED": enabled,
-                    "OPEN_ISCSI_ACTIVE": active,
+                    "LOGIN_ENABLED": enabled,
+                    "LOGIN_ACTIVE": active,
                 },
             )
 
-        result = run(has_nodes=False, iscsid="yes", enabled="yes", active="no")
-        if result.returncode != 0:
-            raise SystemExit("nix/scripts/homelab-host: target-free iSCSI client was rejected")
-        if "is-active open-iscsi.service" in events.read_text():
-            raise SystemExit("nix/scripts/homelab-host: target-free open-iscsi was required active")
-        if run(has_nodes=True, iscsid="yes", enabled="yes", active="no").returncode == 0:
-            raise SystemExit("nix/scripts/homelab-host: configured open-iscsi target may be inactive")
-        if run(has_nodes=True, iscsid="yes", enabled="yes", active="yes").returncode != 0:
-            raise SystemExit("nix/scripts/homelab-host: active configured iSCSI client was rejected")
-        if run(has_nodes=False, iscsid="no", enabled="yes", active="no").returncode == 0:
-            raise SystemExit("nix/scripts/homelab-host: inactive iscsid was accepted")
-        if run(has_nodes=False, iscsid="yes", enabled="no", active="no").returncode == 0:
-            raise SystemExit("nix/scripts/homelab-host: disabled open-iscsi was accepted")
+        for login_service in ("open-iscsi.service", "iscsi.service"):
+            result = run(
+                login_service,
+                has_nodes=False,
+                iscsid="yes",
+                enabled="yes",
+                active="no",
+            )
+            if result.returncode != 0:
+                raise SystemExit(
+                    f"nix/scripts/homelab-host: target-free {login_service} client was rejected"
+                )
+            if f"is-active {login_service}" in events.read_text():
+                raise SystemExit(
+                    f"nix/scripts/homelab-host: target-free {login_service} was required active"
+                )
+            if (
+                run(
+                    login_service,
+                    has_nodes=True,
+                    iscsid="yes",
+                    enabled="yes",
+                    active="no",
+                ).returncode
+                == 0
+            ):
+                raise SystemExit(
+                    f"nix/scripts/homelab-host: configured {login_service} target may be inactive"
+                )
+            if (
+                run(
+                    login_service,
+                    has_nodes=True,
+                    iscsid="yes",
+                    enabled="yes",
+                    active="yes",
+                ).returncode
+                != 0
+            ):
+                raise SystemExit(
+                    f"nix/scripts/homelab-host: active configured {login_service} client was rejected"
+                )
+            if (
+                run(
+                    login_service,
+                    has_nodes=False,
+                    iscsid="no",
+                    enabled="yes",
+                    active="no",
+                ).returncode
+                == 0
+            ):
+                raise SystemExit("nix/scripts/homelab-host: inactive iscsid was accepted")
+            if (
+                run(
+                    login_service,
+                    has_nodes=False,
+                    iscsid="yes",
+                    enabled="no",
+                    active="no",
+                ).returncode
+                == 0
+            ):
+                raise SystemExit(
+                    f"nix/scripts/homelab-host: disabled {login_service} was accepted"
+                )
 
 
 def check_rollback_restored_services() -> None:
@@ -3704,6 +3829,18 @@ require(
     'generation=$(current_remote_generation "$host")',
     "uname -n",
 )
+adopt = source("nix/scripts/adopt-host")
+generic_baseline = adopt.split("generic_baseline() {", 1)[1].split(
+    "\nnas_baseline() {", 1
+)[0]
+if not re.search(
+    r"if sudo -n test -d /var/lib/rancher/k3s/server/db; then\s+"
+    r'etcd=\$\(sudo -n /usr/local/bin/k3s etcd-snapshot ls',
+    generic_baseline,
+):
+    raise SystemExit(
+        "nix/scripts/adopt-host: agent baseline may create K3s server state"
+    )
 require(
     "nix/scripts/homelab-host",
     "bootstrap-host",
@@ -3737,6 +3874,8 @@ require(
     "/var/lib/homelab-secrets/active/k3s-token.cred",
     "PATH=/usr/local/sbin:/usr/local/bin:/usr/sbin:/usr/bin:/sbin:/bin HOST_NAME=",
     'iptables --wait -D "$chain" "$index"',
+    'systemctl enable iscsid.service "$ISCSI_LOGIN_SERVICE"',
+    'systemctl start iscsid.service "$ISCSI_LOGIN_SERVICE"',
     "reconcile_distro_packages",
     "--version 1.20.0",
     "etc-state.tar",
@@ -3801,12 +3940,13 @@ require(
     "BOOTSTRAP_CONTEXT:-homelab-backbone",
 )
 require(
-    "nix/scripts/provision-host",
+    "nix/scripts/homelab-host",
     'for unit in k3s.service k3s-agent.service homelab-k3s.service; do',
-    'systemctl is-active --quiet "$unit"',
+    'systemctl is-active "$unit"',
+    'systemctl is-enabled "$unit"',
 )
 forbid(
-    "nix/scripts/provision-host",
+    "nix/scripts/homelab-host",
     "systemctl is-active k3s.service k3s-agent.service homelab-k3s.service",
 )
 require(
@@ -3823,9 +3963,9 @@ forbid(
 require(
     "nix/scripts/homelab-host",
     "systemctl is-active iscsid.service",
-    "systemctl is-enabled open-iscsi.service",
+    'systemctl is-enabled "$ISCSI_LOGIN_SERVICE"',
     "find /etc/iscsi/nodes -mindepth 1 -print -quit",
-    "systemctl is-active open-iscsi.service",
+    'systemctl is-active "$ISCSI_LOGIN_SERVICE"',
 )
 forbid(
     "nix/scripts/homelab-host",
@@ -4352,7 +4492,7 @@ check_time_sync_waits()
 check_wireguard_rollback_failure_continuation()
 check_firewall_restore_waits()
 check_cilium_restart_waits()
-check_provision_active_service_guard()
+check_onboard_k3s_install_guard()
 check_iscsi_service_verification()
 check_rollback_restored_services()
 check_legacy_cleanup_path_verification()

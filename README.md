@@ -35,7 +35,7 @@ nix run .#rotate-psk -- --link wg0-n2p1-n2p2
 
 ## Migration progress
 
-2026-09-01 기준 Linux host migration 진행 상태:
+2026-09-02 기준 Linux host migration 진행 상태:
 
 - Nix 관리 완료: `n2p1`, `n2p2`, `rpi4`, `rock5bp`, `macmini`, `rpi5`
 - Ansible host 관리 잔여: 없음
@@ -166,11 +166,13 @@ nix run .#homelab-host -- commit <new-node>
 nix run .#decommission-host -- <old-node>
 ```
 
-변경된 노드의 WireGuard peer만 갱신할 때는 `nix run .#rollout-peers -- <host>`를 사용한다. `onboard-k3s-node`는 이미 standard install layout이 있고 K3s state/service가 없는 대상에 대한 낮은 수준의 준비 명령으로 유지한다.
+변경된 노드의 WireGuard peer만 갱신할 때는 `nix run .#rollout-peers -- <host>`를 사용한다. `onboard-k3s-node`는 K3s state와 active/enabled legacy service가 없는 대상에 대해 healthy server의 live version으로 standard install layout을 설치하되 service enable/start는 건너뛰고, canonical token을 host ciphertext에 복사한 뒤 guarded `prepare`까지 실행한다. 신규 provisioning host뿐 아니라 이미 Nix-managed인 active host에 K3s 역할을 추가할 때도 같은 명령을 사용한다.
+
+`macmini`의 Runbear Cloudflare WARP client는 loopback DNS proxy(`127.0.2.2`, `127.0.2.3`)를 `systemd-resolved`에 동적으로 등록한다. 따라서 이 host의 global `DNSOverTLS`만 `opportunistic`으로 두어 local proxy에는 평문 loopback DNS를 허용하고, `end0` link는 계속 `DNSOverTLS=yes`와 DNSSEC를 강제한다. WARP가 연결되면 upstream DNS는 WARP의 DoH 정책을 따르며, WARP가 없는 다른 host의 strict DoT 계약은 바뀌지 않는다.
 
 K3s version과 순차 rollout은 기존 Rancher `system-upgrade-controller`가 단독 소유한다. Nix topology는 K3s version을 선언하거나 binary를 Nix store에 고정하지 않는다. `homelab-k3s.service`는 install-script layout의 `/usr/local/bin/k3s`를 `exec`하고 `Restart=always`로 실행하므로, Rancher `k3s-upgrade`가 binary를 교체하고 기존 process를 종료하면 systemd가 동일 unit을 새 binary로 다시 시작한다. 기존 `k3s.service`/`k3s-agent.service` unit은 cutover 후 제거하지만 `/usr/local/bin/k3s`와 install helper는 유지한다.
 
-`n2p1`, `n2p2`, `rpi4`, `rpi5`, `rock5bp`는 live iSCSI client dependency를 유지한다. `rock5bp`의 NAS plane은 계속 외부 소유다. Nix는 ZFS pool/dataset/zvol, rtslib/targetcli, Samba/NFS, storage cron, `democratic-csi` uid/gid 1001 identity, `/home/democratic-csi/.ssh/authorized_keys`, `/etc/sudoers.d/democratic-csi`, native firewall file/runtime chain을 선언하거나 쓰지 않는다. Commit generation의 sshd는 기존 home key lookup과 managed admin-key lookup을 함께 유지한다.
+`n2p1`, `n2p2`, `rpi4`, `rpi5`, `rock5bp`, `macmini`는 live iSCSI client dependency를 유지한다. Debian 계열은 `open-iscsi.service`, Arch Linux는 `iscsi.service`를 login unit으로 사용하며 두 계열 모두 `iscsid.service`를 먼저 기동한다. `rock5bp`의 NAS plane은 계속 외부 소유다. Nix는 ZFS pool/dataset/zvol, rtslib/targetcli, Samba/NFS, storage cron, `democratic-csi` uid/gid 1001 identity, `/home/democratic-csi/.ssh/authorized_keys`, `/etc/sudoers.d/democratic-csi`, native firewall file/runtime chain을 선언하거나 쓰지 않는다. Commit generation의 sshd는 기존 home key lookup과 managed admin-key lookup을 함께 유지한다.
 
 ## Ansible ownership boundary
 

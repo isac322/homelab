@@ -121,6 +121,10 @@
               rpi5 = self.systemConfigs.rpi5.config;
               n2p1 = self.systemConfigs.n2p1.config;
               n2p1Commit = self.systemConfigs."n2p1-commit".config;
+              macmini = self.systemConfigs.macmini.config;
+              macminiK3s = macmini.environment.etc."rancher/k3s/config.yaml".text;
+              macminiLan = macmini.environment.etc."systemd/network/10-homelab-lan.network".text;
+              macminiResolved = macmini.environment.etc."systemd/resolved.conf".text;
               rockWg = rock.environment.etc."systemd/network/99-wg0.netdev".text;
               rockNetworkdCredentials =
                 rock.environment.etc."systemd/system/systemd-networkd.service.d/50-homelab-wireguard-credentials.conf".text;
@@ -183,6 +187,24 @@
             assert preservationOwnershipIsExplicit;
             assert topology.nodes.rock5bp.preserveNasState;
             assert !(topology.nodes.n2p1.preserveNasState);
+            assert topology.nodes.macmini.k3sRole == "agent";
+            assert topology.nodes.macmini.iscsiClient;
+            assert topology.nodes.macmini.resolvedDnsOverTls == "opportunistic";
+            assert lib.hasInfix "DNSOverTLS=opportunistic" macminiResolved;
+            assert lib.hasInfix "DNSOverTLS=yes" macminiLan;
+            assert lib.hasInfix "server: https://k8s.backbone.homelab.bhyoo.com:6443" macminiK3s;
+            assert lib.hasInfix "node-ip: 192.168.219.8" macminiK3s;
+            assert lib.hasInfix "node-external-ip: 10.222.0.6" macminiK3s;
+            assert lib.hasInfix "exec /usr/local/bin/k3s agent" macmini.systemd.services.homelab-k3s.script;
+            assert builtins.elem "open-iscsi" macmini.homelab.distroPackages.present;
+            assert builtins.elem "lsscsi" macmini.homelab.distroPackages.present;
+            assert builtins.elem "sg3_utils" macmini.homelab.distroPackages.present;
+            assert !(builtins.elem "sg3-utils" macmini.homelab.distroPackages.present);
+            assert !(builtins.elem "scsitools" macmini.homelab.distroPackages.present);
+            assert builtins.elem "iptables.service" macmini.systemd.services.homelab-k3s.requires;
+            assert builtins.elem "iscsid.service" macmini.systemd.services.homelab-k3s.after;
+            assert builtins.elem "iscsi.service" macmini.systemd.services.homelab-k3s.after;
+            assert !(builtins.elem "open-iscsi.service" macmini.systemd.services.homelab-k3s.after);
             assert rock.homelab.firewall.manageRules == false;
             assert rpi5.homelab.firewall.manageRules;
             assert !(builtins.elem "cron" rock.homelab.distroPackages.absent);

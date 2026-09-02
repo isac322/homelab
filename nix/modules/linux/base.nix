@@ -113,7 +113,7 @@ in
           DNS=1.1.1.1#cloudflare-dns.com
           FallbackDNS=1.0.0.1#cloudflare-dns.com
           DNSSEC=yes
-          DNSOverTLS=yes
+          DNSOverTLS=${hostConfig.resolvedDnsOverTls}
           MulticastDNS=yes
           LLMNR=no
         '';

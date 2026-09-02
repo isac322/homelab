@@ -438,7 +438,7 @@ verify_wireguard_runtime() {
 }
 
 apply_native_runtime() {
-  local host=$1 default_interface lan_address zram interfaces interface backend firewall_service ssh_service role manage_rules command
+  local host=$1 default_interface lan_address zram interfaces interface backend firewall_service ssh_service role manage_rules iscsi_client iscsi_login_service command
   assert_iptables_nft_backend "$host"
   default_interface=$(host_field "$host" defaultInterface 2>/dev/null || true)
   lan_address=$(host_field "$host" lanAddress 2>/dev/null || true)
@@ -447,22 +447,29 @@ apply_native_runtime() {
   backend=$(host_field "$host" packageBackend)
   role=$(host_field "$host" k3sRole 2>/dev/null || true)
   manage_rules=$(manage_firewall_rules "$host")
+  iscsi_client=$(nix_eval --json "$root#topology.nodes.$host.iscsiClient")
   if [ "$backend" = pacman ]; then
     firewall_service=iptables.service
     ssh_service=sshd.service
+    iscsi_login_service=iscsi.service
   else
     firewall_service=netfilter-persistent.service
     ssh_service=ssh.service
+    iscsi_login_service=open-iscsi.service
   fi
   printf -v command \
-    'sudo -n env HOST_NAME=%q DEFAULT_INTERFACE=%q STATIC_LAN=%q ZRAM=%q WG_INTERFACES=%q FIREWALL_SERVICE=%q SSH_SERVICE=%q ROLE=%q MANAGE_FIREWALL_RULES=%q sh -s' \
+    'sudo -n env HOST_NAME=%q DEFAULT_INTERFACE=%q STATIC_LAN=%q ZRAM=%q WG_INTERFACES=%q FIREWALL_SERVICE=%q SSH_SERVICE=%q ROLE=%q MANAGE_FIREWALL_RULES=%q ISCSI_CLIENT=%q ISCSI_LOGIN_SERVICE=%q sh -s' \
     "$host" "$default_interface" "$([ -n "$lan_address" ] && [ "$lan_address" != null ] && printf true || printf false)" \
-    "$zram" "$interfaces" "$firewall_service" "$ssh_service" "$role" "$manage_rules"
+    "$zram" "$interfaces" "$firewall_service" "$ssh_service" "$role" "$manage_rules" "$iscsi_client" "$iscsi_login_service"
   remote "$host" "$command" <<'REMOTE_NATIVE_RUNTIME'
 set -eu
 systemctl daemon-reload
 systemctl enable systemd-networkd.service systemd-resolved.service systemd-timesyncd.service
 if test "$MANAGE_FIREWALL_RULES" = true; then systemctl enable "$FIREWALL_SERVICE"; fi
+if test "$ISCSI_CLIENT" = true; then
+  systemctl enable iscsid.service "$ISCSI_LOGIN_SERVICE"
+  systemctl start iscsid.service "$ISCSI_LOGIN_SERVICE"
+fi
 if test "$ROLE" = server || test "$ROLE" = agent; then
   systemctl enable homelab-k3s.service
 fi
@@ -1517,9 +1524,51 @@ REMOTE_K3S_COLD_BACKUP
       exit 1
     }
     role=$(host_field "$host" k3sRole 2>/dev/null || true)
-    test -n "$role" && test "$role" != null
-    remote "$host" 'test -x /usr/local/bin/k3s && test ! -d /var/lib/rancher/k3s && test "$(systemctl is-active k3s.service k3s-agent.service homelab-k3s.service 2>/dev/null | grep -c "^active$" || true)" -eq 0'
-    "$root/nix/scripts/wireguard-secrets" copy-k3s-token --from "$source_host" --to "$host" --write
+    test "$role" = server || test "$role" = agent || {
+      echo "$host must have a K3s role before onboarding" >&2
+      exit 1
+    }
+    source_role=$(host_field "$source_host" k3sRole 2>/dev/null || true)
+    test "$source_role" = server || {
+      echo "$source_host must be an existing K3s server" >&2
+      exit 1
+    }
+    remote "$host" 'test ! -e /var/lib/rancher/k3s && for unit in k3s.service k3s-agent.service homelab-k3s.service; do test "$(systemctl is-active "$unit" 2>/dev/null || true)" != active && test "$(systemctl is-enabled "$unit" 2>/dev/null || true)" != enabled; done'
+    if ! remote "$host" 'test -x /usr/local/bin/k3s'; then
+      version=$(remote "$source_host" 'sudo -n /usr/local/bin/k3s --version' | sed -n 's/^k3s version v\([^ ]*\).*/\1/p')
+      test -n "$version" || {
+        echo "could not determine the live K3s version on $source_host" >&2
+        exit 1
+      }
+      printf -v command 'sudo -n env K3S_VERSION=%q K3S_ROLE=%q sh -s' "v$version" "$role"
+      remote "$host" "$command" <<'REMOTE_K3S_INSTALL'
+set -eu
+test ! -e /var/lib/rancher/k3s
+for unit in k3s.service k3s-agent.service homelab-k3s.service; do
+  test "$(systemctl is-active "$unit" 2>/dev/null || true)" != active
+  test "$(systemctl is-enabled "$unit" 2>/dev/null || true)" != enabled
+done
+installer=$(mktemp /tmp/k3s-install.XXXXXX)
+cleanup_installer() { rm -f -- "$installer"; }
+trap cleanup_installer EXIT HUP INT TERM
+curl --proto '=https' --tlsv1.2 -fsSL -o "$installer" https://get.k3s.io
+test -s "$installer"
+INSTALL_K3S_SKIP_ENABLE=true \
+  INSTALL_K3S_SKIP_START=true \
+  INSTALL_K3S_VERSION="$K3S_VERSION" \
+  INSTALL_K3S_EXEC="$K3S_ROLE" \
+  sh "$installer"
+test -x /usr/local/bin/k3s
+test ! -e /var/lib/rancher/k3s
+for unit in k3s.service k3s-agent.service homelab-k3s.service; do
+  test "$(systemctl is-active "$unit" 2>/dev/null || true)" != active
+  test "$(systemctl is-enabled "$unit" 2>/dev/null || true)" != enabled
+done
+REMOTE_K3S_INSTALL
+    fi
+    if ! "$root/nix/scripts/wireguard-secrets" copy-k3s-token --from "$source_host" --to "$host" --check >/dev/null 2>&1; then
+      "$root/nix/scripts/wireguard-secrets" copy-k3s-token --from "$source_host" --to "$host" --write
+    fi
     "$0" prepare "$host"
     ;;
   reconcile-distro-packages)
@@ -1582,18 +1631,20 @@ REMOTE_K3S_COLD_BACKUP
       firewall_rules=/etc/iptables/iptables.rules
       firewall_service=iptables.service
       ssh_service=sshd.service
+      iscsi_login_service=iscsi.service
     else
       firewall_rules=/etc/iptables/rules.v4
       firewall_service=netfilter-persistent.service
       ssh_service=ssh.service
+      iscsi_login_service=open-iscsi.service
     fi
     democratic_csi_key_sha=
     if [ "$iscsi_server" = true ] && [ "$preserve" != true ]; then
       democratic_csi_key_sha=$(sha256sum "$root/ssh_pub_keys/democratic-csi.pub" | awk '{print $1}')
     fi
     printf -v verify_command \
-      'env PATH=/usr/local/sbin:/usr/local/bin:/usr/sbin:/usr/bin:/sbin:/bin HOST_NAME=%q ROLE=%q ISCSI_CLIENT=%q ISCSI_SERVER=%q PRESERVE_NAS_STATE=%q MANAGE_FIREWALL_RULES=%q ZRAM=%q DEMOCRATIC_CSI_KEY_SHA=%q LAN_ADDRESS=%q GATEWAY_ADDRESS=%q DEFAULT_INTERFACE=%q FIREWALL_RULES=%q FIREWALL_SERVICE=%q SSH_SERVICE=%q ADMIN_USER=%q SAMBA_CLIENTS=%q NETBIOS=%q LOCAL_NETWORK=%q LOCALTIME_SOURCE=%q sh -s' \
-      "$host" "$role" "$iscsi_client" "$iscsi_server" "$preserve" "$manage_rules" "$zram" "$democratic_csi_key_sha" \
+      'env PATH=/usr/local/sbin:/usr/local/bin:/usr/sbin:/usr/bin:/sbin:/bin HOST_NAME=%q ROLE=%q ISCSI_CLIENT=%q ISCSI_LOGIN_SERVICE=%q ISCSI_SERVER=%q PRESERVE_NAS_STATE=%q MANAGE_FIREWALL_RULES=%q ZRAM=%q DEMOCRATIC_CSI_KEY_SHA=%q LAN_ADDRESS=%q GATEWAY_ADDRESS=%q DEFAULT_INTERFACE=%q FIREWALL_RULES=%q FIREWALL_SERVICE=%q SSH_SERVICE=%q ADMIN_USER=%q SAMBA_CLIENTS=%q NETBIOS=%q LOCAL_NETWORK=%q LOCALTIME_SOURCE=%q sh -s' \
+      "$host" "$role" "$iscsi_client" "$iscsi_login_service" "$iscsi_server" "$preserve" "$manage_rules" "$zram" "$democratic_csi_key_sha" \
       "$lan_address" "$gateway_address" "$default_interface" "$firewall_rules" "$firewall_service" "$ssh_service" \
       "$admin_user" "$samba_clients" "$netbios" "$local_network" "$localtime_source"
     remote "$host" "$verify_command" <<'REMOTE_VERIFY'
@@ -1714,9 +1765,9 @@ fi
 stage=iscsi-client
 if test "$ISCSI_CLIENT" = true; then
   systemctl is-active iscsid.service
-  systemctl is-enabled open-iscsi.service
+  systemctl is-enabled "$ISCSI_LOGIN_SERVICE"
   if find /etc/iscsi/nodes -mindepth 1 -print -quit 2>/dev/null | grep -q .; then
-    systemctl is-active open-iscsi.service
+    systemctl is-active "$ISCSI_LOGIN_SERVICE"
   fi
 fi
 stage=iscsi-server
