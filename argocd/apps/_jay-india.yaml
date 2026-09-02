@@ -1,0 +1,69 @@
+# CRDs
+apiVersion: argoproj.io/v1alpha1
+kind: Application
+metadata:
+  name: jay-india
+  finalizers:
+    - resources-finalizer.argocd.argoproj.io
+spec:
+  destination:
+    name: prod
+    namespace: jay-india
+  project: jay-india
+  sources:
+    - repoURL: https://github.com/isac322/homelab.git
+      targetRevision: HEAD
+      ref: homelab
+    - chart: jay-india
+      helm:
+        valueFiles:
+          - values.yaml
+          - $homelab/values/jay-india/prod.yaml
+      repoURL: https://charts.bhyoo.com
+      targetRevision: 0.3.0
+  syncPolicy:
+    automated:
+      prune: true
+      selfHeal: true
+    retry:
+      backoff:
+        duration: 5s
+        factor: 2
+        maxDuration: 3m0s
+      limit: 100
+    syncOptions:
+      - CreateNamespace=true
+    managedNamespaceMetadata:
+      labels:
+        homelab.bhyoo.com/cloudflare-origin-ca-key-required: 'true'
+---
+apiVersion: argoproj.io/v1alpha1
+kind: Application
+metadata:
+  name: jay-india-origin-ca-issuer
+  finalizers:
+    - resources-finalizer.argocd.argoproj.io
+spec:
+  destination:
+    name: prod
+    namespace: jay-india
+  project: jay-india
+  source:
+    path: apps/objects/cloudflare-origin-ca-issuer
+    repoURL: https://github.com/isac322/homelab.git
+    targetRevision: HEAD
+  syncPolicy:
+    automated:
+      prune: true
+      selfHeal: true
+    retry:
+      backoff:
+        duration: 5s
+        factor: 2
+        maxDuration: 3m0s
+      limit: 100
+    syncOptions:
+      - CreateNamespace=true
+    managedNamespaceMetadata:
+      labels:
+        homelab.bhyoo.com/cloudflare-origin-ca-key-required: 'true'

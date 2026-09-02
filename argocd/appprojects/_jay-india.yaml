@@ -1,0 +1,15 @@
+apiVersion: argoproj.io/v1alpha1
+kind: AppProject
+metadata:
+  name: jay-india
+spec:
+  description: Jay's india static web page
+  sourceRepos:
+    - https://charts.bhyoo.com
+    - https://github.com/isac322/homelab.git
+  destinations:
+    - namespace: jay-india
+      name: prod
+  clusterResourceWhitelist:
+    - group: '*'
+      kind: '*'

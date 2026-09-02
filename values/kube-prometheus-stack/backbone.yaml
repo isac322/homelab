@@ -431,6 +431,75 @@ grafana:
                 severity: warning
                 managed_by: gitops
               isPaused: false
+            - uid: infra-prometheus-wal-failure
+              title: Prometheus WAL integrity failure
+              condition: B
+              data:
+                - refId: A
+                  relativeTimeRange:
+                    from: 1200
+                    to: 0
+                  datasourceUid: prometheus
+                  model:
+                    datasource:
+                      type: prometheus
+                      uid: prometheus
+                    editorMode: code
+                    expr: >-
+                      sum(increase(prometheus_tsdb_wal_corruptions_total{
+                      cluster="backbone", job="shared-prometheus"}[15m]))
+                      +
+                      sum(increase(prometheus_tsdb_wal_writes_failed_total{
+                      cluster="backbone", job="shared-prometheus"}[15m]))
+                    instant: true
+                    intervalMs: 60000
+                    legendFormat: __auto
+                    maxDataPoints: 43200
+                    range: false
+                    refId: A
+                - refId: B
+                  relativeTimeRange:
+                    from: 0
+                    to: 0
+                  datasourceUid: __expr__
+                  model:
+                    conditions:
+                      - evaluator:
+                          params:
+                            - 0
+                          type: gt
+                        operator:
+                          type: and
+                        query:
+                          params:
+                            - B
+                        reducer:
+                          params: []
+                          type: last
+                        type:
+                          type: query
+                    datasource:
+                      type: __expr__
+                      uid: __expr__
+                    expression: A
+                    intervalMs: 60000
+                    maxDataPoints: 43200
+                    refId: B
+                    type: threshold
+              noDataState: OK
+              execErrState: Error
+              for: 1m
+              annotations:
+                display_name: Prometheus WAL 무결성 오류
+                target: Prometheus WAL
+                current_value: '{{`{{ with $values.A }}{{ printf "%.0f건" .Value }}{{ else }}값 없음{{ end }}`}}'
+                threshold: 최근 15분 동안 WAL 손상 또는 쓰기 실패가 1건 이상 발생
+                description: Prometheus 로그와 WAL, PVC 상태를 확인하세요.
+                summary: Prometheus WAL 손상 또는 쓰기 실패가 감지되었습니다.
+              labels:
+                severity: critical
+                managed_by: gitops
+              isPaused: false
 
     templates.yaml:
       apiVersion: 1
