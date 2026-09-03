@@ -9,20 +9,21 @@ controllerServiceAccount:
   namespace: arc-systems
   name: arc-gha-rs-controller
 
-# Official ARC runner image with chart dind sidecar. containerMode is left
-# empty so the injected latest tags can be replaced with digest pins.
+# Official ARC runner plus gcc/pkg-config. Rust build scripts need `cc`.
+# containerMode is left empty so the injected latest tags can be replaced
+# with digest pins.
 template:
   spec:
     initContainers:
       - name: init-dind-externals
-        image: ghcr.io/actions/actions-runner:2.337.0@sha256:e5496277be5d09bc968b3d64911b74e219ac4a3f2edce956a3ecf9271bea1ef4
+        image: ghcr.io/isac322/gha-actions-runner:2.337.0-cc@sha256:106cfac2c960b03ba52ab3b4f53bcb8117e90dbd4a1409c92df52e16943f44b0
         command: ["cp", "-r", "/home/runner/externals/.", "/home/runner/tmpDir/"]
         volumeMounts:
           - name: dind-externals
             mountPath: /home/runner/tmpDir
     containers:
       - name: runner
-        image: ghcr.io/actions/actions-runner:2.337.0@sha256:e5496277be5d09bc968b3d64911b74e219ac4a3f2edce956a3ecf9271bea1ef4
+        image: ghcr.io/isac322/gha-actions-runner:2.337.0-cc@sha256:106cfac2c960b03ba52ab3b4f53bcb8117e90dbd4a1409c92df52e16943f44b0
         command: ["/home/runner/run.sh"]
         env:
           - name: DOCKER_HOST
@@ -56,6 +57,7 @@ template:
           initialDelaySeconds: 0
           failureThreshold: 24
           periodSeconds: 5
+          timeoutSeconds: 5
         volumeMounts:
           - name: work
             mountPath: /home/runner/_work
