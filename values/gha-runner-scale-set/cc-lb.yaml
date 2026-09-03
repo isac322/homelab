@@ -9,27 +9,31 @@ controllerServiceAccount:
   namespace: arc-systems
   name: arc-gha-rs-controller
 
-# Official ARC runner plus gcc/pkg-config. Rust build scripts need `cc`.
-# containerMode is left empty so the injected latest tags can be replaced
-# with digest pins.
+# Official ARC image has no C toolchain. Add clang (not gcc) to match
+# isac322/cc-lb .github/runner-image, and pin the digest.
+# containerMode is left empty so chart latest tags can be replaced.
 template:
   spec:
     initContainers:
       - name: init-dind-externals
-        image: ghcr.io/isac322/gha-actions-runner:2.337.0-cc@sha256:106cfac2c960b03ba52ab3b4f53bcb8117e90dbd4a1409c92df52e16943f44b0
+        image: ghcr.io/isac322/gha-actions-runner:2.337.0-cc@sha256:57eb36838d1e2dad5082357f6e63aba8dd2d3b28629789024f21a160fd83451f
         command: ["cp", "-r", "/home/runner/externals/.", "/home/runner/tmpDir/"]
         volumeMounts:
           - name: dind-externals
             mountPath: /home/runner/tmpDir
     containers:
       - name: runner
-        image: ghcr.io/isac322/gha-actions-runner:2.337.0-cc@sha256:106cfac2c960b03ba52ab3b4f53bcb8117e90dbd4a1409c92df52e16943f44b0
+        image: ghcr.io/isac322/gha-actions-runner:2.337.0-cc@sha256:57eb36838d1e2dad5082357f6e63aba8dd2d3b28629789024f21a160fd83451f
         command: ["/home/runner/run.sh"]
         env:
           - name: DOCKER_HOST
             value: unix:///var/run/docker.sock
           - name: RUNNER_WAIT_FOR_DOCKER_IN_SECONDS
             value: "120"
+          - name: CC
+            value: clang
+          - name: CXX
+            value: clang++
         resources:
           requests:
             cpu: "1"
