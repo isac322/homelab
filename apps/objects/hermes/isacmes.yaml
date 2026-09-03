@@ -324,6 +324,21 @@ spec:
             chat_id: "5286349319"
             name: bhyoo
             user_id: "5286349319"
+      platform_hints:
+        telegram:
+          append: |
+            Camofox human browser handoff contract:
+            - Whenever user interaction in the Camofox browser is required,
+              including login, CAPTCHA, 2FA, consent, credential entry, file
+              selection, sensitive submission, or visual confirmation, you MUST
+              include this direct VNC link in the same message:
+              https://isacmes-vnc.bhyoo.com/vnc.html?autoconnect=true&resize=scale
+            - State the target site or page and the exact action the user must
+              complete, keep the current browser session and tab open, and ask
+              the user to reply when finished.
+            - Never merely ask the user to use or check "the browser" without
+              the VNC link. Never expose loopback addresses, internal ports,
+              Camofox API keys, or VNC passwords.
       memory:
         provider: hindsight
       auxiliary:
