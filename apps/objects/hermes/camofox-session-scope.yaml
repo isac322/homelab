@@ -26,8 +26,8 @@ data:
     codex = target_codex.read_text()
     codex = replace_once(
         codex,
-        "import json\nimport re",
-        "import json\nimport os\nimport re",
+        "import json\nimport logging\nimport re",
+        "import json\nimport logging\nimport os\nimport re",
         "native web search os import",
     )
     native_web_search = "\n".join(
