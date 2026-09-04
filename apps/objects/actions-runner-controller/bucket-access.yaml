@@ -1,0 +1,9 @@
+apiVersion: objectstorage.k8s.io/v1alpha1
+kind: BucketAccess
+metadata:
+  name: sccache
+spec:
+  bucketAccessClassName: versitygw
+  bucketClaimName: sccache
+  credentialsSecretName: sccache-bucket-creds
+  protocol: S3

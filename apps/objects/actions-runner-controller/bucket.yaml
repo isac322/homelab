@@ -1,0 +1,13 @@
+apiVersion: objectstorage.k8s.io/v1alpha1
+kind: Bucket
+metadata:
+  name: sccache
+spec:
+  bucketClaim:
+    name: sccache
+    namespace: arc-runners
+  bucketClassName: versitygw
+  driverName: versitygw.cosi.dev
+  deletionPolicy: Retain
+  protocols:
+    - S3
