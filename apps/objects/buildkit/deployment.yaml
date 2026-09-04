@@ -36,7 +36,7 @@ spec:
               containerPort: 6060
           resources:
             requests:
-              cpu: "2"
+              cpu: "4"
               memory: 4Gi
             limits:
               cpu: "4"
