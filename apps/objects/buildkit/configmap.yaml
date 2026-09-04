@@ -1,0 +1,16 @@
+apiVersion: v1
+kind: ConfigMap
+metadata:
+  name: buildkitd-config
+  namespace: arc-systems
+data:
+  buildkitd.toml: |
+    [registry."docker.io"]
+      mirrors = ["http://registry-docker-io.arc-systems.svc.cluster.local:5000"]
+      http = true
+      insecure = true
+
+    [registry."ghcr.io"]
+      mirrors = ["http://registry-ghcr-io.arc-systems.svc.cluster.local:5000"]
+      http = true
+      insecure = true

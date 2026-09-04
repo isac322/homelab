@@ -1,6 +1,6 @@
 githubConfigUrl: https://github.com/isac322/cc-lb
 githubConfigSecret: github-config
-runnerScaleSetName: oracle4-cc-lb-4
+runnerScaleSetName: cc-lb-4
 
 minRunners: 0
 maxRunners: 1
@@ -14,6 +14,7 @@ containerMode:
 
 # clippy/nextest/e2e; request 3 so k3s keeps a core
 # No DinD. Image builds go to buildkit.arc-systems.svc:1234.
+# actions/cache talks to the in-cluster cache server, not GitHub.
 template:
   spec:
     containers:
@@ -31,6 +32,12 @@ template:
             value: "false"
           - name: BUILDKIT_HOST
             value: tcp://buildkit.arc-systems.svc.cluster.local:1234
+          - name: ACTIONS_RESULTS_URL
+            value: http://gha-cache-server.arc-systems.svc.cluster.local:3000/
+          - name: CUSTOM_ACTIONS_RESULTS_URL
+            value: http://gha-cache-server.arc-systems.svc.cluster.local:3000/
+          - name: DISABLE_RUNNER_UPDATE
+            value: "true"
         resources:
           requests:
             cpu: 3
