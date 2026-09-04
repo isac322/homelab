@@ -11,6 +11,12 @@ controllerServiceAccount:
 
 containerMode:
   type: kubernetes
+  kubernetesModeWorkVolumeClaim:
+    accessModes: ["ReadWriteOnce"]
+    storageClassName: ssd-ha-xfs
+    resources:
+      requests:
+        storage: 10Gi
 
 # fmt/promtool/web/helm and docker-build clients; compile runs on BuildKit
 # No DinD. Image builds go to buildkit.arc-systems.svc:1234.

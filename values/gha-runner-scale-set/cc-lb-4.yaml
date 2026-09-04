@@ -11,6 +11,12 @@ controllerServiceAccount:
 
 containerMode:
   type: kubernetes
+  kubernetesModeWorkVolumeClaim:
+    accessModes: ["ReadWriteOnce"]
+    storageClassName: ssd-ha-xfs
+    resources:
+      requests:
+        storage: 10Gi
 
 # clippy/nextest/e2e; request 3 so k3s keeps a core
 # No DinD. Image builds go to buildkit.arc-systems.svc:1234.
