@@ -5,6 +5,34 @@ metadata:
   namespace: arc-systems
 data:
   buildkitd.toml: |
+    root = "/var/lib/buildkit"
+
+    [grpc]
+      address = ["unix:///run/buildkit/buildkitd.sock", "tcp://0.0.0.0:1234"]
+      debugAddress = "0.0.0.0:6060"
+
+    [history]
+      maxAge = 172800
+      maxEntries = 50
+
+    [worker.oci]
+      enabled = true
+      gc = true
+      reservedSpace = "10GB"
+      maxUsedSpace = "45GB"
+      minFreeSpace = "5GB"
+      max-parallelism = 4
+
+      [[worker.oci.gcpolicy]]
+        keepDuration = "48h"
+        reservedSpace = "100MB"
+        filters = ["type==source.local", "type==exec.cachemount", "type==source.git.checkout"]
+
+      [[worker.oci.gcpolicy]]
+        all = true
+        reservedSpace = "10GB"
+        maxUsedSpace = "45GB"
+
     [registry."docker.io"]
       mirrors = ["registry-docker-io.arc-systems.svc.cluster.local:5000"]
 
@@ -18,39 +46,3 @@ data:
     [registry."registry-ghcr-io.arc-systems.svc.cluster.local:5000"]
       http = true
       insecure = true
-  entrypoint.sh: |
-    #!/bin/sh
-    # Privileged BuildKit uses the host cgroup namespace, so runc workers land
-    # in /sys/fs/cgroup/buildkit on the node instead of the pod's kubepods
-    # slice. kubelet then reports 0 CPU/memory and cpu.max/memory.max never
-    # apply. Reparent into the CRI container cgroup before exec.
-    set -eu
-    cfg=/etc/buildkit/buildkitd.toml
-    if [ ! -d /sys/fs/cgroup/kubepods.slice ]; then
-      exec buildkitd --config "$cfg" --addr unix:///run/buildkit/buildkitd.sock --addr tcp://0.0.0.0:1234
-    fi
-    uid=$(echo "${POD_UID}" | tr '-' '_')
-    slice=$(find /sys/fs/cgroup/kubepods.slice \
-      \( -name "kubepods-burstable-pod${uid}.slice" \
-      -o -name "kubepods-besteffort-pod${uid}.slice" \
-      -o -name "kubepods-pod${uid}.slice" \) -type d | head -n 1)
-    if [ -z "${slice}" ]; then
-      exec buildkitd --config "$cfg" --addr unix:///run/buildkit/buildkitd.sock --addr tcp://0.0.0.0:1234
-    fi
-    scope=$(find "${slice}" -maxdepth 1 -type d -name 'cri-containerd-*.scope' | head -n 1)
-    if [ -z "${scope}" ]; then
-      exec buildkitd --config "$cfg" --addr unix:///run/buildkit/buildkitd.sock --addr tcp://0.0.0.0:1234
-    fi
-    initcg="${scope}/init"
-    mkdir -p "${initcg}"
-    echo $$ > "${initcg}/cgroup.procs"
-    if [ ! -s "${scope}/cgroup.subtree_control" ]; then
-      echo '+cpu +memory +io +pids' > "${scope}/cgroup.subtree_control" || true
-    fi
-    parent=${scope#/sys/fs/cgroup}
-    runtime_cfg=/tmp/buildkitd.toml
-    {
-      cat "$cfg"
-      printf '\n[worker.oci]\n  defaultCgroupParent = "%s"\n' "${parent}"
-    } > "${runtime_cfg}"
-    exec buildkitd --config "${runtime_cfg}" --addr unix:///run/buildkit/buildkitd.sock --addr tcp://0.0.0.0:1234

@@ -14,19 +14,26 @@ spec:
     metadata:
       labels:
         app: buildkit
+      annotations:
+        checksum/config: df4ea3370cc3fa67c0964f7ea374bf200d43d3c1f68ee6f8e8c887cbea1f75a5
     spec:
+      terminationGracePeriodSeconds: 30
       containers:
         - name: buildkitd
-          image: docker.io/moby/buildkit:v0.25.2@sha256:0f63d66f8d2de0bd16438284831a3e9ee6ca7cd57b6eb3ed6e38a7a456590fa7
-          command: ["/bin/sh", "/etc/buildkit/entrypoint.sh"]
+          image: docker.io/moby/buildkit:v0.33.0@sha256:6c2fa84a6b61ccd72899dde4239f8d5717f05f9a8ca6f3cad185fb1a95a94de3
+          args:
+            - --config
+            - /etc/buildkit/buildkitd.toml
           env:
-            - name: POD_UID
-              valueFrom:
-                fieldRef:
-                  fieldPath: metadata.uid
+            - name: GOMAXPROCS
+              value: "4"
+            - name: BUILDKIT_HOST
+              value: unix:///run/buildkit/buildkitd.sock
           ports:
             - name: buildkit
               containerPort: 1234
+            - name: debug
+              containerPort: 6060
           resources:
             requests:
               cpu: "2"
@@ -42,16 +49,26 @@ spec:
             - name: config
               mountPath: /etc/buildkit
               readOnly: true
+          startupProbe:
+            exec:
+              command: ["buildctl", "debug", "workers"]
+            periodSeconds: 1
+            timeoutSeconds: 1
+            failureThreshold: 60
           readinessProbe:
-            tcpSocket:
-              port: 1234
-            periodSeconds: 5
-            failureThreshold: 6
+            exec:
+              command: ["buildctl", "debug", "workers"]
+            initialDelaySeconds: 5
+            periodSeconds: 30
+            timeoutSeconds: 5
+            failureThreshold: 5
           livenessProbe:
-            tcpSocket:
-              port: 1234
-            periodSeconds: 15
-            failureThreshold: 4
+            exec:
+              command: ["buildctl", "debug", "workers"]
+            initialDelaySeconds: 5
+            periodSeconds: 30
+            timeoutSeconds: 5
+            failureThreshold: 5
       volumes:
         - name: cache
           persistentVolumeClaim:
@@ -59,4 +76,3 @@ spec:
         - name: config
           configMap:
             name: buildkitd-config
-            defaultMode: 0555
