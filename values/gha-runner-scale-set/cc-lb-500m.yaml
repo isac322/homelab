@@ -44,6 +44,48 @@ template:
             value: http://gha-cache-server.arc-systems.svc.cluster.local:3000/
           - name: DISABLE_RUNNER_UPDATE
             value: "true"
+          - name: AWS_ACCESS_KEY_ID
+            valueFrom:
+              secretKeyRef:
+                name: sccache-s3
+                key: AWS_ACCESS_KEY_ID
+                optional: true
+          - name: AWS_SECRET_ACCESS_KEY
+            valueFrom:
+              secretKeyRef:
+                name: sccache-s3
+                key: AWS_SECRET_ACCESS_KEY
+                optional: true
+          - name: SCCACHE_BUCKET
+            valueFrom:
+              secretKeyRef:
+                name: sccache-s3
+                key: SCCACHE_BUCKET
+                optional: true
+          - name: SCCACHE_ENDPOINT
+            valueFrom:
+              secretKeyRef:
+                name: sccache-s3
+                key: SCCACHE_ENDPOINT
+                optional: true
+          - name: SCCACHE_REGION
+            valueFrom:
+              secretKeyRef:
+                name: sccache-s3
+                key: SCCACHE_REGION
+                optional: true
+          - name: SCCACHE_S3_USE_SSL
+            valueFrom:
+              secretKeyRef:
+                name: sccache-s3
+                key: SCCACHE_S3_USE_SSL
+                optional: true
+          - name: SCCACHE_S3_KEY_PREFIX
+            valueFrom:
+              secretKeyRef:
+                name: sccache-s3
+                key: SCCACHE_S3_KEY_PREFIX
+                optional: true
         resources:
           requests:
             cpu: 500m

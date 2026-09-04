@@ -1,0 +1,27 @@
+apiVersion: external-secrets.io/v1
+kind: ExternalSecret
+metadata:
+  name: sccache-s3
+spec:
+  refreshInterval: 1h
+  secretStoreRef:
+    name: kubernetes
+    kind: SecretStore
+  target:
+    name: sccache-s3
+    creationPolicy: Owner
+    template:
+      engineVersion: v2
+      data:
+        AWS_ACCESS_KEY_ID: "{{ (.BucketInfo | fromJson).spec.secretS3.accessKeyID }}"
+        AWS_SECRET_ACCESS_KEY: "{{ (.BucketInfo | fromJson).spec.secretS3.accessSecretKey }}"
+        SCCACHE_BUCKET: "{{ (.BucketInfo | fromJson).spec.bucketName }}"
+        SCCACHE_ENDPOINT: http://versitygw.object-storage.svc.cluster.local:7070
+        SCCACHE_REGION: us-east-1
+        SCCACHE_S3_USE_SSL: "false"
+        SCCACHE_S3_KEY_PREFIX: cc-lb
+  data:
+    - secretKey: BucketInfo
+      remoteRef:
+        key: sccache-bucket-creds
+        property: BucketInfo
