@@ -2,12 +2,14 @@ fullnameOverride: gha-cache-server
 
 image:
   repository: ghcr.io/falcondev-oss/github-actions-cache-server
-  tag: 9.4.7@sha256:318a568e4eba358dbe5978338353a4101b527996a076746ba781a32c6ed19543
+  tag: 9.7.0@sha256:3999b0202ec509f3b2084ef92cc50b408838e0d442b5997dd6dff2d89f4fe7b4
 
 config:
   apiBaseUrl: http://gha-cache-server.arc-systems.svc.cluster.local:3000
   cacheCleanupOlderThanDays: 14
-  cacheMaxSizeBytes: 42949672960
+  cacheMaxSizeBytes: "42949672960"
+  cacheFilesystemMaxUsagePercent: 90
+  orphanedStorageGracePeriodHours: 24
   storage:
     driver: filesystem
     filesystem:

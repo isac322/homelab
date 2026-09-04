@@ -146,7 +146,7 @@ spec:
         valueFiles:
           - $homelab/values/gha-cache-server/backbone.yaml
       repoURL: ghcr.io/falcondev-oss/charts
-      targetRevision: 1.0.3
+      targetRevision: 1.1.3
   syncPolicy:
     automated:
       prune: true
