@@ -47,3 +47,7 @@ template:
         resources:
           requests:
             cpu: 3
+            memory: 8Gi
+          limits:
+            cpu: 3
+            memory: 8Gi
