@@ -41,6 +41,11 @@ metadata:
     app: registry-docker-io
 spec:
   replicas: 1
+  strategy:
+    type: RollingUpdate
+    rollingUpdate:
+      maxSurge: 0
+      maxUnavailable: 1
   selector:
     matchLabels:
       app: registry-docker-io
@@ -49,9 +54,10 @@ spec:
       labels:
         app: registry-docker-io
     spec:
+      enableServiceLinks: false
       containers:
         - name: registry
-          image: docker.io/library/registry:2.8.3@sha256:a3d8aaa63ed8681a604f1dea0aa03f100d5895b6a58ace528858a7b332415373
+          image: docker.io/library/registry:3.1.1@sha256:1be55279f18a2fe1a74edf2664cac61c1bea305b7b4642dab412e7affdcb3e33
           ports:
             - name: registry
               containerPort: 5000
@@ -63,7 +69,7 @@ spec:
               memory: 1Gi
           volumeMounts:
             - name: config
-              mountPath: /etc/docker/registry
+              mountPath: /etc/distribution
               readOnly: true
             - name: data
               mountPath: /var/lib/registry
