@@ -18,8 +18,8 @@ containerMode:
       requests:
         storage: 10Gi
 
-# clippy/nextest/e2e used to serialize here; max 2 fits two 3c/8Gi pods on rock5bp.
-# request 3 so a 4-core node still leaves a core for k3s.
+# nextest-cov p95 4.4c / 4.7Gi; e2e/clippy ~2.8c. 4c/6Gi on 8-core nodes.
+# max 2: two pods need 8c/12Gi, which fits rock5bp.
 # No DinD. Image builds go to buildkit.arc-systems.svc:1234.
 # actions/cache talks to the in-cluster cache server, not GitHub.
 template:
@@ -89,11 +89,11 @@ template:
                 optional: true
         resources:
           requests:
-            cpu: 3
-            memory: 8Gi
+            cpu: "4"
+            memory: 6Gi
           limits:
-            cpu: 3
-            memory: 8Gi
+            cpu: "4"
+            memory: 6Gi
 
 listenerTemplate:
   spec:
