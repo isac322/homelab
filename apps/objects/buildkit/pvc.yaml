@@ -1,0 +1,12 @@
+apiVersion: v1
+kind: PersistentVolumeClaim
+metadata:
+  name: buildkit-cache
+  namespace: arc-systems
+spec:
+  accessModes:
+    - ReadWriteOnce
+  storageClassName: ssd-ha-xfs
+  resources:
+    requests:
+      storage: 50Gi

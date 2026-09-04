@@ -9,65 +9,28 @@ controllerServiceAccount:
   namespace: arc-systems
   name: arc-gha-rs-controller
 
-# fmt, promtool, web, helm — 7d p50 0.09c, 79% peak ≤0.25c
-# Image digest shared across oracle4-cc-lb-{500m,1,2,4}.
+containerMode:
+  type: kubernetes
+
+# fmt/promtool/web/helm and docker-build clients; compile runs on BuildKit
+# No DinD. Image builds go to buildkit.arc-systems.svc:1234.
 template:
   spec:
-    initContainers:
-      - name: init-dind-externals
-        image: ghcr.io/isac322/cc-lb-actions-runner:2.337.0-cclb-20f79911f8e8@sha256:d4b215346fc04e7271816c5f9e6c132f7d7b47e629cef2864c4b516441980139
-        command: ["cp", "-r", "/home/runner/externals/.", "/home/runner/tmpDir/"]
-        volumeMounts:
-          - name: dind-externals
-            mountPath: /home/runner/tmpDir
     containers:
       - name: runner
         image: ghcr.io/isac322/cc-lb-actions-runner:2.337.0-cclb-20f79911f8e8@sha256:d4b215346fc04e7271816c5f9e6c132f7d7b47e629cef2864c4b516441980139
         command: ["/home/runner/run.sh"]
         env:
-          - name: DOCKER_HOST
-            value: unix:///var/run/docker.sock
-          - name: RUNNER_WAIT_FOR_DOCKER_IN_SECONDS
-            value: "120"
+          - name: ACTIONS_RUNNER_CONTAINER_HOOKS
+            value: /home/runner/k8s/index.js
+          - name: ACTIONS_RUNNER_POD_NAME
+            valueFrom:
+              fieldRef:
+                fieldPath: metadata.name
+          - name: ACTIONS_RUNNER_REQUIRE_JOB_CONTAINER
+            value: "false"
+          - name: BUILDKIT_HOST
+            value: tcp://buildkit.arc-systems.svc.cluster.local:1234
         resources:
           requests:
             cpu: 500m
-        volumeMounts:
-          - name: work
-            mountPath: /home/runner/_work
-          - name: dind-sock
-            mountPath: /var/run
-      - name: dind
-        image: docker:28-dind@sha256:2a232a42256f70d78e3cc5d2b5d6b3276710a0de0596c145f627ecfae90282ac
-        args:
-          - dockerd
-          - --host=unix:///var/run/docker.sock
-          - --group=$(DOCKER_GROUP_GID)
-        env:
-          - name: DOCKER_GROUP_GID
-            value: "123"
-        securityContext:
-          privileged: true
-        startupProbe:
-          exec:
-            command:
-              - docker
-              - info
-          initialDelaySeconds: 0
-          failureThreshold: 24
-          periodSeconds: 5
-          timeoutSeconds: 5
-        volumeMounts:
-          - name: work
-            mountPath: /home/runner/_work
-          - name: dind-sock
-            mountPath: /var/run
-          - name: dind-externals
-            mountPath: /home/runner/externals
-    volumes:
-      - name: work
-        emptyDir: {}
-      - name: dind-sock
-        emptyDir: {}
-      - name: dind-externals
-        emptyDir: {}
