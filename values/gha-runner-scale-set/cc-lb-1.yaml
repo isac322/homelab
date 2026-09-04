@@ -3,7 +3,7 @@ githubConfigSecret: github-config
 runnerScaleSetName: cc-lb-1
 
 minRunners: 0
-maxRunners: 2
+
 
 controllerServiceAccount:
   namespace: arc-systems
@@ -18,7 +18,8 @@ containerMode:
       requests:
         storage: 10Gi
 
-# cargo-deny and other rustc-install jobs
+# cargo-deny and other rustc-install jobs.
+# No maxRunners: ARC omits the cap and scales with the GitHub queue.
 # No DinD. Image builds go to buildkit.arc-systems.svc:1234.
 # actions/cache talks to the in-cluster cache server, not GitHub.
 template:

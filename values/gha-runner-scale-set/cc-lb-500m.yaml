@@ -3,7 +3,7 @@ githubConfigSecret: github-config
 runnerScaleSetName: cc-lb-500m
 
 minRunners: 0
-maxRunners: 2
+
 
 controllerServiceAccount:
   namespace: arc-systems
@@ -18,7 +18,8 @@ containerMode:
       requests:
         storage: 10Gi
 
-# fmt/promtool/web/helm and docker-build clients; compile runs on BuildKit
+# fmt/promtool/web/helm and docker-build clients; compile runs on BuildKit.
+# No maxRunners: ARC omits the cap and scales with the GitHub queue.
 # No DinD. Image builds go to buildkit.arc-systems.svc:1234.
 # actions/cache talks to the in-cluster cache server, not GitHub.
 template:

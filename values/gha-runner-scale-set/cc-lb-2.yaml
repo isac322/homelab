@@ -3,7 +3,7 @@ githubConfigSecret: github-config
 runnerScaleSetName: cc-lb-2
 
 minRunners: 0
-maxRunners: 2
+
 
 controllerServiceAccount:
   namespace: arc-systems
@@ -19,6 +19,7 @@ containerMode:
         storage: 10Gi
 
 # clippy/e2e/release-plz: observed ~1c, not 4c. Image compiles stay on BuildKit.
+# No maxRunners: ARC omits the cap and scales with the GitHub queue.
 # No DinD. Image builds go to buildkit.arc-systems.svc:1234.
 # actions/cache talks to the in-cluster cache server, not GitHub.
 template:
