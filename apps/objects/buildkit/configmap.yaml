@@ -5,6 +5,34 @@ metadata:
   namespace: arc-systems
 data:
   buildkitd.toml: |
+    root = "/var/lib/buildkit"
+
+    [grpc]
+      address = ["unix:///run/buildkit/buildkitd.sock", "tcp://0.0.0.0:1234"]
+      debugAddress = "0.0.0.0:6060"
+
+    [history]
+      maxAge = 172800
+      maxEntries = 50
+
+    [worker.oci]
+      enabled = true
+      gc = true
+      reservedSpace = "10GB"
+      maxUsedSpace = "45GB"
+      minFreeSpace = "5GB"
+      max-parallelism = 4
+
+      [[worker.oci.gcpolicy]]
+        keepDuration = "48h"
+        reservedSpace = "100MB"
+        filters = ["type==source.local", "type==exec.cachemount", "type==source.git.checkout"]
+
+      [[worker.oci.gcpolicy]]
+        all = true
+        reservedSpace = "10GB"
+        maxUsedSpace = "45GB"
+
     [registry."docker.io"]
       mirrors = ["registry-docker-io.arc-systems.svc.cluster.local:5000"]
 

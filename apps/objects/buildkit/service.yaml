@@ -12,3 +12,6 @@ spec:
     - name: buildkit
       port: 1234
       targetPort: 1234
+    - name: debug
+      port: 6060
+      targetPort: 6060
