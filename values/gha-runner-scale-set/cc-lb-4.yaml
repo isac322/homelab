@@ -1,0 +1,73 @@
+githubConfigUrl: https://github.com/isac322/cc-lb
+githubConfigSecret: github-config
+runnerScaleSetName: oracle4-cc-lb-4
+
+minRunners: 0
+maxRunners: 1
+
+controllerServiceAccount:
+  namespace: arc-systems
+  name: arc-gha-rs-controller
+
+# clippy/nextest/e2e — p95 2.3c, max 6.4c burst on the 4-core node; request 3 so k3s keeps a core
+# Image digest shared across oracle4-cc-lb-{500m,1,2,4}.
+template:
+  spec:
+    initContainers:
+      - name: init-dind-externals
+        image: ghcr.io/isac322/cc-lb-actions-runner:2.337.0-cclb-20f79911f8e8@sha256:d4b215346fc04e7271816c5f9e6c132f7d7b47e629cef2864c4b516441980139
+        command: ["cp", "-r", "/home/runner/externals/.", "/home/runner/tmpDir/"]
+        volumeMounts:
+          - name: dind-externals
+            mountPath: /home/runner/tmpDir
+    containers:
+      - name: runner
+        image: ghcr.io/isac322/cc-lb-actions-runner:2.337.0-cclb-20f79911f8e8@sha256:d4b215346fc04e7271816c5f9e6c132f7d7b47e629cef2864c4b516441980139
+        command: ["/home/runner/run.sh"]
+        env:
+          - name: DOCKER_HOST
+            value: unix:///var/run/docker.sock
+          - name: RUNNER_WAIT_FOR_DOCKER_IN_SECONDS
+            value: "120"
+        resources:
+          requests:
+            cpu: 3
+        volumeMounts:
+          - name: work
+            mountPath: /home/runner/_work
+          - name: dind-sock
+            mountPath: /var/run
+      - name: dind
+        image: docker:28-dind@sha256:2a232a42256f70d78e3cc5d2b5d6b3276710a0de0596c145f627ecfae90282ac
+        args:
+          - dockerd
+          - --host=unix:///var/run/docker.sock
+          - --group=$(DOCKER_GROUP_GID)
+        env:
+          - name: DOCKER_GROUP_GID
+            value: "123"
+        securityContext:
+          privileged: true
+        startupProbe:
+          exec:
+            command:
+              - docker
+              - info
+          initialDelaySeconds: 0
+          failureThreshold: 24
+          periodSeconds: 5
+          timeoutSeconds: 5
+        volumeMounts:
+          - name: work
+            mountPath: /home/runner/_work
+          - name: dind-sock
+            mountPath: /var/run
+          - name: dind-externals
+            mountPath: /home/runner/externals
+    volumes:
+      - name: work
+        emptyDir: {}
+      - name: dind-sock
+        emptyDir: {}
+      - name: dind-externals
+        emptyDir: {}

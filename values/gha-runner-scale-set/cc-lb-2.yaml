@@ -1,16 +1,16 @@
 githubConfigUrl: https://github.com/isac322/cc-lb
 githubConfigSecret: github-config
-runnerScaleSetName: oracle4-cc-lb-heavy
+runnerScaleSetName: oracle4-cc-lb-2
 
 minRunners: 0
-# One heavy runner on the 4-core node. Leave headroom for light runners and k3s.
 maxRunners: 1
 
 controllerServiceAccount:
   namespace: arc-systems
   name: arc-gha-rs-controller
 
-# Wolfi cc-lb runner image. Keep this digest in lockstep with cc-lb-light.yaml.
+# docker/image builds — 94% of pods peak ≤2c
+# Image digest shared across oracle4-cc-lb-{500m,1,2,4}.
 template:
   spec:
     initContainers:
@@ -31,7 +31,7 @@ template:
             value: "120"
         resources:
           requests:
-            cpu: "2"
+            cpu: 2
         volumeMounts:
           - name: work
             mountPath: /home/runner/_work
