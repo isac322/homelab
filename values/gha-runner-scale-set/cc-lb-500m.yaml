@@ -93,3 +93,15 @@ template:
           limits:
             cpu: 500m
             memory: 1Gi
+
+listenerTemplate:
+  spec:
+    containers:
+      - name: listener
+        resources:
+          requests:
+            cpu: 100m
+            memory: 128Mi
+          limits:
+            cpu: 100m
+            memory: 128Mi
