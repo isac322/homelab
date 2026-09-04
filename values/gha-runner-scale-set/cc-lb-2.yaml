@@ -13,7 +13,7 @@ containerMode:
   type: kubernetes
   kubernetesModeWorkVolumeClaim:
     accessModes: ["ReadWriteOnce"]
-    storageClassName: ssd-ha-xfs
+    storageClassName: local-path
     resources:
       requests:
         storage: 10Gi
