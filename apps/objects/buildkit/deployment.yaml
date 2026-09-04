@@ -18,13 +18,12 @@ spec:
       containers:
         - name: buildkitd
           image: docker.io/moby/buildkit:v0.25.2@sha256:0f63d66f8d2de0bd16438284831a3e9ee6ca7cd57b6eb3ed6e38a7a456590fa7
-          args:
-            - --config
-            - /etc/buildkit/buildkitd.toml
-            - --addr
-            - unix:///run/buildkit/buildkitd.sock
-            - --addr
-            - tcp://0.0.0.0:1234
+          command: ["/bin/sh", "/etc/buildkit/entrypoint.sh"]
+          env:
+            - name: POD_UID
+              valueFrom:
+                fieldRef:
+                  fieldPath: metadata.uid
           ports:
             - name: buildkit
               containerPort: 1234
@@ -60,3 +59,4 @@ spec:
         - name: config
           configMap:
             name: buildkitd-config
+            defaultMode: 0555
