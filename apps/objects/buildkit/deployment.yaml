@@ -1,0 +1,62 @@
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: buildkit
+  namespace: arc-systems
+  labels:
+    app: buildkit
+spec:
+  replicas: 1
+  selector:
+    matchLabels:
+      app: buildkit
+  template:
+    metadata:
+      labels:
+        app: buildkit
+    spec:
+      containers:
+        - name: buildkitd
+          image: docker.io/moby/buildkit:v0.25.2@sha256:0f63d66f8d2de0bd16438284831a3e9ee6ca7cd57b6eb3ed6e38a7a456590fa7
+          args:
+            - --config
+            - /etc/buildkit/buildkitd.toml
+            - --addr
+            - unix:///run/buildkit/buildkitd.sock
+            - --addr
+            - tcp://0.0.0.0:1234
+          ports:
+            - name: buildkit
+              containerPort: 1234
+          resources:
+            requests:
+              cpu: "2"
+              memory: 4Gi
+            limits:
+              cpu: "4"
+              memory: 8Gi
+          securityContext:
+            privileged: true
+          volumeMounts:
+            - name: cache
+              mountPath: /var/lib/buildkit
+            - name: config
+              mountPath: /etc/buildkit
+              readOnly: true
+          readinessProbe:
+            tcpSocket:
+              port: 1234
+            periodSeconds: 5
+            failureThreshold: 6
+          livenessProbe:
+            tcpSocket:
+              port: 1234
+            periodSeconds: 15
+            failureThreshold: 4
+      volumes:
+        - name: cache
+          persistentVolumeClaim:
+            claimName: buildkit-cache
+        - name: config
+          configMap:
+            name: buildkitd-config

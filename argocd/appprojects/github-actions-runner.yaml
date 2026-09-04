@@ -7,6 +7,7 @@ spec:
   sourceRepos:
     - https://github.com/isac322/homelab.git
     - ghcr.io/actions/actions-runner-controller-charts
+    - ghcr.io/falcondev-oss/charts
   destinations:
     - namespace: arc-systems
       name: backbone

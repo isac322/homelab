@@ -1,0 +1,49 @@
+githubConfigUrl: https://github.com/isac322/cc-lb
+githubConfigSecret: github-config
+runnerScaleSetName: cc-lb-1
+
+minRunners: 0
+maxRunners: 2
+
+controllerServiceAccount:
+  namespace: arc-systems
+  name: arc-gha-rs-controller
+
+containerMode:
+  type: kubernetes
+  kubernetesModeWorkVolumeClaim:
+    accessModes: ["ReadWriteOnce"]
+    storageClassName: local-path
+    resources:
+      requests:
+        storage: 10Gi
+
+# cargo-deny and other rustc-install jobs
+# No DinD. Image builds go to buildkit.arc-systems.svc:1234.
+# actions/cache talks to the in-cluster cache server, not GitHub.
+template:
+  spec:
+    containers:
+      - name: runner
+        image: ghcr.io/isac322/cc-lb-actions-runner:2.337.0-cclb-eadffd458017@sha256:628482521262ff2d2ad2f5b7ba6475145773acb5a8bef0275ae7e9bbf33f113b
+        command: ["/home/runner/run.sh"]
+        env:
+          - name: ACTIONS_RUNNER_CONTAINER_HOOKS
+            value: /home/runner/k8s/index.js
+          - name: ACTIONS_RUNNER_POD_NAME
+            valueFrom:
+              fieldRef:
+                fieldPath: metadata.name
+          - name: ACTIONS_RUNNER_REQUIRE_JOB_CONTAINER
+            value: "false"
+          - name: BUILDKIT_HOST
+            value: tcp://buildkit.arc-systems.svc.cluster.local:1234
+          - name: ACTIONS_RESULTS_URL
+            value: http://gha-cache-server.arc-systems.svc.cluster.local:3000/
+          - name: CUSTOM_ACTIONS_RESULTS_URL
+            value: http://gha-cache-server.arc-systems.svc.cluster.local:3000/
+          - name: DISABLE_RUNNER_UPDATE
+            value: "true"
+        resources:
+          requests:
+            cpu: 1

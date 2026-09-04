@@ -1,0 +1,32 @@
+fullnameOverride: gha-cache-server
+
+image:
+  repository: ghcr.io/falcondev-oss/github-actions-cache-server
+  tag: 9.4.7@sha256:318a568e4eba358dbe5978338353a4101b527996a076746ba781a32c6ed19543
+
+config:
+  apiBaseUrl: http://gha-cache-server.arc-systems.svc.cluster.local:3000
+  cacheCleanupOlderThanDays: 14
+  cacheMaxSizeBytes: 42949672960
+  storage:
+    driver: filesystem
+    filesystem:
+      path: /data/cache
+  db:
+    driver: sqlite
+    sqlite:
+      path: /data/cache-server.db
+
+resources:
+  requests:
+    cpu: 200m
+    memory: 512Mi
+  limits:
+    memory: 1Gi
+
+persistentVolumeClaim:
+  enabled: true
+  accessModes:
+    - ReadWriteOnce
+  storage: 50Gi
+  storageClassName: ssd-ha-xfs
