@@ -623,6 +623,9 @@ grafana:
       memory: 384Mi
 
   sidecar:
+    image:
+      tag: 2.11.2
+      sha: 2912be006f62f9ea080194cf6d3afcd90daead8d101d0ba686a137a849f6a4f6
     resources:
       requests:
         cpu: 20m

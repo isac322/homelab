@@ -28,7 +28,7 @@ spec:
               - values.yaml
               - '$homelab/values/kube-prometheus-stack/{{cluster}}.yaml'
           repoURL: https://prometheus-community.github.io/helm-charts
-          targetRevision: 88.6.2
+          targetRevision: 89.2.1
       syncPolicy:
         automated:
           prune: true
