@@ -148,6 +148,22 @@ in
       replaceExisting = true;
       mode = "0600";
     };
+    # NodePorts 30500/30501 are the docker.io/ghcr.io pull-through caches
+    # in apps/objects/registry-mirror. containerd on the node cannot use
+    # ClusterIP DNS, so kubelet pulls via loopback NodePort.
+    environment.etc."rancher/k3s/registries.yaml" = {
+      text = ''
+        mirrors:
+          docker.io:
+            endpoint:
+              - "http://127.0.0.1:30500"
+          ghcr.io:
+            endpoint:
+              - "http://127.0.0.1:30501"
+      '';
+      replaceExisting = true;
+      mode = "0644";
+    };
     systemd.services.homelab-k3s = {
       description = "Run K3s ${if server then "server" else "agent"}";
       wantedBy = [ "multi-user.target" ];
