@@ -4315,7 +4315,7 @@ require(
     'systemctl enable iscsid.service "$ISCSI_LOGIN_SERVICE"',
     'systemctl start iscsid.service "$ISCSI_LOGIN_SERVICE"',
     "reconcile_distro_packages",
-    "--version 1.20.0",
+    "--version 1.20.1",
     "etc-state.tar",
     "policy-rc.d",
     "FIREWALL_SERVICE",
@@ -4912,7 +4912,7 @@ require(
     "apps/objects/k3s-system-upgrade/k3s-upgrade-plan.yaml",
     "name: server-plan",
     "name: agent-plan",
-    "version: v1.36.3+k3s1",
+    "version: v1.36.4+k3s1",
     "image: rancher/k3s-upgrade",
 )
 if (root / "nix/k3s-package.nix").exists():

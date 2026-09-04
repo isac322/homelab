@@ -106,7 +106,7 @@
         atomic: yes
         chart_ref: cilium
         chart_repo_url: https://helm.cilium.io/
-        chart_version: 1.20.0
+        chart_version: 1.20.1
         kubeconfig: /etc/rancher/k3s/k3s.yaml
         release_name: cilium
         release_namespace: kube-system
