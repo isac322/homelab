@@ -1934,11 +1934,11 @@ REMOTE_VERIFY
     cluster=${2:?cluster required}; test "$cluster" = backbone
     context=${BOOTSTRAP_CONTEXT:-homelab-backbone}; values="$root/values/cilium/backbone.yaml"
     if kubectl --context "$context" get --raw=/readyz >/dev/null 2>&1; then
-      helm --kube-context "$context" diff upgrade cilium cilium --repo https://helm.cilium.io --version 1.20.0 --namespace kube-system --values "$values" >/dev/null
+      helm --kube-context "$context" diff upgrade cilium cilium --repo https://helm.cilium.io --version 1.20.1 --namespace kube-system --values "$values" >/dev/null
       printf 'existing cluster: Cilium dry-run diff completed; release ownership unchanged\n'
     else
       test "${ALLOW_NEW_CLUSTER_BOOTSTRAP:-}" = yes
-      helm --kube-context "$context" upgrade --install cilium cilium --repo https://helm.cilium.io --version 1.20.0 --namespace kube-system --create-namespace --atomic --wait --values "$values"
+      helm --kube-context "$context" upgrade --install cilium cilium --repo https://helm.cilium.io --version 1.20.1 --namespace kube-system --create-namespace --atomic --wait --values "$values"
       kubectl --context "$context" -n kube-system rollout status ds/cilium --timeout=10m
       kubectl --context "$context" -n kube-system rollout status ds/cilium-envoy --timeout=10m
       kubectl --context "$context" -n kube-system rollout status deploy/cilium-operator --timeout=10m
