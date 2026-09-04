@@ -3,7 +3,7 @@
 api:
   replicaCount: 1
   image:
-    tag: "0.9.1-slim"
+    tag: "0.9.2-slim"
   resources:
     requests:
       cpu: 250m
