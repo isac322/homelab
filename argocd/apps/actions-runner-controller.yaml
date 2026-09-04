@@ -89,7 +89,44 @@ spec:
         releaseName: cc-lb
         valueFiles:
           - values.yaml
-          - $homelab/values/gha-runner-scale-set/cc-lb.yaml
+          - $homelab/values/gha-runner-scale-set/cc-lb-light.yaml
+      repoURL: ghcr.io/actions/actions-runner-controller-charts
+      targetRevision: 0.14.2
+  syncPolicy:
+    automated:
+      prune: true
+      selfHeal: true
+    retry:
+      backoff:
+        duration: 5s
+        factor: 2
+        maxDuration: 3m0s
+      limit: 100
+    syncOptions:
+      - CreateNamespace=true
+      - ServerSideApply=true
+---
+apiVersion: argoproj.io/v1alpha1
+kind: Application
+metadata:
+  name: arc-cc-lb-heavy
+  finalizers:
+    - resources-finalizer.argocd.argoproj.io
+spec:
+  destination:
+    name: backbone
+    namespace: arc-runners
+  project: github-actions-runner
+  sources:
+    - repoURL: https://github.com/isac322/homelab.git
+      targetRevision: HEAD
+      ref: homelab
+    - chart: gha-runner-scale-set
+      helm:
+        releaseName: cc-lb-heavy
+        valueFiles:
+          - values.yaml
+          - $homelab/values/gha-runner-scale-set/cc-lb-heavy.yaml
       repoURL: ghcr.io/actions/actions-runner-controller-charts
       targetRevision: 0.14.2
   syncPolicy:

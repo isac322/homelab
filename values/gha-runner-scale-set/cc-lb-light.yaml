@@ -1,29 +1,27 @@
 githubConfigUrl: https://github.com/isac322/cc-lb
 githubConfigSecret: github-config
-runnerScaleSetName: oracle4-cc-lb
+runnerScaleSetName: oracle4-cc-lb-light
 
 minRunners: 0
-maxRunners: 4
+maxRunners: 2
 
 controllerServiceAccount:
   namespace: arc-systems
   name: arc-gha-rs-controller
 
-# Official ARC runner image with chart dind sidecar. containerMode is left
-# empty so the injected latest tags can be replaced with digest pins.
-# C toolchain is installed by cc-lb's setup-clang action, not this image.
+# Wolfi cc-lb runner image. Keep this digest in lockstep with cc-lb-heavy.yaml.
 template:
   spec:
     initContainers:
       - name: init-dind-externals
-        image: ghcr.io/actions/actions-runner:2.337.0@sha256:e5496277be5d09bc968b3d64911b74e219ac4a3f2edce956a3ecf9271bea1ef4
+        image: ghcr.io/isac322/cc-lb-actions-runner:2.337.0-cclb-20f79911f8e8@sha256:d4b215346fc04e7271816c5f9e6c132f7d7b47e629cef2864c4b516441980139
         command: ["cp", "-r", "/home/runner/externals/.", "/home/runner/tmpDir/"]
         volumeMounts:
           - name: dind-externals
             mountPath: /home/runner/tmpDir
     containers:
       - name: runner
-        image: ghcr.io/actions/actions-runner:2.337.0@sha256:e5496277be5d09bc968b3d64911b74e219ac4a3f2edce956a3ecf9271bea1ef4
+        image: ghcr.io/isac322/cc-lb-actions-runner:2.337.0-cclb-20f79911f8e8@sha256:d4b215346fc04e7271816c5f9e6c132f7d7b47e629cef2864c4b516441980139
         command: ["/home/runner/run.sh"]
         env:
           - name: DOCKER_HOST
@@ -32,7 +30,7 @@ template:
             value: "120"
         resources:
           requests:
-            cpu: "1"
+            cpu: 250m
         volumeMounts:
           - name: work
             mountPath: /home/runner/_work
