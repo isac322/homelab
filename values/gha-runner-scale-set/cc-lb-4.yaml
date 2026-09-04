@@ -19,7 +19,7 @@ template:
   spec:
     containers:
       - name: runner
-        image: ghcr.io/isac322/cc-lb-actions-runner:2.337.0-cclb-20f79911f8e8@sha256:d4b215346fc04e7271816c5f9e6c132f7d7b47e629cef2864c4b516441980139
+        image: ghcr.io/isac322/cc-lb-actions-runner:2.337.0-cclb-eadffd458017@sha256:628482521262ff2d2ad2f5b7ba6475145773acb5a8bef0275ae7e9bbf33f113b
         command: ["/home/runner/run.sh"]
         env:
           - name: ACTIONS_RUNNER_CONTAINER_HOOKS
