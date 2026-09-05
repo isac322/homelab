@@ -8,6 +8,14 @@
 let
   cfg = config.homelab.distroPackages;
   preserveNasState = hostConfig.preserveNasState or false;
+  nixPresent = with pkgs; [
+    age
+    htop
+    jq
+    kubectl
+    kubernetes-helm
+    sops
+  ];
   aptPresent = [
     "locales"
     "systemd-resolved"
@@ -41,29 +49,44 @@ let
   commonPresent = [
     "curl"
     "vim"
-    "htop"
     "wireguard-tools"
     "nvme-cli"
     "iptables"
   ];
+  commonAbsent = [
+    "age"
+    "htop"
+  ];
   baseAbsent =
-    if hostConfig.packageBackend == "pacman" then
-      pacmanAbsent
-    else
-      [
-        "netplan.io"
-        "network-manager"
-        "networkd-dispatcher"
-        "cron"
-        "snapd"
-        "ufw"
-      ];
+    commonAbsent
+    ++ (
+      if hostConfig.packageBackend == "pacman" then
+        pacmanAbsent
+      else
+        [
+          "netplan.io"
+          "network-manager"
+          "networkd-dispatcher"
+          "cron"
+          "snapd"
+          "ufw"
+        ]
+    );
   defaultAbsent =
     if preserveNasState then
       lib.remove (if hostConfig.packageBackend == "pacman" then "cronie" else "cron") baseAbsent
     else
       baseAbsent;
   list = lib.concatMapStringsSep " " lib.escapeShellArg;
+  validateDistroPackages =
+    packages:
+    let
+      globalPackageOverlap = lib.intersectLists (map lib.getName nixPresent) packages;
+    in
+    assert lib.assertMsg (globalPackageOverlap == [ ]) ''
+      Linux packages must have one global owner; these are declared in both Nix and distro packages: ${lib.concatStringsSep ", " globalPackageOverlap}
+    '';
+    packages;
 in
 {
   options.homelab.distroPackages = {
@@ -74,6 +97,7 @@ in
         ++ (if hostConfig.packageBackend == "pacman" then archPresent else aptPresent)
         ++ iscsiClientPresent
         ++ iscsiServerPresent;
+      apply = validateDistroPackages;
     };
     absent = lib.mkOption {
       type = lib.types.listOf lib.types.str;
@@ -86,15 +110,7 @@ in
   };
 
   config = {
-    environment.systemPackages = with pkgs; [
-      vim
-      htop
-      kubectl
-      kubernetes-helm
-      wireguard-tools
-      sops
-      age
-    ];
+    environment.systemPackages = nixPresent;
     system-manager.preActivationAssertions.requiredDistroPackages = {
       enable = true;
       name = "requiredDistroPackages";

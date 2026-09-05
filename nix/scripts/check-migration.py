@@ -4107,6 +4107,7 @@ require(
     '"systemd-zram-generator"',
     '"zram-generator"',
     "default = true;",
+    "lib.assertMsg",
 )
 forbid(
     "nix/modules/linux/packages.nix",
@@ -4115,6 +4116,14 @@ forbid(
     "pacman -Syu",
     "homelab-distro-packages",
     "homelab-iscsi-client",
+)
+forbid("nix/modules/linux/base.nix", "environment.systemPackages")
+require(
+    "README.md",
+    "Linux package ownership",
+    "전역 패키지는 한 관리자가 소유한다",
+    "`runtimeInputs`",
+    "`preserveNasState=true`",
 )
 require(
     "nix/modules/linux/firewall.nix",
@@ -4342,9 +4351,17 @@ require(
     "system-manager generation changed after prepare",
     "systemd-timesyncd.service",
     "NTPSynchronized",
-    "age curl git sudo xz",
-    "age ca-certificates curl git sudo xz-utils",
+    "set -- age",
+    "test -x /run/system-manager/sw/bin/age-keygen",
+    r'\"\$@\" curl git sudo xz',
+    r'\"\$@\" ca-certificates curl git sudo xz-utils',
     "command -v git",
+)
+require(
+    "nix/scripts/wireguard-secrets",
+    "age_keygen=/run/system-manager/sw/bin/age-keygen",
+    r'\"\$age_keygen\" -o',
+    r'\"\$age_keygen\" -y',
 )
 forbid("nix/scripts/homelab-host", "sudo -n nix-env")
 forbid("nix/scripts/adopt-host", "sudo -n nix-env")

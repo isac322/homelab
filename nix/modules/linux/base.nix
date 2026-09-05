@@ -77,18 +77,6 @@ in
     services.userborn.enable = true;
     systemd.maskedUnits = disabledServices;
 
-    environment.systemPackages = with pkgs; [
-      age
-      curl
-      htop
-      jq
-      kubectl
-      kubernetes-helm
-      sops
-      vim
-      wireguard-tools
-    ];
-
     environment.etc = {
       hostname = {
         text = "${name}\n";
