@@ -31,8 +31,6 @@ esac
 script_dir=$(cd -- "$(dirname -- "${BASH_SOURCE[0]}")" && pwd)
 selector="${script_dir}/select-modules.sh"
 config=/etc/nvme-tcp-dkms/source.conf
-cache_dir=${NVME_TCP_CACHE_DIR:-/var/cache/nvme-tcp-dkms}
-expected_signer=${NVME_TCP_KERNEL_SIGNING_FINGERPRINT:-647F28654894E3BD457199BE38DBBDC86092693E}
 
 if [[ -e "$config" ]]; then
   read -r owner mode < <(stat -c '%u %a' "$config")
@@ -43,6 +41,9 @@ if [[ -e "$config" ]]; then
   # shellcheck source=/dev/null
   source "$config"
 fi
+cache_dir=${NVME_TCP_CACHE_DIR:-/var/cache/nvme-tcp-dkms}
+expected_signer=${NVME_TCP_KERNEL_SIGNING_FINGERPRINT:-647F28654894E3BD457199BE38DBBDC86092693E}
+
 
 case "$role" in
   host)
@@ -163,11 +164,15 @@ else
     echo "cannot derive an upstream version from $KERNELVER" >&2
     exit 1
   }
+  source_version=$upstream_version
+  if [[ "$source_version" == *.0 ]]; then
+    source_version=${source_version%.0}
+  fi
   major=${upstream_version%%.*}
-  base_url="https://cdn.kernel.org/pub/linux/kernel/v${major}.x/linux-${upstream_version}.tar"
-  archive="${cache_dir}/linux-${upstream_version}.tar.xz"
-  signature="${cache_dir}/linux-${upstream_version}.tar.sign"
-  extract_dir="${cache_dir}/linux-${upstream_version}"
+  base_url="https://cdn.kernel.org/pub/linux/kernel/v${major}.x/linux-${source_version}.tar"
+  archive="${cache_dir}/linux-${source_version}.tar.xz"
+  signature="${cache_dir}/linux-${source_version}.tar.sign"
+  extract_dir="${cache_dir}/linux-${source_version}"
 
   download "${base_url}.xz" "$archive"
   download "${base_url}.sign" "$signature"
@@ -201,7 +206,7 @@ else
     temporary=$(mktemp -d "${cache_dir}/extract.XXXXXX")
     trap 'rm -rf "$temporary"' EXIT
     tar -xJf "$archive" --strip-components=1 -C "$temporary" \
-      "linux-${upstream_version}/drivers/nvme"
+      "linux-${source_version}/drivers/nvme"
     rm -rf "$extract_dir"
     mv "$temporary" "$extract_dir"
     trap - EXIT
