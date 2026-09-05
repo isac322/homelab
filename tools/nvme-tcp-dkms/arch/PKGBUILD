@@ -1,0 +1,43 @@
+pkgbase=nvme-tcp-dkms
+pkgname=(nvme-tcp-host-dkms nvmet-tcp-target-dkms)
+pkgver=1.0.0
+pkgrel=1
+pkgdesc='Role-specific supplemental NVMe/TCP kernel modules managed by DKMS'
+arch=(any)
+url='https://github.com/isac322/homelab'
+license=(GPL-2.0-only)
+depends=(dkms ca-certificates curl gnupg util-linux xz)
+conflicts=(nvme-extras-dkms)
+replaces=(nvme-extras-dkms)
+source=(
+  prepare.sh
+  select-modules.sh
+  host-dkms.conf
+  target-dkms.conf
+)
+sha256sums=(
+  'c6264815b84da85f904e81fc90e3f0cf1038507240d6a0639a475f5708e3ccff'
+  '6549d8777e072ebe982bc08c23f8cac98320fcfaa2e053f2e551d895974e9505'
+  'f63015cd826e382f84a404bb85c1e42a1b0942f97909e91306707f2b36d2c3b5'
+  '8d385f74eb0a34fffe2fdc12ccc364a3827df1b403b192c33818e7ff36957019'
+)
+
+package_nvme-tcp-host-dkms() {
+  pkgdesc='Supplemental NVMe/TCP host modules managed by DKMS'
+
+  local source_dir="${pkgdir}/usr/src/nvme-tcp-host-${pkgver}"
+  install -Dm0755 "${srcdir}/prepare.sh" "${source_dir}/prepare.sh"
+  install -Dm0755 "${srcdir}/select-modules.sh" "${source_dir}/select-modules.sh"
+  install -Dm0644 "${srcdir}/host-dkms.conf" "${source_dir}/dkms.conf"
+  sed -i "s/#MODULE_VERSION#/${pkgver}/g" "${source_dir}/dkms.conf"
+}
+
+package_nvmet-tcp-target-dkms() {
+  pkgdesc='Supplemental NVMe/TCP target transport managed by DKMS'
+
+  local source_dir="${pkgdir}/usr/src/nvmet-tcp-target-${pkgver}"
+  install -Dm0755 "${srcdir}/prepare.sh" "${source_dir}/prepare.sh"
+  install -Dm0755 "${srcdir}/select-modules.sh" "${source_dir}/select-modules.sh"
+  install -Dm0644 "${srcdir}/target-dkms.conf" "${source_dir}/dkms.conf"
+  sed -i "s/#MODULE_VERSION#/${pkgver}/g" "${source_dir}/dkms.conf"
+}
