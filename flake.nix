@@ -121,6 +121,7 @@
               rpi5 = self.systemConfigs.rpi5.config;
               n2p1 = self.systemConfigs.n2p1.config;
               n2p1Commit = self.systemConfigs."n2p1-commit".config;
+              n2p1NixPackages = map lib.getName n2p1.environment.systemPackages;
               macmini = self.systemConfigs.macmini.config;
               macminiK3s = macmini.environment.etc."rancher/k3s/config.yaml".text;
               macminiLan = macmini.environment.etc."systemd/network/10-homelab-lan.network".text;
@@ -182,6 +183,14 @@
                 projectServices self.systemConfigs.${hostName}.config == expected
                 && projectServices self.systemConfigs."${hostName}-commit".config == expected
               ) (builtins.attrNames linuxHosts);
+              globalPackageOwnershipIsExclusive = lib.all (
+                hostName:
+                let
+                  cfg = self.systemConfigs.${hostName}.config;
+                in
+                lib.intersectLists (map lib.getName cfg.environment.systemPackages) cfg.homelab.distroPackages.present
+                == [ ]
+              ) (builtins.attrNames linuxHosts);
               preservationOwnershipIsExplicit = lib.all (
                 hostName:
                 let
@@ -221,6 +230,7 @@
             assert projectServiceOwnershipIsMinimal;
             assert projectEtcOwnershipIsExplicit;
             assert preservationOwnershipIsExplicit;
+            assert globalPackageOwnershipIsExclusive;
             assert topology.nodes.rock5bp.preserveNasState;
             assert !(topology.nodes.n2p1.preserveNasState);
             assert topology.nodes.macmini.k3sRole == "agent";
@@ -237,6 +247,20 @@
             assert builtins.elem "sg3_utils" macmini.homelab.distroPackages.present;
             assert !(builtins.elem "sg3-utils" macmini.homelab.distroPackages.present);
             assert !(builtins.elem "scsitools" macmini.homelab.distroPackages.present);
+            assert builtins.elem "curl" n2p1.homelab.distroPackages.present;
+            assert builtins.elem "wireguard-tools" n2p1.homelab.distroPackages.present;
+            assert builtins.elem "nvme-cli" n2p1.homelab.distroPackages.present;
+            assert builtins.elem "vim" n2p1.homelab.distroPackages.present;
+            assert !(builtins.elem "htop" n2p1.homelab.distroPackages.present);
+            assert !(builtins.elem "vim" n2p1.homelab.distroPackages.absent);
+            assert builtins.elem "age" n2p1.homelab.distroPackages.absent;
+            assert builtins.elem "htop" n2p1.homelab.distroPackages.absent;
+            assert !(builtins.elem "vim" n2p1NixPackages);
+            assert builtins.elem "htop" n2p1NixPackages;
+            assert builtins.elem "age" n2p1NixPackages;
+            assert builtins.elem "jq" n2p1NixPackages;
+            assert !(builtins.elem "curl" n2p1NixPackages);
+            assert !(builtins.elem "wireguard-tools" n2p1NixPackages);
             assert builtins.elem "iptables.service" macmini.systemd.services.homelab-k3s.requires;
             assert builtins.elem "iscsid.service" macmini.systemd.services.homelab-k3s.after;
             assert builtins.elem "iscsi.service" macmini.systemd.services.homelab-k3s.after;

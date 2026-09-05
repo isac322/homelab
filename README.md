@@ -45,6 +45,13 @@ nix run .#rotate-psk -- --link wg0-n2p1-n2p2
 - `rock5bp` migration 전후 live 검증에서 NAS baseline, ZFS pool health, democratic-csi PV/PVC binding, VolumeAttachment, iSCSI session이 모두 일치했다. Production restore는 필요하지 않았고, 2026-08-31에 migration 전용 off-host ZFS stream backup 약 226 GiB와 `pre-nix-migration-20260827T091229Z` snapshot/hold를 제거했다. 삭제 후 보존된 manifest를 기준으로 별도 read-only completeness audit을 수행해 17개 zvol stream을 live PV/PVC 및 kubelet mount 또는 VolumeAttachment/iSCSI session에 일대일 대응했고, root stream의 17개 child dataset도 모두 확인했다(18/18 PASS). 삭제 경로와 receipt-pinned recovery/baseline/storage inventory 및 NAS evidence 경로의 disjointness도 검증했다.
 - 각 host는 `prepare -> activate -> reboot -> reboot-verify -> commit`이 terminal receipt로 끝나고 live verification이 통과한 뒤에만 `[ansible_managed]`에서 `[nix_managed]`로 옮긴다.
 
+## Linux package ownership
+
+Linux 호스트의 전역 패키지는 한 관리자가 소유한다. 커널·DKMS·systemd/udev/initramfs 통합, bootstrap·복구, 호스트 네트워크·스토리지 도구는 apt 또는 pacman이 관리한다. 현재 공통 OS 패키지는 `curl`, `vim`, `wireguard-tools`, `nvme-cli`, `iptables`다. 배포판과 독립적인 사용자 공간 도구인 `age`, `htop`, `jq`, `kubectl`, Helm, `sops`는 Nix `environment.systemPackages`가 관리한다.
+`bootstrap-host`는 Nix `age-keygen`이 아직 없을 때만 OS `age`를 임시 설치한다. 일반 호스트는 commit 단계에서 이 bootstrap 패키지를 제거한다. `preserveNasState=true`인 `rock5bp`는 package reconciliation이 읽기 전용이므로, Nix generation 활성화 후 OS `age`를 별도 유지보수로 제거한다.
+
+Nix와 distro 전역 패키지 목록에 같은 이름을 선언하면 module evaluation이 실패한다. Nix app이나 systemd service의 `runtimeInputs`는 해당 프로그램의 `/nix/store` closure에만 고정되므로 전역 소유권 중복으로 보지 않는다. `rock5bp`의 `preserveNasState=true` 계약에서는 distro package reconciliation이 계속 읽기 전용이다.
+
 ## Linux migration
 
 일반 activation은 다음 다섯 단계다. K3s version과 rolling upgrade는 기존 Rancher `system-upgrade-controller`, `server-plan`, `agent-plan`, `backbone-k3s-upgrade` Application이 계속 소유한다. Host migration 중에는 Plan version을 변경하거나 별도 rollout을 시작하지 않는다.

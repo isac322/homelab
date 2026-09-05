@@ -1297,13 +1297,14 @@ case "${1:-}" in
         trap - EXIT HUP INT TERM
       fi
       . /etc/os-release
+      if test -x /run/system-manager/sw/bin/age-keygen; then set --; else set -- age; fi
       case \"\$ID\" in
         arch|archarm)
-          \$SUDO pacman --noconfirm --needed -S age curl git sudo xz
+          \$SUDO pacman --noconfirm --needed -S \"\$@\" curl git sudo xz
           ;;
         debian|ubuntu|raspbian)
           \$SUDO apt-get update
-          \$SUDO env DEBIAN_FRONTEND=noninteractive apt-get install -y --no-install-recommends age ca-certificates curl git sudo xz-utils
+          \$SUDO env DEBIAN_FRONTEND=noninteractive apt-get install -y --no-install-recommends \"\$@\" ca-certificates curl git sudo xz-utils
           ;;
         *)
           echo \"unsupported bootstrap distribution: \$ID\" >&2
@@ -1314,7 +1315,7 @@ case "${1:-}" in
         curl --proto \"=https\" --tlsv1.2 -fsSL https://nixos.org/nix/install | sh -s -- --daemon --yes
       fi
       test -x /nix/var/nix/profiles/default/bin/nix || command -v nix >/dev/null
-      command -v age-keygen >/dev/null
+      test -x /run/system-manager/sw/bin/age-keygen || command -v age-keygen >/dev/null
       command -v git >/dev/null
       sudo -n true
     '"
