@@ -1,0 +1,238 @@
+name: NVMe TCP DKMS packages
+
+on:
+  pull_request:
+    paths:
+      - tools/nvme-tcp-dkms/**
+      - .github/workflows/nvme-tcp-dkms.yaml
+  push:
+    branches:
+      - master
+    paths:
+      - tools/nvme-tcp-dkms/**
+      - .github/workflows/nvme-tcp-dkms.yaml
+  workflow_dispatch:
+    inputs:
+      publish:
+        description: Publish a GitHub release after successful builds
+        type: boolean
+        default: false
+
+permissions:
+  contents: read
+
+defaults:
+  run:
+    shell: bash
+
+jobs:
+  validate:
+    name: Validate package sources
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v6
+
+      - name: Validate scripts and package versions
+        # language=Bash
+        run: |
+          set -euo pipefail
+          sudo apt-get update
+          sudo apt-get install -y --no-install-recommends devscripts shellcheck
+          bash -n \
+            tools/nvme-tcp-dkms/common/prepare.sh \
+            tools/nvme-tcp-dkms/common/select-modules.sh \
+            tools/nvme-tcp-dkms/check-version.sh \
+            tools/nvme-tcp-dkms/test.sh
+          shellcheck \
+            tools/nvme-tcp-dkms/common/prepare.sh \
+            tools/nvme-tcp-dkms/common/select-modules.sh \
+            tools/nvme-tcp-dkms/check-version.sh \
+            tools/nvme-tcp-dkms/test.sh
+          tools/nvme-tcp-dkms/check-version.sh
+          tools/nvme-tcp-dkms/test.sh
+
+  debian:
+    name: Build Debian packages
+    needs: validate
+    runs-on: ubuntu-latest
+    container: debian:bookworm
+    steps:
+      - name: Install build dependencies
+        # language=Bash
+        run: |
+          set -euo pipefail
+          apt-get update
+          apt-get install -y --no-install-recommends \
+            build-essential ca-certificates curl debhelper devscripts dh-dkms \
+            dkms dpkg-dev gnupg linux-headers-amd64 linux-source util-linux xz-utils
+
+      - name: Checkout
+        uses: actions/checkout@v6
+
+      - name: Build binary packages
+        working-directory: tools/nvme-tcp-dkms
+        # language=Bash
+        run: |
+          set -euo pipefail
+          dpkg-buildpackage --build=binary --no-sign
+          mkdir -p dist/debian
+          mv ../nvme-tcp-host-dkms_*.deb ../nvmet-tcp-target-dkms_*.deb dist/debian/
+
+      - name: Verify package contents
+        working-directory: tools/nvme-tcp-dkms
+        # language=Bash
+        run: |
+          set -euo pipefail
+          version=$(cat VERSION)
+          host=$(find dist/debian -name 'nvme-tcp-host-dkms_*.deb' -print -quit)
+          target=$(find dist/debian -name 'nvmet-tcp-target-dkms_*.deb' -print -quit)
+          test "$(dpkg-deb --field "$host" Package)" = nvme-tcp-host-dkms
+          test "$(dpkg-deb --field "$target" Package)" = nvmet-tcp-target-dkms
+          dpkg-deb --contents "$host" | grep -q "/usr/src/nvme-tcp-host-${version}/dkms.conf"
+          dpkg-deb --contents "$target" | grep -q "/usr/src/nvmet-tcp-target-${version}/dkms.conf"
+
+      - name: Install packages and build both roles with DKMS
+        working-directory: tools/nvme-tcp-dkms
+        # language=Bash
+        run: |
+          set -euo pipefail
+          kernel_dir=$(find /lib/modules -mindepth 1 -maxdepth 1 -type d -exec test -e '{}/build' ';' -print -quit)
+          kernelver=${kernel_dir##*/}
+          source_archive=$(find /usr/src -maxdepth 1 -name 'linux-source-*.tar.*' -print -quit)
+          test -n "$kernelver"
+          test -n "$source_archive"
+          vendor_source=$(mktemp -d)
+          trap 'rm -rf "$vendor_source"' EXIT
+          tar -xf "$source_archive" --strip-components=1 -C "$vendor_source"
+          printf '%s\n' \
+            'kernel/drivers/nvme/host/nvme-core.ko' \
+            'kernel/drivers/nvme/target/nvmet.ko' \
+            > "/lib/modules/$kernelver/modules.builtin"
+          mkdir -p /etc/nvme-tcp-dkms
+          printf 'NVME_TCP_SOURCE_DIR=%s\n' "$vendor_source" > /etc/nvme-tcp-dkms/source.conf
+          chmod 0644 /etc/nvme-tcp-dkms/source.conf
+          dpkg -i dist/debian/*.deb
+          dkms status -m nvme-tcp-host -v "$(cat VERSION)" -k "$kernelver" | grep -q ': installed'
+          dkms status -m nvmet-tcp-target -v "$(cat VERSION)" -k "$kernelver" | grep -q ': installed'
+          test -n "$(find "/lib/modules/$kernelver/updates/dkms" -name 'nvme-fabrics.ko*' -print -quit)"
+          test -n "$(find "/lib/modules/$kernelver/updates/dkms" -name 'nvme-tcp.ko*' -print -quit)"
+          test -n "$(find "/lib/modules/$kernelver/updates/dkms" -name 'nvmet-tcp.ko*' -print -quit)"
+
+      - name: Upload Debian packages
+        uses: actions/upload-artifact@v4
+        with:
+          name: nvme-tcp-dkms-debian
+          path: tools/nvme-tcp-dkms/dist/debian/*.deb
+          if-no-files-found: error
+
+  arch:
+    name: Build Arch packages
+    needs: validate
+    runs-on: ubuntu-latest
+    container: archlinux:base-devel
+    steps:
+      - name: Install build dependencies
+        # language=Bash
+        run: |
+          set -euo pipefail
+          pacman -Syu --noconfirm --needed \
+            ca-certificates curl dkms git gnupg linux-headers util-linux xz
+
+      - name: Checkout
+        uses: actions/checkout@v6
+
+      - name: Build split packages
+        # language=Bash
+        run: |
+          set -euo pipefail
+          useradd --create-home builder
+          chown -R builder:builder "$GITHUB_WORKSPACE"
+          su builder -c "cd '$GITHUB_WORKSPACE/tools/nvme-tcp-dkms/arch' && makepkg --cleanbuild --noconfirm"
+          mkdir -p tools/nvme-tcp-dkms/dist/arch
+          mv tools/nvme-tcp-dkms/arch/*.pkg.tar.zst tools/nvme-tcp-dkms/dist/arch/
+
+      - name: Verify package contents
+        # language=Bash
+        run: |
+          set -euo pipefail
+          version=$(cat tools/nvme-tcp-dkms/VERSION)
+          host=$(find tools/nvme-tcp-dkms/dist/arch -name 'nvme-tcp-host-dkms-*.pkg.tar.zst' -print -quit)
+          target=$(find tools/nvme-tcp-dkms/dist/arch -name 'nvmet-tcp-target-dkms-*.pkg.tar.zst' -print -quit)
+          tar --zstd -tf "$host" | grep -q "usr/src/nvme-tcp-host-${version}/dkms.conf"
+          tar --zstd -tf "$target" | grep -q "usr/src/nvmet-tcp-target-${version}/dkms.conf"
+
+      - name: Compile both module roles against Arch headers
+        working-directory: tools/nvme-tcp-dkms
+        # language=Bash
+        run: |
+          set -euo pipefail
+          kernel_dir=$(find /usr/lib/modules -mindepth 1 -maxdepth 1 -type d -exec test -e '{}/build' ';' -print -quit)
+          kernelver=${kernel_dir##*/}
+          test -n "$kernelver"
+          fake=$(mktemp -d)
+          work=$(mktemp -d)
+          trap 'rm -rf "$fake" "$work"' EXIT
+          mkdir -p "$fake/$kernelver"
+          printf '%s\n' \
+            'kernel/drivers/nvme/host/nvme-core.ko' \
+            'kernel/drivers/nvme/target/nvmet.ko' \
+            > "$fake/$kernelver/modules.builtin"
+          export NVME_TCP_MODULES_ROOT="$fake"
+          export NVME_TCP_CACHE_DIR="$RUNNER_TEMP/nvme-tcp-source-cache"
+          common/prepare.sh "$kernelver" host 'nvme-fabrics nvme-tcp' "$work/host"
+          make -C "/usr/lib/modules/$kernelver/build" M="$work/host" modules
+          common/prepare.sh "$kernelver" target 'nvmet-tcp' "$work/target"
+          make -C "/usr/lib/modules/$kernelver/build" M="$work/target" modules
+          test -s "$work/host/nvme-fabrics.ko"
+          test -s "$work/host/nvme-tcp.ko"
+          test -s "$work/target/nvmet-tcp.ko"
+
+      - name: Upload Arch packages
+        uses: actions/upload-artifact@v4
+        with:
+          name: nvme-tcp-dkms-arch
+          path: tools/nvme-tcp-dkms/dist/arch/*.pkg.tar.zst
+          if-no-files-found: error
+
+  release:
+    name: Publish GitHub release
+    needs:
+      - debian
+      - arch
+    if: >-
+      github.event_name == 'push' ||
+      (github.event_name == 'workflow_dispatch' && inputs.publish)
+    runs-on: ubuntu-latest
+    permissions:
+      contents: write
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v6
+
+      - name: Download package artifacts
+        uses: actions/download-artifact@v4
+        with:
+          path: dist
+          merge-multiple: true
+
+      - name: Publish versioned release
+        env:
+          GH_TOKEN: ${{ github.token }}
+        # language=Bash
+        run: |
+          set -euo pipefail
+          version=$(cat tools/nvme-tcp-dkms/VERSION)
+          tag="nvme-tcp-dkms-v${version}"
+          if gh release view "$tag" --repo "$GITHUB_REPOSITORY" >/dev/null 2>&1; then
+            echo "release $tag already exists; bump tools/nvme-tcp-dkms/VERSION" >&2
+            exit 1
+          fi
+          mapfile -t packages < <(find dist -type f \( -name '*.deb' -o -name '*.pkg.tar.zst' \) -print | sort)
+          test "${#packages[@]}" -eq 4
+          gh release create "$tag" \
+            --repo "$GITHUB_REPOSITORY" \
+            --target "$GITHUB_SHA" \
+            --title "NVMe TCP DKMS ${version}" \
+            --notes "Role-specific supplemental DKMS packages. Install nvmet-tcp-target-dkms only on the storage target and nvme-tcp-host-dkms only on clients whose vendor kernel lacks the in-tree modules." \
+            "${packages[@]}"

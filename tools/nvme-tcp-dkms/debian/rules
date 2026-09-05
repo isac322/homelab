@@ -1,0 +1,24 @@
+#!/usr/bin/make -f
+
+include /usr/share/dpkg/pkg-info.mk
+
+%:
+	dh $@ --with dkms
+
+override_dh_auto_build:
+
+override_dh_auto_install:
+	install -Dm0755 common/prepare.sh \
+		debian/nvme-tcp-host-dkms/usr/src/nvme-tcp-host-$(DEB_VERSION_UPSTREAM)/prepare.sh
+	install -Dm0755 common/select-modules.sh \
+		debian/nvme-tcp-host-dkms/usr/src/nvme-tcp-host-$(DEB_VERSION_UPSTREAM)/select-modules.sh
+	install -Dm0755 common/prepare.sh \
+		debian/nvmet-tcp-target-dkms/usr/src/nvmet-tcp-target-$(DEB_VERSION_UPSTREAM)/prepare.sh
+	install -Dm0755 common/select-modules.sh \
+		debian/nvmet-tcp-target-dkms/usr/src/nvmet-tcp-target-$(DEB_VERSION_UPSTREAM)/select-modules.sh
+
+override_dh_dkms:
+	dh_dkms -V $(DEB_VERSION_UPSTREAM)
+
+override_dh_auto_test:
+	./test.sh
