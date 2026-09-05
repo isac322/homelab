@@ -1803,10 +1803,6 @@ if test "$ADMIN_USER" != root; then
 fi
 stage=firewall
 if test "$MANAGE_FIREWALL_RULES" = true; then test -s "$FIREWALL_RULES"; fi
-test "$(systemd-analyze cat-config systemd/logind.conf | sed -n 's/^[[:space:]]*InhibitDelayMaxSec=//p' | tail -n 1)" = 195s
-if test "$MASK_UNATTENDED_LOGIND_DELAY" = true; then
-  test "$(readlink -f /etc/systemd/logind.conf.d/unattended-upgrades-logind-maxdelay.conf)" = /dev/null
-fi
 for unit in homelab-host-settings.service homelab-wireguard.service homelab-firewall.service homelab-runtime-tuning.service homelab-k3s-legacy-cleanup.service homelab-legacy-tuning-cleanup.service; do
   ! systemctl cat "$unit" >/dev/null 2>&1
 done
@@ -1853,6 +1849,14 @@ if test "$ROLE" = server || test "$ROLE" = agent; then
   test "$(grep -c '^  - priority:' "$shutdown_config")" -eq 4
   ! grep -q '^shutdownGracePeriod:' "$shutdown_config"
   ! grep -q '^shutdownGracePeriodCriticalPods:' "$shutdown_config"
+  inhibit=$(systemd-analyze cat-config systemd/logind.conf | sed -n 's/^[[:space:]]*InhibitDelayMaxSec=//p' | tail -n 1)
+  case "$inhibit" in
+    195|195s|"3min 15s") ;;
+    *) echo "InhibitDelayMaxSec is ${inhibit:-missing}, expected 195s" >&2; exit 1 ;;
+  esac
+  if test "$MASK_UNATTENDED_LOGIND_DELAY" = true; then
+    test "$(readlink -f /etc/systemd/logind.conf.d/unattended-upgrades-logind-maxdelay.conf)" = /dev/null
+  fi
   systemd-inhibit --list --no-pager | grep -qi kubelet
   if test "$MANAGE_FIREWALL_RULES" = true; then
   stage=k3s-firewall
