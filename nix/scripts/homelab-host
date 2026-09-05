@@ -561,6 +561,9 @@ if test "$MANAGE_FIREWALL_RULES" = true; then
   place_jump FORWARD HOMELAB_FORWARD "$forward_position"
 fi
 if test "$ROLE" = server || test "$ROLE" = agent; then
+  systemctl restart systemd-logind.service
+fi
+if test "$ROLE" = server || test "$ROLE" = agent; then
   systemctl restart homelab-k3s.service
   if test "$ROLE" = server; then
     attempt=0
@@ -1119,6 +1122,14 @@ record_rolled_back() {
     echo "$host rollback is recorded locally, but recovery artifact cleanup failed; rerun a phase-gated command or nix run .#k3s-handoff -- cleanup-restored $host" >&2
     return 1
   fi
+}
+cleanup_unmanaged_kubelet_shutdown_link() {
+  local host=$1
+  remote "$host" 'sudo -n sh -ceu '\''
+    path=/var/lib/rancher/k3s/agent/etc/kubelet.conf.d/10-graceful-node-shutdown.conf
+    test "$(readlink "$path" 2>/dev/null || true)" = /etc/homelab/kubelet/10-graceful-node-shutdown.conf || exit 0
+    grep -Fq "$path" /etc/tmpfiles.d/00-system-manager.conf 2>/dev/null || rm -f "$path"
+  '\'''
 }
 rollback_armed_host() {
   local host=$1 attempt=1
@@ -1701,6 +1712,8 @@ REMOTE_K3S_CLEANUP
     local_network=$(nix_eval --raw "$root#systemConfigs.$host.config.homelab.firewall.localNetwork")
     localtime_source=$(nix_eval --raw "$root#systemConfigs.$host.config.environment.etc.localtime.source")
     resolved_dns_over_tls=$(host_field "$host" resolvedDnsOverTls)
+    mask_unattended_logind_delay=false
+    case "$host" in n2p1|n2p2) mask_unattended_logind_delay=true ;; esac
     if [ "$backend" = pacman ]; then
       firewall_rules=/etc/iptables/iptables.rules
       firewall_service=iptables.service
@@ -1717,10 +1730,11 @@ REMOTE_K3S_CLEANUP
       democratic_csi_key_sha=$(sha256sum "$root/ssh_pub_keys/democratic-csi.pub" | awk '{print $1}')
     fi
     printf -v verify_command \
-      'env PATH=/usr/local/sbin:/usr/local/bin:/usr/sbin:/usr/bin:/sbin:/bin HOST_NAME=%q ROLE=%q ISCSI_CLIENT=%q ISCSI_LOGIN_SERVICE=%q ISCSI_SERVER=%q PRESERVE_NAS_STATE=%q MANAGE_FIREWALL_RULES=%q ZRAM=%q DEMOCRATIC_CSI_KEY_SHA=%q LAN_ADDRESS=%q GATEWAY_ADDRESS=%q DEFAULT_INTERFACE=%q FIREWALL_RULES=%q FIREWALL_SERVICE=%q SSH_SERVICE=%q ADMIN_USER=%q SAMBA_CLIENTS=%q NETBIOS=%q LOCAL_NETWORK=%q LOCALTIME_SOURCE=%q RESOLVED_DNS_OVER_TLS=%q sh -s' \
+      'env PATH=/usr/local/sbin:/usr/local/bin:/usr/sbin:/usr/bin:/sbin:/bin HOST_NAME=%q ROLE=%q ISCSI_CLIENT=%q ISCSI_LOGIN_SERVICE=%q ISCSI_SERVER=%q PRESERVE_NAS_STATE=%q MANAGE_FIREWALL_RULES=%q ZRAM=%q DEMOCRATIC_CSI_KEY_SHA=%q LAN_ADDRESS=%q GATEWAY_ADDRESS=%q DEFAULT_INTERFACE=%q FIREWALL_RULES=%q FIREWALL_SERVICE=%q SSH_SERVICE=%q ADMIN_USER=%q SAMBA_CLIENTS=%q NETBIOS=%q LOCAL_NETWORK=%q LOCALTIME_SOURCE=%q RESOLVED_DNS_OVER_TLS=%q MASK_UNATTENDED_LOGIND_DELAY=%q sh -s' \
       "$host" "$role" "$iscsi_client" "$iscsi_login_service" "$iscsi_server" "$preserve" "$manage_rules" "$zram" "$democratic_csi_key_sha" \
       "$lan_address" "$gateway_address" "$default_interface" "$firewall_rules" "$firewall_service" "$ssh_service" \
-      "$admin_user" "$samba_clients" "$netbios" "$local_network" "$localtime_source" "$resolved_dns_over_tls"
+      "$admin_user" "$samba_clients" "$netbios" "$local_network" "$localtime_source" "$resolved_dns_over_tls" \
+      "$mask_unattended_logind_delay"
     remote "$host" "$verify_command" <<'REMOTE_VERIFY'
 set -eu
 stage=core-services
@@ -1829,6 +1843,21 @@ if test "$ROLE" = server || test "$ROLE" = agent; then
   stage=k3s-credential-config
   sudo -n test -s /var/lib/homelab-secrets/active/k3s-token.cred
   systemctl cat homelab-k3s.service | grep -Fx 'LoadCredentialEncrypted=k3s-token:/var/lib/homelab-secrets/active/k3s-token.cred'
+  stage=k3s-graceful-shutdown
+  shutdown_config=/var/lib/rancher/k3s/agent/etc/kubelet.conf.d/10-graceful-node-shutdown.conf
+  grep -qx "shutdownGracePeriodByPodPriority:" "$shutdown_config"
+  test "$(grep -c '^  - priority:' "$shutdown_config")" -eq 4
+  ! grep -q '^shutdownGracePeriod:' "$shutdown_config"
+  ! grep -q '^shutdownGracePeriodCriticalPods:' "$shutdown_config"
+  inhibit=$(systemd-analyze cat-config systemd/logind.conf | sed -n 's/^[[:space:]]*InhibitDelayMaxSec=//p' | tail -n 1)
+  case "$inhibit" in
+    195|195s|"3min 15s") ;;
+    *) echo "InhibitDelayMaxSec is ${inhibit:-missing}, expected 195s" >&2; exit 1 ;;
+  esac
+  if test "$MASK_UNATTENDED_LOGIND_DELAY" = true; then
+    test "$(readlink -f /etc/systemd/logind.conf.d/unattended-upgrades-logind-maxdelay.conf)" = /dev/null
+  fi
+  systemd-inhibit --list --no-pager | grep -qi kubelet
   if test "$MANAGE_FIREWALL_RULES" = true; then
   stage=k3s-firewall
   attempt=0
@@ -1900,6 +1929,17 @@ REMOTE_VERIFY
         echo "$host Kubernetes Node Ready is ${node_ready:-missing}" >&2
         exit 1
       }
+      kubectl --context "$context" get --raw "/api/v1/nodes/$host/proxy/configz" \
+        | jq -e '
+            .kubeletconfig.shutdownGracePeriod == "0s"
+            and .kubeletconfig.shutdownGracePeriodCriticalPods == "0s"
+            and .kubeletconfig.shutdownGracePeriodByPodPriority == [
+              {"priority": 0, "shutdownGracePeriodSeconds": 60},
+              {"priority": 900000000, "shutdownGracePeriodSeconds": 45},
+              {"priority": 2000000000, "shutdownGracePeriodSeconds": 30},
+              {"priority": 2000001000, "shutdownGracePeriodSeconds": 45}
+            ]
+          ' >/dev/null
     fi
     ;;
   restore-host)
@@ -1923,6 +1963,7 @@ REMOTE_VERIFY
       test -x \"\$profile/bin/activate\"
       \"\$profile/bin/activate\"
     '"
+    cleanup_unmanaged_kubelet_shutdown_link "$host"
     apply_native_runtime "$host"
     "$0" verify-host "$host"
     ;;

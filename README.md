@@ -190,6 +190,14 @@ inventory의 `[nix_managed]`와 `ansible_host`에서 `hosts_dns_hostname`으로 
 Peer 변경은 `nix run .#rollout-peers -- <host>`로 수행한다. K3s binary/version
 rollout은 계속 Rancher `system-upgrade-controller`가 소유한다.
 
+### Graceful node shutdown
+
+K3s node 6대(`n2p1`, `n2p2`, `rpi4`, `rpi5`, `rock5bp`, `macmini`)는 priority별로 순차 종료한다. 일반 workload(priority 0)는 60초, ZFS CSI(priority 900000000 이상)는 45초, `system-cluster-critical`은 30초, `system-node-critical`은 45초다. 현재 일반 Pod의 표준 종료 예산은 최대 30초이고 ZFS 및 democratic-csi node Pod는 30초와 `preStop`/volume unmount 작업을 사용한다. 전체 kubelet 예산은 180초이며 logind `InhibitDelayMaxSec=195s`가 15초의 감지·해제 여유를 둔다.
+
+CNPG의 1800초와 Prometheus의 600초 종료 예산은 일반 reboot에 그대로 반영하지 않는다. 이를 반영하면 모든 node의 machine-wide inhibitor가 30분 이상으로 늘어난다. 해당 workload가 있는 node의 계획 유지보수는 CNPG switchover와 `kubectl drain`으로 처리한다. `n2p1`, `n2p2`에서는 unattended-upgrades의 같은 이름 30초 drop-in을 `/dev/null`로 마스킹한다. `activate`는 logind를 먼저 재시작한 뒤 K3s를 재시작하며, `verify-host`는 merged logind 값, kubelet inhibitor, API의 active priority별 kubelet config를 확인한다.
+
+구성 적용 후 일반 재부팅은 `systemctl reboot`를 사용한다. 이 경로는 kubelet의 정상 Pod 종료 기회를 제공하지만 PDB eviction, 대체 Pod의 Ready 완료, 단일 replica 무중단, local PV 이동을 보장하지 않는다. 먼저 `n2p1`, `n2p2`에서 검증하고 control-plane/etcd node는 quorum을 위해 항상 한 번에 하나씩 재부팅한다. `reboot -f`와 `systemctl reboot --force`는 사용하지 않는다.
+
 ## Verification
 
 ```bash

@@ -400,6 +400,10 @@ if ! test -e "$stages/system-manager-restored"; then
       exit "$rc"
     }
   fi
+  path=/var/lib/rancher/k3s/agent/etc/kubelet.conf.d/10-graceful-node-shutdown.conf
+  if test "$(readlink "$path" 2>/dev/null || true)" = /etc/homelab/kubelet/10-graceful-node-shutdown.conf; then
+    grep -Fq "$path" /etc/tmpfiles.d/00-system-manager.conf 2>/dev/null || rm -f "$path"
+  fi
   touch "$stages/system-manager-restored"
 fi
 if ! test -e "$stages/archive-restored"; then
