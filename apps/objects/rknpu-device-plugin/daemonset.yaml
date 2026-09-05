@@ -1,0 +1,51 @@
+apiVersion: apps/v1
+kind: DaemonSet
+metadata:
+  name: rknpu-device-plugin-daemonset
+  namespace: kube-system
+spec:
+  updateStrategy:
+    type: RollingUpdate
+    rollingUpdate:
+      maxUnavailable: 1
+      maxSurge: 0
+  selector:
+    matchLabels:
+      name: rknpu-dp-ds
+  template:
+    metadata:
+      labels:
+        name: rknpu-dp-ds
+    spec:
+      nodeSelector:
+        homelab.bhyoo.com/npu: rknn
+      priorityClassName: system-node-critical
+      tolerations:
+        - key: CriticalAddonsOnly
+          operator: Exists
+      containers:
+        - name: rknpu-dp-cntr
+          image: ghcr.io/elct9620/rknpu-device-plugin:f8a6989@sha256:542c5933b4f5d837632eb419abd5c97a3bc1fe8ac6cebc8db6423f81c9210790
+          imagePullPolicy: IfNotPresent
+          securityContext:
+            allowPrivilegeEscalation: false
+            capabilities:
+              drop:
+                - ALL
+          volumeMounts:
+            - name: dp
+              mountPath: /var/lib/kubelet/device-plugins
+            - name: sys
+              mountPath: /sys
+            - name: dev
+              mountPath: /dev
+      volumes:
+        - name: dp
+          hostPath:
+            path: /var/lib/kubelet/device-plugins
+        - name: sys
+          hostPath:
+            path: /sys
+        - name: dev
+          hostPath:
+            path: /dev
