@@ -4,7 +4,6 @@ runnerScaleSetName: cc-lb-2
 
 minRunners: 0
 
-
 controllerServiceAccount:
   namespace: arc-systems
   name: arc-gha-rs-controller
@@ -20,10 +19,21 @@ containerMode:
 
 # clippy/e2e/release-plz: observed ~1c, not 4c. Image compiles stay on BuildKit.
 # No maxRunners: ARC omits the cap and scales with the GitHub queue.
+# Heavy jobs stay off rock5bp (unreliable disk). local-path work volumes
+# pin kubernetes-mode job pods to the runner node.
 # No DinD. Image builds go to buildkit.arc-systems.svc:1234.
 # actions/cache talks to the in-cluster cache server, not GitHub.
 template:
   spec:
+    affinity:
+      nodeAffinity:
+        requiredDuringSchedulingIgnoredDuringExecution:
+          nodeSelectorTerms:
+            - matchExpressions:
+                - key: kubernetes.io/hostname
+                  operator: NotIn
+                  values:
+                    - rock5bp
     containers:
       - name: runner
         image: ghcr.io/isac322/cc-lb-actions-runner:2.337.0-cclb-91f8035a0c5f@sha256:508df5d4504e09e2d560b61ef297e2fa77f5e671409c4d8214887a3d8e7327d0
@@ -97,6 +107,15 @@ template:
 
 listenerTemplate:
   spec:
+    affinity:
+      nodeAffinity:
+        requiredDuringSchedulingIgnoredDuringExecution:
+          nodeSelectorTerms:
+            - matchExpressions:
+                - key: kubernetes.io/hostname
+                  operator: NotIn
+                  values:
+                    - rock5bp
     containers:
       - name: listener
         resources:
