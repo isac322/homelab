@@ -1,3 +1,10 @@
+zfsPlugin:
+  image:
+    registry: docker.io/
+    repository: openebs/zfs-driver
+    pullPolicy: IfNotPresent
+    tag: 2.11.1@sha256:16f1a74bb2495c78f9652be5d7cd6e869cb212c9decd42cac63e6566b07fa5f2
+
 # zfsNode contains the configurables for
 # the zfs node daemonset
 zfsNode:
