@@ -15,6 +15,8 @@ spec:
     targetRevision: v0.2.2
     kustomize:
       namespace: object-storage
+      images:
+        - gcr.io/k8s-staging-sig-storage/objectstorage-controller=gcr.io/k8s-staging-sig-storage/objectstorage-controller:v0.2.2@sha256:1a403232505f78038737f3ffee2da053138a3acb7e225ff81c35980029fad162
       patches:
         - target:
             kind: Deployment

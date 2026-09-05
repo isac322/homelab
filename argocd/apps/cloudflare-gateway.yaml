@@ -48,6 +48,17 @@ spec:
     repoURL: https://github.com/pl4nty/cloudflare-kubernetes-gateway.git
     path: config/default
     targetRevision: v0.10.1
+    kustomize:
+      patches:
+        - target:
+            group: apps
+            version: v1
+            kind: Deployment
+            name: controller-manager
+          patch: |
+            - op: replace
+              path: /spec/template/spec/containers/0/env/0/value
+              value: docker.io/cloudflare/cloudflared:2026.8.3@sha256:51c9cefcb4569df44e1ad403ab1d3d8065aa8e84339bcfc6aee75502e1140339
   syncPolicy:
     automated:
       prune: true
