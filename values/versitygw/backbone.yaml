@@ -1,5 +1,5 @@
 image:
-  tag: v1.7.0
+  tag: v1.8.0@sha256:30292fc2eeacc67a36993b01f7a7a5e3361a19cced0e80c1d71cfa2a4b0a2499
 
 strategy:
   type: Recreate
