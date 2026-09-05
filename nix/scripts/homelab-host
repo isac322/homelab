@@ -1845,10 +1845,10 @@ if test "$ROLE" = server || test "$ROLE" = agent; then
   systemctl cat homelab-k3s.service | grep -Fx 'LoadCredentialEncrypted=k3s-token:/var/lib/homelab-secrets/active/k3s-token.cred'
   stage=k3s-graceful-shutdown
   shutdown_config=/var/lib/rancher/k3s/agent/etc/kubelet.conf.d/10-graceful-node-shutdown.conf
-  grep -qx "shutdownGracePeriodByPodPriority:" "$shutdown_config"
-  test "$(grep -c '^  - priority:' "$shutdown_config")" -eq 4
-  ! grep -q '^shutdownGracePeriod:' "$shutdown_config"
-  ! grep -q '^shutdownGracePeriodCriticalPods:' "$shutdown_config"
+  sudo -n grep -qx "shutdownGracePeriodByPodPriority:" "$shutdown_config"
+  test "$(sudo -n grep -c '^  - priority:' "$shutdown_config")" -eq 4
+  ! sudo -n grep -q '^shutdownGracePeriod:' "$shutdown_config"
+  ! sudo -n grep -q '^shutdownGracePeriodCriticalPods:' "$shutdown_config"
   inhibit=$(systemd-analyze cat-config systemd/logind.conf | sed -n 's/^[[:space:]]*InhibitDelayMaxSec=//p' | tail -n 1)
   case "$inhibit" in
     195|195s|"3min 15s") ;;
@@ -1857,7 +1857,7 @@ if test "$ROLE" = server || test "$ROLE" = agent; then
   if test "$MASK_UNATTENDED_LOGIND_DELAY" = true; then
     test "$(readlink -f /etc/systemd/logind.conf.d/unattended-upgrades-logind-maxdelay.conf)" = /dev/null
   fi
-  systemd-inhibit --list --no-pager | grep -qi kubelet
+  sudo -n systemd-inhibit --list --no-pager | grep -qi kubelet
   if test "$MANAGE_FIREWALL_RULES" = true; then
   stage=k3s-firewall
   attempt=0
