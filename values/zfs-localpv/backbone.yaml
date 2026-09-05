@@ -8,6 +8,8 @@ zfsPlugin:
 # zfsNode contains the configurables for
 # the zfs node daemonset
 zfsNode:
+  defaultFormatOptions:
+    xfs: "-s size=4096"
   resources:
     limits:
       cpu: 100m
