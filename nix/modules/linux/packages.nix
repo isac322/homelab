@@ -43,6 +43,7 @@ let
     "vim"
     "htop"
     "wireguard-tools"
+    "nvme-cli"
     "iptables"
   ];
   baseAbsent =
