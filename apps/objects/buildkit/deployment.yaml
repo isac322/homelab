@@ -19,6 +19,10 @@ spec:
       annotations:
         checksum/config: df4ea3370cc3fa67c0964f7ea374bf200d43d3c1f68ee6f8e8c887cbea1f75a5
     spec:
+      # 4c/4Gi pack collides with cc-lb-4 on macmini. Cache is already
+      # iSCSI from rock5bp; run the pod on that node.
+      nodeSelector:
+        kubernetes.io/hostname: rock5bp
       terminationGracePeriodSeconds: 30
       containers:
         - name: buildkitd
