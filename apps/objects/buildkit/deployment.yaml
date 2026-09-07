@@ -19,18 +19,6 @@ spec:
       annotations:
         checksum/config: df4ea3370cc3fa67c0964f7ea374bf200d43d3c1f68ee6f8e8c887cbea1f75a5
     spec:
-      # Prefer rock5bp so macmini can pack cc-lb-4. Soft preference only:
-      # schedule elsewhere if rock5bp cannot take 4c/4Gi.
-      affinity:
-        nodeAffinity:
-          preferredDuringSchedulingIgnoredDuringExecution:
-            - weight: 100
-              preference:
-                matchExpressions:
-                  - key: kubernetes.io/hostname
-                    operator: In
-                    values:
-                      - rock5bp
       terminationGracePeriodSeconds: 30
       containers:
         - name: buildkitd
