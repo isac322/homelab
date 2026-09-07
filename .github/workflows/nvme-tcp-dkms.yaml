@@ -120,7 +120,7 @@ jobs:
           test -n "$(find "/lib/modules/$kernelver/updates/dkms" -name 'nvmet-tcp.ko*' -print -quit)"
 
       - name: Upload Debian packages
-        uses: actions/upload-artifact@v4
+        uses: actions/upload-artifact@v7
         with:
           name: nvme-tcp-dkms-debian
           path: tools/nvme-tcp-dkms/dist/debian/*.deb
@@ -189,7 +189,7 @@ jobs:
           test -s "$work/target/nvmet-tcp.ko"
 
       - name: Upload Arch packages
-        uses: actions/upload-artifact@v4
+        uses: actions/upload-artifact@v7
         with:
           name: nvme-tcp-dkms-arch
           path: tools/nvme-tcp-dkms/dist/arch/*.pkg.tar.zst
