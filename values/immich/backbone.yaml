@@ -109,7 +109,7 @@ server:
           resources:
             requests:
               cpu: 300m
-              memory: 3Gi
+              memory: 1536Mi
             limits:
               cpu: 2
               memory: 5Gi
@@ -216,8 +216,8 @@ machine-learning:
             privileged: true
           resources:
             requests:
-              cpu: 300m
-              memory: 3Gi
+              cpu: 200m
+              memory: 1536Mi
             limits:
               cpu: 2
               memory: 6Gi
