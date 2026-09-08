@@ -17,7 +17,7 @@ spec:
       labels:
         app: buildkit
       annotations:
-        checksum/config: df4ea3370cc3fa67c0964f7ea374bf200d43d3c1f68ee6f8e8c887cbea1f75a5
+        checksum/config: b80dda73916f8f9460d1fed69261c1d4f44f56be872c1a9f648f7d08d4a18e32
     spec:
       terminationGracePeriodSeconds: 30
       containers:
