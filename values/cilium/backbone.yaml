@@ -137,8 +137,7 @@ hubble:
         cpu: 10m
         memory: 48Mi
       limits:
-        cpu: 50m
-        memory: 96Mi
+        memory: 56Mi
   ui:
     enabled: false  # 리소스 절약. 필요 시 kubectl port-forward
 
@@ -150,17 +149,16 @@ operator:
       cpu: 25m
       memory: 160Mi
     limits:
-      cpu: 100m
-      memory: 256Mi
+      memory: 192Mi
 
 # ─── Agent 리소스 ───
 # 메모리 제약 있는 노드(rpi4 3.7G, n2p1/n2p2 3.5G) 고려
 resources:
   requests:
-    cpu: 200m
+    cpu: 250m
     memory: 384Mi
   limits:
-    memory: 512Mi
+    memory: 448Mi
 
 # ─── Envoy DaemonSet (Gateway API 용) ───
 envoy:
@@ -177,9 +175,9 @@ envoy:
   resources:
     requests:
       cpu: 20m
-      memory: 112Mi
+      memory: 128Mi
     limits:
-      memory: 256Mi
+      memory: 144Mi
   affinity:
     nodeAffinity:
       requiredDuringSchedulingIgnoredDuringExecution:

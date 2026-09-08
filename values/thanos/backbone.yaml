@@ -28,11 +28,10 @@ query:
     - --query.auto-downsampling
   resources:
     requests:
-      cpu: 15m
+      cpu: 50m
       memory: 96Mi
     limits:
-      cpu: 300m
-      memory: 256Mi
+      memory: 512Mi
 
 queryFrontend:
   enabled: true
@@ -49,10 +48,9 @@ queryFrontend:
   resources:
     requests:
       cpu: 10m
-      memory: 48Mi
+      memory: 56Mi
     limits:
-      cpu: 200m
-      memory: 128Mi
+      memory: 96Mi
 
 storegateway:
   enabled: true
@@ -74,7 +72,6 @@ storegateway:
       cpu: 30m
       memory: 1280Mi
     limits:
-      cpu: 500m
       memory: 3Gi
   persistence:
     enabled: true
@@ -89,7 +86,7 @@ compactor:
       memory: 200Mi
     limits:
       cpu: 500m
-      memory: 512Mi
+      memory: 256Mi
   persistence:
     enabled: true
     storageClass: ssd-ha-xfs

@@ -616,18 +616,16 @@ grafana:
 
   resources:
     requests:
-      cpu: 180m
+      cpu: 150m
       memory: 384Mi
     limits:
-      cpu: 300m
-      memory: 512Mi
+      memory: 480Mi
   downloadDashboards:
     resources:
       requests:
         cpu: 10m
         memory: 32Mi
       limits:
-        cpu: 50m
         memory: 64Mi
 
   sidecar:
@@ -637,9 +635,8 @@ grafana:
     resources:
       requests:
         cpu: 5m
-        memory: 100Mi
+        memory: 112Mi
       limits:
-        cpu: 20m
         memory: 128Mi
     alerts:
       enabled: true
@@ -802,10 +799,9 @@ kube-state-metrics:
   resources:
     requests:
       cpu: 15m
-      memory: 96Mi
+      memory: 72Mi
     limits:
-      cpu: 50m
-      memory: 128Mi
+      memory: 120Mi
 
 ## Configuration for prometheus-node-exporter subchart
 ##
@@ -814,10 +810,9 @@ prometheus-node-exporter:
   resources:
     requests:
       cpu: 10m
-      memory: 36Mi
+      memory: 32Mi
     limits:
-      cpu: 50m
-      memory: 48Mi
+      memory: 76Mi
 
 ## Manages Prometheus and Alertmanager components
 ##
@@ -838,19 +833,17 @@ prometheusOperator:
   resources:
     requests:
       cpu: 10m
-      memory: 72Mi
+      memory: 48Mi
     limits:
-      cpu: 100m
-      memory: 128Mi
+      memory: 96Mi
 
   prometheusConfigReloader:
     resources:
       requests:
         cpu: 5m
-        memory: 32Mi
+        memory: 20Mi
       limits:
-        cpu: 10m
-        memory: 64Mi
+        memory: 32Mi
 
 ## Deploy a Prometheus instance
 ##
@@ -919,10 +912,9 @@ prometheus:
       resources:
         requests:
           cpu: 10m
-          memory: 56Mi
+          memory: 40Mi
         limits:
-          cpu: 50m
-          memory: 96Mi
+          memory: 64Mi
       objectStorageConfig:
         existingSecret:
           name: thanos-objstore-config
@@ -952,8 +944,7 @@ prometheus:
         cpu: 250m
         memory: 1536Mi
       limits:
-        cpu: 1500m
-        memory: 2560Mi
+        memory: 1792Mi
 
     ## Prometheus StorageSpec for persistent data
     ## ref: https://github.com/prometheus-operator/prometheus-operator/blob/main/Documentation/user-guides/storage.md

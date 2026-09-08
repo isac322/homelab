@@ -3,16 +3,14 @@ driver:
   resources:
     requests:
       cpu: 5m
-      memory: 36Mi
+      memory: 16Mi
     limits:
-      cpu: 50m
-      memory: 64Mi
+      memory: 24Mi
 
 sidecar:
   resources:
     requests:
       cpu: 5m
-      memory: 36Mi
+      memory: 20Mi
     limits:
-      cpu: 50m
-      memory: 64Mi
+      memory: 40Mi

@@ -53,11 +53,10 @@ singleBinary:
                   - rock5bp
   resources:
     requests:
-      cpu: 30m
-      memory: 280Mi
+      cpu: 100m
+      memory: 224Mi
     limits:
-      cpu: 250m
-      memory: 512Mi
+      memory: 384Mi
   persistence:
     enabled: true
     storageClass: ssd-ha-xfs
@@ -94,16 +93,14 @@ gateway:
       cpu: 5m
       memory: 24Mi
     limits:
-      cpu: 50m
-      memory: 48Mi
+      memory: 32Mi
   metrics:
     resources:
       requests:
         cpu: 5m
-        memory: 32Mi
+        memory: 24Mi
       limits:
-        cpu: 50m
-        memory: 64Mi
+        memory: 32Mi
 
 lokiCanary:
   enabled: false

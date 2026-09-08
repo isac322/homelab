@@ -90,10 +90,10 @@ service:
 resources:
   requests:
     cpu: 50m
-    memory: 768Mi
+    memory: 512Mi
   limits:
-    cpu: 1500m
-    memory: 3Gi
+    cpu: 2
+    memory: 2560Mi
 
 # -- Additional volumes to mount in the Jellyfin pod.
 volumes:

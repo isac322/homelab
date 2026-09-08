@@ -25,11 +25,10 @@ alloy:
         mountPath: /var/lib/alloy
   resources:
     requests:
-      cpu: 50m
-      memory: 320Mi
+      cpu: 100m
+      memory: 224Mi
     limits:
-      cpu: 150m
-      memory: 450Mi
+      memory: 384Mi
   configMap:
     create: true
     content: |-
@@ -85,8 +84,7 @@ alloy:
 configReloader:
   resources:
     requests:
-      cpu: 10m
-      memory: 36Mi
+      cpu: 5m
+      memory: 16Mi
     limits:
-      cpu: 50m
-      memory: 64Mi
+      memory: 48Mi

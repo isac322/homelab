@@ -29,11 +29,10 @@ spec:
           imagePullPolicy: IfNotPresent
           resources:
             requests:
-              cpu: 10m
+              cpu: 5m
               memory: 16Mi
             limits:
-              cpu: 50m
-              memory: 32Mi
+              memory: 24Mi
           securityContext:
             allowPrivilegeEscalation: false
             capabilities:
