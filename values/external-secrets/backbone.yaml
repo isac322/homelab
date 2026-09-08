@@ -3,8 +3,7 @@ resources:
     cpu: 10m
     memory: 104Mi
   limits:
-    cpu: 50m
-    memory: 160Mi
+    memory: 128Mi
 
 grafanaDashboard:
   enabled: true
@@ -19,10 +18,9 @@ webhook:
   resources:
     requests:
       cpu: 10m
-      memory: 112Mi
+      memory: 64Mi
     limits:
-      cpu: 50m
-      memory: 192Mi
+      memory: 128Mi
 
   certManager:
     enabled: true

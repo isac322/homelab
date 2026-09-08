@@ -6,11 +6,10 @@ api:
     tag: "0.9.2-slim"
   resources:
     requests:
-      cpu: 100m
+      cpu: 25m
       memory: 640Mi
     limits:
-      cpu: 500m
-      memory: 1Gi
+      memory: 768Mi
   env:
     # LLM — Google Generative API (Gemini API key via existingSecret)
     HINDSIGHT_API_LLM_PROVIDER: "gemini"
@@ -66,11 +65,10 @@ controlPlane:
   replicaCount: 1
   resources:
     requests:
-      cpu: 20m
+      cpu: 10m
       memory: 64Mi
     limits:
-      cpu: 100m
-      memory: 256Mi
+      memory: 96Mi
 
 worker:
   enabled: false

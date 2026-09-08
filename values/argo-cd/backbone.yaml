@@ -90,11 +90,10 @@ controller:
 
   resources:
     limits:
-      cpu: 1000m
       memory: 2Gi
     requests:
-      cpu: 300m
-      memory: 1536Mi
+      cpu: 200m
+      memory: 1200Mi
 
   metrics:
     enabled: true
@@ -112,11 +111,10 @@ redis:
 
   resources:
     limits:
-      cpu: 100m
-      memory: 96Mi
+      memory: 48Mi
     requests:
       cpu: 10m
-      memory: 48Mi
+      memory: 28Mi
 
   metrics:
     enabled: true
@@ -134,11 +132,10 @@ redis:
 server:
   resources:
     limits:
-      cpu: 200m
-      memory: 256Mi
+      memory: 224Mi
     requests:
-      cpu: 20m
-      memory: 192Mi
+      cpu: 10m
+      memory: 96Mi
 
   ingress:
     enabled: false
@@ -160,11 +157,10 @@ server:
 repoServer:
   resources:
     limits:
-      cpu: 1
-      memory: 512Mi
+      memory: 384Mi
     requests:
-      cpu: 150m
-      memory: 256Mi
+      cpu: 50m
+      memory: 192Mi
 
   metrics:
     enabled: true
@@ -174,11 +170,10 @@ repoServer:
 applicationSet:
   resources:
     limits:
-      cpu: 100m
-      memory: 128Mi
+      memory: 112Mi
     requests:
       cpu: 10m
-      memory: 80Mi
+      memory: 72Mi
 
   metrics:
     enabled: true

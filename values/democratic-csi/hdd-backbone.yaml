@@ -54,8 +54,7 @@ csiProxy:
       cpu: 5m
       memory: 16Mi
     limits:
-      cpu: 10m
-      memory: 24Mi
+      memory: 20Mi
 
 controller:
   externalAttacher:
@@ -64,32 +63,28 @@ controller:
         cpu: 5m
         memory: 32Mi
       limits:
-        cpu: 50m
-        memory: 48Mi
+        memory: 40Mi
   externalProvisioner:
     resources:
       requests:
         cpu: 5m
         memory: 32Mi
       limits:
-        cpu: 50m
-        memory: 48Mi
+        memory: 40Mi
   externalResizer:
     resources:
       requests:
-        cpu: 5m
-        memory: 32Mi
+        cpu: 10m
+        memory: 36Mi
       limits:
-        cpu: 50m
-        memory: 48Mi
+        memory: 40Mi
   externalSnapshotter:
     resources:
       requests:
         cpu: 5m
         memory: 32Mi
       limits:
-        cpu: 50m
-        memory: 48Mi
+        memory: 40Mi
   driver:
     image:
       registry: docker.io/isac322/democratic-csi
@@ -97,11 +92,10 @@ controller:
       pullPolicy: Always
     resources:
       requests:
-        cpu: 50m
-        memory: 144Mi
+        cpu: 25m
+        memory: 80Mi
       limits:
-        cpu: 100m
-        memory: 256Mi
+        memory: 112Mi
     extraEnv:
       - name: SSH_PRIVATE_KEY
         valueFrom:
@@ -116,16 +110,14 @@ node:
         cpu: 5m
         memory: 8Mi
       limits:
-        cpu: 10m
-        memory: 16Mi
+        memory: 12Mi
   driverRegistrar:
     resources:
       requests:
         cpu: 5m
-        memory: 32Mi
+        memory: 24Mi
       limits:
-        cpu: 50m
-        memory: 64Mi
+        memory: 36Mi
   driver:
     image:
       registry: docker.io/isac322/democratic-csi
@@ -134,10 +126,9 @@ node:
     resources:
       requests:
         cpu: 50m
-        memory: 144Mi
+        memory: 136Mi
       limits:
-        cpu: 150m
-        memory: 256Mi
+        memory: 192Mi
     extraEnv:
       - name: SSH_PRIVATE_KEY
         valueFrom:

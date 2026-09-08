@@ -64,9 +64,9 @@ spec:
           resources:
             requests:
               cpu: 10m
-              memory: 64Mi
+              memory: 40Mi
             limits:
-              memory: 1Gi
+              memory: 64Mi
           volumeMounts:
             - name: config
               mountPath: /etc/distribution

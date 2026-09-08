@@ -11,10 +11,9 @@ cluster:
   resources:
     requests:
       cpu: 1
-      memory: 1792Mi
+      memory: 1280Mi
     limits:
-      cpu: 4
-      memory: 2560Mi
+      memory: 2Gi
   storage:
     storageClass: ssd-ha-cnpg
     size: 10Gi
