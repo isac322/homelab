@@ -6,6 +6,24 @@ spec:
   image:
     repository: nousresearch/hermes-agent
     tag: v2026.8.31
+  scheduling:
+    affinity:
+      nodeAffinity:
+        preferredDuringSchedulingIgnoredDuringExecution:
+          - weight: 100
+            preference:
+              matchExpressions:
+                - key: kubernetes.io/hostname
+                  operator: In
+                  values:
+                    - rock5bp
+  resources:
+    requests:
+      cpu: 200m
+      memory: 4Gi
+    limits:
+      cpu: 2
+      memory: 6Gi
   initContainers:
     - name: install-hermes-lcm
       image: nousresearch/hermes-agent:v2026.8.31
@@ -19,6 +37,13 @@ spec:
           test "$(git -C /lcm/plugin rev-parse HEAD)" = \
             "10cbb78347ec86f3004153b24767324ded9e37b4"
           rm -rf /lcm/plugin/.git
+      resources:
+        requests:
+          cpu: 50m
+          memory: 64Mi
+        limits:
+          cpu: 500m
+          memory: 256Mi
       volumeMounts:
         - name: hermes-lcm
           mountPath: /lcm
@@ -48,6 +73,13 @@ spec:
               name: skillfish-github-token
               key: token
               optional: true
+      resources:
+        requests:
+          cpu: 100m
+          memory: 128Mi
+        limits:
+          cpu: 1000m
+          memory: 512Mi
       securityContext:
         allowPrivilegeEscalation: false
         capabilities:
@@ -79,6 +111,13 @@ spec:
         runAsGroup: 1000
         runAsNonRoot: true
         runAsUser: 1000
+      resources:
+        requests:
+          cpu: 10m
+          memory: 32Mi
+        limits:
+          cpu: 100m
+          memory: 64Mi
       volumeMounts:
         - name: hermes-native-web-search-patch
           mountPath: /patch
@@ -96,6 +135,13 @@ spec:
           mkdir -p /home/node/.cache/camoufox
           cp -R /root/.cache/camoufox/. /home/node/.cache/camoufox/
           chown -R 1000:1000 /home/node
+      resources:
+        requests:
+          cpu: 50m
+          memory: 640Mi
+        limits:
+          cpu: 500m
+          memory: 1Gi
       securityContext:
         allowPrivilegeEscalation: false
         capabilities:
@@ -236,9 +282,9 @@ spec:
       resources:
         requests:
           cpu: 200m
-          memory: 512Mi
+          memory: 1Gi
         limits:
-          cpu: "2"
+          cpu: 1
           memory: 2Gi
       securityContext:
         allowPrivilegeEscalation: false

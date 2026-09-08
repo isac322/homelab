@@ -20,6 +20,16 @@ spec:
         checksum/config: b80dda73916f8f9460d1fed69261c1d4f44f56be872c1a9f648f7d08d4a18e32
     spec:
       terminationGracePeriodSeconds: 30
+      affinity:
+        nodeAffinity:
+          preferredDuringSchedulingIgnoredDuringExecution:
+            - weight: 100
+              preference:
+                matchExpressions:
+                  - key: kubernetes.io/hostname
+                    operator: In
+                    values:
+                      - macmini
       containers:
         - name: buildkitd
           image: docker.io/moby/buildkit:v0.33.0@sha256:6c2fa84a6b61ccd72899dde4239f8d5717f05f9a8ca6f3cad185fb1a95a94de3
@@ -41,8 +51,8 @@ spec:
               cpu: "4"
               memory: 4Gi
             limits:
-              cpu: "4"
-              memory: 8Gi
+              cpu: "6"
+              memory: 10Gi
           securityContext:
             privileged: true
           volumeMounts:

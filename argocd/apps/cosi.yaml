@@ -27,9 +27,9 @@ spec:
               value:
                 requests:
                   cpu: 5m
-                  memory: 32Mi
+                  memory: 36Mi
                 limits:
-                  cpu: 50m
+                  cpu: 30m
                   memory: 64Mi
   syncPolicy:
     automated:

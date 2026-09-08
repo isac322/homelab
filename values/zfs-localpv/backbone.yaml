@@ -27,8 +27,8 @@ zfsController:
   replicas: 1
   resources:
     limits:
-      cpu: 200m
-      memory: 256Mi
+      cpu: 100m
+      memory: 128Mi
     requests:
       cpu: 10m
-      memory: 128Mi
+      memory: 64Mi

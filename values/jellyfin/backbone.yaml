@@ -89,11 +89,11 @@ service:
 # -- Resource requests and limits for the Jellyfin container.
 resources:
   requests:
-    cpu: 10m
-    memory: 512Mi
+    cpu: 50m
+    memory: 768Mi
   limits:
-    cpu: "1"
-    memory: 6Gi
+    cpu: 1500m
+    memory: 3Gi
 
 # -- Additional volumes to mount in the Jellyfin pod.
 volumes:

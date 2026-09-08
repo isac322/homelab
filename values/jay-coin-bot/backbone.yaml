@@ -1,10 +1,10 @@
 resources:
   requests:
-    cpu: 15m
-    memory: 96Mi
+    cpu: 25m
+    memory: 112Mi
   limits:
     cpu: 100m
-    memory: 256Mi
+    memory: 192Mi
 
 env:
   MAX_POSITIONS: "2"
