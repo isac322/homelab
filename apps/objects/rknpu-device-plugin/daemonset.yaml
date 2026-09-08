@@ -27,6 +27,13 @@ spec:
         - name: rknpu-dp-cntr
           image: ghcr.io/elct9620/rknpu-device-plugin:f8a6989@sha256:542c5933b4f5d837632eb419abd5c97a3bc1fe8ac6cebc8db6423f81c9210790
           imagePullPolicy: IfNotPresent
+          resources:
+            requests:
+              cpu: 10m
+              memory: 16Mi
+            limits:
+              cpu: 50m
+              memory: 32Mi
           securityContext:
             allowPrivilegeEscalation: false
             capabilities:

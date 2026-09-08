@@ -2,11 +2,11 @@ driver:
   name: versitygw-hdd.cosi.dev
   resources:
     requests:
-      cpu: 10m
-      memory: 32Mi
+      cpu: 5m
+      memory: 36Mi
     limits:
-      cpu: 100m
-      memory: 128Mi
+      cpu: 50m
+      memory: 64Mi
 
 bucketClass:
   name: versitygw-hdd-cosi-driver
@@ -22,8 +22,8 @@ versitygw:
 sidecar:
   resources:
     requests:
-      cpu: 10m
-      memory: 32Mi
+      cpu: 5m
+      memory: 36Mi
     limits:
-      cpu: 100m
-      memory: 128Mi
+      cpu: 50m
+      memory: 64Mi

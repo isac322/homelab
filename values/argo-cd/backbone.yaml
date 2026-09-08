@@ -77,13 +77,24 @@ configs:
     server.enable.gzip: true
 
 controller:
+  affinity:
+    nodeAffinity:
+      preferredDuringSchedulingIgnoredDuringExecution:
+        - weight: 100
+          preference:
+            matchExpressions:
+              - key: kubernetes.io/hostname
+                operator: In
+                values:
+                  - rock5bp
+
   resources:
     limits:
-      cpu: 1500m
+      cpu: 1000m
       memory: 2Gi
     requests:
-      cpu: 500m
-      memory: 512Mi
+      cpu: 300m
+      memory: 1536Mi
 
   metrics:
     enabled: true
@@ -102,10 +113,10 @@ redis:
   resources:
     limits:
       cpu: 100m
-      memory: 128Mi
+      memory: 96Mi
     requests:
       cpu: 10m
-      memory: 32Mi
+      memory: 48Mi
 
   metrics:
     enabled: true
@@ -123,11 +134,11 @@ redis:
 server:
   resources:
     limits:
-      cpu: 500m
+      cpu: 200m
       memory: 256Mi
     requests:
-      cpu: 50m
-      memory: 96Mi
+      cpu: 20m
+      memory: 192Mi
 
   ingress:
     enabled: false
@@ -149,11 +160,11 @@ server:
 repoServer:
   resources:
     limits:
-      cpu: 3000m
-      memory: 1Gi
-    requests:
-      cpu: 200m
+      cpu: 1
       memory: 512Mi
+    requests:
+      cpu: 150m
+      memory: 256Mi
 
   metrics:
     enabled: true
@@ -163,11 +174,11 @@ repoServer:
 applicationSet:
   resources:
     limits:
-      cpu: 250m
+      cpu: 100m
       memory: 128Mi
     requests:
       cpu: 10m
-      memory: 48Mi
+      memory: 80Mi
 
   metrics:
     enabled: true

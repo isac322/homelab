@@ -2,17 +2,17 @@ driver:
   name: versitygw.cosi.dev
   resources:
     requests:
-      cpu: 10m
-      memory: 32Mi
+      cpu: 5m
+      memory: 36Mi
     limits:
-      cpu: 100m
-      memory: 128Mi
+      cpu: 50m
+      memory: 64Mi
 
 sidecar:
   resources:
     requests:
-      cpu: 10m
-      memory: 32Mi
+      cpu: 5m
+      memory: 36Mi
     limits:
-      cpu: 100m
-      memory: 128Mi
+      cpu: 50m
+      memory: 64Mi

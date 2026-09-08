@@ -28,11 +28,11 @@ query:
     - --query.auto-downsampling
   resources:
     requests:
-      cpu: 50m
-      memory: 128Mi
+      cpu: 15m
+      memory: 96Mi
     limits:
-      cpu: 1000m
-      memory: 1Gi
+      cpu: 300m
+      memory: 256Mi
 
 queryFrontend:
   enabled: true
@@ -48,24 +48,34 @@ queryFrontend:
     - --labels.response-cache-config={"type":"in-memory","config":{"max-size":"32MB","max-item-size":"1MB","validity":"6h"}}
   resources:
     requests:
-      cpu: 20m
-      memory: 64Mi
+      cpu: 10m
+      memory: 48Mi
     limits:
-      cpu: 500m
-      memory: 768Mi
+      cpu: 200m
+      memory: 128Mi
 
 storegateway:
   enabled: true
   replicaCount: 1
   extraFlags:
     - --index-cache-size=512MB
+  affinity:
+    nodeAffinity:
+      preferredDuringSchedulingIgnoredDuringExecution:
+        - weight: 100
+          preference:
+            matchExpressions:
+              - key: kubernetes.io/hostname
+                operator: In
+                values:
+                  - rock5bp
   resources:
     requests:
-      cpu: 50m
-      memory: 256Mi
-    limits:
-      cpu: 1000m
+      cpu: 30m
       memory: 2Gi
+    limits:
+      cpu: 500m
+      memory: 3Gi
   persistence:
     enabled: true
     storageClass: ssd-ha-xfs
@@ -75,11 +85,11 @@ compactor:
   enabled: true
   resources:
     requests:
-      cpu: 50m
-      memory: 256Mi
+      cpu: 120m
+      memory: 200Mi
     limits:
-      cpu: 1000m
-      memory: 2Gi
+      cpu: 500m
+      memory: 512Mi
   persistence:
     enabled: true
     storageClass: ssd-ha-xfs

@@ -616,11 +616,19 @@ grafana:
 
   resources:
     requests:
-      cpu: 50m
-      memory: 192Mi
+      cpu: 180m
+      memory: 384Mi
     limits:
       cpu: 300m
-      memory: 384Mi
+      memory: 512Mi
+  downloadDashboards:
+    resources:
+      requests:
+        cpu: 10m
+        memory: 32Mi
+      limits:
+        cpu: 50m
+        memory: 64Mi
 
   sidecar:
     image:
@@ -628,11 +636,11 @@ grafana:
       sha: 2912be006f62f9ea080194cf6d3afcd90daead8d101d0ba686a137a849f6a4f6
     resources:
       requests:
+        cpu: 5m
+        memory: 100Mi
+      limits:
         cpu: 20m
         memory: 128Mi
-      limits:
-        cpu: 100m
-        memory: 192Mi
     alerts:
       enabled: true
       label: grafana_alert
@@ -793,10 +801,10 @@ kubeEtcd:
 kube-state-metrics:
   resources:
     requests:
-      cpu: 10m
-      memory: 64Mi
+      cpu: 15m
+      memory: 96Mi
     limits:
-      cpu: 100m
+      cpu: 50m
       memory: 128Mi
 
 ## Configuration for prometheus-node-exporter subchart
@@ -806,10 +814,10 @@ prometheus-node-exporter:
   resources:
     requests:
       cpu: 10m
-      memory: 32Mi
+      memory: 36Mi
     limits:
-      cpu: 200m
-      memory: 64Mi
+      cpu: 50m
+      memory: 48Mi
 
 ## Manages Prometheus and Alertmanager components
 ##
@@ -830,9 +838,9 @@ prometheusOperator:
   resources:
     requests:
       cpu: 10m
-      memory: 32Mi
+      memory: 72Mi
     limits:
-      cpu: 200m
+      cpu: 100m
       memory: 128Mi
 
   prometheusConfigReloader:
@@ -911,10 +919,10 @@ prometheus:
       resources:
         requests:
           cpu: 10m
-          memory: 48Mi
+          memory: 56Mi
         limits:
-          cpu: 200m
-          memory: 768Mi
+          cpu: 50m
+          memory: 96Mi
       objectStorageConfig:
         existingSecret:
           name: thanos-objstore-config
@@ -928,13 +936,24 @@ prometheus:
 
     ## Resource limits & requests
     ##
+
+    affinity:
+      nodeAffinity:
+        preferredDuringSchedulingIgnoredDuringExecution:
+          - weight: 100
+            preference:
+              matchExpressions:
+                - key: kubernetes.io/hostname
+                  operator: In
+                  values:
+                    - rock5bp
     resources:
       requests:
-        cpu: 200m
-        memory: 2048Mi
+        cpu: 250m
+        memory: 1536Mi
       limits:
-        cpu: 2000m
-        memory: 6Gi
+        cpu: 1500m
+        memory: 2560Mi
 
     ## Prometheus StorageSpec for persistent data
     ## ref: https://github.com/prometheus-operator/prometheus-operator/blob/main/Documentation/user-guides/storage.md

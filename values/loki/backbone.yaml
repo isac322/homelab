@@ -41,13 +41,23 @@ loki:
 
 singleBinary:
   replicas: 1
+  affinity:
+    nodeAffinity:
+      preferredDuringSchedulingIgnoredDuringExecution:
+        - weight: 100
+          preference:
+            matchExpressions:
+              - key: kubernetes.io/hostname
+                operator: In
+                values:
+                  - rock5bp
   resources:
     requests:
-      cpu: 20m
-      memory: 256Mi
+      cpu: 30m
+      memory: 280Mi
     limits:
-      cpu: 500m
-      memory: 768Mi
+      cpu: 250m
+      memory: 512Mi
   persistence:
     enabled: true
     storageClass: ssd-ha-xfs
@@ -81,11 +91,19 @@ gateway:
     digest: sha256:aa8c9087d36d93e9d650c5365f883b421e8214aedbad24ade52b844c583358f1
   resources:
     requests:
-      cpu: 10m
-      memory: 32Mi
+      cpu: 5m
+      memory: 24Mi
     limits:
-      cpu: 100m
-      memory: 64Mi
+      cpu: 50m
+      memory: 48Mi
+  metrics:
+    resources:
+      requests:
+        cpu: 5m
+        memory: 32Mi
+      limits:
+        cpu: 50m
+        memory: 64Mi
 
 lokiCanary:
   enabled: false

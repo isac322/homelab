@@ -26,10 +26,10 @@ alloy:
   resources:
     requests:
       cpu: 50m
-      memory: 256Mi
+      memory: 320Mi
     limits:
-      cpu: 200m
-      memory: 512Mi
+      cpu: 150m
+      memory: 450Mi
   configMap:
     create: true
     content: |-
@@ -81,3 +81,12 @@ alloy:
           url = "http://loki-gateway.loki.svc.cluster.local/loki/api/v1/push"
         }
       }
+
+configReloader:
+  resources:
+    requests:
+      cpu: 10m
+      memory: 36Mi
+    limits:
+      cpu: 50m
+      memory: 64Mi

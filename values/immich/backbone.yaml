@@ -108,10 +108,10 @@ server:
             LD_LIBRARY_PATH: /usr/lib/aarch64-linux-gnu/mali
           resources:
             requests:
-              cpu: 100m
-              memory: 1Gi
+              cpu: 300m
+              memory: 3Gi
             limits:
-              cpu: "2"
+              cpu: 2
               memory: 5Gi
           securityContext:
             appArmorProfile:
@@ -216,11 +216,11 @@ machine-learning:
             privileged: true
           resources:
             requests:
-              cpu: 100m
-              memory: 2Gi
+              cpu: 300m
+              memory: 3Gi
             limits:
-              cpu: "2"
-              memory: 12Gi
+              cpu: 2
+              memory: 6Gi
               rock-chips.com/rknpu: 1
           probes:
             liveness: &machineLearningProbes

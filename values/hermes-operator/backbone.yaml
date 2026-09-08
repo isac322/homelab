@@ -1,3 +1,11 @@
+resources:
+  requests:
+    cpu: 10m
+    memory: 96Mi
+  limits:
+    cpu: 100m
+    memory: 160Mi
+
 webhook:
   enabled: true
   certManager:
