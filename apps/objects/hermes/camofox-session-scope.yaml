@@ -63,11 +63,17 @@ data:
             "",
         )
     )
+    anchor_candidates = [
+        "        # ``tools`` MUST be omitted when empty: the openai SDK iterates it without a None guard.",
+        "        # ``tools`` MUST be omitted entirely when there are no functions to",
+    ]
+    anchor = next((a for a in anchor_candidates if a in codex), None)
+    if not anchor:
+        raise RuntimeError("expected tools omission comment block in codex.py")
     codex = replace_once(
         codex,
-        '''        # ``tools`` MUST be omitted entirely when there are no functions to''',
-        native_web_search
-        + '''        # ``tools`` MUST be omitted entirely when there are no functions to''',
+        anchor,
+        native_web_search + anchor,
         "OpenAI native web search injection",
     )
     target_codex.write_text(codex)

@@ -7,7 +7,7 @@ metadata:
 spec:
   image:
     repository: nousresearch/hermes-agent
-    tag: v2026.8.31
+    tag: v2026.9.7
   scheduling:
     affinity:
       nodeAffinity:
@@ -28,7 +28,7 @@ spec:
       memory: 6Gi
   initContainers:
     - name: install-hermes-lcm
-      image: nousresearch/hermes-agent:v2026.8.31
+      image: nousresearch/hermes-agent:v2026.9.7
       command:
         - /bin/sh
         - -ec
@@ -50,7 +50,7 @@ spec:
         - name: hermes-lcm
           mountPath: /lcm
     - name: install-default-skills
-      image: nousresearch/hermes-agent:v2026.8.31
+      image: nousresearch/hermes-agent:v2026.9.7
       command:
         - /bin/sh
         - -e
@@ -98,7 +98,7 @@ spec:
         - name: hermes-default-skills
           mountPath: /skills
     - name: patch-openai-native-web-search
-      image: nousresearch/hermes-agent:v2026.8.31
+      image: nousresearch/hermes-agent:v2026.9.7
       command:
         - /opt/hermes/.venv/bin/python
         - /patch/patch.py
