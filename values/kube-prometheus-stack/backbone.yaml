@@ -914,7 +914,7 @@ prometheus:
           cpu: 10m
           memory: 40Mi
         limits:
-          memory: 192Mi
+          memory: 480Mi
       objectStorageConfig:
         existingSecret:
           name: thanos-objstore-config
