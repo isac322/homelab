@@ -9,4 +9,5 @@ spec:
   storageClassName: ssd-ha-xfs
   resources:
     requests:
-      storage: 50Gi
+      # Leave scratch space above the 45GB cache target for release linking.
+      storage: 100Gi
