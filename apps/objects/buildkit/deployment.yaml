@@ -37,8 +37,9 @@ spec:
             - --config
             - /etc/buildkit/buildkitd.toml
           env:
+            # GOMAXPROCS must always match buildkitd's resources.limits.cpu.
             - name: GOMAXPROCS
-              value: "4"
+              value: "6"
             - name: BUILDKIT_HOST
               value: unix:///run/buildkit/buildkitd.sock
           ports:
