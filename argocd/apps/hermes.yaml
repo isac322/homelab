@@ -20,7 +20,7 @@ spec:
           - values.yaml
           - $homelab/values/hermes-operator/backbone.yaml
       repoURL: ghcr.io/paperclipinc/charts
-      targetRevision: 0.1.20
+      targetRevision: 0.2.0
   syncPolicy:
     automated:
       prune: true
