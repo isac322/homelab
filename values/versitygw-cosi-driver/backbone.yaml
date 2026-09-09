@@ -13,4 +13,4 @@ sidecar:
       cpu: 5m
       memory: 20Mi
     limits:
-      memory: 40Mi
+      memory: 48Mi

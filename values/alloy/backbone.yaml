@@ -28,7 +28,7 @@ alloy:
       cpu: 100m
       memory: 224Mi
     limits:
-      memory: 384Mi
+      memory: 512Mi
   configMap:
     create: true
     content: |-

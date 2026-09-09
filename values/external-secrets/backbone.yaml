@@ -20,7 +20,7 @@ webhook:
       cpu: 10m
       memory: 64Mi
     limits:
-      memory: 128Mi
+      memory: 192Mi
 
   certManager:
     enabled: true

@@ -36,8 +36,7 @@ spec:
                         cpu: 10m
                         memory: 64Mi
                       limits:
-                        cpu: 50m
-                        memory: 128Mi
+                        memory: 192Mi
         - repoURL: https://github.com/isac322/homelab.git
           targetRevision: HEAD
           path: apps/objects/k3s-system-upgrade

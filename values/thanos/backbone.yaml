@@ -72,7 +72,7 @@ storegateway:
       cpu: 30m
       memory: 1280Mi
     limits:
-      memory: 3Gi
+      memory: 4Gi
   persistence:
     enabled: true
     storageClass: ssd-ha-xfs

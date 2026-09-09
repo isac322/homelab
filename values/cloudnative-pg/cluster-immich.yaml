@@ -13,7 +13,7 @@ cluster:
       cpu: 100m
       memory: 1152Mi
     limits:
-      memory: 1408Mi
+      memory: 2Gi
   storage:
     storageClass: ssd-ha-cnpg
     size: 10Gi

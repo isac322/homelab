@@ -843,7 +843,7 @@ prometheusOperator:
         cpu: 5m
         memory: 20Mi
       limits:
-        memory: 32Mi
+        memory: 48Mi
 
 ## Deploy a Prometheus instance
 ##
@@ -944,7 +944,7 @@ prometheus:
         cpu: 250m
         memory: 1536Mi
       limits:
-        memory: 1792Mi
+        memory: 3584Mi
 
     ## Prometheus StorageSpec for persistent data
     ## ref: https://github.com/prometheus-operator/prometheus-operator/blob/main/Documentation/user-guides/storage.md

@@ -168,7 +168,7 @@ controller:
         cpu: 25m
         memory: 80Mi
       limits:
-        memory: 112Mi
+        memory: 128Mi
     extraEnv:
       - name: SSH_PRIVATE_KEY
         valueFrom:

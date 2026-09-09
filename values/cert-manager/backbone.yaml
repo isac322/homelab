@@ -24,7 +24,7 @@ resources:
     cpu: 10m
     memory: 80Mi
   limits:
-    memory: 96Mi
+    memory: 128Mi
 
 containerSecurityContext:
   readOnlyRootFilesystem: true

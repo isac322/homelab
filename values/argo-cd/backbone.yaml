@@ -111,7 +111,7 @@ redis:
 
   resources:
     limits:
-      memory: 48Mi
+      memory: 96Mi
     requests:
       cpu: 10m
       memory: 28Mi
@@ -157,7 +157,7 @@ server:
 repoServer:
   resources:
     limits:
-      memory: 384Mi
+      memory: 512Mi
     requests:
       cpu: 50m
       memory: 192Mi

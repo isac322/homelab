@@ -3,7 +3,7 @@ resources:
     cpu: 20m
     memory: 120Mi
   limits:
-    memory: 144Mi
+    memory: 160Mi
 
 imagePullSecrets:
   - name: ghcr-creds

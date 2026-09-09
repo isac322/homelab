@@ -56,7 +56,7 @@ singleBinary:
       cpu: 100m
       memory: 224Mi
     limits:
-      memory: 384Mi
+      memory: 576Mi
   persistence:
     enabled: true
     storageClass: ssd-ha-xfs
@@ -100,7 +100,7 @@ gateway:
         cpu: 5m
         memory: 24Mi
       limits:
-        memory: 32Mi
+        memory: 48Mi
 
 lokiCanary:
   enabled: false
