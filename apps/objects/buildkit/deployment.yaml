@@ -17,7 +17,7 @@ spec:
       labels:
         app: buildkit
       annotations:
-        checksum/config: b80dda73916f8f9460d1fed69261c1d4f44f56be872c1a9f648f7d08d4a18e32
+        checksum/config: 96057d44907834d328d7a09b05715b44ca061c68d5b75def52f8c11367d90334
     spec:
       terminationGracePeriodSeconds: 30
       affinity:

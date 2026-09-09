@@ -21,7 +21,7 @@ data:
       reservedSpace = "10GB"
       maxUsedSpace = "45GB"
       minFreeSpace = "5GB"
-      max-parallelism = 2
+      max-parallelism = 1
 
       [[worker.oci.gcpolicy]]
         keepDuration = "48h"
