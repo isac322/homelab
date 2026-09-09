@@ -87,6 +87,10 @@ template:
                 name: sccache-s3
                 key: SCCACHE_S3_KEY_PREFIX
                 optional: true
+          - name: CARGO_BUILD_JOBS
+            value: "1"
+          - name: RAYON_NUM_THREADS
+            value: "1"
         resources:
           requests:
             cpu: 500m
@@ -104,5 +108,4 @@ listenerTemplate:
             cpu: 100m
             memory: 128Mi
           limits:
-            cpu: 100m
             memory: 128Mi

@@ -56,7 +56,7 @@ singleBinary:
       cpu: 100m
       memory: 224Mi
     limits:
-      memory: 576Mi
+      memory: 1Gi
   persistence:
     enabled: true
     storageClass: ssd-ha-xfs

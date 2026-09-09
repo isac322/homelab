@@ -26,6 +26,10 @@ cluster:
       - vchord.so
     parameters:
       wal_compression: zstd
+      shared_buffers: 512MB
+      work_mem: 16MB
+      maintenance_work_mem: 128MB
+      max_connections: "50"
   postgresUID: 26
   postgresGID: 999
   initdb:

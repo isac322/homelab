@@ -50,7 +50,7 @@ queryFrontend:
       cpu: 10m
       memory: 56Mi
     limits:
-      memory: 96Mi
+      memory: 512Mi
 
 storegateway:
   enabled: true

@@ -10,5 +10,4 @@ spec:
         cpu: 15m
         memory: 64Mi
       default:
-        cpu: 100m
         memory: 128Mi

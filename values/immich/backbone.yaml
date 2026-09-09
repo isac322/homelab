@@ -67,13 +67,17 @@ valkey:
     main:
       containers:
         main:
+          args:
+            - --maxmemory
+            - 192mb
+            - --maxmemory-policy
+            - noeviction
           resources:
             requests:
               cpu: 15m
               memory: 48Mi
             limits:
-              cpu: 100m
-              memory: 128Mi
+              memory: 256Mi
   persistence:
     data:
       enabled: true
@@ -111,7 +115,6 @@ server:
               cpu: 300m
               memory: 1536Mi
             limits:
-              cpu: 2
               memory: 5Gi
           securityContext:
             appArmorProfile:
