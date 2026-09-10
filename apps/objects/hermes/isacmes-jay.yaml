@@ -32,11 +32,29 @@ spec:
         - -ec
       args:
         - |
-          git clone --depth 1 --branch v0.21.0-rc2 \
-            https://github.com/stephenschoettler/hermes-lcm.git /lcm/plugin
-          test "$(git -C /lcm/plugin rev-parse HEAD)" = \
-            "10cbb78347ec86f3004153b24767324ded9e37b4"
-          rm -rf /lcm/plugin/.git
+          TARGET_DIR="/lcm/plugin"
+          TARGET_COMMIT="10cbb78347ec86f3004153b24767324ded9e37b4"
+          TARGET_SHA256="356b0187b5f1fcf28fe4af1f738ec80874a3f911246ca30d6a5dc991f3213299"
+          RECEIPT_FILE="$TARGET_DIR/.version"
+
+          if [ -f "$RECEIPT_FILE" ] && [ "$(cat "$RECEIPT_FILE")" = "$TARGET_COMMIT" ]; then
+            echo "hermes-lcm ($TARGET_COMMIT) is already installed. Skipping."
+            exit 0
+          fi
+
+          echo "Installing hermes-lcm ($TARGET_COMMIT)..."
+          rm -rf "$TARGET_DIR"
+          mkdir -p "$TARGET_DIR"
+
+          TMP_TAR="/lcm/lcm.tar.gz"
+          trap 'rm -f "$TMP_TAR"' EXIT
+
+          curl -fsSL "https://github.com/stephenschoettler/hermes-lcm/archive/${TARGET_COMMIT}.tar.gz" -o "$TMP_TAR"
+          echo "${TARGET_SHA256}  ${TMP_TAR}" | sha256sum -c -
+
+          tar -xzf "$TMP_TAR" -C "$TARGET_DIR" --strip-components=1
+          echo "$TARGET_COMMIT" > "$RECEIPT_FILE"
+          echo "hermes-lcm successfully installed."
       resources:
         requests:
           cpu: 50m
