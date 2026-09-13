@@ -18,8 +18,8 @@ podSecurityContext:
   fsGroup: 505
   supplementalGroups:
     - 44
+    - 105
     - 5200
-
 # -- Security context for the container.
 securityContext:
   privileged: true
