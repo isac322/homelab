@@ -196,6 +196,18 @@ server:
       enabled: true
       type: hostPath
       hostPath: /usr/lib/aarch64-linux-gnu/libxcb-dri2.so.0
+    libx11-xcb:
+      enabled: true
+      type: hostPath
+      hostPath: /usr/lib/aarch64-linux-gnu/libX11-xcb.so.1
+    libwayland-client:
+      enabled: true
+      type: hostPath
+      hostPath: /usr/lib/aarch64-linux-gnu/libwayland-client.so.0
+    libwayland-server:
+      enabled: true
+      type: hostPath
+      hostPath: /usr/lib/aarch64-linux-gnu/libwayland-server.so.0
 
 machine-learning:
   enabled: true
