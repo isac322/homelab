@@ -28,7 +28,7 @@ spec:
               - values.yaml
               - '$homelab/values/cert-manager/{{name}}.yaml'
           repoURL: https://charts.jetstack.io
-          targetRevision: v1.21.1
+          targetRevision: v1.21.2
       syncPolicy:
         automated:
           prune: true
