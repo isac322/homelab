@@ -208,6 +208,15 @@ server:
       enabled: true
       type: hostPath
       hostPath: /usr/lib/aarch64-linux-gnu/libwayland-server.so.0
+    patch-media:
+      enabled: true
+      type: configMap
+      name: immich-media-patch
+      advancedMounts:
+        main:
+          main:
+            - path: /usr/src/app/server/dist/utils/media.js
+              subPath: media.js
 
 machine-learning:
   enabled: true
