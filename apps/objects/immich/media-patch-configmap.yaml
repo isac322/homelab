@@ -895,7 +895,7 @@ data:
                     return [
                         `scale_rkrga=${this.getScaling(videoStream)}:format=p010:afbc=1:async_depth=4`,
                         'hwmap=derive_device=opencl:mode=read',
-                        `tonemap_opencl=format=nv12:r=tv:p=${primaries}:t=${transfer}:m=${matrix}:tonemap=${this.config.tonemap}:desat=0:tonemap_mode=lum`,
+                        `tonemap_opencl=format=nv12:r=tv:p=${primaries}:t=${transfer}:m=${matrix}:tonemap=${this.config.tonemap}:desat=0:apply_dovi=0`,
                         'hwmap=derive_device=rkmpp:mode=write:reverse=1',
                         'format=drm_prime',
                     ];
