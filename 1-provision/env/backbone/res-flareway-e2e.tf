@@ -39,22 +39,22 @@ resource "github_repository_environment" "cloudflare_e2e" {
 }
 
 resource "github_actions_environment_secret" "flareway_e2e_api_token" {
-  repository      = github_repository.flareway.name
-  environment     = github_repository_environment.cloudflare_e2e.environment
-  secret_name     = "FLAREWAY_E2E_CF_API_TOKEN"
-  plaintext_value = module.dns_secrets.flareway_e2e.api_token
+  repository  = github_repository.flareway.name
+  environment = github_repository_environment.cloudflare_e2e.environment
+  secret_name = "FLAREWAY_E2E_CF_API_TOKEN"
+  value       = module.dns_secrets.flareway_e2e.api_token
 }
 
 resource "github_actions_environment_secret" "flareway_e2e_account_id" {
-  repository      = github_repository.flareway.name
-  environment     = github_repository_environment.cloudflare_e2e.environment
-  secret_name     = "FLAREWAY_E2E_CF_ACCOUNT_ID"
-  plaintext_value = module.dns_secrets.flareway_e2e.account_id
+  repository  = github_repository.flareway.name
+  environment = github_repository_environment.cloudflare_e2e.environment
+  secret_name = "FLAREWAY_E2E_CF_ACCOUNT_ID"
+  value       = module.dns_secrets.flareway_e2e.account_id
 }
 
 resource "github_actions_environment_secret" "flareway_e2e_zone" {
-  repository      = github_repository.flareway.name
-  environment     = github_repository_environment.cloudflare_e2e.environment
-  secret_name     = "FLAREWAY_E2E_ZONE"
-  plaintext_value = module.dns_secrets.flareway_e2e.zone
+  repository  = github_repository.flareway.name
+  environment = github_repository_environment.cloudflare_e2e.environment
+  secret_name = "FLAREWAY_E2E_ZONE"
+  value       = module.dns_secrets.flareway_e2e.zone
 }
