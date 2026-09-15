@@ -10,6 +10,7 @@ spec:
         values:
           - isacmes
           - isacmes-jay
+          - yjyou
       - key: app.kubernetes.io/name
         operator: In
         values:

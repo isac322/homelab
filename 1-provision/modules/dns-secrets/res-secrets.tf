@@ -125,6 +125,14 @@ resource "aws_ssm_parameter" "hermes_isacmes_jay_telegram_token" {
   value       = var.hermes_isacmes_jay_telegram_token
 }
 
+resource "aws_ssm_parameter" "hermes_yjyou_telegram_token" {
+  count       = var.hermes_yjyou_telegram_token == null ? 0 : 1
+  name        = "/homelab/cluster/${var.k8s_cluster_name}/token/telegram/yjyou"
+  description = "Telegram bot token for the Yjyou Hermes instance"
+  type        = "SecureString"
+  value       = var.hermes_yjyou_telegram_token
+}
+
 resource "aws_ssm_parameter" "github_app_id_arc_cc_lb" {
   count       = var.github_app_id_arc_cc_lb == null ? 0 : 1
   name        = "/homelab/cluster/${var.k8s_cluster_name}/github-app/arc-cc-lb/id"
@@ -182,6 +190,7 @@ data "aws_iam_policy_document" "secret_read" {
       var.grafana_telegram_chat_id == null ? [] : [aws_ssm_parameter.grafana_telegram_chat_id[0].arn],
       var.hermes_isacmes_telegram_token == null ? [] : [aws_ssm_parameter.hermes_isacmes_telegram_token[0].arn],
       var.hermes_isacmes_jay_telegram_token == null ? [] : [aws_ssm_parameter.hermes_isacmes_jay_telegram_token[0].arn],
+      var.hermes_yjyou_telegram_token == null ? [] : [aws_ssm_parameter.hermes_yjyou_telegram_token[0].arn],
       var.github_app_id_arc_cc_lb == null ? [] : [aws_ssm_parameter.github_app_id_arc_cc_lb[0].arn],
       var.github_app_installation_id_arc_cc_lb == null ? [] : [aws_ssm_parameter.github_app_installation_id_arc_cc_lb[0].arn],
       var.github_app_private_key_arc_cc_lb == null ? [] : [aws_ssm_parameter.github_app_private_key_arc_cc_lb[0].arn],

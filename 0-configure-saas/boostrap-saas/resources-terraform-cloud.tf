@@ -250,6 +250,14 @@ resource "tfe_variable" "hermes_isacmes_jay_telegram_token" {
   workspace_id = tfe_workspace.backbone.id
 }
 
+resource "tfe_variable" "hermes_yjyou_telegram_token" {
+  key          = "hermes_yjyou_telegram_token"
+  value        = var.hermes_yjyou_telegram_token
+  category     = "terraform"
+  sensitive    = true
+  workspace_id = tfe_workspace.backbone.id
+}
+
 resource "tfe_variable" "github_app_id_arc_cc_lb" {
   key          = "github_app_id_arc_cc_lb"
   value        = var.github_app_id_arc_cc_lb

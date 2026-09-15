@@ -1,0 +1,567 @@
+apiVersion: hermes.agent/v1
+kind: HermesInstance
+metadata:
+  name: yjyou
+spec:
+  image:
+    repository: nousresearch/hermes-agent
+    tag: v2026.9.7
+  scheduling:
+    affinity:
+      nodeAffinity:
+        preferredDuringSchedulingIgnoredDuringExecution:
+          - weight: 100
+            preference:
+              matchExpressions:
+                - key: kubernetes.io/hostname
+                  operator: In
+                  values:
+                    - rock5bp
+  resources:
+    requests:
+      cpu: 50m
+      memory: 512Mi
+    limits:
+      memory: 2Gi
+  initContainers:
+    - name: install-hermes-lcm
+      image: nousresearch/hermes-agent:v2026.9.7
+      command:
+        - /bin/sh
+        - -ec
+      args:
+        - |
+          TARGET_DIR="/lcm/plugin"
+          TARGET_COMMIT="10cbb78347ec86f3004153b24767324ded9e37b4"
+          TARGET_SHA256="356b0187b5f1fcf28fe4af1f738ec80874a3f911246ca30d6a5dc991f3213299"
+          RECEIPT_FILE="$TARGET_DIR/.version"
+
+          if [ -f "$RECEIPT_FILE" ] && [ "$(cat "$RECEIPT_FILE")" = "$TARGET_COMMIT" ]; then
+            echo "hermes-lcm ($TARGET_COMMIT) is already installed. Skipping."
+            exit 0
+          fi
+
+          echo "Installing hermes-lcm ($TARGET_COMMIT)..."
+          rm -rf "$TARGET_DIR"
+          mkdir -p "$TARGET_DIR"
+
+          TMP_TAR="/lcm/lcm.tar.gz"
+          trap 'rm -f "$TMP_TAR"' EXIT
+
+          curl -fsSL "https://github.com/stephenschoettler/hermes-lcm/archive/${TARGET_COMMIT}.tar.gz" -o "$TMP_TAR"
+          echo "${TARGET_SHA256}  ${TMP_TAR}" | sha256sum -c -
+
+          tar -xzf "$TMP_TAR" -C "$TARGET_DIR" --strip-components=1
+          echo "$TARGET_COMMIT" > "$RECEIPT_FILE"
+          echo "hermes-lcm successfully installed."
+      resources:
+        requests:
+          cpu: 20m
+          memory: 32Mi
+        limits:
+          memory: 64Mi
+      volumeMounts:
+        - name: hermes-lcm
+          mountPath: /lcm
+    - name: install-default-skills
+      image: nousresearch/hermes-agent:v2026.9.7
+      command:
+        - /bin/sh
+        - -e
+      args:
+        - /installer/install.sh
+      env:
+        - name: HOME
+          value: /skills/home
+        - name: DO_NOT_TRACK
+          value: "1"
+        - name: CI
+          value: "true"
+        - name: NPM_CONFIG_CACHE
+          value: /skills/home/.npm
+        - name: NPM_CONFIG_UPDATE_NOTIFIER
+          value: "false"
+        - name: TMPDIR
+          value: /skills/home/tmp
+        - name: GITHUB_TOKEN
+          valueFrom:
+            secretKeyRef:
+              name: skillfish-github-token
+              key: token
+              optional: true
+      resources:
+        requests:
+          cpu: 50m
+          memory: 64Mi
+        limits:
+          memory: 256Mi
+      securityContext:
+        allowPrivilegeEscalation: false
+        capabilities:
+          drop:
+            - ALL
+        readOnlyRootFilesystem: true
+        runAsGroup: 1000
+        runAsNonRoot: true
+        runAsUser: 1000
+      volumeMounts:
+        - name: hermes-default-skills-installer
+          mountPath: /installer
+          readOnly: true
+        - name: hermes-default-skills
+          mountPath: /skills
+    - name: patch-openai-native-web-search
+      image: nousresearch/hermes-agent:v2026.9.7
+      command:
+        - /opt/hermes/.venv/bin/python
+        - /patch/patch.py
+        - /opt/hermes/agent/transports/codex.py
+        - /patched/codex.py
+      securityContext:
+        allowPrivilegeEscalation: false
+        capabilities:
+          drop:
+            - ALL
+        readOnlyRootFilesystem: true
+        runAsGroup: 1000
+        runAsNonRoot: true
+        runAsUser: 1000
+      resources:
+        requests:
+          cpu: 10m
+          memory: 32Mi
+        limits:
+          memory: 64Mi
+      volumeMounts:
+        - name: hermes-native-web-search-patch
+          mountPath: /patch
+          readOnly: true
+        - name: hermes-patched-files
+          mountPath: /patched
+    - name: prepare-camofox-home
+      image: ghcr.io/jo-inc/camofox-browser:1.14.0
+      command:
+        - /bin/sh
+        - -ec
+      args:
+        - |
+          rm -rf /home/node/.cache/camoufox
+          mkdir -p /home/node/.cache/camoufox
+          cp -R /root/.cache/camoufox/. /home/node/.cache/camoufox/
+          chown -R 1000:1000 /home/node
+      resources:
+        requests:
+          cpu: 50m
+          memory: 640Mi
+        limits:
+          memory: 1Gi
+      securityContext:
+        allowPrivilegeEscalation: false
+        capabilities:
+          drop:
+            - ALL
+          add:
+            - CHOWN
+        readOnlyRootFilesystem: true
+        runAsUser: 0
+      volumeMounts:
+        - name: camofox-home
+          mountPath: /home/node
+  extraVolumes:
+    - name: hermes-lcm
+      emptyDir: {}
+    - name: hermes-default-skills-installer
+      configMap:
+        name: hermes-default-skills-installer
+    - name: hermes-default-skills
+      emptyDir: {}
+    - name: hermes-patched-files
+      emptyDir: {}
+    - name: hermes-native-web-search-patch
+      configMap:
+        name: hermes-native-web-search-patch
+    - name: camofox-home
+      emptyDir: {}
+    - name: camofox-tmp
+      emptyDir:
+        medium: Memory
+        sizeLimit: 512Mi
+    - name: camofox-shm
+      emptyDir:
+        medium: Memory
+        sizeLimit: 512Mi
+    - name: camofox-data
+      persistentVolumeClaim:
+        claimName: yjyou-camofox-data
+    - name: camofox-interactive
+      configMap:
+        name: camofox-runtime
+  extraVolumeMounts:
+    - name: hermes-lcm
+      mountPath: /opt/data/plugins/hermes-lcm
+      subPath: plugin
+      readOnly: true
+    - name: hermes-default-skills
+      mountPath: /opt/data/skills/blader-humanizer
+      subPath: blader-humanizer
+      readOnly: true
+    - name: hermes-default-skills
+      mountPath: /opt/data/skills/writing-clearly-and-concisely
+      subPath: writing-clearly-and-concisely
+      readOnly: true
+    - name: hermes-default-skills
+      mountPath: /opt/data/skills/comment-writer
+      subPath: comment-writer
+      readOnly: true
+    - name: hermes-patched-files
+      mountPath: /opt/hermes/agent/transports/codex.py
+      subPath: codex.py
+      readOnly: true
+  sidecars:
+    - name: camofox
+      image: ghcr.io/jo-inc/camofox-browser:1.14.0
+      imagePullPolicy: IfNotPresent
+      env:
+        - name: HOME
+          value: /home/node
+        - name: CAMOFOX_BIND_HOST
+          value: 127.0.0.1
+        - name: BROWSER_IDLE_TIMEOUT_MS
+          value: "2147483647"
+        - name: CAMOFOX_API_KEY
+          valueFrom:
+            secretKeyRef:
+              name: yjyou-camofox-credentials
+              key: camofoxApiKey
+        - name: CAMOFOX_ACCESS_KEY
+          valueFrom:
+            secretKeyRef:
+              name: yjyou-camofox-credentials
+              key: camofoxApiKey
+        - name: CAMOFOX_CRASH_REPORT_ENABLED
+          value: "false"
+        - name: CAMOFOX_DISABLE_DEFAULT_ADDONS
+          value: "true"
+        - name: CAMOFOX_PROFILE_DIR
+          value: /data/profiles
+        - name: CAMOFOX_COOKIES_DIR
+          value: /data/cookies
+        - name: CAMOFOX_TRACES_DIR
+          value: /data/traces
+        - name: CAMOFOX_INTERACTIVE_USER_ID
+          value: interactive
+        - name: ENABLE_VNC
+          value: "1"
+        - name: VNC_BIND
+          value: 0.0.0.0
+        - name: VNC_PASSWORD
+          valueFrom:
+            secretKeyRef:
+              name: yjyou-camofox-credentials
+              key: vncPassword
+        - name: VNC_RESOLUTION
+          value: 1920x1080
+        - name: VNC_PORT
+          value: "5900"
+        - name: NOVNC_PORT
+          value: "6080"
+      ports:
+        - name: browser-api
+          containerPort: 9377
+        - name: novnc
+          containerPort: 6080
+      startupProbe:
+        exec:
+          command:
+            - node
+            - -e
+            - fetch('http://127.0.0.1:9377/health').then(r=>process.exit(r.ok?0:1)).catch(()=>process.exit(1))
+        failureThreshold: 60
+        periodSeconds: 2
+      readinessProbe:
+        exec:
+          command:
+            - node
+            - -e
+            - fetch('http://127.0.0.1:9377/health').then(r=>process.exit(r.ok?0:1)).catch(()=>process.exit(1))
+        periodSeconds: 10
+      livenessProbe:
+        exec:
+          command:
+            - node
+            - -e
+            - fetch('http://127.0.0.1:9377/health').then(r=>process.exit(r.ok?0:1)).catch(()=>process.exit(1))
+        periodSeconds: 30
+      resources:
+        requests:
+          cpu: 100m
+          memory: 512Mi
+        limits:
+          memory: 1536Mi
+      securityContext:
+        allowPrivilegeEscalation: false
+        capabilities:
+          drop:
+            - ALL
+        readOnlyRootFilesystem: true
+        runAsGroup: 1000
+        runAsNonRoot: true
+        runAsUser: 1000
+      volumeMounts:
+        - name: camofox-home
+          mountPath: /home/node
+        - name: camofox-tmp
+          mountPath: /tmp
+        - name: camofox-shm
+          mountPath: /dev/shm
+        - name: camofox-data
+          mountPath: /data
+        - name: camofox-interactive
+          mountPath: /app/camofox.config.json
+          subPath: camofox.config.json
+          readOnly: true
+        - name: camofox-interactive
+          mountPath: /app/plugins/interactive/index.js
+          subPath: interactive.js
+          readOnly: true
+        - name: camofox-interactive
+          mountPath: /app/plugins/hangul-ime/index.js
+          subPath: hangul-ime.js
+          readOnly: true
+  config:
+    raw:
+      _config_version: 39
+      approvals:
+        mode: "off"
+      agent:
+        disabled_toolsets:
+          - computer_use
+      model:
+        default: gpt-5.6-terra
+        provider: openai-api
+      mcp_servers:
+        linear:
+          url: https://mcp.linear.app/mcp
+          auth: oauth
+          oauth:
+            # Force paste-back auth from the colocated Camofox browser. Pointing
+            # at the live callback listener can race Hermes' reconnect flow.
+            redirect_uri: http://127.0.0.1:65535/callback
+          tools:
+            resources: false
+            prompts: false
+      plugins:
+        enabled:
+          - hermes-lcm
+          - security-guidance
+          - disk-cleanup
+      context:
+        engine: lcm
+      browser:
+        camofox:
+          managed_persistence: true
+          adopt_existing_tab: true
+          user_id: interactive
+      platforms:
+        telegram:
+          enabled: true
+          home_channel:
+            platform: telegram
+            chat_id: "8712015249"
+            name: yjyou
+            user_id: "8712015249"
+      platform_hints:
+        telegram:
+          append: |
+            Camofox human browser handoff contract:
+            - Whenever user interaction in the Camofox browser is required,
+              including login, CAPTCHA, 2FA, consent, credential entry, file
+              selection, sensitive submission, or visual confirmation, you MUST
+              include this direct VNC link in the same message:
+              https://yjyou-vnc.bhyoo.com/vnc.html?autoconnect=true&resize=scale
+            - State the target site or page and the exact action the user must
+              complete, keep the current browser session and tab open, and ask
+              the user to reply when finished.
+            - Never merely ask the user to use or check "the browser" without
+              the VNC link. Never expose loopback addresses, internal ports,
+              Camofox API keys, or VNC passwords.
+      memory:
+        provider: hindsight
+      auxiliary:
+        vision:
+          provider: gemini
+          model: gemini-3.8-flash
+        web_extract:
+          provider: gemini
+          model: gemini-3.5-flash-lite
+        compression:
+          provider: main
+          model: gpt-5.6-sol
+          reasoning_effort: low
+        title_generation:
+          provider: gemini
+          model: gemini-3.5-flash-lite
+        approval:
+          provider: main
+          model: gpt-5.4-mini
+          reasoning_effort: low
+        background_review:
+          provider: main
+          model: gpt-5.6-terra
+          reasoning_effort: low
+        curator:
+          provider: main
+          model: gpt-5.6-sol
+          reasoning_effort: medium
+        goal_judge:
+          provider: main
+          model: gpt-5.6-sol
+          reasoning_effort: high
+        kanban_decomposer:
+          provider: main
+          model: gpt-5.6-sol
+          reasoning_effort: medium
+        triage_specifier:
+          provider: main
+          model: gpt-5.6-terra
+          reasoning_effort: low
+        profile_describer:
+          provider: gemini
+          model: gemini-3.5-flash-lite
+        memory_query_rewrite:
+          provider: gemini
+          model: gemini-3.5-flash-lite
+        monitor:
+          provider: gemini
+          model: gemini-3.5-flash-lite
+        mcp:
+          provider: main
+          model: gpt-5.4-mini
+          reasoning_effort: low
+        skills_hub:
+          provider: main
+          model: gpt-5.6-terra
+          reasoning_effort: low
+        tts_audio_tags:
+          provider: gemini
+          model: gemini-3.5-flash-lite
+        moa_reference:
+          provider: gemini
+          model: gemini-3.8-flash
+        moa_aggregator:
+          provider: main
+          model: gpt-5.6-sol
+          reasoning_effort: high
+        assertion_extraction:
+          provider: gemini
+          model: gemini-3.8-flash
+        selective_evidence_selector:
+          provider: main
+          model: gpt-5.4-mini
+          reasoning_effort: low
+  env:
+    - name: HOME
+      value: /opt/data
+    - name: XDG_CONFIG_HOME
+      value: /opt/data/.config
+    - name: XDG_CACHE_HOME
+      value: /opt/data/.cache
+    - name: XDG_DATA_HOME
+      value: /opt/data/.local/share
+    - name: XDG_STATE_HOME
+      value: /opt/data/.local/state
+    - name: PATH
+      value: /command:/opt/hermes/bin:/opt/hermes/.venv/bin:/opt/data/.local/bin:/opt/data/.local/share/pnpm:/opt/data/.local/share/bun/bin:/opt/data/.local/share/cargo/bin:/opt/data/.local/share/gem/bin:/usr/local/sbin:/usr/local/bin:/usr/sbin:/usr/bin:/sbin:/bin
+    - name: NPM_CONFIG_PREFIX
+      value: /opt/data/.local
+    - name: NPM_CONFIG_CACHE
+      value: /opt/data/.cache/npm
+    - name: NPM_CONFIG_USERCONFIG
+      value: /opt/data/.config/npm/npmrc
+    - name: PNPM_HOME
+      value: /opt/data/.local/share/pnpm
+    - name: BUN_INSTALL
+      value: /opt/data/.local/share/bun
+    - name: BUN_INSTALL_CACHE_DIR
+      value: /opt/data/.cache/bun
+    - name: UV_TOOL_BIN_DIR
+      value: /opt/data/.local/bin
+    - name: UV_TOOL_DIR
+      value: /opt/data/.local/share/uv/tools
+    - name: UV_CACHE_DIR
+      value: /opt/data/.cache/uv
+    - name: PIPX_HOME
+      value: /opt/data/.local/share/pipx
+    - name: PIPX_BIN_DIR
+      value: /opt/data/.local/bin
+    - name: PIP_CACHE_DIR
+      value: /opt/data/.cache/pip
+    - name: PYTHONUSERBASE
+      value: /opt/data/.local
+    - name: CARGO_HOME
+      value: /opt/data/.local/share/cargo
+    - name: RUSTUP_HOME
+      value: /opt/data/.local/share/rustup
+    - name: GOPATH
+      value: /opt/data/.local/share/go
+    - name: GOBIN
+      value: /opt/data/.local/bin
+    - name: GOCACHE
+      value: /opt/data/.cache/go-build
+    - name: GEM_HOME
+      value: /opt/data/.local/share/gem
+    - name: GEM_SPEC_CACHE
+      value: /opt/data/.cache/gem
+    - name: DENO_DIR
+      value: /opt/data/.cache/deno
+    - name: DENO_INSTALL
+      value: /opt/data/.local
+    - name: TELEGRAM_ALLOWED_USERS
+      value: "8712015249"
+    - name: OPENAI_API_KEY
+      valueFrom:
+        secretKeyRef:
+          name: yjyou-credentials
+          key: apiKey
+    - name: OPENAI_BASE_URL
+      valueFrom:
+        secretKeyRef:
+          name: yjyou-credentials
+          key: baseUrl
+    - name: GEMINI_API_KEY
+      valueFrom:
+        secretKeyRef:
+          name: yjyou-credentials
+          key: geminiApiKey
+    - name: HERMES_OPENAI_NATIVE_WEB_SEARCH
+      value: "true"
+    - name: HERMES_API_CALL_STALE_TIMEOUT
+      value: "600"
+    - name: HERMES_STREAM_STALE_TIMEOUT
+      value: "600"
+    - name: CAMOFOX_URL
+      value: http://127.0.0.1:9377
+    - name: CAMOFOX_API_KEY
+      valueFrom:
+        secretKeyRef:
+          name: yjyou-camofox-credentials
+          key: camofoxApiKey
+    - name: HINDSIGHT_MODE
+      value: local_external
+    - name: HINDSIGHT_API_URL
+      value: http://hindsight-api.hindsight.svc:8888
+    - name: HINDSIGHT_BANK_ID
+      value: yjyou
+  storage:
+    persistence:
+      enabled: true
+      size: 10Gi
+      storageClassName: ssd-ha-xfs
+  gateways:
+    telegram:
+      enabled: true
+      allowedUserIDs:
+        - 8712015249
+      botTokenSecretRef:
+        name: yjyou-credentials
+        key: token

@@ -91,6 +91,12 @@ variable "hermes_isacmes_jay_telegram_token" {
   sensitive = true
 }
 
+variable "hermes_yjyou_telegram_token" {
+  type      = string
+  sensitive = true
+  default   = null
+}
+
 variable "github_app_id_arc_cc_lb" {
   type    = string
   default = null

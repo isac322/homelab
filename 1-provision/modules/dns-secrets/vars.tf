@@ -80,6 +80,12 @@ variable "hermes_isacmes_jay_telegram_token" {
   default   = null
 }
 
+variable "hermes_yjyou_telegram_token" {
+  type      = string
+  sensitive = true
+  default   = null
+}
+
 variable "github_app_id_arc_cc_lb" {
   type    = string
   default = null
