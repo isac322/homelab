@@ -5,6 +5,9 @@ metadata:
   annotations:
     argocd.argoproj.io/sync-wave: "5"
 spec:
+  security:
+    networkPolicy:
+      enabled: false
   image:
     repository: nousresearch/hermes-agent
     tag: v2026.9.11

@@ -3,6 +3,9 @@ kind: HermesInstance
 metadata:
   name: yjyou
 spec:
+  security:
+    networkPolicy:
+      enabled: false
   image:
     repository: nousresearch/hermes-agent
     tag: v2026.9.7
