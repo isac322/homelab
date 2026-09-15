@@ -34,8 +34,8 @@ wg0_edges = re.search(r"wg0Edges = \{(.*?)\n  \};\n\n  combinations", text, re.S
 edge_count = len(re.findall(r"^    [a-z0-9-]+ = \{", wg0_edges, re.M))
 if node_count != 7:
     raise SystemExit(f"wg0 topology must contain exactly 7 nodes, found {node_count}")
-if edge_count != 14:
-    raise SystemExit(f"wg0 topology must contain exactly 14 edges, found {edge_count}")
+if edge_count != 15:
+    raise SystemExit(f"wg0 topology must contain exactly 15 edges, found {edge_count}")
 if "wg0PeerNodes" not in text or text.count('fullMeshLinks "wg0"') != 1:
     raise SystemExit("wg0 lifecycle-aware full-mesh construction changed")
 if "requiredLinks = wg0RequiredLinks;" not in text:

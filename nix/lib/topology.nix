@@ -261,6 +261,10 @@ let
       address = "10.222.0.230/32";
       publicKey = "vRSVWjIMwGadIPmdPYEOheYLQQ0t7eIIHq3wCaW+aXc=";
     };
+    eygo-phone = {
+      address = "10.222.0.231/32";
+      publicKey = "n2WsSMjRxiqzX9yjrIUEvjrQgTB4lYPzx7Q5sRDcG3k=";
+    };
   };
 
   combinations =

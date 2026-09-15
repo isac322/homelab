@@ -84,3 +84,7 @@
             ip_address: 10.222.0.230
             allowed_groups:
               - backbone
+          eygo-phone:
+            ip_address: 10.222.0.231
+            allowed_groups:
+              - backbone
