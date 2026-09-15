@@ -353,6 +353,7 @@ def check_shell_syntax() -> None:
     scripts = [
         "nix/scripts/adopt-host",
         "nix/scripts/decommission-host",
+        "nix/scripts/edge-wireguard-secrets",
         "nix/scripts/homelab-host",
         "nix/scripts/k3s-handoff",
         "nix/scripts/issue-kubeconfig",
@@ -394,6 +395,102 @@ def check_shell_syntax() -> None:
                     f"{relative}: embedded {marker} sh -n failed\n"
                     f"{result.stderr.strip()}"
                 )
+
+def check_edge_secret_bundle() -> None:
+    topology = source("nix/lib/topology.nix")
+    edge_section = re.search(
+        r"  wg0Edges = \{(.*?)\n  \};\n\n  combinations",
+        topology,
+        re.DOTALL,
+    )
+    if edge_section is None:
+        raise SystemExit("nix/lib/topology.nix: wg0Edges block missing")
+    declared_edges = set(
+        re.findall(r"^    ([a-z0-9-]+) = \{", edge_section.group(1), re.MULTILINE)
+    )
+    ciphertext = source("nix/secrets/wireguard/edges.sops.yaml")
+    encrypted_data, separator, _ = ciphertext.partition("\nsops:")
+    if not separator:
+        raise SystemExit("nix/secrets/wireguard/edges.sops.yaml: SOPS metadata missing")
+    entries = dict(
+        re.findall(
+            r"^        ([a-z0-9-]+): (.+)$",
+            encrypted_data,
+            re.MULTILINE,
+        )
+    )
+    if not entries:
+        raise SystemExit(
+            "nix/secrets/wireguard/edges.sops.yaml: no recoverable edge keys"
+        )
+    unknown_edges = set(entries) - declared_edges
+    if unknown_edges:
+        raise SystemExit(
+            "nix/secrets/wireguard/edges.sops.yaml: unknown edges: "
+            + ", ".join(sorted(unknown_edges))
+        )
+    missing_edges = declared_edges - set(entries)
+    if missing_edges:
+        raise SystemExit(
+            "nix/secrets/wireguard/edges.sops.yaml: missing edge private keys: "
+            + ", ".join(sorted(missing_edges))
+        )
+    plaintext_edges = [
+        edge
+        for edge, value in entries.items()
+        if not value.startswith("ENC[AES256_GCM")
+    ]
+    if plaintext_edges:
+        raise SystemExit(
+            "nix/secrets/wireguard/edges.sops.yaml: plaintext keys: "
+            + ", ".join(sorted(plaintext_edges))
+        )
+    expected_recipients = set(
+        re.findall(
+            r"(?:operator|recovery) = \"(age1[^\"]+)\";",
+            topology,
+        )
+    )
+    actual_recipients = set(
+        re.findall(r"^\s+recipient: (age1\S+)$", ciphertext, re.MULTILINE)
+    )
+    if actual_recipients != expected_recipients:
+        raise SystemExit(
+            "nix/secrets/wireguard/edges.sops.yaml: recipients must be exactly "
+            "the topology operator and recovery identities"
+        )
+    gateway_match = re.search(r'gateway = "([a-z0-9-]+)";', topology)
+    if gateway_match is None:
+        raise SystemExit("nix/lib/topology.nix: WireGuard gateway missing")
+    gateway = gateway_match.group(1)
+    gateway_ciphertext = source(
+        f"nix/secrets/wireguard/hosts/node-{gateway}.sops.yaml"
+    )
+    missing_psks = []
+    plaintext_psks = []
+    for edge in sorted(declared_edges):
+        match = re.search(
+            rf"^        wg0-{re.escape(gateway)}-{re.escape(edge)}: (.+)$",
+            gateway_ciphertext,
+            re.MULTILINE,
+        )
+        if match is None:
+            missing_psks.append(edge)
+        elif not match.group(1).startswith("ENC[AES256_GCM"):
+            plaintext_psks.append(edge)
+    if missing_psks:
+        raise SystemExit(
+            f"nix/secrets/wireguard/hosts/node-{gateway}.sops.yaml: "
+            "missing edge PSKs: "
+            + ", ".join(missing_psks)
+        )
+    if plaintext_psks:
+        raise SystemExit(
+            f"nix/secrets/wireguard/hosts/node-{gateway}.sops.yaml: "
+            "plaintext edge PSKs: "
+            + ", ".join(plaintext_psks)
+        )
+
 
 
 def check_receipt_round_trip() -> None:
@@ -4209,6 +4306,14 @@ require(
     "$root#topology.wg0.peerNodes",
 )
 require(
+    "nix/scripts/edge-wireguard-secrets",
+    "$root#topology.wg0.edges",
+    "$root#topology.secretRecipients.operator",
+    "$root#topology.secretRecipients.recovery",
+    "nix/secrets/wireguard/edges.sops.yaml",
+    "private key does not derive the public key declared in topology",
+)
+require(
     "nix/scripts/rollout-peers",
     "systemd/network/99-wg0.netdev",
     "systemd/network/99-wg0.network",
@@ -5011,5 +5116,6 @@ check_nas_preservation_contracts()
 check_preservation_policy_failure()
 check_storage_inventory_failure_propagation()
 check_storage_capture_readiness_guard()
+check_edge_secret_bundle()
 check_shell_syntax()
 print("migration-contracts: ok")

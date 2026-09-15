@@ -56,6 +56,9 @@ let
   secretApp =
     name: description: command:
     mkApp name description ./scripts/wireguard-secrets command;
+  edgeSecretApp =
+    name: description: command:
+    mkApp name description ./scripts/edge-wireguard-secrets command;
 in
 {
   bootstrap-host =
@@ -101,6 +104,12 @@ in
     secretApp "rekey-secrets" "Re-encrypt secret bundles for a recipient transition"
       "rekey-secrets";
   rotate-psk = secretApp "rotate-psk" "Rotate one managed WireGuard link PSK" "rotate-psk";
+  edge-wireguard-status =
+    edgeSecretApp "edge-wireguard-status" "Check whether every WireGuard edge config is recoverable"
+      "status";
+  render-edge-wireguard =
+    edgeSecretApp "render-edge-wireguard" "Render one recoverable WireGuard edge config"
+      "render";
   k3s-handoff =
     mkApp "k3s-handoff" "Manage persistent full-host rollback across a Nix activation"
       ./scripts/k3s-handoff

@@ -423,6 +423,7 @@
                 for script in \
                   ${./nix/scripts/adopt-host} \
                   ${./nix/scripts/decommission-host} \
+                  ${./nix/scripts/edge-wireguard-secrets} \
                   ${./nix/scripts/homelab-host} \
                   ${./nix/scripts/issue-kubeconfig} \
                   ${./nix/scripts/k3s-handoff} \
