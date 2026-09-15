@@ -220,6 +220,16 @@ server:
           main:
             - path: /usr/src/app/server/dist/utils/media.js
               subPath: media.js
+            - path: /usr/src/app/server/dist/utils/database.js
+              subPath: database.js
+            - path: /usr/src/app/server/dist/repositories/media.repository.js
+              subPath: media.repository.js
+            - path: /usr/src/app/server/dist/repositories/asset.repository.js
+              subPath: asset.repository.js
+            - path: /usr/src/app/server/dist/services/metadata.service.js
+              subPath: metadata.service.js
+            - path: /usr/src/app/server/dist/services/media.service.js
+              subPath: media.service.js
 
 machine-learning:
   enabled: true
