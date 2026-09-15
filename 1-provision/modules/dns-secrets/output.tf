@@ -10,3 +10,12 @@ output "democratic_csi_ssh_public_key" {
   description = "The OpenSSH public key for Democratic CSI"
   value       = var.use_democratic_csi ? tls_private_key.democratic_csi[0].public_key_openssh : null
 }
+
+output "flareway_e2e" {
+  value = {
+    api_token  = cloudflare_api_token.flareway_e2e.value
+    account_id = data.cloudflare_zone.flareway_e2e.account.id
+    zone       = data.cloudflare_zone.flareway_e2e.name
+  }
+  sensitive = true
+}

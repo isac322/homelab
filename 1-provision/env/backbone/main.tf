@@ -8,7 +8,11 @@ terraform {
     }
     cloudflare = {
       source  = "cloudflare/cloudflare"
-      version = "~> 5.12.0"
+      version = "~> 5.24.0"
+    }
+    github = {
+      source  = "integrations/github"
+      version = "~> 6.13.0"
     }
     postmark = {
       source  = "jcf/postmark"
@@ -31,6 +35,10 @@ terraform {
 
 provider "cloudflare" {
   api_token = var.cloudflare_token_for_token_issuing
+}
+provider "github" {
+  owner = "isac322"
+  token = var.github_personal_access_token
 }
 provider "postmark" {
   account_token = var.postmark_account_token

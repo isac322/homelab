@@ -27,3 +27,15 @@ import {
   to = module.dns_secrets.aws_ssm_parameter.github_app_private_key_arc_cc_lb[0]
   id = "/homelab/cluster/backbone/github-app/arc-cc-lb/private-key"
 }
+
+# The repository and environment predate Terraform. Remove these import blocks
+# only when bootstrapping a new repository that does not exist yet.
+import {
+  to = github_repository.flareway
+  id = "flareway"
+}
+
+import {
+  to = github_repository_environment.cloudflare_e2e
+  id = "flareway:cloudflare-e2e"
+}
