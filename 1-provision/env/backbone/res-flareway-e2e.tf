@@ -6,7 +6,6 @@ resource "github_repository" "flareway" {
   has_issues      = true
   has_projects    = false
   has_wiki        = false
-  has_downloads   = false
   has_discussions = false
   is_template     = false
 
@@ -18,13 +17,17 @@ resource "github_repository" "flareway" {
   delete_branch_on_merge      = true
   squash_merge_commit_title   = "PR_TITLE"
   squash_merge_commit_message = "COMMIT_MESSAGES"
-  vulnerability_alerts        = true
   topics                      = []
   web_commit_signoff_required = false
 
   lifecycle {
     prevent_destroy = true
   }
+}
+
+resource "github_repository_vulnerability_alerts" "flareway" {
+  repository = github_repository.flareway.name
+  enabled    = true
 }
 
 resource "github_repository_environment" "cloudflare_e2e" {

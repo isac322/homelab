@@ -36,6 +36,11 @@ import {
 }
 
 import {
+  to = github_repository_vulnerability_alerts.flareway
+  id = "flareway"
+}
+
+import {
   to = github_repository_environment.cloudflare_e2e
   id = "flareway:cloudflare-e2e"
 }
