@@ -886,7 +886,7 @@ data:
     exports.RkmppSwDecodeConfig = RkmppSwDecodeConfig;
     class RkmppHwDecodeConfig extends RkmppSwDecodeConfig {
         getBaseInputOptions() {
-            return ['-hwaccel', 'rkmpp', '-hwaccel_output_format', 'drm_prime', '-afbc', 'rga', '-noautorotate'];
+            return ['-apply_cropping', '0', '-hwaccel', 'rkmpp', '-hwaccel_output_format', 'drm_prime', '-afbc', 'rga', '-noautorotate'];
         }
         getFilterOptions(videoStream) {
             if (this.shouldToneMap(videoStream)) {
