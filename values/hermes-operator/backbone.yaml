@@ -5,6 +5,24 @@ resources:
   limits:
     memory: 120Mi
 
+affinity:
+  nodeAffinity:
+    preferredDuringSchedulingIgnoredDuringExecution:
+      - weight: 100
+        preference:
+          matchExpressions:
+            - key: kubernetes.io/hostname
+              operator: In
+              values:
+                - n2p1
+      - weight: 80
+        preference:
+          matchExpressions:
+            - key: kubernetes.io/hostname
+              operator: In
+              values:
+                - n2p2
+
 webhook:
   enabled: true
   certManager:

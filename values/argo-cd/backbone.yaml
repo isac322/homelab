@@ -114,6 +114,23 @@ redis:
     - --maxmemory-policy
     - allkeys-lru
 
+  affinity:
+    nodeAffinity:
+      preferredDuringSchedulingIgnoredDuringExecution:
+        - weight: 100
+          preference:
+            matchExpressions:
+              - key: kubernetes.io/hostname
+                operator: In
+                values:
+                  - n2p2
+        - weight: 80
+          preference:
+            matchExpressions:
+              - key: kubernetes.io/hostname
+                operator: In
+                values:
+                  - n2p1
   resources:
     limits:
       memory: 192Mi

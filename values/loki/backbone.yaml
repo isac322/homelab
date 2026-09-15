@@ -50,7 +50,21 @@ singleBinary:
               - key: kubernetes.io/hostname
                 operator: In
                 values:
-                  - rock5bp
+                  - n2p1
+        - weight: 80
+          preference:
+            matchExpressions:
+              - key: kubernetes.io/hostname
+                operator: In
+                values:
+                  - n2p2
+        - weight: 50
+          preference:
+            matchExpressions:
+              - key: kubernetes.io/hostname
+                operator: In
+                values:
+                  - rpi5
   resources:
     requests:
       cpu: 100m

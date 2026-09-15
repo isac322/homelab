@@ -165,7 +165,7 @@ resource "aws_iam_user" "external_secrets" {
 }
 resource "aws_iam_user_policy" "secret_read" {
   name   = "secret_read"
-  policy = data.aws_iam_policy_document.secret_read.json
+  policy = data.aws_iam_policy_document.secret_read.minified_json
   user   = aws_iam_user.external_secrets.name
 }
 data "aws_iam_policy_document" "secret_read" {
@@ -179,6 +179,7 @@ data "aws_iam_policy_document" "secret_read" {
         aws_ssm_parameter.cf_api_token_for_cloudflared_gateway.arn,
         aws_ssm_parameter.postmark_smtp_token_for_immich.arn,
         aws_ssm_parameter.cf_account_id.arn,
+        "${trimsuffix(aws_ssm_parameter.cf_account_id.arn, "cloudflare/account-id")}token/telegram/*",
       ],
       var.use_democratic_csi ? [aws_ssm_parameter.democratic_csi_ssh_private_key[0].arn] : [],
       var.openai_api_key == null ? [] : [aws_ssm_parameter.hindsight_openai_api_key[0].arn],
@@ -186,11 +187,7 @@ data "aws_iam_policy_document" "secret_read" {
       var.gemini_api_key == null ? [] : [aws_ssm_parameter.hindsight_gemini_api_key[0].arn],
       var.openai_proxy == null ? [] : [aws_ssm_parameter.hermes_openai_proxy[0].arn],
       var.gemini_api_key == null ? [] : [aws_ssm_parameter.hermes_gemini_api_key[0].arn],
-      var.grafana_telegram_bot_token == null ? [] : [aws_ssm_parameter.grafana_telegram_bot_token[0].arn],
       var.grafana_telegram_chat_id == null ? [] : [aws_ssm_parameter.grafana_telegram_chat_id[0].arn],
-      var.hermes_isacmes_telegram_token == null ? [] : [aws_ssm_parameter.hermes_isacmes_telegram_token[0].arn],
-      var.hermes_isacmes_jay_telegram_token == null ? [] : [aws_ssm_parameter.hermes_isacmes_jay_telegram_token[0].arn],
-      var.hermes_yjyou_telegram_token == null ? [] : [aws_ssm_parameter.hermes_yjyou_telegram_token[0].arn],
       var.github_app_id_arc_cc_lb == null ? [] : [aws_ssm_parameter.github_app_id_arc_cc_lb[0].arn],
       var.github_app_installation_id_arc_cc_lb == null ? [] : [aws_ssm_parameter.github_app_installation_id_arc_cc_lb[0].arn],
       var.github_app_private_key_arc_cc_lb == null ? [] : [aws_ssm_parameter.github_app_private_key_arc_cc_lb[0].arn],

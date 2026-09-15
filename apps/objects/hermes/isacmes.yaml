@@ -24,11 +24,10 @@ spec:
                     - rock5bp
   resources:
     requests:
-      cpu: 200m
-      memory: 2Gi
+      cpu: 50m
+      memory: 512Mi
     limits:
-      cpu: 2
-      memory: 6Gi
+      memory: 3Gi
   initContainers:
     - name: install-hermes-lcm
       image: nousresearch/hermes-agent:v2026.9.11
@@ -62,11 +61,10 @@ spec:
           echo "hermes-lcm successfully installed."
       resources:
         requests:
-          cpu: 50m
-          memory: 64Mi
+          cpu: 20m
+          memory: 32Mi
         limits:
-          cpu: 500m
-          memory: 256Mi
+          memory: 64Mi
       volumeMounts:
         - name: hermes-lcm
           mountPath: /lcm
@@ -98,11 +96,10 @@ spec:
               optional: true
       resources:
         requests:
-          cpu: 100m
-          memory: 128Mi
+          cpu: 50m
+          memory: 64Mi
         limits:
-          cpu: 1000m
-          memory: 512Mi
+          memory: 256Mi
       securityContext:
         allowPrivilegeEscalation: false
         capabilities:
@@ -139,7 +136,6 @@ spec:
           cpu: 10m
           memory: 32Mi
         limits:
-          cpu: 100m
           memory: 64Mi
       volumeMounts:
         - name: hermes-native-web-search-patch
@@ -163,7 +159,6 @@ spec:
           cpu: 50m
           memory: 640Mi
         limits:
-          cpu: 500m
           memory: 1Gi
       securityContext:
         allowPrivilegeEscalation: false
@@ -305,10 +300,9 @@ spec:
       resources:
         requests:
           cpu: 100m
-          memory: 768Mi
+          memory: 512Mi
         limits:
-          cpu: 1
-          memory: 2Gi
+          memory: 1536Mi
       securityContext:
         allowPrivilegeEscalation: false
         capabilities:

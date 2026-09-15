@@ -235,7 +235,7 @@ let
     };
     jay-desktop = {
       address = "10.222.0.195/32";
-      publicKey = "qhLHqMrXfamYQ9jvaFB+G1zQ5efU4TRtH1XS2/adiRY=";
+      publicKey = "Ix/v1dcNN7xqEdwxxfwiJMgVZ8y56HySkIVQYqBMzEM=";
     };
     yjyoo-phone = {
       address = "10.222.0.225/32";
