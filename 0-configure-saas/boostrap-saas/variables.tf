@@ -165,3 +165,12 @@ variable "github_app_private_key_arc_cc_lb" {
   type      = string
   sensitive = true
 }
+
+variable "github_personal_access_token" {
+  type        = string
+  description = <<-EOT
+    Fine-grained GitHub PAT supplied to the homelab-backbone HCP Terraform workspace.
+    It must select isac322/flareway and grant Administration and Environments read/write.
+  EOT
+  sensitive   = true
+}

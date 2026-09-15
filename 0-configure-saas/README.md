@@ -23,6 +23,24 @@ github_app_private_key_arc_cc_lb     = <<-EOT
 EOT
 ```
 
+The `homelab-backbone` workspace also needs a fine-grained GitHub PAT:
+
+```hcl
+github_personal_access_token = "<fine-grained PAT>"
+```
+
+Create it under the `isac322` resource owner, select only
+`isac322/flareway`, and grant these repository permissions:
+
+- `Administration`: Read and write
+- `Environments`: Read and write
+
+GitHub grants `Metadata: Read` automatically. `Contents`, `Actions`, and
+`Workflows` write permissions are not required. The bootstrap configuration
+stores this value as the sensitive Terraform variable
+`github_personal_access_token` in the `bhyoo/homelab-backbone` HCP Terraform
+workspace.
+
 ## Get credential
 
 ### AWS

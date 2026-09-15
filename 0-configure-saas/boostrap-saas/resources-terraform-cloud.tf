@@ -261,7 +261,7 @@ resource "tfe_variable" "hermes_yjyou_telegram_token" {
 resource "tfe_variable" "github_app_id_arc_cc_lb" {
   key          = "github_app_id_arc_cc_lb"
   value        = var.github_app_id_arc_cc_lb
-  description = "GitHub App credentials for ARC runners on isac322/cc-lb"
+  description  = "GitHub App credentials for ARC runners on isac322/cc-lb"
   category     = "terraform"
   workspace_id = tfe_workspace.backbone.id
 }
@@ -269,7 +269,7 @@ resource "tfe_variable" "github_app_id_arc_cc_lb" {
 resource "tfe_variable" "github_app_installation_id_arc_cc_lb" {
   key          = "github_app_installation_id_arc_cc_lb"
   value        = var.github_app_installation_id_arc_cc_lb
-  description = "GitHub App credentials for ARC runners on isac322/cc-lb"
+  description  = "GitHub App credentials for ARC runners on isac322/cc-lb"
   category     = "terraform"
   workspace_id = tfe_workspace.backbone.id
 }
@@ -277,7 +277,16 @@ resource "tfe_variable" "github_app_installation_id_arc_cc_lb" {
 resource "tfe_variable" "github_app_private_key_arc_cc_lb" {
   key          = "github_app_private_key_arc_cc_lb"
   value        = var.github_app_private_key_arc_cc_lb
-  description = "GitHub App credentials for ARC runners on isac322/cc-lb"
+  description  = "GitHub App credentials for ARC runners on isac322/cc-lb"
+  category     = "terraform"
+  sensitive    = true
+  workspace_id = tfe_workspace.backbone.id
+}
+
+resource "tfe_variable" "github_personal_access_token" {
+  key          = "github_personal_access_token"
+  value        = var.github_personal_access_token
+  description  = "Fine-grained PAT for managing isac322/flareway repository settings and cloudflare-e2e Environment secrets"
   category     = "terraform"
   sensitive    = true
   workspace_id = tfe_workspace.backbone.id

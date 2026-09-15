@@ -85,3 +85,15 @@ variable "github_app_private_key_arc_cc_lb" {
   type      = string
   sensitive = true
 }
+
+variable "github_personal_access_token" {
+  type        = string
+  description = <<-EOT
+    Fine-grained GitHub PAT for the homelab-backbone workspace.
+    Resource owner: isac322.
+    Repository access: Only select repositories, isac322/flareway.
+    Repository permissions: Administration, Read and write; Environments, Read and write.
+    Metadata Read is granted automatically; no Contents, Actions, or Workflows Write permission is required.
+  EOT
+  sensitive   = true
+}

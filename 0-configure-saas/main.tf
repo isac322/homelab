@@ -55,6 +55,7 @@ module "saas" {
   github_app_id_arc_cc_lb              = var.github_app_id_arc_cc_lb
   github_app_installation_id_arc_cc_lb = var.github_app_installation_id_arc_cc_lb
   github_app_private_key_arc_cc_lb     = var.github_app_private_key_arc_cc_lb
+  github_personal_access_token         = var.github_personal_access_token
 
   aws_admin_account_id  = 825808295984
   aws_admin_family_name = "Yoo"
