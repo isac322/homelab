@@ -4693,25 +4693,13 @@ data:
                 return enum_1.JobStatus.Failed;
             }
             if (videoStream.cropTop === undefined || videoStream.cropTop === null) {
-                const probe = await this.mediaRepository.probeVideo(input);
+                const probe = await this.mediaRepository.probe(input);
                 if (probe.videoStreams?.[0]) {
                     const s = probe.videoStreams[0];
                     videoStream.cropTop = s.cropTop ?? null;
                     videoStream.cropBottom = s.cropBottom ?? null;
                     videoStream.cropLeft = s.cropLeft ?? null;
                     videoStream.cropRight = s.cropRight ?? null;
-                    if (s.cropTop || s.cropBottom || s.cropLeft || s.cropRight) {
-                        await this.db
-                            .updateTable('asset_video')
-                            .set({
-                                cropTop: s.cropTop ?? null,
-                                cropBottom: s.cropBottom ?? null,
-                                cropLeft: s.cropLeft ?? null,
-                                cropRight: s.cropRight ?? null,
-                            })
-                            .where('assetId', '=', asset.id)
-                            .execute();
-                    }
                 }
             }
             let { ffmpeg } = await this.getConfig({ withCache: true });
