@@ -7,7 +7,7 @@ nameOverride: hindsight
 
 cluster:
   instances: 1
-  imageName: ghcr.io/tensorchord/cloudnative-vectorchord:18.4-1.1.1
+  imageName: ghcr.io/tensorchord/cloudnative-vectorchord:18.6-1.1.1@sha256:c7672bc011351a587cc292a94aac7eeebb593ed2e120077bd9c9944c9467db93
   resources:
     requests:
       cpu: 1
