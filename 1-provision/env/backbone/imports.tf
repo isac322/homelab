@@ -44,3 +44,18 @@ import {
   to = github_repository_environment.cloudflare_e2e
   id = "flareway:cloudflare-e2e"
 }
+
+import {
+  to = github_repository_environment.release
+  id = "flareway:release"
+}
+
+import {
+  to = github_repository_dependabot_security_updates.flareway
+  id = "flareway"
+}
+
+import {
+  to = github_actions_repository_permissions.flareway
+  id = "flareway"
+}

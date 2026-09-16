@@ -20,6 +20,15 @@ resource "github_repository" "flareway" {
   topics                      = []
   web_commit_signoff_required = false
 
+  security_and_analysis {
+    secret_scanning {
+      status = "enabled"
+    }
+    secret_scanning_push_protection {
+      status = "enabled"
+    }
+  }
+
   lifecycle {
     prevent_destroy = true
   }
@@ -30,9 +39,62 @@ resource "github_repository_vulnerability_alerts" "flareway" {
   enabled    = true
 }
 
+resource "github_repository_dependabot_security_updates" "flareway" {
+  repository = github_repository.flareway.name
+  enabled    = true
+}
+
+resource "github_actions_repository_permissions" "flareway" {
+  repository           = github_repository.flareway.name
+  enabled              = true
+  allowed_actions      = "all"
+  sha_pinning_required = false
+}
+
+resource "github_branch_protection" "flareway_main" {
+  repository_id = github_repository.flareway.node_id
+  pattern       = "main"
+
+  enforce_admins                  = true
+  required_linear_history         = true
+  require_conversation_resolution = true
+  allows_force_pushes             = false
+  allows_deletions                = false
+  lock_branch                     = false
+
+  required_status_checks {
+    strict = true
+    contexts = [
+      "Cloudflare SDK parity",
+      "Container build and runtime",
+      "Envoy component tests",
+      "GatewayHTTP conformance",
+      "Generation diff",
+      "Lint",
+      "Schema, build, Helm, and Kustomize",
+      "Unit and envtest",
+    ]
+  }
+
+  required_pull_request_reviews {
+    required_approving_review_count = 0
+    dismiss_stale_reviews           = false
+    require_code_owner_reviews      = false
+    require_last_push_approval      = false
+  }
+}
+
 resource "github_repository_environment" "cloudflare_e2e" {
   repository          = github_repository.flareway.name
   environment         = "cloudflare-e2e"
+  can_admins_bypass   = true
+  prevent_self_review = false
+  wait_timer          = 0
+}
+
+resource "github_repository_environment" "release" {
+  repository          = github_repository.flareway.name
+  environment         = "release"
   can_admins_bypass   = true
   prevent_self_review = false
   wait_timer          = 0
