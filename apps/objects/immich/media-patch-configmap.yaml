@@ -4069,7 +4069,7 @@ data:
             if (missing.length > 0) {
                 this.logger.debugFn(() => `Creating missing persons: ${missing.map((p) => `${p.name}/${p.personGroupId}`)}`);
                 await this.personRepository.createGroups(missing.map((item) => ({ id: item.personGroupId, clusterGroupId: asset.clusterGroupId })));
-                await this.personRepository.createAll(missing);
+                await this.personRepository.createAll(missing.map(({ name, ownerId, personGroupId }) => ({ name, ownerId, personGroupId })));
                 const jobs = missing.map(({ personGroupId, ownerId }) => ({ name: enum_1.JobName.PersonGenerateThumbnail, data: { personGroupId, ownerId } }));
                 await this.jobRepository.queueAll(jobs);
             }

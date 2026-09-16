@@ -9,7 +9,7 @@ controllers:
     containers:
       main:
         image:
-          tag: v3.2.0
+          tag: v3.2.2@sha256:79cc1623323d5894922686d8743b4780181428f98eecbfb58ce12c41ef02d1ea
         env:
           REDIS_HOSTNAME: '{{ printf "%s-valkey" .Release.Name }}'
           # Add the env vars to connect to your database here.
@@ -208,9 +208,9 @@ server:
       enabled: true
       type: hostPath
       hostPath: /usr/lib/aarch64-linux-gnu/libwayland-server.so.0
-    # media.js is a verbatim copy of immich v3.2.0 dist/utils/media.js with only
+    # media.js is a verbatim copy of immich v3.2.2 dist/utils/media.js with only
     # the tonemap range/peak strings changed. It is valid ONLY for the server version
-    # pinned at line 12 (v3.2.0). Regenerate this ConfigMap whenever that tag is bumped.
+    # pinned at line 12 (v3.2.2). Regenerate this ConfigMap whenever that tag is bumped.
     patch-media:
       enabled: true
       type: configMap
@@ -244,7 +244,7 @@ machine-learning:
           image:
             repository: ghcr.io/isac322/immich-machine-learning
             # Keep in sync with persistence.patched-models.volumeSpec.image.reference
-            tag: v3.2.0-rknn
+            tag: v3.2.2-rknn@sha256:1f7f68bc02a39629e9b9b4bdbf7e10862ba569c4b02ff25d2db10cfa74775d42
           env:
             MACHINE_LEARNING_RKNN_THREADS: 3
           securityContext:
@@ -297,7 +297,7 @@ machine-learning:
       volumeSpec:
         image:
           # Keep tag in sync with controllers.main.containers.main.image.tag above
-          reference: ghcr.io/isac322/immich-patched-models:v3.2.0-rknn
+          reference: ghcr.io/isac322/immich-patched-models:v3.2.2-rknn@sha256:5d57a5b30ae46f167d2b8000695dcd7a86aaa0f71f258490f9b96bb5e79397b1
           pullPolicy: IfNotPresent
       advancedMounts:
         main:
