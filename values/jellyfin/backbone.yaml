@@ -4,7 +4,7 @@ nameOverride: ""
 fullnameOverride: ""
 
 image:
-  tag: 10.11.11
+  tag: 12.1@sha256:78d3ea1207d1322471fcac39a614f004f2ccf7e878f95ab2977d752f07e4dd7e
 
 # -- Annotations to add to the pod.
 podAnnotations: {}
