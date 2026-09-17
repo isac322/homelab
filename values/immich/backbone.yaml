@@ -67,6 +67,10 @@ valkey:
     main:
       containers:
         main:
+          image:
+            repository: docker.io/valkey/valkey
+            tag: 9.1.2-alpine@sha256:a0dbf4c1d5708782907c10e2c72deff317518518b5288a58416981d9db95d30b
+            pullPolicy: IfNotPresent
           args:
             - --maxmemory
             - 192mb
