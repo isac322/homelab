@@ -1,5 +1,7 @@
 driver:
   name: versitygw.cosi.dev
+  image:
+    tag: 0.6.0@sha256:a4d1ab1f55a22cd2b899b0fad00a94b28da4ff12b1a5e332fc998af25803206f
   resources:
     requests:
       cpu: 5m
