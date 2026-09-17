@@ -100,8 +100,8 @@ sidecar:
 
 gateway:
   image:
-    tag: 1.31.5-alpine
-    digest: sha256:aa8c9087d36d93e9d650c5365f883b421e8214aedbad24ade52b844c583358f1
+    tag: 1.31.6-alpine
+    digest: sha256:b54ac358b83fc6c965793fd271839b4ea4cdb6e99895bb19618cbc2ca152d972
   resources:
     requests:
       cpu: 5m
