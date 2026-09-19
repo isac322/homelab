@@ -1,6 +1,6 @@
 resource "github_repository" "flareway" {
   name        = "flareway"
-  description = "Cloudflare networking and Zero Trust for Kubernetes"
+  description = "A Kubernetes operator for Cloudflare Tunnel, Access & WARP - Gateway API routing through an Envoy data plane, with no inbound ports or public IPs on the cluster."
   visibility  = "public"
 
   has_issues      = true
@@ -17,7 +17,22 @@ resource "github_repository" "flareway" {
   delete_branch_on_merge      = true
   squash_merge_commit_title   = "PR_TITLE"
   squash_merge_commit_message = "COMMIT_MESSAGES"
-  topics                      = []
+  topics = [
+    "kubernetes",
+    "kubernetes-operator",
+    "kubernetes-controller",
+    "gateway-api",
+    "ingress",
+    "ingress-controller",
+    "cloudflare",
+    "cloudflare-tunnel",
+    "cloudflare-access",
+    "cloudflare-warp",
+    "cloudflared",
+    "zero-trust",
+    "zero-trust-network-access",
+    "envoy",
+  ]
   web_commit_signoff_required = false
 
   security_and_analysis {
