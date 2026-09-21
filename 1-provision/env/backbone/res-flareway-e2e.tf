@@ -135,3 +135,56 @@ resource "github_actions_environment_secret" "flareway_e2e_zone" {
   secret_name = "FLAREWAY_E2E_ZONE"
   value       = module.dns_secrets.flareway_e2e.zone
 }
+
+# --- Flareway e2e Zero Trust bootstrap -------------------------------------
+# Durable account-level Zero Trust configuration for the private WARP e2e
+# path. Per-run objects (service tokens, app-scoped enrollment policies,
+# custom device profiles, device registrations) are created and deleted by
+# the e2e runner with FLAREWAY_E2E_CF_API_TOKEN; Terraform must not manage
+# or clobber them. The runner discovers the WARP app via
+# GET /access/apps?type=warp and the team name via the organization
+# auth_domain, so no additional GitHub secrets/variables are required.
+
+# Account-wide device settings singleton. Only the two proxy flags below are
+# managed. The provider Update sends explicit nulls for attributes that are
+# set in state but unset in config, and Read fills every field after the
+# first apply, so ignore_changes pins all unmanaged attributes to their
+# imported/current values instead of letting a later apply wipe them.
+# The resource does not support terraform import; first apply is an upsert.
+resource "cloudflare_zero_trust_device_settings" "flareway_e2e" {
+  provider = cloudflare.flareway_e2e
+
+  # Same account the e2e token is scoped to (zone's owning account).
+  account_id = module.dns_secrets.flareway_e2e.account_id
+
+  # Required for Gateway network policies on private WARP traffic.
+  gateway_proxy_enabled     = true
+  gateway_udp_proxy_enabled = true
+
+  lifecycle {
+    ignore_changes = [
+      disable_for_time,
+      external_emergency_signal_enabled,
+      external_emergency_signal_fingerprint,
+      external_emergency_signal_interval,
+      external_emergency_signal_url,
+      root_certificate_installation_enabled,
+      use_zt_virtual_ip,
+    ]
+  }
+}
+
+resource "cloudflare_zero_trust_access_application" "flareway_e2e_warp_enrollment" {
+  provider = cloudflare.flareway_e2e
+
+  # Same account the e2e token is scoped to (zone's owning account).
+  account_id       = module.dns_secrets.flareway_e2e.account_id
+  name             = "Warp Login App"
+  type             = "warp"
+  session_duration = "24h"
+  policies         = []
+
+  lifecycle {
+    ignore_changes = [policies]
+  }
+}

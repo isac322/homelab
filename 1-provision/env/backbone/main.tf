@@ -36,6 +36,13 @@ terraform {
 provider "cloudflare" {
   api_token = var.cloudflare_token_for_token_issuing
 }
+# The issuing token above is scoped to token issuance only; the flareway e2e
+# bootstrap resources authenticate with the e2e token itself, which carries
+# the Zero Trust permissions they need.
+provider "cloudflare" {
+  alias     = "flareway_e2e"
+  api_token = module.dns_secrets.flareway_e2e.api_token
+}
 provider "github" {
   owner = "isac322"
   token = var.github_personal_access_token

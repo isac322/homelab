@@ -100,6 +100,10 @@ resource "cloudflare_api_token" "flareway_e2e" {
         { id = local.account_permission_groups["Cloudflare Tunnel Write"] },
         { id = local.account_permission_groups["Cloudflare One Networks Write"] },
         { id = local.account_permission_groups["Zero Trust Read"] },
+
+        # Device settings (TCP/UDP proxy), device profiles, registrations,
+        # and Gateway policies for the private WARP e2e path.
+        { id = local.account_permission_groups["Zero Trust Write"] },
       ]
       resources = jsonencode({
         "com.cloudflare.api.account.${data.cloudflare_zone.flareway_e2e.account.id}" = "*"
