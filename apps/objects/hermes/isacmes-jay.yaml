@@ -346,9 +346,30 @@ spec:
       agent:
         disabled_toolsets:
           - computer_use
+        reasoning_effort: medium
       model:
-        default: gpt-5.6-terra
+        default: gpt-6-astra
         provider: openai-api
+        api_mode: codex_responses
+      delegation:
+        model: gpt-6-sol
+        provider: openai-api
+        api_mode: codex_responses
+        reasoning_effort: medium
+      moa:
+        presets:
+          default:
+            enabled: true
+            reference_models:
+              - provider: openai-api
+                model: gpt-6-sol
+                reasoning_effort: medium
+              - provider: gemini
+                model: gemini-3.8-flash
+            aggregator:
+              provider: openai-api
+              model: gpt-6-astra
+              reasoning_effort: medium
       mcp_servers:
         linear:
           url: https://mcp.linear.app/mcp
@@ -401,39 +422,43 @@ spec:
         vision:
           provider: gemini
           model: gemini-3.8-flash
-        web_extract:
-          provider: gemini
-          model: gemini-3.5-flash-lite
         compression:
           provider: main
-          model: gpt-5.6-sol
+          model: gpt-6-sol
+          api_mode: codex_responses
           reasoning_effort: low
         title_generation:
           provider: gemini
           model: gemini-3.5-flash-lite
         approval:
           provider: main
-          model: gpt-5.4-mini
+          model: gpt-6-luna
+          api_mode: codex_responses
           reasoning_effort: low
         background_review:
           provider: main
-          model: gpt-5.6-terra
+          model: gpt-6-sol
+          api_mode: codex_responses
           reasoning_effort: low
         curator:
           provider: main
-          model: gpt-5.6-sol
+          model: gpt-6-sol
+          api_mode: codex_responses
           reasoning_effort: medium
         goal_judge:
           provider: main
-          model: gpt-5.6-sol
+          model: gpt-6-sol
+          api_mode: codex_responses
           reasoning_effort: high
         kanban_decomposer:
           provider: main
-          model: gpt-5.6-sol
+          model: gpt-6-sol
+          api_mode: codex_responses
           reasoning_effort: medium
         triage_specifier:
           provider: main
-          model: gpt-5.6-terra
+          model: gpt-6-sol
+          api_mode: codex_responses
           reasoning_effort: low
         profile_describer:
           provider: gemini
@@ -446,29 +471,29 @@ spec:
           model: gemini-3.5-flash-lite
         mcp:
           provider: main
-          model: gpt-5.4-mini
+          model: gpt-6-luna
+          api_mode: codex_responses
           reasoning_effort: low
         skills_hub:
           provider: main
-          model: gpt-5.6-terra
+          model: gpt-6-sol
+          api_mode: codex_responses
           reasoning_effort: low
         tts_audio_tags:
           provider: gemini
           model: gemini-3.5-flash-lite
-        moa_reference:
-          provider: gemini
-          model: gemini-3.8-flash
-        moa_aggregator:
-          provider: main
-          model: gpt-5.6-sol
-          reasoning_effort: high
         assertion_extraction:
           provider: gemini
           model: gemini-3.8-flash
         selective_evidence_selector:
           provider: main
-          model: gpt-5.4-mini
+          model: gpt-6-luna
+          api_mode: codex_responses
           reasoning_effort: low
+        review:
+          provider: openai-api
+          model: gpt-6-astra
+          api_mode: codex_responses
   env:
     - name: HOME
       value: /opt/data

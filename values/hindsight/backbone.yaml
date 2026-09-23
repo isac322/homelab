@@ -13,7 +13,7 @@ api:
   env:
     # LLM — Google Generative API (Gemini API key via existingSecret)
     HINDSIGHT_API_LLM_PROVIDER: "gemini"
-    HINDSIGHT_API_LLM_MODEL: "gemini-3.1-flash-lite"
+    HINDSIGHT_API_LLM_MODEL: "gemini-3.5-flash-lite"
     # Vector extension
     HINDSIGHT_API_VECTOR_EXTENSION: "vchord"
     # Retain
