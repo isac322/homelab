@@ -341,7 +341,7 @@ spec:
           - computer_use
         reasoning_effort: medium
       model:
-        default: gpt-6-astra
+        default: gpt-6-sol
         provider: openai-api
         api_mode: codex_responses
       delegation:
