@@ -1,3 +1,8 @@
+# Update this image pin together with argocd/apps/hermes.yaml's chart version.
+image:
+  repository: ghcr.io/paperclipinc/hermes-operator
+  tag: v0.2.0@sha256:7a491ec9b0ff3037341a7b1f71b8e3d0a8a6f61ea3dd3fc00b585bcd57b82481
+
 resources:
   requests:
     cpu: 10m
