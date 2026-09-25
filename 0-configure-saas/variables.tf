@@ -86,6 +86,12 @@ variable "github_app_private_key_arc_cc_lb" {
   sensitive = true
 }
 
+variable "github_app_private_key_archon" {
+  type        = string
+  description = "Private key of the dedicated Archon GitHub App installed on isac322/cc-lb."
+  sensitive   = true
+}
+
 variable "github_personal_access_token" {
   type        = string
   description = <<-EOT

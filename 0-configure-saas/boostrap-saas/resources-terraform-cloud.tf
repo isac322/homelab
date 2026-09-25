@@ -283,6 +283,15 @@ resource "tfe_variable" "github_app_private_key_arc_cc_lb" {
   workspace_id = tfe_workspace.backbone.id
 }
 
+resource "tfe_variable" "github_app_private_key_archon" {
+  key          = "github_app_private_key_archon"
+  value        = var.github_app_private_key_archon
+  description  = "GitHub App private key for Archon on isac322/cc-lb"
+  category     = "terraform"
+  sensitive    = true
+  workspace_id = tfe_workspace.backbone.id
+}
+
 resource "tfe_variable" "github_personal_access_token" {
   key          = "github_personal_access_token"
   value        = var.github_personal_access_token

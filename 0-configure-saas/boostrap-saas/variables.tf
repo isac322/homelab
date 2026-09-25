@@ -166,6 +166,11 @@ variable "github_app_private_key_arc_cc_lb" {
   sensitive = true
 }
 
+variable "github_app_private_key_archon" {
+  type      = string
+  sensitive = true
+}
+
 variable "github_personal_access_token" {
   type        = string
   description = <<-EOT
