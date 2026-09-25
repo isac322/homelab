@@ -65,7 +65,7 @@ jobs:
           apt-get update
           apt-get install -y --no-install-recommends \
             build-essential ca-certificates curl debhelper devscripts dh-dkms \
-            dkms dpkg-dev gnupg linux-headers-amd64 linux-source util-linux xz-utils
+            dkms dpkg-dev gnupg linux-headers-amd64 linux-source patch util-linux xz-utils
 
       - name: Checkout
         uses: actions/checkout@v6
@@ -137,7 +137,7 @@ jobs:
         run: |
           set -euo pipefail
           pacman -Syu --noconfirm --needed \
-            ca-certificates curl dkms git gnupg linux-headers util-linux xz
+            ca-certificates curl dkms git gnupg linux-headers patch util-linux xz
 
       - name: Checkout
         uses: actions/checkout@v6
@@ -200,9 +200,7 @@ jobs:
     needs:
       - debian
       - arch
-    if: >-
-      github.event_name == 'push' ||
-      (github.event_name == 'workflow_dispatch' && inputs.publish)
+    if: github.event_name == 'workflow_dispatch' && inputs.publish
     runs-on: ubuntu-latest
     permissions:
       contents: write

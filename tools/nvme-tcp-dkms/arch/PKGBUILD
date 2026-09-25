@@ -14,12 +14,14 @@ source=(
   select-modules.sh
   host-dkms.conf
   target-dkms.conf
+  nvmet-tcp-fix-commands-allocation-crash.patch
 )
 sha256sums=(
-  '6183746ffd3d43b4c7c4809b0bcffbc21ea6c2d274fcd194279c5efe2a53c73f'
+  '04657cb74eb2d5020b86b713fce2f4268d0e839dead0fcb2ab10b5f403c3d12f'
   '6549d8777e072ebe982bc08c23f8cac98320fcfaa2e053f2e551d895974e9505'
   'f63015cd826e382f84a404bb85c1e42a1b0942f97909e91306707f2b36d2c3b5'
   '8d385f74eb0a34fffe2fdc12ccc364a3827df1b403b192c33818e7ff36957019'
+  'dcd9997520e31888f2d006a3ed6e75b514346d8c0c254ef43d245456dd5403fe'
 )
 
 package_nvme-tcp-host-dkms() {
@@ -34,10 +36,13 @@ package_nvme-tcp-host-dkms() {
 
 package_nvmet-tcp-target-dkms() {
   pkgdesc='Supplemental NVMe/TCP target transport managed by DKMS'
+  depends+=(patch)
 
   local source_dir="${pkgdir}/usr/src/nvmet-tcp-target-${pkgver}"
   install -Dm0755 "${srcdir}/prepare.sh" "${source_dir}/prepare.sh"
   install -Dm0755 "${srcdir}/select-modules.sh" "${source_dir}/select-modules.sh"
   install -Dm0644 "${srcdir}/target-dkms.conf" "${source_dir}/dkms.conf"
+  install -Dm0644 "${srcdir}/nvmet-tcp-fix-commands-allocation-crash.patch" \
+    "${source_dir}/patches/nvmet-tcp-fix-commands-allocation-crash.patch"
   sed -i "s/#MODULE_VERSION#/${pkgver}/g" "${source_dir}/dkms.conf"
 }

@@ -2,7 +2,7 @@ Source: nvme-tcp-dkms
 Section: kernel
 Priority: optional
 Maintainer: Byeonghoon Yoo <bhyoo@bhyoo.com>
-Build-Depends: debhelper-compat (= 13), dh-dkms
+Build-Depends: debhelper-compat (= 13), dh-dkms, patch
 Standards-Version: 4.7.2
 Rules-Requires-Root: no
 
@@ -17,7 +17,7 @@ Description: supplemental NVMe/TCP host modules managed by DKMS
 
 Package: nvmet-tcp-target-dkms
 Architecture: all
-Depends: ${misc:Depends}, dkms (>= 3.0.10), ca-certificates, curl, gnupg, xz-utils
+Depends: ${misc:Depends}, dkms (>= 3.0.10), ca-certificates, curl, gnupg, xz-utils, patch
 Conflicts: nvme-extras-dkms
 Replaces: nvme-extras-dkms
 Description: supplemental NVMe/TCP target transport managed by DKMS
