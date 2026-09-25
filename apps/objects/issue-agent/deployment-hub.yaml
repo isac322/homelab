@@ -1,0 +1,93 @@
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: issue-agent-hub
+spec:
+  replicas: 1
+  strategy:
+    type: Recreate
+  selector:
+    matchLabels:
+      app: issue-agent-hub
+  template:
+    metadata:
+      labels:
+        app: issue-agent-hub
+    spec:
+      automountServiceAccountToken: false
+      enableServiceLinks: false
+      securityContext:
+        runAsNonRoot: true
+        runAsUser: 1000
+        runAsGroup: 1000
+        fsGroup: 1000
+        fsGroupChangePolicy: OnRootMismatch
+        seccompProfile:
+          type: RuntimeDefault
+      imagePullSecrets:
+        - name: ghcr-creds-isac322
+      containers:
+        - name: hub
+          image: ghcr.io/isac322/issue-agent-hapi:0.30.7-20260926@sha256:936f5569c8c143fef9250785c339657e1c443f2be4aaa79771c8c7e96ab53b6e
+          env:
+            - name: HOME
+              value: /var/lib/hapi
+            - name: HAPI_HOME
+              value: /var/lib/hapi
+            - name: HAPI_LISTEN_HOST
+              value: 0.0.0.0
+            - name: HAPI_LISTEN_PORT
+              value: "3006"
+            - name: HAPI_PUBLIC_URL
+              value: https://hapi.bhyoo.com
+            - name: CORS_ORIGINS
+              value: https://hapi.bhyoo.com
+            - name: CLI_API_TOKEN
+              valueFrom:
+                secretKeyRef:
+                  name: issue-agent-hapi-auth
+                  key: CLI_API_TOKEN
+          ports:
+            - name: http
+              containerPort: 3006
+          startupProbe:
+            httpGet:
+              path: /health
+              port: http
+            periodSeconds: 5
+            failureThreshold: 60
+          readinessProbe:
+            httpGet:
+              path: /health
+              port: http
+            periodSeconds: 10
+          livenessProbe:
+            httpGet:
+              path: /health
+              port: http
+            periodSeconds: 30
+            failureThreshold: 5
+          resources:
+            requests:
+              cpu: 100m
+              memory: 256Mi
+            limits:
+              memory: 1Gi
+          securityContext:
+            allowPrivilegeEscalation: false
+            readOnlyRootFilesystem: true
+            capabilities:
+              drop:
+                - ALL
+          volumeMounts:
+            - name: data
+              mountPath: /var/lib/hapi
+            - name: tmp
+              mountPath: /tmp
+      volumes:
+        - name: data
+          persistentVolumeClaim:
+            claimName: issue-agent-hub-data
+        - name: tmp
+          emptyDir:
+            sizeLimit: 256Mi

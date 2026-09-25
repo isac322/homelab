@@ -1,0 +1,132 @@
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: issue-agent-bridge
+spec:
+  replicas: 1
+  strategy:
+    type: Recreate
+  selector:
+    matchLabels:
+      app: issue-agent-bridge
+  template:
+    metadata:
+      labels:
+        app: issue-agent-bridge
+    spec:
+      automountServiceAccountToken: false
+      enableServiceLinks: false
+      securityContext:
+        runAsNonRoot: true
+        runAsUser: 1000
+        runAsGroup: 1000
+        fsGroup: 1000
+        fsGroupChangePolicy: OnRootMismatch
+        seccompProfile:
+          type: RuntimeDefault
+      containers:
+        - name: bridge
+          image: python@sha256:caaf356f40667c496d405780745b9ac25771c189a51dfcc42430d531ea09f8a2
+          command:
+            - python
+            - -B
+            - /opt/issue-agent-bridge/bridge.py
+          env:
+            - name: HOME
+              value: /tmp
+            - name: PORT
+              value: "8080"
+            - name: BRIDGE_STATE_PATH
+              value: /var/lib/issue-agent-bridge/state.sqlite3
+            - name: GITHUB_WEBHOOK_SECRET_FILE
+              value: /run/issue-agent/webhook/secret
+            - name: GITHUB_TOKEN_DIR
+              value: /run/issue-agent/github
+            - name: GITHUB_BOT_LOGIN
+              value: "ironeater[bot]"
+            - name: REPO_REGISTRY_FILE
+              value: /opt/issue-agent-bridge/repo-registry.json
+            - name: N8N_WEBHOOK_URL
+              value: http://issue-agent-n8n.issue-agent.svc.cluster.local:5678/webhook/issue-agent
+            - name: N8N_WEBHOOK_TOKEN_FILE
+              value: /run/issue-agent/ops/n8n-webhook-token
+            - name: BRIDGE_OPS_TOKEN_FILE
+              value: /run/issue-agent/ops/bridge-ops-token
+            - name: HAPI_BASE_URL
+              value: http://issue-agent-hub.issue-agent.svc.cluster.local:3006
+            - name: HAPI_ACCESS_TOKEN_FILE
+              value: /run/issue-agent/hapi/CLI_API_TOKEN
+          ports:
+            - name: webhook
+              containerPort: 8080
+          readinessProbe:
+            httpGet:
+              path: /healthz
+              port: webhook
+          livenessProbe:
+            httpGet:
+              path: /healthz
+              port: webhook
+            initialDelaySeconds: 10
+            periodSeconds: 30
+          resources:
+            requests:
+              cpu: 25m
+              memory: 64Mi
+            limits:
+              memory: 256Mi
+          securityContext:
+            allowPrivilegeEscalation: false
+            readOnlyRootFilesystem: true
+            capabilities:
+              drop:
+                - ALL
+          volumeMounts:
+            - name: bridge-code
+              mountPath: /opt/issue-agent-bridge
+              readOnly: true
+            - name: bridge-state
+              mountPath: /var/lib/issue-agent-bridge
+            - name: tmp
+              mountPath: /tmp
+            - name: webhook
+              mountPath: /run/issue-agent/webhook
+              readOnly: true
+            - name: github
+              mountPath: /run/issue-agent/github
+              readOnly: true
+            - name: ops
+              mountPath: /run/issue-agent/ops
+              readOnly: true
+            - name: hapi
+              mountPath: /run/issue-agent/hapi
+              readOnly: true
+      volumes:
+        - name: bridge-state
+          persistentVolumeClaim:
+            claimName: issue-agent-bridge-state
+        - name: tmp
+          emptyDir:
+            sizeLimit: 64Mi
+        - name: bridge-code
+          configMap:
+            name: issue-agent-bridge-code
+        - name: webhook
+          secret:
+            secretName: issue-agent-webhook
+            defaultMode: 0440
+        - name: github
+          secret:
+            secretName: issue-agent-github-token
+            defaultMode: 0440
+        - name: ops
+          secret:
+            secretName: issue-agent-bridge-ops
+            defaultMode: 0440
+        - name: hapi
+          secret:
+            secretName: issue-agent-hapi-auth
+            defaultMode: 0440
+            items:
+              - key: CLI_API_TOKEN
+                path: CLI_API_TOKEN

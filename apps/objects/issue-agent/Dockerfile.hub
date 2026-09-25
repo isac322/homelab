@@ -1,0 +1,38 @@
+# syntax=docker/dockerfile:1
+# HAPI hub: session store (SQLite + WAL under HAPI_HOME), REST/SSE API, web UI.
+# Build context: apps/objects/issue-agent (see .dockerignore). linux/arm64 only.
+
+# debian:trixie-slim (linux/arm64)
+FROM debian:trixie-slim@sha256:da496358bd6934d2bd6a563a33176a2e50eff5490c54b4ac6fb051b69fef4071
+
+# HAPI v0.30.7 (tiann/hapi commit 0239edf38e2da653d662f31039e24ccea04c7837).
+# Checksum from the release checksums.txt; equals the GitHub asset digest.
+ARG HAPI_VERSION=0.30.7
+ARG HAPI_SHA256=4c11ed308412e4510289ed5e5875a43f60f7ee5cee9cbfdc0e2d97f55851a193
+
+RUN apt-get update \
+    && apt-get install -y --no-install-recommends ca-certificates curl tini \
+    && curl -fsSLo /tmp/hapi.tar.gz "https://github.com/tiann/hapi/releases/download/v${HAPI_VERSION}/hapi-linux-arm64.tar.gz" \
+    && echo "${HAPI_SHA256}  /tmp/hapi.tar.gz" | sha256sum -c - \
+    && tar -xzf /tmp/hapi.tar.gz -C /usr/local/bin hapi \
+    && chmod 0755 /usr/local/bin/hapi \
+    && rm /tmp/hapi.tar.gz \
+    && apt-get purge -y curl \
+    && apt-get autoremove -y \
+    && rm -rf /var/lib/apt/lists/* \
+    && groupadd --gid 1000 hapi \
+    && useradd --uid 1000 --gid 1000 --home-dir /var/lib/hapi --no-create-home --shell /usr/sbin/nologin hapi \
+    && install -d -o 1000 -g 1000 -m 0700 /var/lib/hapi
+
+# Data directory (settings.json, hapi.db + WAL, JWT secret). Mount a PVC here.
+# CLI_API_TOKEN must come from a Secret; without it the hub generates and persists one.
+ENV HOME=/var/lib/hapi \
+    HAPI_HOME=/var/lib/hapi \
+    HAPI_LISTEN_HOST=0.0.0.0 \
+    HAPI_LISTEN_PORT=3006
+
+USER 1000:1000
+WORKDIR /var/lib/hapi
+EXPOSE 3006
+# Unauthenticated probe: GET /health
+ENTRYPOINT ["/usr/bin/tini", "--", "/usr/local/bin/hapi", "hub", "--no-relay"]

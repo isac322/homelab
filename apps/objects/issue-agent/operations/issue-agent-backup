@@ -1,0 +1,460 @@
+#!/usr/bin/env bash
+# issue-agent-backup: consistent online backup of the Issue Agent record stores.
+#
+# PRIVATE OPERATOR ARTIFACT (0700/0600, gitignored default location); never hand it to
+# agents or external readers -- use issue-agent-records for that. Known credential and
+# config files are left out (the ESO Secrets are their source of truth), but the
+# database snapshots are kept byte-faithful for restore and still hold credential
+# material: n8n execution data records the bridge's webhook Authorization header, and
+# n8n credentials are stored encrypted.
+#   hub.tar      HAPI_HOME: hapi.db snapshot + remaining hub files, WITHOUT
+#                settings.json (persisted cliApiToken) and jwt-secret.json
+#   n8n.tar      ~/.n8n: database.sqlite snapshot (credentials stay encrypted with the
+#                key in Secret issue-agent-n8n-encryption), workflow-import state, event
+#                logs, binary data; WITHOUT `config` (encryption key copy)
+#   bridge.tar   state.sqlite3 snapshot
+#   runner.tar   CODEX_HOME (rollouts, history, sqlite state snapshots) and HAPI_HOME
+#                (runner identity) WITHOUT config.toml, auth.json, shell_snapshots
+#                (captured environment), app-server/runtime control and ownership state,
+#                codex-runtimes (live endpoint tokens), regenerated tool bundles; plus
+#                checkouts-manifest.txt (worktree branch/HEAD/dirty/unpushed state;
+#                checkouts are not copied)
+# Records (transcripts, tool output, issue text) may also contain anything an agent read.
+#
+# Consistency: every SQLite database is copied with SQLite's own snapshot API while the
+# workload keeps running (no quiesce, no restart, no extra tooling):
+#   hub     bun:sqlite `VACUUM INTO` via the existing Bun-compiled hapi binary (BUN_BE_BUN=1)
+#   n8n     n8n's bundled node sqlite3 `VACUUM INTO`
+#   bridge  Python sqlite3 online backup API (read-only connection)
+#   runner  Python sqlite3 online backup API for every SQLite file under the homes
+# Each snapshot passes `PRAGMA integrity_check` in-pod before it is streamed. Snapshots
+# are per database and NOT cross-store atomic. Capturing in reference order
+# (bridge -> n8n -> hub -> runner) narrows but does not eliminate skew: a record written
+# between two captures can reference data absent from the earlier store. Plain files
+# (JSONL rollouts, logs) are read live; a rollout may end in a partial last line.
+#
+# Temporary snapshot files are written next to each database in its own PVC
+# (`.issue-agent-backup.*`, removed on exit and before each run). Run one backup at a time.
+set -euo pipefail
+umask 077
+
+CONTEXT=homelab-backbone
+NAMESPACE=issue-agent
+OUT=""
+COMPONENTS="bridge,n8n,hub,runner"
+
+usage() {
+  cat <<'EOF'
+Usage:
+  issue-agent-backup create [--context NAME] [--namespace NAME] [--out DIR]
+                            [--components bridge,n8n,hub,runner]
+  issue-agent-backup verify DIR
+
+create  Streams consistent snapshots into a new 0700 directory (files 0600).
+        Default DIR: <repo>/.host-state/issue-agent/backups/<UTC timestamp> (gitignored).
+        PRIVATE OPERATOR ARTIFACT: snapshots are byte-faithful and still hold credential
+        material (e.g. n8n execution data); never give it to agents or external readers.
+verify  Checks SHA256SUMS, unpacks each archive into a private temporary directory
+        inside DIR, and runs `PRAGMA integrity_check` on every SQLite file (needs a local
+        sqlite3 or python3). Makes no cluster calls.
+
+The kubectl context defaults to homelab-backbone; the current context is never used.
+EOF
+}
+
+die() {
+  printf 'issue-agent-backup: %s\n' "$*" >&2
+  exit 1
+}
+log() { printf 'issue-agent-backup: %s\n' "$*" >&2; }
+
+((BASH_VERSINFO[0] > 4 || (BASH_VERSINFO[0] == 4 && BASH_VERSINFO[1] >= 4))) || die "bash >= 4.4 required"
+
+k() { kubectl --context "$CONTEXT" --namespace "$NAMESPACE" "$@"; }
+
+pod_for() {
+  local pods count
+  pods="$(k get pods -l "app=$1" --field-selector=status.phase=Running \
+    -o jsonpath='{range .items[*]}{.metadata.name}{"\n"}{end}')" || die "cannot list pods for app=$1"
+  count="$(grep -c . <<<"$pods" || true)"
+  [[ "$count" -eq 1 ]] || die "expected exactly one Running pod for app=$1, found ${count}"
+  printf '%s' "$pods"
+}
+
+sha256() {
+  if command -v sha256sum >/dev/null; then sha256sum "$@"; else shasum -a 256 "$@"; fi
+}
+
+# ---------------------------------------------------------------------------
+# In-pod producers: each writes one tar stream to stdout, diagnostics to stderr.
+# ---------------------------------------------------------------------------
+
+# Hub (debian-slim: sh, tar, mktemp; hapi = Bun-compiled executable).
+read -r -d '' HUB_SH <<'SH' || true
+set -eu
+umask 077
+data="${HAPI_HOME:-/var/lib/hapi}"
+db="${DB_PATH:-$data/hapi.db}"
+[ "$(dirname "$db")" = "$data" ] || { echo "hub: DB_PATH outside HAPI_HOME is not supported" >&2; exit 1; }
+[ -f "$db" ] || { echo "hub: $db not found" >&2; exit 1; }
+name="$(basename "$db")"
+rm -rf "$data"/.issue-agent-backup.*
+snap="$(mktemp -d "$data/.issue-agent-backup.XXXXXX")"
+trap 'rm -rf "$snap"' EXIT INT TERM
+SRC="$db" DST="$snap/$name" BUN_BE_BUN=1 /usr/local/bin/hapi -e '
+const { Database } = require("bun:sqlite");
+// VACUUM INTO attaches its output with the source connection flags; a read-only
+// source cannot create it. The connection only reads the source database.
+const src = new Database(process.env.SRC, { readwrite: true, create: false });
+src.exec("PRAGMA busy_timeout = 30000");
+src.prepare("VACUUM INTO ?").run(process.env.DST);
+src.close();
+const dst = new Database(process.env.DST, { readonly: true });
+const result = dst.query("PRAGMA integrity_check").values();
+dst.close();
+if (result.length !== 1 || result[0][0] !== "ok") {
+  console.error("hub: snapshot integrity_check failed: " + JSON.stringify(result));
+  process.exit(1);
+}
+' >&2
+rc=0
+tar -C "$data" --exclude="./$name" --exclude="./$name-wal" --exclude="./$name-shm" \
+  --exclude="./$name-journal" --exclude='./.issue-agent-backup.*' \
+  --exclude=./settings.json --exclude=./jwt-secret.json --exclude=./runtime \
+  -cf - . -C "$snap" "$name" || rc=$?
+# GNU tar: 1 = a non-database file changed while being read.
+[ "$rc" -le 1 ] || exit "$rc"
+[ "$rc" -eq 0 ] || echo "hub: warning: a non-database file changed while being archived" >&2
+SH
+
+# n8n (node; no tar/python in the image): sqlite3 snapshot + minimal ustar writer.
+read -r -d '' N8N_JS <<'JS' || true
+const fs = require("fs"), path = require("path"), { createRequire } = require("module");
+const sqlite3 = createRequire("/usr/local/lib/node_modules/n8n/package.json")("sqlite3");
+const home = "/home/node/.n8n";
+const db = process.env.DB_SQLITE_DATABASE || path.join(home, "database.sqlite");
+if (path.dirname(db) !== home) { console.error("n8n: DB outside ~/.n8n is not supported"); process.exit(1); }
+const dbName = path.basename(db);
+// `config` holds a copy of the encryption key (Secret issue-agent-n8n-encryption).
+const SKIP = new Set([dbName, `${dbName}-wal`, `${dbName}-shm`, `${dbName}-journal`, "config"]);
+const out = process.stdout;
+
+const open = (p, mode) => new Promise((res, rej) => { const d = new sqlite3.Database(p, mode, (e) => (e ? rej(e) : res(d))); });
+const run = (d, sql, params = []) => new Promise((res, rej) => d.run(sql, params, (e) => (e ? rej(e) : res())));
+const all = (d, sql) => new Promise((res, rej) => d.all(sql, [], (e, r) => (e ? rej(e) : res(r))));
+const close = (d) => new Promise((res, rej) => d.close((e) => (e ? rej(e) : res())));
+const write = (buf) => new Promise((res) => { if (out.write(buf)) res(); else out.once("drain", res); });
+
+function octal(buf, off, len, value) { buf.write(value.toString(8).padStart(len - 1, "0") + "\0", off, len, "ascii"); }
+function paxRecord(key, value) {
+  const body = ` ${key}=${value}\n`;
+  let len = Buffer.byteLength(body) + 1;
+  while (String(len).length + Buffer.byteLength(body) !== len) len = String(len).length + Buffer.byteLength(body);
+  return `${len}${body}`;
+}
+function header(name, { mode, size, mtime, type, linkname = "" }) {
+  const h = Buffer.alloc(512);
+  h.write(name.slice(0, 100), 0, 100, "utf8");
+  octal(h, 100, 8, mode & 0o7777); octal(h, 108, 8, 0); octal(h, 116, 8, 0);
+  octal(h, 124, 12, size); octal(h, 136, 12, Math.floor(mtime));
+  h.write("        ", 148, 8, "ascii");
+  h.write(type, 156, 1, "ascii");
+  h.write(linkname.slice(0, 100), 157, 100, "utf8");
+  h.write("ustar\0", 257, 6, "ascii"); h.write("00", 263, 2, "ascii");
+  let sum = 0; for (const b of h) sum += b;
+  h.write(sum.toString(8).padStart(6, "0") + "\0 ", 148, 8, "ascii");
+  return h;
+}
+const pad = (size) => Buffer.alloc((512 - (size % 512)) % 512);
+
+async function entry(name, st, type, linkname = "") {
+  const size = type === "0" ? st.size : 0;
+  if (Buffer.byteLength(name) > 100 || Buffer.byteLength(linkname) > 100) {
+    const pax = Buffer.from(paxRecord("path", name) + (linkname ? paxRecord("linkpath", linkname) : ""));
+    await write(header("PaxHeader", { mode: 0o644, size: pax.length, mtime: st.mtimeMs / 1000, type: "x" }));
+    await write(pax); await write(pad(pax.length));
+  }
+  await write(header(name, { mode: st.mode, size, mtime: st.mtimeMs / 1000, type, linkname }));
+}
+async function addFile(abs, name) {
+  let st;
+  try { st = fs.lstatSync(abs); } catch (e) { if (e.code === "ENOENT") return; throw e; }
+  if (st.isSymbolicLink()) return entry(name, st, "2", fs.readlinkSync(abs));
+  if (st.isDirectory()) return entry(name.endsWith("/") ? name : `${name}/`, st, "5");
+  if (!st.isFile()) return;
+  await entry(name, st, "0");
+  const fd = fs.openSync(abs, "r");
+  try {
+    let left = st.size;
+    const chunk = Buffer.alloc(1 << 20);
+    while (left > 0) {
+      const n = fs.readSync(fd, chunk, 0, Math.min(chunk.length, left), null);
+      if (n === 0) { console.error(`n8n: warning: ${name} shrank while reading; zero-padded`); await write(Buffer.alloc(left)); break; }
+      await write(Buffer.from(chunk.subarray(0, n))); left -= n;
+    }
+  } finally { fs.closeSync(fd); }
+  await write(pad(st.size));
+}
+async function walk(dir, rel) {
+  for (const name of fs.readdirSync(dir).sort()) {
+    if (!rel && (SKIP.has(name) || name.startsWith(".issue-agent-backup."))) continue;
+    const abs = path.join(dir, name), r = rel ? `${rel}/${name}` : name;
+    await addFile(abs, r);
+    let st; try { st = fs.lstatSync(abs); } catch { continue; }
+    if (st.isDirectory()) await walk(abs, r);
+  }
+}
+
+async function main() {
+  if (!fs.existsSync(db)) throw new Error(`${db} not found`);
+  for (const name of fs.readdirSync(home)) {
+    if (name.startsWith(".issue-agent-backup.")) fs.rmSync(path.join(home, name), { recursive: true, force: true });
+  }
+  const snapDir = fs.mkdtempSync(path.join(home, ".issue-agent-backup."));
+  const cleanup = () => fs.rmSync(snapDir, { recursive: true, force: true });
+  process.on("exit", cleanup);
+  for (const sig of ["SIGINT", "SIGTERM", "SIGPIPE"]) process.on(sig, () => process.exit(1));
+  const snap = path.join(snapDir, dbName);
+  const src = await open(db, sqlite3.OPEN_READWRITE); // VACUUM INTO output needs a writable connection; source is only read
+  src.configure("busyTimeout", 30000);
+  await run(src, "VACUUM INTO ?", [snap]);
+  await close(src);
+  const dst = await open(snap, sqlite3.OPEN_READONLY);
+  const check = await all(dst, "PRAGMA integrity_check");
+  await close(dst);
+  if (check.length !== 1 || Object.values(check[0])[0] !== "ok") throw new Error(`snapshot integrity_check: ${JSON.stringify(check)}`);
+  await walk(home, "");
+  await addFile(snap, dbName);
+  await write(Buffer.alloc(1024));
+}
+main().catch((e) => { console.error(`n8n: ${e && e.message ? e.message : e}`); process.exit(1); });
+JS
+
+# Bridge and runner (python3 stdlib): online backup API for SQLite files + tar stream.
+# argv[1] = {"base": dir, "include": [rel...], "exclude": [rel...], "checkouts": dir|null}
+read -r -d '' PY_TAR <<'PY' || true
+import io, json, os, sqlite3, stat, subprocess, sys, tarfile, tempfile, time, urllib.parse
+
+spec = json.loads(sys.argv[1])
+base = spec["base"]
+exclude = set(spec["exclude"])
+MAGIC = b"SQLite format 3\x00"
+PREFIX = ".issue-agent-backup."
+warned = []
+
+
+def warn(msg):
+    sys.stderr.write("backup: warning: %s\n" % msg)
+
+
+def is_sqlite(path):
+    try:
+        with open(path, "rb") as fh:
+            return fh.read(16) == MAGIC
+    except OSError:
+        return False
+
+
+for name in os.listdir(base):
+    if name.startswith(PREFIX):
+        subprocess.run(["rm", "-rf", "--", os.path.join(base, name)], check=True)
+snapdir = tempfile.mkdtemp(prefix=PREFIX, dir=base)
+tar = tarfile.open(fileobj=sys.stdout.buffer, mode="w|", format=tarfile.PAX_FORMAT)
+try:
+    def snapshot(path, rel):
+        dst_path = os.path.join(snapdir, "db")
+        src = sqlite3.connect("file:%s?mode=ro" % urllib.parse.quote(path), uri=True, timeout=30)
+        dst = sqlite3.connect(dst_path)
+        try:
+            src.backup(dst)
+            # The copy inherits WAL mode; store it as a self-contained rollback-journal file.
+            dst.execute("PRAGMA journal_mode=DELETE")
+            result = dst.execute("PRAGMA integrity_check").fetchall()
+        finally:
+            src.close()
+            dst.close()
+        if result != [("ok",)]:
+            raise SystemExit("backup: %s snapshot integrity_check failed: %r" % (rel, result))
+        tar.add(dst_path, arcname=rel, recursive=False)
+        os.unlink(dst_path)
+        sys.stderr.write("backup: snapshot %s ok\n" % rel)
+
+    for top in spec["include"]:
+        root = os.path.join(base, top)
+        if not os.path.lexists(root):
+            continue
+        for dirpath, dirnames, filenames in os.walk(root, followlinks=False):
+            rel_dir = os.path.relpath(dirpath, base)
+            dirnames[:] = sorted(d for d in dirnames if os.path.join(rel_dir, d) not in exclude)
+            tar.add(dirpath, arcname=rel_dir, recursive=False)
+            names = set(filenames)
+            for name in sorted(filenames):
+                rel = os.path.join(rel_dir, name)
+                path = os.path.join(dirpath, name)
+                if rel in exclude or name.startswith(PREFIX):
+                    continue
+                for suffix in ("-wal", "-shm", "-journal"):
+                    if name.endswith(suffix) and name[: -len(suffix)] in names and is_sqlite(path[: -len(suffix)]):
+                        break
+                else:
+                    try:
+                        st = os.lstat(path)
+                        if stat.S_ISREG(st.st_mode) and is_sqlite(path):
+                            snapshot(path, rel)
+                        else:
+                            tar.add(path, arcname=rel, recursive=False)
+                    except FileNotFoundError:
+                        warn("%s disappeared while archiving" % rel)
+
+    checkouts = spec.get("checkouts")
+    if checkouts and os.path.isdir(checkouts):
+        lines = []
+
+        def git(*args):
+            proc = subprocess.run(["git", "--no-optional-locks", *args], capture_output=True, text=True)
+            return proc.stdout.rstrip() if proc.returncode == 0 else "(git %s failed: %s)" % (args[-1], proc.stderr.strip())
+
+        for owner in sorted(os.listdir(checkouts)):
+            for repo in sorted(os.listdir(os.path.join(checkouts, owner)) if os.path.isdir(os.path.join(checkouts, owner)) else []):
+                clone = os.path.join(checkouts, owner, repo)
+                if not os.path.isdir(os.path.join(clone, ".git")):
+                    continue
+                for line in git("-C", clone, "worktree", "list", "--porcelain").splitlines():
+                    if not line.startswith("worktree "):
+                        continue
+                    wt = line[len("worktree "):]
+                    lines.append("== %s" % wt)
+                    lines.append(git("-C", wt, "status", "--porcelain=v1", "--branch"))
+                    lines.append("HEAD " + git("-C", wt, "rev-parse", "HEAD"))
+                    lines.append("unpushed:\n" + git("-C", wt, "log", "--oneline", "-n", "50", "HEAD", "--not", "--remotes"))
+        data = ("\n".join(lines) + "\n").encode()
+        info = tarfile.TarInfo("checkouts-manifest.txt")
+        info.size, info.mtime, info.mode = len(data), int(time.time()), 0o600
+        tar.addfile(info, io.BytesIO(data))
+    tar.close()
+finally:
+    subprocess.run(["rm", "-rf", "--", snapdir])
+PY
+
+capture() {
+  local component="$1" file="$DIR/$1.tar" pod rc=0
+  shift
+  case "$component" in
+    hub) pod="$(pod_for issue-agent-hub)"; k exec "$pod" -c hub -- sh -c "$HUB_SH" >"$file" || rc=$? ;;
+    n8n) pod="$(pod_for issue-agent-n8n)"; k exec "$pod" -c n8n -- node -e "$N8N_JS" >"$file" || rc=$? ;;
+    bridge)
+      pod="$(pod_for issue-agent-bridge)"
+      k exec "$pod" -c bridge -- python -B -c "$PY_TAR" \
+        '{"base":"/var/lib/issue-agent-bridge","include":["."],"exclude":[],"checkouts":null}' >"$file" || rc=$? ;;
+    runner)
+      pod="$(pod_for issue-agent-runner)"
+      k exec "$pod" -c runner -- python3 -B -c "$PY_TAR" \
+        '{"base":"/home/agent","include":[".codex",".hapi"],"exclude":[".codex/config.toml",".codex/auth.json",".codex/AGENTS.md",".codex/tmp",".codex/.tmp",".codex/shell_snapshots",".codex/app-server-control",".codex/hapi-runtime-owners",".codex/thread-writer-locks",".codex/skills/.system",".hapi/codex-runtimes",".hapi/runtime",".hapi/locks"],"checkouts":"/home/agent/checkouts"}' \
+        >"$file" || rc=$? ;;
+  esac
+  [[ "$rc" -eq 0 ]] || die "$component capture failed (exit $rc); partial file left at $file"
+  tar -tf "$file" >/dev/null || die "$component archive is not a readable tar: $file"
+  chmod 600 "$file"
+  printf '%s\tpod=%s\timage=%s\tbytes=%s\n' "$component" "$pod" \
+    "$(k get pod "$pod" -o jsonpath='{.status.containerStatuses[0].imageID}')" \
+    "$(wc -c <"$file" | tr -d ' ')" >>"$DIR/MANIFEST"
+  log "$component: $(wc -c <"$file" | tr -d ' ') bytes"
+}
+
+cmd_create() {
+  local repo_root
+  repo_root="$(cd "$(dirname "${BASH_SOURCE[0]}")/../../../.." && pwd)"
+  DIR="${OUT:-$repo_root/.host-state/issue-agent/backups/$(date -u +%Y%m%dT%H%M%SZ)}"
+  [[ ! -e "$DIR" && ! -L "$DIR" ]] || die "$DIR already exists"
+  command -v kubectl >/dev/null || die "kubectl not found"
+  k get namespace "$NAMESPACE" -o name >/dev/null || die "namespace $NAMESPACE not reachable in context $CONTEXT"
+  mkdir -p "$DIR"
+  chmod 700 "$DIR"
+  printf 'created\t%s\ncontext\t%s\nnamespace\t%s\n' "$(date -u +%Y-%m-%dT%H:%M:%SZ)" "$CONTEXT" "$NAMESPACE" >"$DIR/MANIFEST"
+  log "writing PRIVATE operator backup (byte-faithful DB snapshots; auth/config files excluded) to $DIR"
+
+  local c
+  for c in bridge n8n hub runner; do # reference order; see header
+    if [[ ",$COMPONENTS," == *",$c,"* ]]; then
+      capture "$c"
+    fi
+  done
+  (
+    cd "$DIR"
+    find . -type f ! -name SHA256SUMS ! -name MANIFEST -print0 | sort -z |
+      while IFS= read -r -d '' f; do sha256 "$f"; done >SHA256SUMS
+  )
+  chmod 600 "$DIR/SHA256SUMS" "$DIR/MANIFEST"
+  log "done: $DIR (run: $0 verify $DIR)"
+}
+
+integrity() {
+  if command -v sqlite3 >/dev/null; then
+    sqlite3 -readonly "$1" 'PRAGMA integrity_check;'
+  elif command -v python3 >/dev/null; then
+    python3 -c 'import sqlite3,sys; c=sqlite3.connect("file:"+sys.argv[1]+"?mode=ro",uri=True); print("\n".join(r[0] for r in c.execute("PRAGMA integrity_check")))' "$1"
+  else
+    die "verify needs sqlite3 or python3"
+  fi
+}
+
+cmd_verify() {
+  local dir="$1" work tarball f magic result failed=0 count=0
+  [[ -f "$dir/SHA256SUMS" ]] || die "$dir/SHA256SUMS not found"
+  (cd "$dir" && if command -v sha256sum >/dev/null; then sha256sum -c --quiet SHA256SUMS; else shasum -a 256 -c --quiet SHA256SUMS; fi) ||
+    die "checksum mismatch"
+  work="$(mktemp -d "$dir/.verify.XXXXXX")"
+  # shellcheck disable=SC2064 # expand now: `work` is local and gone when EXIT fires
+  trap "rm -rf $(printf '%q' "$work")" EXIT
+  for tarball in "$dir"/*.tar; do
+    [[ -e "$tarball" ]] || continue
+    mkdir "$work/x"
+    tar -xf "$tarball" -C "$work/x"
+    while IFS= read -r -d '' f; do
+      magic="$(head -c 15 "$f" 2>/dev/null | LC_ALL=C tr -d '\000' || true)"
+      [[ "$magic" == "SQLite format 3" ]] || continue
+      count=$((count + 1))
+      result="$(integrity "$f" 2>&1 || true)"
+      if [[ "$result" == ok ]]; then
+        log "ok   $(basename "$tarball"):${f#"$work/x/"}"
+      else
+        log "FAIL $(basename "$tarball"):${f#"$work/x/"}: $result"
+        failed=1
+      fi
+    done < <(find "$work/x" -type f -print0)
+    rm -rf "$work/x"
+  done
+  [[ "$count" -gt 0 ]] || die "no SQLite databases found in $dir"
+  [[ "$failed" -eq 0 ]] || die "integrity check failed"
+  log "verified $count SQLite databases and all checksums in $dir"
+}
+
+main() {
+  [[ $# -gt 0 ]] || { usage >&2; exit 2; }
+  local cmd="$1"
+  shift
+  case "$cmd" in
+    -h | --help) usage; exit 0 ;;
+    verify) [[ $# -eq 1 ]] || die "verify requires DIR"; cmd_verify "$1"; return ;;
+    create) ;;
+    *) die "unknown command $cmd (see --help)" ;;
+  esac
+  while [[ $# -gt 0 ]]; do
+    case "$1" in
+      --context) CONTEXT="${2:?--context requires a value}"; shift 2 ;;
+      --namespace) NAMESPACE="${2:?--namespace requires a value}"; shift 2 ;;
+      --out) OUT="${2:?--out requires a value}"; shift 2 ;;
+      --components) COMPONENTS="${2:?--components requires a value}"; shift 2 ;;
+      -h | --help) usage; exit 0 ;;
+      *) die "unknown option $1" ;;
+    esac
+  done
+  [[ -n "$CONTEXT" && -n "$NAMESPACE" ]] || die "context and namespace must be non-empty"
+  local c
+  for c in ${COMPONENTS//,/ }; do
+    [[ "$c" =~ ^(bridge|n8n|hub|runner)$ ]] || die "unknown component $c"
+  done
+  cmd_create
+}
+
+main "$@"

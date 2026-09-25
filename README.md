@@ -198,6 +198,44 @@ K3s version과 순차 rollout은 기존 Rancher `system-upgrade-controller`가 �
 
 `n2p1`, `n2p2`, `rpi4`, `rpi5`, `rock5bp`, `macmini`는 live iSCSI client dependency를 유지한다. Debian 계열은 `open-iscsi.service`, Arch Linux는 `iscsi.service`를 login unit으로 사용하며 두 계열 모두 `iscsid.service`를 먼저 기동한다. `rock5bp`의 NAS plane은 계속 외부 소유다. Nix는 ZFS pool/dataset/zvol, rtslib/targetcli, Samba/NFS, storage cron, `democratic-csi` uid/gid 1001 identity, `/home/democratic-csi/.ssh/authorized_keys`, `/etc/sudoers.d/democratic-csi`, native firewall file/runtime chain을 선언하거나 쓰지 않는다. Commit generation의 sshd는 기존 home key lookup과 managed admin-key lookup을 함께 유지한다.
 
+### Issue agent (n8n + HAPI)
+
+`apps/objects/issue-agent/`는 `isac322/cc-lb` GitHub 이슈 자동화를 `issue-agent` namespace에 배포한다. 설계와 책임 경계는 `docs/issue-agent-platform.md`를 따른다. Argo CD 등록 파일은 `argocd/apps/issue-agent.yaml`과 `argocd/appprojects/issue-agent.yaml`이다. 자동 merge는 하지 않는다.
+
+- 구성: 각 Deployment는 단일 replica이며 `Recreate`로 교체한다.
+  - `issue-agent-bridge`: GitHub webhook 검증·중복 방지·상태 SQLite를 담당한다.
+  - `issue-agent-n8n`: 분류·질문·구현·PR 전달 흐름을 담당한다.
+  - `issue-agent-hub`: HAPI Hub로, 세션·메시지 SQLite와 웹 UI를 제공한다.
+  - `issue-agent-runner`: HAPI Runner로, Codex를 실행하며 네이티브 `CODEX_HOME`, checkout, 이슈별 worktree를 home PVC에 보존한다.
+
+  Hub, n8n, runner home, bridge 상태는 각각 `ssd-ha-xfs` PVC에 저장한다. 모든 Pod는 non-root이며 Kubernetes API 토큰을 마운트하지 않는다.
+- 이미지: HAPI Hub와 Runner는 `ghcr.io/isac322/issue-agent-hapi`, `ghcr.io/isac322/issue-agent-runner`를 digest로 고정한다. 비공개 이미지 pull에는 namespace 안의 `ghcr-creds-isac322` Secret을 사용한다. n8n은 공식 이미지를 digest로 고정한다.
+- Provider: `external-secret-provider.yaml`이 기존 CLIProxyAPI SSM 항목에서 Runner용 `issue-agent-provider` Secret(`OPENAI_API_KEY`, Codex `config.toml`)과 n8n 분류용 `issue-agent-n8n-model` Secret을 만든다. 값은 파일 마운트로만 전달하므로 변경 후 해당 Pod를 재시작한다.
+- GitHub 인증: 기존 GitHub App(App ID `5063990`, installation `164533066`)을 재사용한다. App 이름은 `ironeater`이며 bot 계정은 `ironeater[bot]`(user ID `333478113`)이다.
+  - 개인키는 Terraform Cloud 민감 변수와 SSM `/homelab/cluster/backbone/github-app/archon/private-key`가 소유한다. 경로 이름에 `archon`이 있지만 이 App의 정식 자격증명이므로 삭제하거나 이름을 바꾸지 않는다.
+  - ESO가 `cc-lb`로 제한된 설치 토큰을 15분마다 `issue-agent-github-token`에 갱신한다. Git과 `gh`는 디렉터리로 마운트한 `hosts.yml`을 읽는다.
+  - `GH_TOKEN`·`GITHUB_TOKEN` 환경변수나 `subPath` 마운트를 추가하지 않는다. Git 작성자와 bridge의 `GITHUB_BOT_LOGIN`은 `ironeater[bot]`으로 설정한다. App 이름을 바꾸면 이 값들도 함께 바꾼다.
+- 인터넷 공개 경로: `https://issue-agent-webhook.bhyoo.com/webhooks/github`만 Cloudflare tunnel로 노출한다. App webhook의 서명 secret은 `issue-agent-webhook` Secret의 `secret` 키와 일치해야 한다. n8n 내부 webhook과 bridge의 `/ops`는 클러스터 내부 전용이며, 서로 다른 bearer 토큰(`issue-agent-bridge-ops`)으로 인증한다.
+- 운영자 접근: WireGuard 연결 후 내부 `bhyoo-gateway`로 접속한다. 두 UI 모두 인증을 유지한다.
+  - HAPI: `https://hapi.bhyoo.com`에 `issue-agent-hapi-auth` Secret의 `CLI_API_TOKEN`으로 로그인한다.
+  - n8n: `https://n8n.bhyoo.com`에 `bhyoo@bhyoo.com`으로 로그인한다. 비밀번호는 `issue-agent-n8n-owner` Secret의 `password` 키에 있다. n8n에는 bcrypt 해시만 전달되며, 소유자 정보는 시작할 때마다 이 Secret으로 다시 적용된다.
+
+  비밀값은 채팅·로그·문서에 남기지 않는다. 생성된 인증 값(HAPI 토큰, webhook secret, n8n 암호화 키와 소유자 비밀번호, bridge·n8n 토큰)은 ESO Password generator가 한 번 만들고 다시 생성하지 않는다.
+
+```bash
+kubectl --context homelab-backbone -n issue-agent get secret issue-agent-n8n-owner -o jsonpath='{.data.password}' | base64 -d
+kubectl --context homelab-backbone -n issue-agent logs deployment/issue-agent-bridge
+kubectl --context homelab-backbone -n issue-agent logs deployment/issue-agent-n8n
+```
+
+n8n은 시작 전 `n8n-bootstrap.sh`로 자격증명을 고정 ID로 갱신한다. Git의 workflow(`IssueAgentMain01`)는 원본이 바뀌었고 UI에서 수정되지 않은 경우에만 가져와 게시한다. UI 수정과 Git 변경이 겹치면 가져오지 않고 로그에 `CONFLICT`를 남긴다. 이때 수정본을 export해 Git에 반영한다. n8n 실행 기록은 성공·실패 모두 저장하며 자동 정리하지 않는다.
+
+bridge DB에 이슈 생성 이벤트가 없는 이슈의 후속 댓글은 `unmanaged`로 기록만 하고 처리하지 않는다. 배포 전 bridge 회귀 검증은 `python3 -B -m unittest apps/objects/issue-agent/test_bridge.py`로 실행한다.
+
+기록 조회·내보내기는 [`issue-agent-records`](apps/objects/issue-agent/operations/issue-agent-records), 온라인 SQLite 백업은 [`issue-agent-backup`](apps/objects/issue-agent/operations/issue-agent-backup)을 사용한다. 사용법·복원 전제조건은 [운영 절차](apps/objects/issue-agent/operations/README.md)에 있다. 네이티브 기록은 보관된 세션도 조회할 수 있다. 원본 DB 백업은 인증 자료가 포함될 수 있는 비공개 운영자 자료이며 외부 조회용 export와 구분한다.
+
+기존 Archon은 새 시스템 webhook 전환 검증 후 완전히 제거했다. 전용 코드·Kubernetes/ArgoCD 정의 19개, `archon` namespace와 두 PVC(20Gi+1Gi), rock5bp의 backing zvol, `archon.bhyoo.com`·`archon-webhook.bhyoo.com` DNS가 제거됐다. GitHub App과 SSM 개인키는 새 시스템에서 재사용하므로 유지한다. 인증 경로에 남은 `archon` 문자열은 기존 자격증명 경로이며 Archon 서비스가 남아 있다는 뜻이 아니다. GitHub의 기존 이슈·PR은 삭제하지 않았다.
+
 ## Ansible ownership boundary
 
 Legacy host-management playbook은 `[ansible_managed]`만 target으로 삼는다. Commit까지

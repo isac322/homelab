@@ -1,0 +1,99 @@
+# syntax=docker/dockerfile:1
+# HAPI runner + native Codex CLI + the common Issue Agent profile.
+# Build context: apps/objects/issue-agent (see .dockerignore). linux/arm64 only.
+# No repository checkout, credential, or provider config is baked in; the
+# bootstrap clones configured repositories at runtime into the home PVC.
+
+# node:24.21.0-trixie-slim (linux/arm64). Node runs Codex's npm launcher.
+FROM node:24.21.0-trixie-slim@sha256:7da5980a342ed134ad56bb16c918f94548cd15cf3b961aa231c286598accb536
+
+# HAPI v0.30.7 (tiann/hapi commit 0239edf38e2da653d662f31039e24ccea04c7837);
+# must match the hub image. Checksum = release checksums.txt = asset digest.
+ARG HAPI_VERSION=0.30.7
+ARG HAPI_SHA256=4c11ed308412e4510289ed5e5875a43f60f7ee5cee9cbfdc0e2d97f55851a193
+# @openai/codex 0.157.0 (HAPI shared sessions require >= 0.154.0).
+# SHA-256 of the npm tarballs whose sha512 matched the registry `integrity`.
+ARG CODEX_VERSION=0.157.0
+ARG CODEX_SHA256=f15a756cb568359327c47afcb5a6c5a5ce03215a96bbb284eef9e0ebd991f214
+ARG CODEX_LINUX_ARM64_SHA256=e94d36849541bb0e07aacbbf3edc99af7eba22ff813e6878eabd3e4c328309eb
+# GitHub CLI 2.101.0; checksum = release checksums.txt = asset digest.
+ARG GH_VERSION=2.101.0
+ARG GH_SHA256=b57e8063f18862647c9d22727c32e9da1b963f8bf9db648fe123a6975695640f
+# rustup 1.29.1 (versioned archive). Toolchains install lazily into the home PVC.
+ARG RUSTUP_VERSION=1.29.1
+ARG RUSTUP_SHA256=15f6e4ce9f583b929c996c91562bad6d4454f3281de858b02cdfdef615fac433
+
+SHELL ["/bin/bash", "-o", "pipefail", "-c"]
+
+RUN apt-get update \
+    && apt-get install -y --no-install-recommends \
+        build-essential ca-certificates curl git less openssh-client pkg-config procps python3 tini \
+    && rm -rf /var/lib/apt/lists/*
+
+RUN curl -fsSLo /tmp/hapi.tar.gz "https://github.com/tiann/hapi/releases/download/v${HAPI_VERSION}/hapi-linux-arm64.tar.gz" \
+    && echo "${HAPI_SHA256}  /tmp/hapi.tar.gz" | sha256sum -c - \
+    && tar -xzf /tmp/hapi.tar.gz -C /usr/local/bin hapi \
+    && chmod 0755 /usr/local/bin/hapi \
+    && rm /tmp/hapi.tar.gz
+
+# Same layout as `npm install -g`: bin/codex.js resolves the
+# @openai/codex-linux-arm64 package from the global node_modules.
+RUN curl -fsSLo /tmp/codex.tgz "https://registry.npmjs.org/@openai/codex/-/codex-${CODEX_VERSION}.tgz" \
+    && curl -fsSLo /tmp/codex-arm64.tgz "https://registry.npmjs.org/@openai/codex/-/codex-${CODEX_VERSION}-linux-arm64.tgz" \
+    && echo "${CODEX_SHA256}  /tmp/codex.tgz" | sha256sum -c - \
+    && echo "${CODEX_LINUX_ARM64_SHA256}  /tmp/codex-arm64.tgz" | sha256sum -c - \
+    && install -d /usr/local/lib/node_modules/@openai/codex /usr/local/lib/node_modules/@openai/codex-linux-arm64 \
+    && tar -xzf /tmp/codex.tgz --strip-components=1 --no-same-owner -C /usr/local/lib/node_modules/@openai/codex \
+    && tar -xzf /tmp/codex-arm64.tgz --strip-components=1 --no-same-owner -C /usr/local/lib/node_modules/@openai/codex-linux-arm64 \
+    && ln -s ../lib/node_modules/@openai/codex/bin/codex.js /usr/local/bin/codex \
+    && rm /tmp/codex.tgz /tmp/codex-arm64.tgz
+
+RUN curl -fsSLo /tmp/gh.tar.gz "https://github.com/cli/cli/releases/download/v${GH_VERSION}/gh_${GH_VERSION}_linux_arm64.tar.gz" \
+    && echo "${GH_SHA256}  /tmp/gh.tar.gz" | sha256sum -c - \
+    && tar -xzf /tmp/gh.tar.gz --strip-components=2 -C /usr/local/bin "gh_${GH_VERSION}_linux_arm64/bin/gh" \
+    && rm /tmp/gh.tar.gz
+
+# Only the rustup proxies live in the image; RUSTUP_HOME/CARGO_HOME are
+# redirected to the PVC at runtime so rust-toolchain.toml installs persist.
+RUN curl -fsSLo /tmp/rustup-init "https://static.rust-lang.org/rustup/archive/${RUSTUP_VERSION}/aarch64-unknown-linux-gnu/rustup-init" \
+    && echo "${RUSTUP_SHA256}  /tmp/rustup-init" | sha256sum -c - \
+    && chmod 0755 /tmp/rustup-init \
+    && RUSTUP_HOME=/tmp/rustup-build CARGO_HOME=/usr/local/cargo /tmp/rustup-init -y --no-modify-path --profile minimal --default-toolchain none \
+    && rm -rf /tmp/rustup-init /tmp/rustup-build
+
+# The base image's `node` account (uid/gid 1000) becomes `agent`.
+RUN usermod --login agent --home /home/agent node \
+    && groupmod --new-name agent node \
+    && install -d -o 1000 -g 1000 -m 0700 /home/agent
+
+# BuildKit's COPY --chmod also sets that mode on auto-created parent
+# directories; create them 0755 first so uid 1000 can traverse them.
+RUN install -d -m 0755 /etc/issue-agent /opt/issue-agent/bin /opt/issue-agent/profile /etc/codex/skills
+COPY --chmod=0644 runner/gitconfig /etc/issue-agent/gitconfig
+COPY --chmod=0755 runner/bootstrap.sh /opt/issue-agent/bin/runner-bootstrap
+COPY --chmod=0755 runner/healthcheck.sh /opt/issue-agent/bin/runner-healthcheck
+# Global instructions are copied into CODEX_HOME by the bootstrap. Skills use
+# Codex's ADMIN scope (/etc/codex/skills), so they never live on the PVC.
+COPY --chmod=0644 profile/AGENTS.md /opt/issue-agent/profile/AGENTS.md
+COPY profile/skills/ /etc/codex/skills/
+RUN find /etc/codex/skills -type d -exec chmod 0755 {} + && find /etc/codex/skills -type f -exec chmod 0644 {} +
+
+ENV HOME=/home/agent \
+    HAPI_HOME=/home/agent/.hapi \
+    CODEX_HOME=/home/agent/.codex \
+    ISSUE_AGENT_CHECKOUTS=/home/agent/checkouts \
+    ISSUE_AGENT_PROVIDER_DIR=/run/issue-agent/provider \
+    GH_CONFIG_DIR=/run/issue-agent/github \
+    GIT_CONFIG_SYSTEM=/etc/issue-agent/gitconfig \
+    GIT_TERMINAL_PROMPT=0 \
+    GH_PROMPT_DISABLED=1 \
+    GH_NO_UPDATE_NOTIFIER=1 \
+    RUSTUP_HOME=/home/agent/.rustup \
+    CARGO_HOME=/home/agent/.cargo \
+    PATH=/home/agent/.cargo/bin:/usr/local/cargo/bin:/usr/local/sbin:/usr/local/bin:/usr/sbin:/usr/bin:/sbin:/bin \
+    HAPI_RUNNER_SUPERVISED=1 \
+    HAPI_DISABLE_VERSION_HANDOFF=1
+
+USER 1000:1000
+WORKDIR /home/agent
+ENTRYPOINT ["/usr/bin/tini", "--", "/opt/issue-agent/bin/runner-bootstrap"]

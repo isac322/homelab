@@ -1,0 +1,26 @@
+apiVersion: kustomize.config.k8s.io/v1beta1
+kind: Kustomization
+namespace: issue-agent
+resources:
+  - namespace.yaml
+  - pvc.yaml
+  - external-secret-auth.yaml
+  - external-secret-provider.yaml
+  - external-secret-github.yaml
+  - deployment-hub.yaml
+  - deployment-n8n.yaml
+  - deployment-runner.yaml
+  - deployment-bridge.yaml
+  - service.yaml
+  - httproute-hub.yaml
+  - httproute-n8n.yaml
+  - httproute-webhook.yaml
+configMapGenerator:
+  - name: issue-agent-bridge-code
+    files:
+      - bridge.py
+      - repo-registry.json
+  - name: issue-agent-n8n-workflow
+    files:
+      - n8n-workflow.json
+      - n8n-bootstrap.sh

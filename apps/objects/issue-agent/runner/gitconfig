@@ -1,0 +1,5 @@
+[include]
+    path = /etc/gitconfig
+[credential "https://github.com"]
+    helper =
+    helper = !gh auth git-credential

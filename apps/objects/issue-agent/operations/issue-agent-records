@@ -1,0 +1,600 @@
+#!/usr/bin/env bash
+# issue-agent-records: read-only query/export of Issue Agent records.
+#
+# Returns records only -- never authentication material:
+#   hub      HAPI sessions/messages via the Hub REST API. The request runs inside the
+#            bridge pod, which already mounts the HAPI access token; the token and the
+#            short-lived JWT stay in that process and are never written or printed.
+#            Only GET requests are issued after the token exchange.
+#   codex    Native Codex rollout transcripts (CODEX_HOME/sessions, archived_sessions).
+#            Only files named rollout-*-<uuid>.jsonl under those two roots are readable;
+#            config.toml, auth.json, history, sqlite state, and worktrees are refused.
+#   bridge   Bridge event/issue/turn rows (SQLite, opened read-only).
+#   n8n      Workflow definitions and execution records (SQLite, opened read-only);
+#            credentials, users, settings, and API keys tables are never queried.
+#
+# Exports contain issue text, agent transcripts, and tool output. They carry no
+# auth secrets, but may contain anything an agent read or printed; handle them as
+# private data. Output files are created 0600 (directories 0700) and never overwritten.
+set -euo pipefail
+umask 077
+
+CONTEXT=homelab-backbone
+NAMESPACE=issue-agent
+OUT=""
+N8N_LIMIT=100
+N8N_WORKFLOW=""
+
+UUID_RE='^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$'
+HUB_ID_RE='^[A-Za-z0-9_-]{1,128}$'
+REPO_RE='^[A-Za-z0-9_.-]+/[A-Za-z0-9_.-]+$'
+DELIVERY_RE='^[A-Za-z0-9-]{1,64}$'
+N8N_WF_RE='^[A-Za-z0-9]{1,64}$'
+
+usage() {
+  cat <<'EOF'
+Usage: issue-agent-records [options] <command> [args]
+
+Read-only export of Issue Agent records. No authentication material is returned.
+
+Options:
+  --context NAME     kubectl context (default: homelab-backbone; the current context is never used)
+  --namespace NAME   namespace (default: issue-agent)
+  --out PATH         write to PATH (0600 file; 0700 directory for `issue`) instead of stdout;
+                     PATH must not exist
+
+Commands:
+  hub-sessions                    HAPI session summaries (JSON)
+  hub-session <session-id>        HAPI session export: session, messages, scratchlist (JSON)
+  codex-sessions                  native Codex rollout index (JSON)
+  codex-session <uuid>            native Codex rollout transcript (JSONL)
+  bridge [events|issues|turns]    bridge state rows (JSON); default: all tables
+  n8n-workflows                   n8n workflow definitions (JSON; no credentials)
+  n8n-executions [--workflow ID] [--limit N]
+                                  n8n execution metadata, newest first (JSON; default limit 100)
+  n8n-execution <id>              n8n execution metadata + run data (JSON; run data is n8n "flatted")
+  issue <owner/repo> <number>     complete record bundle for one issue (requires --out DIR):
+                                  bridge rows, every related HAPI session export, the native
+                                  Codex transcripts those sessions map to, n8n executions whose
+                                  run data references the issue's deliveries, and mapping.json
+EOF
+}
+
+die() {
+  printf 'issue-agent-records: %s\n' "$*" >&2
+  exit 1
+}
+warn() { printf 'issue-agent-records: warning: %s\n' "$*" >&2; }
+
+k() { kubectl --context "$CONTEXT" --namespace "$NAMESPACE" "$@"; }
+
+pod_for() {
+  local pods count
+  pods="$(k get pods -l "app=$1" --field-selector=status.phase=Running \
+    -o jsonpath='{range .items[*]}{.metadata.name}{"\n"}{end}')" || die "cannot list pods for app=$1"
+  count="$(grep -c . <<<"$pods" || true)"
+  [[ "$count" -eq 1 ]] || die "expected exactly one Running pod for app=$1, found ${count}"
+  printf '%s' "$pods"
+}
+
+# ---------------------------------------------------------------------------
+# In-pod programs. Each receives one JSON request argument and writes records
+# to stdout, diagnostics to stderr.
+# ---------------------------------------------------------------------------
+
+# Bridge pod (python image): HAPI REST client. GET-only after the token exchange.
+read -r -d '' HUB_PY <<'PY' || true
+import json, os, re, sys, time, urllib.error, urllib.parse, urllib.request
+
+UUID = re.compile(r"^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$")
+HUB_ID = re.compile(r"^[A-Za-z0-9_-]{1,128}$")
+base = os.environ["HAPI_BASE_URL"].rstrip("/")
+req = json.loads(sys.argv[1])
+
+
+def fail(msg, code=1):
+    sys.stderr.write("hub: %s\n" % msg)
+    sys.exit(code)
+
+
+def http(method, path, body=None, token=None):
+    data = None if body is None else json.dumps(body).encode()
+    headers = {"Accept": "application/json"}
+    if data is not None:
+        headers["Content-Type"] = "application/json"
+    if token:
+        headers["Authorization"] = "Bearer " + token
+    request = urllib.request.Request(base + path, data=data, method=method, headers=headers)
+    try:
+        with urllib.request.urlopen(request, timeout=300) as resp:
+            raw = resp.read()
+            return resp.status, json.loads(raw) if raw else None
+    except urllib.error.HTTPError as exc:
+        raw = exc.read()
+        try:
+            return exc.code, json.loads(raw) if raw else None
+        except ValueError:
+            return exc.code, None
+
+
+with open(os.environ["HAPI_ACCESS_TOKEN_FILE"], encoding="utf-8") as fh:
+    access = fh.read().strip()
+status, data = http("POST", "/api/auth", {"accessToken": access})
+del access
+jwt = data.get("token") if isinstance(data, dict) else None
+if status != 200 or not isinstance(jwt, str) or not jwt:
+    fail("token exchange failed: HTTP %s" % status)
+del data
+
+
+def get(path, query=None):
+    if query:
+        path += "?" + urllib.parse.urlencode(query)
+    return http("GET", path, token=jwt)
+
+
+def sid_path(sid):
+    if not HUB_ID.match(sid):
+        fail("invalid session id", 2)
+    return "/api/sessions/" + urllib.parse.quote(sid, safe="")
+
+
+def session(sid):
+    status, data = get(sid_path(sid))
+    if status == 404:
+        return None
+    if status != 200 or not isinstance(data, dict) or not isinstance(data.get("session"), dict):
+        fail("session %s: HTTP %s" % (sid, status))
+    return data["session"]
+
+
+def position(m):
+    at = m.get("invokedAt")
+    if at is None:
+        at = m.get("createdAt")
+    seq = m.get("seq")
+    return (at if isinstance(at, (int, float)) else 0, seq if isinstance(seq, (int, float)) else 0)
+
+
+def paginated_export(sid):
+    s = session(sid)
+    if s is None:
+        fail("session %s not found" % sid, 3)
+    by_id, query = {}, {"limit": 200}
+    for _ in range(100000):
+        status, data = get(sid_path(sid) + "/messages", query)
+        messages = data.get("messages") if isinstance(data, dict) else None
+        page = data.get("page") if isinstance(data, dict) else None
+        if status != 200 or not isinstance(messages, list) or not isinstance(page, dict):
+            fail("messages %s: HTTP %s" % (sid, status))
+        for m in messages:
+            if isinstance(m, dict) and isinstance(m.get("id"), str):
+                by_id[m["id"]] = m
+        if not page.get("hasMore") or page.get("nextBeforeSeq") is None:
+            break
+        query = {"limit": 200, "beforeSeq": page["nextBeforeSeq"], "beforeAt": page["nextBeforeAt"]}
+    else:
+        fail("messages %s: pagination did not terminate" % sid)
+    status, data = get(sid_path(sid) + "/scratchlist")
+    scratch = data.get("entries") if status == 200 and isinstance(data, dict) else None
+    return {"schemaVersion": "issue-agent-paginated-1", "exportedAt": int(time.time() * 1000),
+            "session": s, "messages": sorted(by_id.values(), key=position), "scratchlist": scratch}
+
+
+def emit(obj):
+    json.dump(obj, sys.stdout, ensure_ascii=False)
+    sys.stdout.write("\n")
+
+
+action = req["action"]
+if action == "list":
+    status, data = get("/api/sessions", {"limit": 500, "order": "updatedAt"})
+    sessions = data.get("sessions") if isinstance(data, dict) else None
+    if status != 200 or not isinstance(sessions, list):
+        fail("session list: HTTP %s" % status)
+    if len(sessions) >= 500:
+        sys.stderr.write("hub: warning: list capped at the API maximum of 500 most recent sessions\n")
+    emit({"sessions": sessions, "truncated": len(sessions) >= 500})
+elif action == "export":
+    sid = req["id"]
+    status, data = get(sid_path(sid) + "/export", {"force": "true"})
+    if status == 200 and isinstance(data, dict) and isinstance(data.get("session"), dict):
+        emit(data)
+    elif status == 404:
+        fail("session %s not found" % sid, 3)
+    elif status == 413:
+        sys.stderr.write("hub: %s exceeds the export size limit; paginating messages\n" % sid)
+        emit(paginated_export(sid))
+    else:
+        fail("export %s: HTTP %s" % (sid, status))
+elif action == "related":
+    # Follows supersededBySessionId links; prints "session <id>" / "codex <uuid>" lines.
+    seen, queue = set(), [s for s in req["ids"] if HUB_ID.match(s)]
+    codex = set()
+    while queue and len(seen) < 256:
+        sid = queue.pop(0)
+        if sid in seen:
+            continue
+        seen.add(sid)
+        s = session(sid)
+        if s is None:
+            sys.stderr.write("hub: warning: session %s not found\n" % sid)
+            continue
+        print("session " + sid)
+        meta = s.get("metadata") if isinstance(s.get("metadata"), dict) else {}
+        for key in ("codexSessionId", "codexSourceSessionId"):
+            value = meta.get(key)
+            if isinstance(value, str) and UUID.match(value):
+                codex.add(value)
+        nxt = meta.get("supersededBySessionId")
+        if isinstance(nxt, str) and HUB_ID.match(nxt) and nxt not in seen:
+            queue.append(nxt)
+    for value in sorted(codex):
+        print("codex " + value)
+else:
+    fail("unknown action", 2)
+PY
+
+# Runner pod (python3): bounded reader for native Codex rollouts only.
+read -r -d '' CODEX_PY <<'PY' || true
+import json, os, re, stat, sys
+
+req = json.loads(sys.argv[1])
+home = os.path.realpath(os.environ.get("CODEX_HOME") or "/home/agent/.codex")
+ROOTS = ("sessions", "archived_sessions")
+NAME = re.compile(r"^rollout-[0-9T:.-]+-([0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12})\.jsonl$")
+
+
+def fail(msg, code=1):
+    sys.stderr.write("codex: %s\n" % msg)
+    sys.exit(code)
+
+
+def rollouts():
+    for root in ROOTS:
+        top = os.path.join(home, root)
+        try:
+            if not stat.S_ISDIR(os.lstat(top).st_mode):
+                continue
+        except FileNotFoundError:
+            continue
+        real_top = os.path.realpath(top) + os.sep
+        for dirpath, dirnames, filenames in os.walk(top, followlinks=False):
+            for name in filenames:
+                match = NAME.match(name)
+                if not match:
+                    continue
+                path = os.path.join(dirpath, name)
+                try:
+                    st = os.lstat(path)
+                except FileNotFoundError:
+                    continue
+                if not stat.S_ISREG(st.st_mode) or not os.path.realpath(path).startswith(real_top):
+                    continue
+                yield {"uuid": match.group(1), "path": os.path.relpath(path, home),
+                       "archived": root == "archived_sessions", "bytes": st.st_size,
+                       "mtime": int(st.st_mtime)}
+
+
+action = req["action"]
+if action == "list":
+    rows = sorted(rollouts(), key=lambda r: r["mtime"])
+    json.dump({"codexHome": home, "rollouts": rows}, sys.stdout)
+    sys.stdout.write("\n")
+elif action == "get":
+    uuid = req["uuid"]
+    matches = [r for r in rollouts() if r["uuid"] == uuid]
+    if not matches:
+        fail("no rollout for %s" % uuid, 3)
+    if len(matches) > 1:
+        fail("multiple rollouts for %s: %s" % (uuid, ", ".join(r["path"] for r in matches)), 4)
+    fd = os.open(os.path.join(home, matches[0]["path"]), os.O_RDONLY | os.O_NOFOLLOW)
+    with os.fdopen(fd, "rb") as fh:
+        if not stat.S_ISREG(os.fstat(fh.fileno()).st_mode):
+            fail("not a regular file")
+        out = sys.stdout.buffer
+        while True:
+            chunk = fh.read(1 << 20)
+            if not chunk:
+                break
+            out.write(chunk)
+        out.flush()
+else:
+    fail("unknown action", 2)
+PY
+
+# Bridge pod (python image): state.sqlite3 opened read-only.
+read -r -d '' BRIDGE_PY <<'PY' || true
+import json, os, sqlite3, sys, urllib.parse
+
+req = json.loads(sys.argv[1])
+TABLES = ("events", "issues", "turns")
+path = os.environ["BRIDGE_STATE_PATH"]
+conn = sqlite3.connect("file:%s?mode=ro" % urllib.parse.quote(path), uri=True, timeout=30)
+conn.row_factory = sqlite3.Row
+conn.execute("PRAGMA busy_timeout=30000")
+
+
+def rows(sql, params=()):
+    return [dict(r) for r in conn.execute(sql, params)]
+
+
+repo, number = req.get("repo"), req.get("issue")
+out = {}
+conn.execute("BEGIN")  # one read snapshot for every table
+if repo is None:
+    for table in req["tables"]:
+        if table not in TABLES:
+            sys.exit("bridge: unknown table")
+        out[table] = rows("SELECT * FROM %s" % table)
+else:
+    out["issues"] = rows("SELECT * FROM issues WHERE repo = ? AND issue_number = ?", (repo, number))
+    out["events"] = rows("SELECT * FROM events WHERE repo = ? AND issue_number = ? ORDER BY seq", (repo, number))
+    sessions = set()
+    for issue in out["issues"]:
+        if issue.get("session_id"):
+            sessions.add(issue["session_id"])
+        try:
+            sessions.update(s for s in json.loads(issue.get("superseded") or "[]") if isinstance(s, str))
+        except ValueError:
+            pass
+    deliveries = [e["delivery_id"] for e in out["events"]]
+    turns = rows("SELECT * FROM turns") if (sessions or deliveries) else []
+    out["turns"] = [t for t in turns if t["session_id"] in sessions or t["delivery_id"] in deliveries]
+    sessions.update(t["session_id"] for t in out["turns"])
+    if req["action"] == "ids":
+        for s in sorted(sessions):
+            print("session " + s)
+        for d in deliveries:
+            print("delivery " + d)
+        sys.exit(0)
+conn.execute("COMMIT")
+json.dump(out, sys.stdout, ensure_ascii=False)
+sys.stdout.write("\n")
+PY
+
+# n8n pod (node): database.sqlite opened read-only through n8n's bundled sqlite3.
+read -r -d '' N8N_JS <<'JS' || true
+const { createRequire } = require("module");
+const sqlite3 = createRequire("/usr/local/lib/node_modules/n8n/package.json")("sqlite3");
+const req = JSON.parse(process.argv[1]);
+const DB = (process.env.DB_SQLITE_DATABASE || "/home/node/.n8n/database.sqlite");
+const WORKFLOW_COLS = ["id", "name", "active", "nodes", "connections", "settings", "staticData", "pinData",
+  "meta", "versionId", "activeVersionId", "triggerCount", "isArchived", "parentFolderId", "createdAt", "updatedAt"];
+const EXEC_COLS = ["id", "workflowId", "finished", "mode", "status", "retryOf", "retrySuccessId", "startedAt",
+  "stoppedAt", "createdAt", "waitTill", "deletedAt", "storedAt"];
+const DATA_COLS = ["executionId", "workflowData", "data", "workflowVersionId"];
+const JSON_COLS = new Set(["nodes", "connections", "settings", "staticData", "pinData", "meta"]);
+
+const fail = (msg, code = 1) => { process.stderr.write(`n8n: ${msg}\n`); process.exit(code); };
+const all = (db, sql, params = []) => new Promise((resolve, reject) =>
+  db.all(sql, params, (err, rows) => (err ? reject(err) : resolve(rows))));
+
+async function columns(db, table, allow) {
+  const present = new Set((await all(db, `PRAGMA table_info("${table}")`)).map((r) => r.name));
+  if (!present.size) fail(`table ${table} not found`);
+  return allow.filter((c) => present.has(c)).map((c) => `"${c}"`).join(", ");
+}
+
+function decode(row) {
+  for (const key of Object.keys(row)) {
+    if (JSON_COLS.has(key) && typeof row[key] === "string") {
+      try { row[key] = JSON.parse(row[key]); } catch { /* keep raw */ }
+    }
+  }
+  return row;
+}
+
+async function main() {
+  const db = await new Promise((resolve, reject) => {
+    const d = new sqlite3.Database(DB, sqlite3.OPEN_READONLY, (err) => (err ? reject(err) : resolve(d)));
+  });
+  db.configure("busyTimeout", 30000);
+  let out;
+  if (req.action === "workflows") {
+    const cols = await columns(db, "workflow_entity", WORKFLOW_COLS);
+    out = { workflows: (await all(db, `SELECT ${cols} FROM workflow_entity ORDER BY "createdAt"`)).map(decode) };
+  } else if (req.action === "executions") {
+    const cols = await columns(db, "execution_entity", EXEC_COLS);
+    const where = req.workflow ? `WHERE "workflowId" = ?` : "";
+    const params = req.workflow ? [req.workflow, req.limit] : [req.limit];
+    out = { executions: await all(db, `SELECT ${cols} FROM execution_entity ${where} ORDER BY "id" DESC LIMIT ?`, params) };
+  } else if (req.action === "execution") {
+    const cols = await columns(db, "execution_entity", EXEC_COLS);
+    const dcols = await columns(db, "execution_data", DATA_COLS);
+    const [execution] = await all(db, `SELECT ${cols} FROM execution_entity WHERE "id" = ?`, [req.id]);
+    if (!execution) fail(`execution ${req.id} not found`, 3);
+    const [data] = await all(db, `SELECT ${dcols} FROM execution_data WHERE "executionId" = ?`, [req.id]);
+    out = { execution, executionData: data || null, dataFormat: "flatted" };
+  } else if (req.action === "find") {
+    const ids = new Set();
+    for (const needle of req.needles) {
+      const rows = await all(db,
+        `SELECT "executionId" AS id FROM execution_data WHERE instr("data", ?) > 0 ORDER BY "executionId" LIMIT 200`, [needle]);
+      rows.forEach((r) => ids.add(String(r.id)));
+    }
+    process.stdout.write([...ids].sort((a, b) => a - b).map((id) => `execution ${id}\n`).join(""));
+    db.close();
+    return;
+  } else {
+    fail("unknown action", 2);
+  }
+  db.close();
+  // n8n's Webhook node stores incoming request headers in run data, including the
+  // bridge's `Authorization: Bearer <n8n-webhook-token>`; redact credential values.
+  const text = JSON.stringify(out).replace(/\b(Bearer|Basic)\s+[A-Za-z0-9._~+\/=-]{8,}/gi, "$1 [REDACTED]");
+  process.stdout.write(text + "\n");
+}
+main().catch((err) => fail(err && err.message ? err.message : String(err)));
+JS
+
+run_hub() {
+  local pod
+  pod="$(pod_for issue-agent-bridge)" || return 1
+  k exec "$pod" -c bridge -- python -B -c "$HUB_PY" "$1"
+}
+run_codex() {
+  local pod
+  pod="$(pod_for issue-agent-runner)" || return 1
+  k exec "$pod" -c runner -- python3 -B -c "$CODEX_PY" "$1"
+}
+run_bridge() {
+  local pod
+  pod="$(pod_for issue-agent-bridge)" || return 1
+  k exec "$pod" -c bridge -- python -B -c "$BRIDGE_PY" "$1"
+}
+run_n8n() {
+  local pod
+  pod="$(pod_for issue-agent-n8n)" || return 1
+  k exec "$pod" -c n8n -- node -e "$N8N_JS" "$1"
+}
+
+# Writes stdin of a producer to --out (new 0600 file) or stdout.
+emit_to() {
+  local target="$1"
+  shift
+  if [[ -z "$target" ]]; then
+    "$@"
+    return
+  fi
+  [[ ! -e "$target" && ! -L "$target" ]] || die "$target already exists"
+  local tmp="$target.partial.$$"
+  if ! "$@" >"$tmp"; then
+    rm -f "$tmp"
+    return 1
+  fi
+  chmod 600 "$tmp"
+  mv "$tmp" "$target"
+}
+
+cmd_issue() {
+  local repo="$1" number="$2" dir="$OUT"
+  [[ -n "$dir" ]] || die "issue requires --out DIR"
+  [[ ! -e "$dir" && ! -L "$dir" ]] || die "$dir already exists"
+  mkdir -p "$dir"
+  chmod 700 "$dir"
+  mkdir "$dir/hub" "$dir/codex" "$dir/n8n"
+
+  local req ids line
+  req="$(printf '{"action":"dump","repo":"%s","issue":%d}' "$repo" "$number")"
+  emit_to "$dir/bridge.json" run_bridge "$req"
+  req="$(printf '{"action":"ids","repo":"%s","issue":%d}' "$repo" "$number")"
+  ids="$(run_bridge "$req")"
+
+  local -a hub_seed=() deliveries=() hub_sessions=() codex_ids=() executions=()
+  while read -r kind value; do
+    case "$kind" in
+      session) [[ "$value" =~ $HUB_ID_RE ]] && hub_seed+=("$value") ;;
+      delivery) [[ "$value" =~ $DELIVERY_RE ]] && deliveries+=("$value") ;;
+    esac
+  done <<<"$ids"
+  [[ ${#hub_seed[@]} -gt 0 || ${#deliveries[@]} -gt 0 ]] || warn "bridge has no records for $repo#$number"
+
+  if [[ ${#hub_seed[@]} -gt 0 ]]; then
+    req="$(printf '"%s",' "${hub_seed[@]}")"
+    req="{\"action\":\"related\",\"ids\":[${req%,}]}"
+    ids="$(run_hub "$req")" || die "HAPI session lookup failed"
+    while read -r kind value; do
+      case "$kind" in
+        session) [[ "$value" =~ $HUB_ID_RE ]] && hub_sessions+=("$value") ;;
+        codex) [[ "$value" =~ $UUID_RE ]] && codex_ids+=("$value") ;;
+      esac
+    done <<<"$ids"
+  fi
+  for line in "${hub_sessions[@]}"; do
+    emit_to "$dir/hub/$line.json" run_hub "{\"action\":\"export\",\"id\":\"$line\"}" ||
+      warn "hub session $line export failed"
+  done
+  for line in "${codex_ids[@]}"; do
+    emit_to "$dir/codex/$line.jsonl" run_codex "{\"action\":\"get\",\"uuid\":\"$line\"}" ||
+      warn "codex rollout $line unavailable"
+  done
+  if [[ ${#deliveries[@]} -gt 0 ]]; then
+    req="$(printf '"%s",' "${deliveries[@]}")"
+    req="{\"action\":\"find\",\"needles\":[${req%,}]}"
+    ids="$(run_n8n "$req")" || die "n8n execution lookup failed"
+    while read -r kind value; do
+      [[ "$kind" == execution && "$value" =~ ^[0-9]+$ ]] && executions+=("$value")
+    done <<<"$ids"
+  fi
+  for line in "${executions[@]}"; do
+    emit_to "$dir/n8n/execution-$line.json" run_n8n "{\"action\":\"execution\",\"id\":\"$line\"}" ||
+      warn "n8n execution $line export failed"
+  done
+
+  json_list() { local out="" v; for v in "$@"; do out+="\"$v\","; done; printf '[%s]' "${out%,}"; }
+  printf '{"repo":"%s","issue":%d,"exportedAt":"%s","context":"%s","deliveries":%s,"hubSessions":%s,"codexSessions":%s,"n8nExecutions":%s}\n' \
+    "$repo" "$number" "$(date -u +%Y-%m-%dT%H:%M:%SZ)" "$CONTEXT" \
+    "$(json_list "${deliveries[@]}")" "$(json_list "${hub_sessions[@]}")" \
+    "$(json_list "${codex_ids[@]}")" "$(json_list "${executions[@]}")" >"$dir/mapping.json"
+  chmod 600 "$dir/mapping.json"
+  printf 'issue-agent-records: wrote %s (%d hub sessions, %d codex transcripts, %d n8n executions)\n' \
+    "$dir" "${#hub_sessions[@]}" "${#codex_ids[@]}" "${#executions[@]}" >&2
+}
+
+# Empty "${array[@]}" under `set -u` needs bash >= 4.4 (macOS /bin/bash is 3.2).
+((BASH_VERSINFO[0] > 4 || (BASH_VERSINFO[0] == 4 && BASH_VERSINFO[1] >= 4))) || die "bash >= 4.4 required"
+
+main() {
+  local -a args=()
+  while [[ $# -gt 0 ]]; do
+    case "$1" in
+      --context) CONTEXT="${2:?--context requires a value}"; shift 2 ;;
+      --context=*) CONTEXT="${1#*=}"; shift ;;
+      --namespace) NAMESPACE="${2:?--namespace requires a value}"; shift 2 ;;
+      --namespace=*) NAMESPACE="${1#*=}"; shift ;;
+      --out) OUT="${2:?--out requires a value}"; shift 2 ;;
+      --out=*) OUT="${1#*=}"; shift ;;
+      --workflow) N8N_WORKFLOW="${2:?--workflow requires a value}"; shift 2 ;;
+      --limit) N8N_LIMIT="${2:?--limit requires a value}"; shift 2 ;;
+      -h | --help) usage; exit 0 ;;
+      --) shift; args+=("$@"); break ;;
+      -*) die "unknown option $1" ;;
+      *) args+=("$1"); shift ;;
+    esac
+  done
+  [[ ${#args[@]} -gt 0 ]] || { usage >&2; exit 2; }
+  [[ -n "$CONTEXT" && -n "$NAMESPACE" ]] || die "context and namespace must be non-empty"
+  command -v kubectl >/dev/null || die "kubectl not found"
+
+  local cmd="${args[0]}"
+  case "$cmd" in
+    hub-sessions)
+      emit_to "$OUT" run_hub '{"action":"list"}' ;;
+    hub-session)
+      [[ "${args[1]:-}" =~ $HUB_ID_RE ]] || die "hub-session requires a valid session id"
+      emit_to "$OUT" run_hub "{\"action\":\"export\",\"id\":\"${args[1]}\"}" ;;
+    codex-sessions)
+      emit_to "$OUT" run_codex '{"action":"list"}' ;;
+    codex-session)
+      [[ "${args[1]:-}" =~ $UUID_RE ]] || die "codex-session requires a lowercase session UUID"
+      emit_to "$OUT" run_codex "{\"action\":\"get\",\"uuid\":\"${args[1]}\"}" ;;
+    bridge)
+      local tables='"events","issues","turns"'
+      if [[ -n "${args[1]:-}" ]]; then
+        [[ "${args[1]}" =~ ^(events|issues|turns)$ ]] || die "bridge table must be events, issues, or turns"
+        tables="\"${args[1]}\""
+      fi
+      emit_to "$OUT" run_bridge "{\"action\":\"dump\",\"tables\":[$tables]}" ;;
+    n8n-workflows)
+      emit_to "$OUT" run_n8n '{"action":"workflows"}' ;;
+    n8n-executions)
+      [[ "$N8N_LIMIT" =~ ^[0-9]{1,5}$ && "$N8N_LIMIT" -ge 1 ]] || die "--limit must be 1-99999"
+      local wf=null
+      if [[ -n "$N8N_WORKFLOW" ]]; then
+        [[ "$N8N_WORKFLOW" =~ $N8N_WF_RE ]] || die "invalid --workflow id"
+        wf="\"$N8N_WORKFLOW\""
+      fi
+      emit_to "$OUT" run_n8n "{\"action\":\"executions\",\"workflow\":$wf,\"limit\":$N8N_LIMIT}" ;;
+    n8n-execution)
+      [[ "${args[1]:-}" =~ ^[0-9]{1,18}$ ]] || die "n8n-execution requires a numeric execution id"
+      emit_to "$OUT" run_n8n "{\"action\":\"execution\",\"id\":\"${args[1]}\"}" ;;
+    issue)
+      [[ "${args[1]:-}" =~ $REPO_RE ]] || die "issue requires <owner/repo>"
+      [[ "${args[2]:-}" =~ ^[1-9][0-9]{0,9}$ ]] || die "issue requires a positive issue number"
+      cmd_issue "${args[1]}" "${args[2]}" ;;
+    *) die "unknown command $cmd (see --help)" ;;
+  esac
+}
+
+main "$@"

@@ -1,0 +1,166 @@
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: issue-agent-n8n
+spec:
+  replicas: 1
+  strategy:
+    type: Recreate
+  selector:
+    matchLabels:
+      app: issue-agent-n8n
+  template:
+    metadata:
+      labels:
+        app: issue-agent-n8n
+    spec:
+      automountServiceAccountToken: false
+      enableServiceLinks: false
+      securityContext:
+        runAsNonRoot: true
+        runAsUser: 1000
+        runAsGroup: 1000
+        fsGroup: 1000
+        fsGroupChangePolicy: OnRootMismatch
+        seccompProfile:
+          type: RuntimeDefault
+      containers:
+        - name: n8n
+          image: docker.io/n8nio/n8n:2.40.7@sha256:ffeb52485f78b1b06c9a832205853cf75da72a07a514c9a27724df85979d6c34
+          command:
+            - /bin/sh
+            - /etc/issue-agent-n8n/n8n-bootstrap.sh
+          env:
+            - name: N8N_PORT
+              value: "5678"
+            - name: N8N_HOST
+              value: n8n.bhyoo.com
+            - name: N8N_PROTOCOL
+              value: https
+            - name: N8N_EDITOR_BASE_URL
+              value: https://n8n.bhyoo.com/
+            - name: WEBHOOK_URL
+              value: https://n8n.bhyoo.com/
+            - name: N8N_PROXY_HOPS
+              value: "1"
+            - name: DB_TYPE
+              value: sqlite
+            - name: DB_SQLITE_POOL_SIZE
+              value: "2"
+            - name: N8N_DIAGNOSTICS_ENABLED
+              value: "false"
+            - name: N8N_VERSION_NOTIFICATIONS_ENABLED
+              value: "false"
+            - name: N8N_PERSONALIZATION_ENABLED
+              value: "false"
+            - name: ISSUE_AGENT_BRIDGE_URL
+              value: http://issue-agent-webhook.issue-agent.svc.cluster.local:8080
+            - name: N8N_BLOCK_ENV_ACCESS_IN_NODE
+              value: "false"
+            - name: ISSUE_AGENT_MODEL_NAME
+              value: gpt-6-sol
+            - name: EXECUTIONS_DATA_SAVE_ON_SUCCESS
+              value: all
+            - name: EXECUTIONS_DATA_SAVE_ON_ERROR
+              value: all
+            - name: EXECUTIONS_DATA_SAVE_MANUAL_EXECUTIONS
+              value: "true"
+            - name: EXECUTIONS_DATA_PRUNE
+              value: "false"
+            - name: ISSUE_AGENT_WORKFLOW_ID
+              value: IssueAgentMain01
+            - name: N8N_ENFORCE_SETTINGS_FILE_PERMISSIONS
+              value: "true"
+            - name: N8N_ENCRYPTION_KEY_FILE
+              value: /run/issue-agent-n8n/encryption/N8N_ENCRYPTION_KEY
+            - name: N8N_INSTANCE_OWNER_MANAGED_BY_ENV
+              value: "true"
+            - name: N8N_INSTANCE_OWNER_EMAIL
+              value: bhyoo@bhyoo.com
+            - name: N8N_INSTANCE_OWNER_PASSWORD_HASH_FILE
+              value: /run/issue-agent-n8n/owner/N8N_INSTANCE_OWNER_PASSWORD_HASH
+            - name: N8N_INSTANCE_OWNER_FIRST_NAME
+              value: bhyoo
+            - name: N8N_INSTANCE_OWNER_LAST_NAME
+              value: admin
+          ports:
+            - name: http
+              containerPort: 5678
+          startupProbe:
+            httpGet:
+              path: /healthz
+              port: http
+            periodSeconds: 5
+            failureThreshold: 120
+          readinessProbe:
+            httpGet:
+              path: /healthz/readiness
+              port: http
+            periodSeconds: 10
+          livenessProbe:
+            httpGet:
+              path: /healthz
+              port: http
+            periodSeconds: 30
+            failureThreshold: 5
+          resources:
+            requests:
+              cpu: 100m
+              memory: 512Mi
+            limits:
+              memory: 2Gi
+          securityContext:
+            allowPrivilegeEscalation: false
+            capabilities:
+              drop:
+                - ALL
+          volumeMounts:
+            - name: data
+              mountPath: /home/node/.n8n
+            - name: tmp
+              mountPath: /tmp
+            - name: workflow
+              mountPath: /etc/issue-agent-n8n
+              readOnly: true
+            - name: encryption
+              mountPath: /run/issue-agent-n8n/encryption
+              readOnly: true
+            - name: owner
+              mountPath: /run/issue-agent-n8n/owner
+              readOnly: true
+            - name: ops
+              mountPath: /run/issue-agent-n8n/ops
+              readOnly: true
+            - name: model
+              mountPath: /run/issue-agent-n8n/model
+              readOnly: true
+      volumes:
+        - name: data
+          persistentVolumeClaim:
+            claimName: issue-agent-n8n-data
+        - name: tmp
+          emptyDir:
+            medium: Memory
+            sizeLimit: 64Mi
+        - name: workflow
+          configMap:
+            name: issue-agent-n8n-workflow
+        - name: encryption
+          secret:
+            secretName: issue-agent-n8n-encryption
+            defaultMode: 0440
+        - name: owner
+          secret:
+            secretName: issue-agent-n8n-owner
+            defaultMode: 0440
+            items:
+              - key: N8N_INSTANCE_OWNER_PASSWORD_HASH
+                path: N8N_INSTANCE_OWNER_PASSWORD_HASH
+        - name: ops
+          secret:
+            secretName: issue-agent-bridge-ops
+            defaultMode: 0440
+        - name: model
+          secret:
+            secretName: issue-agent-n8n-model
+            defaultMode: 0440

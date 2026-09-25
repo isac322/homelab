@@ -1,0 +1,14 @@
+apiVersion: argoproj.io/v1alpha1
+kind: AppProject
+metadata:
+  name: issue-agent
+spec:
+  description: GitHub issue automation with n8n, HAPI and Codex
+  sourceRepos:
+    - https://github.com/isac322/homelab.git
+  destinations:
+    - namespace: issue-agent
+      name: backbone
+  clusterResourceWhitelist:
+    - group: ''
+      kind: Namespace

@@ -1,0 +1,20 @@
+{
+  "repositories": {
+    "isac322/cc-lb": {
+      "runner_path": "/home/agent/checkouts/isac322/cc-lb",
+      "default_branch": "master",
+      "allowed_users": ["isac322"],
+      "agent": "codex",
+      "model": null,
+      "permission_mode": "yolo",
+      "machine_id": null,
+      "labels": {
+        "bug": "bug",
+        "enhancement": "enhancement",
+        "question": "question",
+        "documentation": "documentation",
+        "duplicate": "duplicate"
+      }
+    }
+  }
+}

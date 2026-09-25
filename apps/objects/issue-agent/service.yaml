@@ -1,0 +1,35 @@
+apiVersion: v1
+kind: Service
+metadata:
+  name: issue-agent-hub
+spec:
+  selector:
+    app: issue-agent-hub
+  ports:
+    - name: http
+      port: 3006
+      targetPort: http
+---
+apiVersion: v1
+kind: Service
+metadata:
+  name: issue-agent-n8n
+spec:
+  selector:
+    app: issue-agent-n8n
+  ports:
+    - name: http
+      port: 5678
+      targetPort: http
+---
+apiVersion: v1
+kind: Service
+metadata:
+  name: issue-agent-webhook
+spec:
+  selector:
+    app: issue-agent-bridge
+  ports:
+    - name: webhook
+      port: 8080
+      targetPort: webhook

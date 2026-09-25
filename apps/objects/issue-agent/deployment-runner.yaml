@@ -1,0 +1,133 @@
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: issue-agent-runner
+spec:
+  replicas: 1
+  strategy:
+    type: Recreate
+  selector:
+    matchLabels:
+      app: issue-agent-runner
+  template:
+    metadata:
+      labels:
+        app: issue-agent-runner
+    spec:
+      automountServiceAccountToken: false
+      enableServiceLinks: false
+      securityContext:
+        runAsNonRoot: true
+        runAsUser: 1000
+        runAsGroup: 1000
+        fsGroup: 1000
+        fsGroupChangePolicy: OnRootMismatch
+        seccompProfile:
+          type: RuntimeDefault
+      affinity:
+        nodeAffinity:
+          requiredDuringSchedulingIgnoredDuringExecution:
+            nodeSelectorTerms:
+              - matchExpressions:
+                  - key: kubernetes.io/hostname
+                    operator: In
+                    values:
+                      - rock5bp
+                      - macmini
+      imagePullSecrets:
+        - name: ghcr-creds-isac322
+      containers:
+        - name: runner
+          image: ghcr.io/isac322/issue-agent-runner:0.30.7-codex0.157.0-20260926-r2@sha256:359285ea165f65ff826b4f396a99237ed3baa5d63456fb806cfe3af73af4345c
+          env:
+            - name: HOME
+              value: /home/agent
+            - name: HAPI_HOME
+              value: /home/agent/.hapi
+            - name: CODEX_HOME
+              value: /home/agent/.codex
+            - name: HAPI_API_URL
+              value: http://issue-agent-hub.issue-agent.svc.cluster.local:3006
+            - name: GH_CONFIG_DIR
+              value: /run/issue-agent/github
+            - name: GH_PROMPT_DISABLED
+              value: "1"
+            - name: GH_NO_UPDATE_NOTIFIER
+              value: "1"
+            - name: GIT_TERMINAL_PROMPT
+              value: "0"
+            - name: GIT_AUTHOR_NAME
+              value: "ironeater[bot]"
+            - name: GIT_AUTHOR_EMAIL
+              value: "333478113+ironeater[bot]@users.noreply.github.com"
+            - name: GIT_COMMITTER_NAME
+              value: "ironeater[bot]"
+            - name: GIT_COMMITTER_EMAIL
+              value: "333478113+ironeater[bot]@users.noreply.github.com"
+            - name: ISSUE_AGENT_REPOSITORIES
+              value: isac322/cc-lb
+            - name: CARGO_BUILD_JOBS
+              value: "4"
+            - name: GOMAXPROCS
+              value: "4"
+            - name: CLI_API_TOKEN
+              valueFrom:
+                secretKeyRef:
+                  name: issue-agent-hapi-auth
+                  key: CLI_API_TOKEN
+            - name: OPENAI_API_KEY
+              valueFrom:
+                secretKeyRef:
+                  name: issue-agent-provider
+                  key: OPENAI_API_KEY
+          startupProbe:
+            exec:
+              command:
+                - /opt/issue-agent/bin/runner-healthcheck
+            periodSeconds: 15
+            timeoutSeconds: 10
+            failureThreshold: 80
+          livenessProbe:
+            exec:
+              command:
+                - /opt/issue-agent/bin/runner-healthcheck
+            periodSeconds: 60
+            timeoutSeconds: 10
+            failureThreshold: 5
+          resources:
+            requests:
+              cpu: "1"
+              memory: 1Gi
+            limits:
+              memory: 4Gi
+          securityContext:
+            allowPrivilegeEscalation: false
+            capabilities:
+              drop:
+                - ALL
+          volumeMounts:
+            - name: home
+              mountPath: /home/agent
+            - name: github
+              mountPath: /run/issue-agent/github
+              readOnly: true
+            - name: provider
+              mountPath: /run/issue-agent/provider
+              readOnly: true
+            - name: tmp
+              mountPath: /tmp
+      volumes:
+        - name: home
+          persistentVolumeClaim:
+            claimName: issue-agent-runner-home
+        - name: tmp
+          emptyDir:
+            sizeLimit: 2Gi
+        - name: github
+          secret:
+            secretName: issue-agent-github-token
+            defaultMode: 0440
+        - name: provider
+          secret:
+            secretName: issue-agent-provider
+            defaultMode: 0440

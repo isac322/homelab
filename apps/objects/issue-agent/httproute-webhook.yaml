@@ -1,0 +1,18 @@
+apiVersion: gateway.networking.k8s.io/v1
+kind: HTTPRoute
+metadata:
+  name: issue-agent-webhook
+spec:
+  parentRefs:
+    - name: cloudflare-tunnel
+      namespace: cloudflare-gateway
+  hostnames:
+    - issue-agent-webhook.bhyoo.com
+  rules:
+    - matches:
+        - path:
+            type: Exact
+            value: /webhooks/github
+      backendRefs:
+        - name: issue-agent-webhook
+          port: 8080
