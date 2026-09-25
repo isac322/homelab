@@ -155,10 +155,15 @@ spec:
         - -ec
       args:
         - |
-          rm -rf /home/node/.cache/camoufox
+          if [ -d /home/node/.cache/camoufox ]; then
+            chown 0:0 /home/node/.cache
+            chown -R 0:0 /home/node/.cache/camoufox
+            rm -rf /home/node/.cache/camoufox
+          fi
           mkdir -p /home/node/.cache/camoufox
           cp -R /root/.cache/camoufox/. /home/node/.cache/camoufox/
-          chown -R 1000:1000 /home/node
+          chown 1000:1000 /home/node /home/node/.cache
+          chown -R 1000:1000 /home/node/.cache/camoufox
       resources:
         requests:
           cpu: 50m
