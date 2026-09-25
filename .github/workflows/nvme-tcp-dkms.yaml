@@ -200,9 +200,7 @@ jobs:
     needs:
       - debian
       - arch
-    if: >-
-      github.event_name == 'push' ||
-      (github.event_name == 'workflow_dispatch' && inputs.publish)
+    if: github.event_name == 'workflow_dispatch' && inputs.publish
     runs-on: ubuntu-latest
     permissions:
       contents: write

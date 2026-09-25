@@ -52,7 +52,7 @@ Linux 호스트의 전역 패키지는 한 관리자가 소유한다. 커널·DK
 
 Nix와 distro 전역 패키지 목록에 같은 이름을 선언하면 module evaluation이 실패한다. Nix app이나 systemd service의 `runtimeInputs`는 해당 프로그램의 `/nix/store` closure에만 고정되므로 전역 소유권 중복으로 보지 않는다. `rock5bp`의 `preserveNasState=true` 계약에서는 distro package reconciliation이 계속 읽기 전용이다.
 
-`nvmet-tcp-target-dkms`는 `tools/nvme-tcp-dkms`가 빌드하는 storage target용 보조 DKMS 패키지다. DKMS build 시점에 `prepare.sh`가 vendor kernel source를 가져온 뒤 `patches/` 아래 upstream patch를 적용한다. 현재 patch는 upstream `5572a55a6f830ee3f3a994b6b962a5c327d28cb3`(nvmet-tcp: fix kernel crash if commands allocation fails) 하나뿐이다. source가 취약하면 patch를 적용하고, 이미 fix를 포함한 최신 source는 그대로 진행하며, 둘 다 아니면 build를 중단한다. patch는 새로 build되는 module에만 적용되므로 이미 설치된 module은 DKMS rebuild·재설치 전까지 취약 상태 그대로다. 이 변경은 package version을 올리지 않으며 release는 전체 verification이 끝난 뒤에만 진행한다.
+`nvmet-tcp-target-dkms`는 `tools/nvme-tcp-dkms`가 빌드하는 storage target용 보조 DKMS 패키지다. DKMS build 시점에 `prepare.sh`가 vendor kernel source를 가져온 뒤 `patches/` 아래 upstream patch를 적용한다. 현재 patch는 upstream `5572a55a6f830ee3f3a994b6b962a5c327d28cb3`(nvmet-tcp: fix kernel crash if commands allocation fails) 하나뿐이다. source가 취약하면 patch를 적용하고, 이미 fix를 포함한 최신 source는 그대로 진행하며, 둘 다 아니면 build를 중단한다. patch는 새로 build되는 module에만 적용되므로 이미 설치된 module은 DKMS rebuild·재설치 전까지 취약 상태 그대로다. `push`와 `pull_request` run은 package를 build·verify만 하고 release를 만들지 않는다. Release는 전체 verification이 끝난 뒤 운영자가 `NVMe TCP DKMS packages` workflow를 `publish: true`로 수동 dispatch할 때만 생성되며, 이 변경은 package version을 올리지 않는다.
 
 ## Linux migration
 
