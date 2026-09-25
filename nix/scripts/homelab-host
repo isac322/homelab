@@ -338,7 +338,7 @@ reconcile_distro_packages() {
   if [ "$purge" = yes ] && [ "$purge_enabled" != true ]; then purge=no; fi
   printf -v command 'sudo -n env BACKEND=%q PURGE=%q PRESENT=%q ABSENT=%q PRESERVE_NAS_STATE=%q sh -s' \
     "$backend" "$purge" "$present" "$absent" "$preserve"
-  remote "$host" "$command" <<'REMOTE_PACKAGE_RECONCILE'
+  remote "$host" "$command" <<'REMOTE_PACKAGE_RECONCILE' || return 1
 set -eu
 if test "$PRESERVE_NAS_STATE" = true; then
   for package in $PRESENT; do
@@ -410,6 +410,14 @@ case "$BACKEND" in
   *) echo "unsupported package backend: $BACKEND" >&2; exit 2 ;;
 esac
 REMOTE_PACKAGE_RECONCILE
+  # The NVMe/TCP DKMS package is built by Nix per node, not fetched from a repository.
+  if jq -e --arg host "$host" 'has($host)' "$root/nix/lib/nvme-tcp-dkms.json" >/dev/null; then
+    if [ "$preserve" = true ]; then
+      echo "$host preserves NAS state; install its NVMe/TCP DKMS package with 'nvme-tcp-dkms install $host'" >&2
+    else
+      "$root/nix/scripts/nvme-tcp-dkms" install "$host"
+    fi
+  fi
 }
 prepare_native_runtime_handoff() {
   local host=$1 role command

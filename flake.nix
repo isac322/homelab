@@ -24,6 +24,7 @@
     let
       lib = nixpkgs.lib;
       topology = import ./nix/lib/topology.nix { inherit lib; };
+      nvmeTcpDkms = import ./nix/lib/nvme-tcp-dkms.nix { inherit lib topology; };
       linuxHosts = lib.filterAttrs (_: host: lib.hasSuffix "-linux" host.system) topology.deployableNodes;
       darwinHosts = lib.filterAttrs (
         _: host: lib.hasSuffix "-darwin" host.system
@@ -49,6 +50,7 @@
             ./nix/modules/linux/firewall.nix
             ./nix/modules/linux/wireguard.nix
             ./nix/modules/linux/k3s-host.nix
+            ./nix/modules/linux/nvme-tcp-dkms.nix
           ]
           ++ lib.optional (builtins.pathExists hostModule) hostModule;
           specialArgs = {
@@ -74,7 +76,7 @@
         };
     in
     {
-      inherit topology;
+      inherit topology nvmeTcpDkms;
       systemConfigs =
         (lib.mapAttrs (mkLinuxHost false) linuxHosts)
         // (lib.mapAttrs' (
@@ -86,7 +88,14 @@
         let
           pkgs = import nixpkgs { inherit system; };
         in
-        import ./nix/packages.nix { inherit pkgs self topology; }
+        import ./nix/packages.nix {
+          inherit
+            pkgs
+            self
+            topology
+            nvmeTcpDkms
+            ;
+        }
       );
       apps = forAllSystems (
         system:
@@ -97,7 +106,7 @@
           type = "app";
           program = "${package}/bin/${package.meta.mainProgram}";
           meta.description = package.meta.description or "Homelab administration command";
-        }) packages
+        }) (lib.filterAttrs (name: _: !lib.hasPrefix "nvme-tcp-dkms-" name) packages)
       );
       checks = forAllSystems (
         system:
@@ -416,6 +425,8 @@
         in
         hostChecks
         // darwinChecks
+        # Every declared node's DKMS package must still assemble from its pinned sources.
+        // lib.filterAttrs (name: _: lib.hasPrefix "nvme-tcp-dkms-" name) self.packages.${system}
         // {
           lifecycle-fixtures = lifecycleFixtures;
           topology =
@@ -448,6 +459,7 @@
                   ${./nix/scripts/k3s-handoff} \
                   ${./nix/scripts/provision-host} \
                   ${./nix/scripts/render-macbook-wireguard} \
+                  ${./nix/scripts/nvme-tcp-dkms} \
                   ${./nix/scripts/rollout-peers} \
                   ${./nix/scripts/sync-wireguard-runtime} \
                   ${./nix/scripts/sync-bootstrap-secret} \

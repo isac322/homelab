@@ -2,6 +2,7 @@
   pkgs,
   self,
   topology,
+  nvmeTcpDkms,
 }:
 let
   # macOS can reject LAN connections from Nix OpenSSH while allowing /usr/bin/ssh.
@@ -34,6 +35,7 @@ let
       sops
       opentofu
       wireguard-tools
+      xz
       yq-go
     ]);
   mkApp =
@@ -60,7 +62,17 @@ let
     name: description: command:
     mkApp name description ./scripts/edge-wireguard-secrets command;
 in
-{
+(pkgs.lib.mapAttrs' (
+  name: decl:
+  pkgs.lib.nameValuePair "nvme-tcp-dkms-${name}" (
+    pkgs.callPackage ./pkgs/nvme-tcp-dkms.nix { inherit decl; }
+  )
+) nvmeTcpDkms.hosts)
+// {
+  nvme-tcp-dkms =
+    mkApp "nvme-tcp-dkms" "Select or install one node's pinned NVMe/TCP DKMS package"
+      ./scripts/nvme-tcp-dkms
+      "";
   bootstrap-host =
     hostApp "bootstrap-host" "Install host prerequisites and establish noninteractive sudo"
       "bootstrap-host";

@@ -1,0 +1,69 @@
+{
+  "macmini": {
+    "role": "host",
+    "modules": [
+      "nvme-fabrics",
+      "nvme-tcp"
+    ],
+    "kernelRelease": "7.1.6-1-1-ARCH",
+    "headersPackage": "linux-asahi-headers",
+    "baseline": {
+      "version": "7.1.6",
+      "hash": "sha256-mV3XGI2SRmK5S0j9b7eDWHJnWQ5bi7M9reLHcefYVcE="
+    },
+    "transport": {
+      "version": "7.1.13",
+      "hash": "sha256-YU2V+v3LXM4rZiDn7cavu2Br/9RlVAVYaBXYRoeEGtc="
+    }
+  },
+  "rock5bp": {
+    "role": "target",
+    "modules": [
+      "nvmet-tcp"
+    ],
+    "kernelRelease": "6.1.84-999-rk2410",
+    "headersPackage": "linux-headers-6.1.84-999-rk2410",
+    "baseline": {
+      "version": "6.1.84",
+      "hash": "sha256-r5fS6+FHZdDbOvZWAwna8IU12iW/rTbl+z5DbyKhcHo="
+    },
+    "transport": {
+      "version": "6.1.186",
+      "hash": "sha256-7u3DK78kSCBa/1DuJ2Ck2HFyz4+CecHlkwBprTb2I24="
+    }
+  },
+  "rpi4": {
+    "role": "host",
+    "modules": [
+      "nvme-fabrics",
+      "nvme-tcp"
+    ],
+    "kernelRelease": "6.18.34+rpt-rpi-v8",
+    "headersPackage": "linux-headers-6.18.34+rpt-rpi-v8",
+    "baseline": {
+      "version": "6.18.34",
+      "hash": "sha256-ZAxHMvtChCFm25fgMsH+fl/3LIWomCx1tA90vjVV12A="
+    },
+    "transport": {
+      "version": "6.18.51",
+      "hash": "sha256-ui9g+Fi/TR+SkQH6o1bJPci5JbF6qp+V6r1GJ3WN9hM="
+    }
+  },
+  "rpi5": {
+    "role": "host",
+    "modules": [
+      "nvme-fabrics",
+      "nvme-tcp"
+    ],
+    "kernelRelease": "6.12.93+rpt-rpi-2712",
+    "headersPackage": "linux-headers-6.12.93+rpt-rpi-2712",
+    "baseline": {
+      "version": "6.12.93",
+      "hash": "sha256-SSZIqHwLacWsf0O+ZHkrkADjQ5VQ1OguShRxDEkJT6M="
+    },
+    "transport": {
+      "version": "6.12.111",
+      "hash": "sha256-nlncZ2JBiPoSpmAflZhJnNZmKpBmvlcrWfk149eEmBA="
+    }
+  }
+}
