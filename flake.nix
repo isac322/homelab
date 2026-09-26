@@ -178,7 +178,9 @@
               projectServiceOwnershipIsMinimal = lib.all (
                 hostName:
                 let
-                  expected = lib.optional (linuxHosts.${hostName}.k3sRole != null) "homelab-k3s";
+                  expected =
+                    lib.optional (linuxHosts.${hostName}.k3sRole != null) "homelab-k3s"
+                    ++ lib.optional (hostName == "rock5bp") "homelab-pillar-firewall";
                 in
                 projectServices self.systemConfigs.${hostName}.config == expected
                 && projectServices self.systemConfigs."${hostName}-commit".config == expected
@@ -276,6 +278,23 @@
             assert !(builtins.hasAttr "iptables/iptables.rules" rock.environment.etc);
             assert builtins.hasAttr "systemd/system/netfilter-persistent.service.d/50-homelab-order.conf"
               rock.environment.etc;
+            # Pillar allowances live in a homelab-owned chain on the preserved NAS
+            # firewall: other active K3s nodes may reach nvmet, only pods the agent.
+            assert
+              rock.homelab.firewall.pillar.nvmeTcpSources == [
+                "192.168.219.8/32"
+                "192.168.219.3/32"
+                "192.168.219.4/32"
+                "192.168.219.7/32"
+                "192.168.219.5/32"
+              ];
+            assert rock.homelab.firewall.pillar.agentSources == [ topology.k3s.podNetwork ];
+            assert rock.systemd.services.homelab-pillar-firewall.partOf == [ "netfilter-persistent.service" ];
+            assert builtins.elem "netfilter-persistent.service"
+              rock.systemd.services.homelab-pillar-firewall.after;
+            assert builtins.elem "homelab-k3s.service" rock.systemd.services.homelab-pillar-firewall.before;
+            assert lib.hasSuffix " apply"
+              rock.systemd.services.homelab-pillar-firewall.serviceConfig.ExecReload;
             assert builtins.length topology.requiredLinks == 35;
             assert !(builtins.hasAttr "wg1" topology);
             assert gracefulShutdownConfigured;
