@@ -17,16 +17,18 @@ variable "cloudflare_main_zone_id" {
 variable "github_personal_access_token" {
   type        = string
   description = <<-EOT
-    Fine-grained GitHub PAT used to manage the isac322/flareway repository,
-    its GitHub Pages site, its cloudflare-e2e and github-pages environments,
-    and the cloudflare-e2e environment's Actions secrets.
+    Fine-grained GitHub PAT used to manage the isac322/flareway and isac322/krema
+    repositories, their GitHub Pages sites, their github-pages deployment
+    environments, flareway's cloudflare-e2e and release environments, and the
+    cloudflare-e2e environment's Actions secrets on isac322/flareway.
     Resource owner: isac322.
     Repository permissions: Administration, Read and write; Environments, Read and write;
     Pages, Read and write.
     Metadata Read is granted automatically; no Contents or Actions Write permission is required.
-    Because flareway already exists and is imported, Repository access may select only isac322/flareway.
-    A bootstrap token that creates a not-yet-existing repository must temporarily use All repositories;
-    rotate it to an only-selected-repository token after creation.
+    Because both repositories already exist and are imported, Repository access may select
+    only isac322/flareway and isac322/krema.
+    A bootstrap token that creates a not-yet-existing repository must temporarily use
+    All repositories; rotate it to an only-selected-repository token after creation.
   EOT
   sensitive   = true
 }

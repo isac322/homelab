@@ -59,3 +59,41 @@ import {
   to = github_actions_repository_permissions.flareway
   id = "flareway"
 }
+
+# The repository, its Pages configuration, and its auto-created github-pages
+# environment predate Terraform. Remove these import blocks only when
+# bootstrapping a new repository that does not exist yet.
+import {
+  to = github_repository.krema
+  id = "krema"
+}
+
+import {
+  to = github_repository_vulnerability_alerts.krema
+  id = "krema"
+}
+
+import {
+  to = github_repository_dependabot_security_updates.krema
+  id = "krema"
+}
+
+import {
+  to = github_actions_repository_permissions.krema
+  id = "krema"
+}
+
+import {
+  to = github_repository_pages.krema
+  id = "krema"
+}
+
+import {
+  to = github_repository_environment.krema_github_pages
+  id = "krema:github-pages"
+}
+
+import {
+  to = github_repository_environment_deployment_policy.krema_github_pages_master
+  id = "krema:github-pages:61197925"
+}
