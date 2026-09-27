@@ -1,7 +1,8 @@
 resource "github_repository" "flareway" {
-  name        = "flareway"
-  description = "A Kubernetes operator for Cloudflare Tunnel, Access & WARP - Gateway API routing through an Envoy data plane, with no inbound ports or public IPs on the cluster."
-  visibility  = "public"
+  name         = "flareway"
+  description  = "A Kubernetes operator for Cloudflare Tunnel, Access & WARP - Gateway API routing through an Envoy data plane, with no inbound ports or public IPs on the cluster."
+  homepage_url = "https://flareway.bhyoo.com"
+  visibility   = "public"
 
   has_issues      = true
   has_projects    = false
@@ -97,6 +98,35 @@ resource "github_branch_protection" "flareway_main" {
     require_code_owner_reviews      = false
     require_last_push_approval      = false
   }
+}
+
+# github_repository_pages is used instead of the deprecated `pages` block on
+# github_repository: the inline block does not send `cname` when enabling
+# Pages (expandPagesUpdate vs EnablePages), so the custom domain would only be
+# set on a second apply. build_type "workflow" deploys from GitHub Actions;
+# `source` is only valid for the "legacy" build type.
+resource "github_repository_pages" "flareway" {
+  repository = github_repository.flareway.name
+  build_type = "workflow"
+  cname      = "flareway.bhyoo.com"
+}
+
+# Manage the `github-pages` deployment environment explicitly so the Pages
+# deploy is limited to protected branches. GitHub may auto-create it when
+# Pages is enabled; the provider's create is a PUT upsert, so no import needed.
+resource "github_repository_environment" "github_pages" {
+  repository          = github_repository.flareway.name
+  environment         = "github-pages"
+  can_admins_bypass   = true
+  prevent_self_review = false
+  wait_timer          = 0
+
+  deployment_branch_policy {
+    protected_branches     = true
+    custom_branch_policies = false
+  }
+
+  depends_on = [github_repository_pages.flareway]
 }
 
 resource "github_repository_environment" "cloudflare_e2e" {
