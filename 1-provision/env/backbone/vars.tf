@@ -18,9 +18,11 @@ variable "github_personal_access_token" {
   type        = string
   description = <<-EOT
     Fine-grained GitHub PAT used to manage the isac322/flareway repository,
-    its cloudflare-e2e environment, and that environment's Actions secrets.
+    its GitHub Pages site, its cloudflare-e2e and github-pages environments,
+    and the cloudflare-e2e environment's Actions secrets.
     Resource owner: isac322.
-    Repository permissions: Administration, Read and write; Environments, Read and write.
+    Repository permissions: Administration, Read and write; Environments, Read and write;
+    Pages, Read and write.
     Metadata Read is granted automatically; no Contents or Actions Write permission is required.
     Because flareway already exists and is imported, Repository access may select only isac322/flareway.
     A bootstrap token that creates a not-yet-existing repository must temporarily use All repositories;
