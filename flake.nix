@@ -460,6 +460,7 @@
                   ${./nix/scripts/provision-host} \
                   ${./nix/scripts/render-macbook-wireguard} \
                   ${./nix/scripts/nvme-tcp-dkms} \
+                  ${./nix/pkgs/nvme-tcp-abi-check} \
                   ${./nix/scripts/rollout-peers} \
                   ${./nix/scripts/sync-wireguard-runtime} \
                   ${./nix/scripts/sync-bootstrap-secret} \

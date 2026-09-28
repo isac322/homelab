@@ -5,11 +5,11 @@
       "nvme-fabrics",
       "nvme-tcp"
     ],
-    "kernelRelease": "7.1.6-1-1-ARCH",
+    "kernelRelease": "7.1.13-3-2-ARCH",
     "headersPackage": "linux-asahi-headers",
     "baseline": {
-      "version": "7.1.6",
-      "hash": "sha256-mV3XGI2SRmK5S0j9b7eDWHJnWQ5bi7M9reLHcefYVcE="
+      "version": "7.1.13",
+      "hash": "sha256-YU2V+v3LXM4rZiDn7cavu2Br/9RlVAVYaBXYRoeEGtc="
     },
     "transport": {
       "version": "7.1.13",

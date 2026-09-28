@@ -61,7 +61,7 @@ nix run .#nvme-tcp-dkms -- select rpi5   # node에서 후보를 scratch 빌드�
 nix run .#nvme-tcp-dkms -- install rpi5  # Nix로 deb/pkg.tar.zst를 빌드해 apt/pacman으로 설치
 ```
 
-`reconcile-distro-packages`는 선언된 일반 host에 이 패키지를 설치하고, `rock5bp`에서는 설치하지 않으므로 `install`을 명시적으로 실행한다. 설치한 모듈은 재부팅하거나 모듈을 다시 load해야 적용된다. 실행 중인 커널의 series가 다르거나 headers가 설치된 커널 중 하나라도 installed module이 없으면 pre-activation assertion이 다음 generation을 막으므로 `select`로 선언을 갱신하고 `install`한다.
+`reconcile-distro-packages`는 선언된 일반 host에 이 패키지를 설치하고, `rock5bp`에서는 설치하지 않으므로 `install`을 명시적으로 실행한다. `install`은 배포판 hook이 빠뜨린 커널(Debian은 실행 중·최신 커널만 빌드)까지 headers가 설치된 모든 커널에 DKMS 빌드를 수행한다. NVMe core(`CONFIG_NVME_CORE`, target은 `CONFIG_NVME_TARGET`)가 없는 커널(예: `rock5bp`의 vendor 6.1.84-8 rescue 커널)은 `BUILD_EXCLUSIVE_CONFIG`로 제외한다. 설치한 모듈은 재부팅하거나 모듈을 다시 load해야 적용된다. 실행 중인 커널의 series가 다르거나 headers가 설치된 커널(NVMe core가 없는 커널 제외) 중 하나라도 installed module이 없으면 pre-activation assertion이 다음 generation을 막으므로 `select`로 선언을 갱신하고 `install`한다.
 
 `rock5bp`의 vendor 6.1.84 `nvmet-tcp`에 남아 있는 allocation failure crash(upstream `5572a55a6f830ee3f3a994b6b962a5c327d28cb3`, nvmet-tcp: fix kernel crash if commands allocation fails)는 transport 소스(6.1.186)에 이미 포함되어 있으므로 별도 patch를 적용하지 않는다. 이미 설치된 module은 새 패키지를 `install`하고 다시 load하기 전까지 취약 상태 그대로다.
 

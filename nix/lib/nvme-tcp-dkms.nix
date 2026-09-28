@@ -1,14 +1,15 @@
 # Per-node NVMe/TCP DKMS declarations.
-#
 # Every node that needs supplemental NVMe/TCP modules gets its own DKMS
-# package, pinned to exactly one kernel release. The package keeps the shared
-# NVMe headers from that kernel's upstream release (`baseline`) and replaces
-# only the transport sources with the newest release of the same stable series
-# that compiles and links against the node's real kernel (`transport`).
+# package, which builds for any kernel of the declared stable series whose
+# NVMe ABI matches the shipped headers. The package keeps the shared NVMe
+# headers from the node's upstream release (`baseline`) and replaces only the
+# transport sources with the newest release of the same stable series that
+# compiles and links against the node's real kernel (`transport`).
 #
 # `role` and `modules` are human decisions. `kernelRelease`, `headersPackage`,
 # `baseline` and `transport` are written by `nix run .#nvme-tcp-dkms -- select
-# <host>`, which test-builds the candidates on the node itself.
+# <host>`, which test-builds the candidates on the node itself; `kernelRelease`
+# records the kernel `select` validated against and does not pin the build.
 { lib, topology }:
 let
   declared = builtins.fromJSON (builtins.readFile ./nvme-tcp-dkms.json);
@@ -17,6 +18,8 @@ let
       packageName = "nvme-tcp-host-dkms";
       dkmsName = "nvme-tcp-host";
       subdir = "host";
+      # Kernels without the NVMe host core cannot load the transports at all.
+      coreConfig = "CONFIG_NVME_CORE";
       allowedModules = [
         "nvme-fabrics"
         "nvme-tcp"
@@ -27,6 +30,8 @@ let
       dkmsName = "nvmet-tcp-target";
       subdir = "target";
       allowedModules = [ "nvmet-tcp" ];
+      # Kernels without the NVMe target core cannot load nvmet-tcp at all.
+      coreConfig = "CONFIG_NVME_TARGET";
     };
   };
   moduleSources = {
@@ -55,12 +60,15 @@ let
       role = roles.${decl.role};
       node = topology.nodes.${name};
       # Debian and pacman both accept this, and it changes whenever either the
-      # transport release or the pinned kernel release changes.
-      version = "${decl.transport.version}+${
-        lib.concatStringsSep "." (
-          builtins.filter (part: part != "") (lib.splitString "-" decl.kernelRelease)
-        )
-      }";
+      # baseline or the transport release changes. The kernel release is no
+      # longer part of it: one package build covers the whole series.
+      version = "${decl.transport.version}+${decl.baseline.version}";
+      # Distro package release; bump it when the packaging itself (dkms.conf,
+      # the ABI check) changes for the same sources so nodes pick it up.
+      packageVersion = "${version}-2";
+      # Kernels of this stable series ("<major>.<minor>.*") build the package;
+      # the in-package ABI check refuses kernels whose NVMe headers differ.
+      series = seriesOf decl.baseline.version;
       packageFormat =
         {
           apt = "deb";
@@ -92,9 +100,16 @@ let
       inherit
         name
         version
+        packageVersion
+        series
         packageFormat
         ;
-      inherit (role) packageName dkmsName subdir;
+      inherit (role)
+        packageName
+        dkmsName
+        subdir
+        coreConfig
+        ;
       moduleSources = lib.getAttrs decl.modules moduleSources;
       transportFiles = lib.unique (map (module: moduleSources.${module}) decl.modules);
     };

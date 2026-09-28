@@ -3,7 +3,9 @@
 # The DKMS source tree is the baseline release's drivers/nvme/<role> directory
 # (so every shared header matches the node's kernel) with only the transport
 # sources replaced from the pinned newer release. The node's DKMS compiles it
-# for exactly one kernel release and never downloads anything.
+# for any kernel of the same stable series and never downloads anything;
+# nvme-tcp-abi-check then fails the build unless it can prove the shipped
+# headers' ABI matches the running kernel.
 {
   lib,
   stdenvNoCC,
@@ -23,11 +25,10 @@ let
     };
   baseline = tarball decl.baseline.version decl.baseline.hash;
   transport = tarball decl.transport.version decl.transport.hash;
-  kernelPattern = "^${lib.escapeRegex decl.kernelRelease}$";
   sourceDir = "usr/src/${decl.dkmsName}-${decl.version}";
   description =
     "NVMe/TCP ${decl.subdir} transport (${lib.concatStringsSep ", " decl.modules}) from Linux "
-    + "${decl.transport.version} for kernel ${decl.kernelRelease}";
+    + "${decl.transport.version} for any ${decl.series}.x kernel with a matching NVMe ABI";
   kbuild =
     lib.concatMapStrings (
       module:
@@ -38,21 +39,26 @@ let
     PACKAGE_NAME="${decl.dkmsName}"
     PACKAGE_VERSION="${decl.version}"
     AUTOINSTALL="yes"
-    BUILD_EXCLUSIVE_KERNEL="${kernelPattern}"
-    MAKE[0]="make -C /lib/modules/''${kernelver}/build M=''${dkms_tree}/''${PACKAGE_NAME}/''${PACKAGE_VERSION}/build modules"
+    BUILD_EXCLUSIVE_CONFIG="${decl.coreConfig}"
+    MAKE[0]="make -C /lib/modules/''${kernelver}/build M=''${dkms_tree}/''${PACKAGE_NAME}/''${PACKAGE_VERSION}/build modules && bash ''${dkms_tree}/''${PACKAGE_NAME}/''${PACKAGE_VERSION}/build/nvme-tcp-abi-check ''${kernelver}"
   ''
   + lib.concatImapStrings (index: module: ''
     BUILT_MODULE_NAME[${toString (index - 1)}]="${module}"
     DEST_MODULE_LOCATION[${toString (index - 1)}]="/updates/dkms"
   '') decl.modules;
+  abiCheckConf = ''
+    series='${decl.series}'
+    own_sources='${lib.concatStringsSep " " (map (module: decl.moduleSources.${module}) decl.modules)}'
+    modules='${lib.concatStringsSep " " decl.modules}'
+  '';
   debControl = ''
     Package: ${decl.packageName}
-    Version: ${decl.version}-1
+    Version: ${decl.packageVersion}
     Architecture: all
     Maintainer: Byeonghoon Yoo <bhyoo@bhyoo.com>
     Section: kernel
     Priority: optional
-    Depends: dkms (>= 3.0.10), ${decl.headersPackage}
+    Depends: dkms (>= 3.0.10), binutils, ${decl.headersPackage}
     Conflicts: nvme-extras-dkms
     Replaces: nvme-extras-dkms
     Homepage: https://github.com/isac322/homelab
@@ -76,9 +82,9 @@ let
   '';
   fileName =
     if decl.packageFormat == "deb" then
-      "${decl.packageName}_${decl.version}-1_all.deb"
+      "${decl.packageName}_${decl.packageVersion}_all.deb"
     else
-      "${decl.packageName}-${decl.version}-1-any.pkg.tar.zst";
+      "${decl.packageName}-${decl.packageVersion}-any.pkg.tar.zst";
 in
 stdenvNoCC.mkDerivation {
   pname = decl.packageName;
@@ -93,6 +99,7 @@ stdenvNoCC.mkDerivation {
   env.SOURCE_DATE_EPOCH = "1";
   passAsFile = [
     "kbuild"
+    "abiCheckConf"
     "dkmsConf"
     "debControl"
     "debPostinst"
@@ -100,6 +107,7 @@ stdenvNoCC.mkDerivation {
   ];
   inherit
     kbuild
+    abiCheckConf
     dkmsConf
     debControl
     debPostinst
@@ -120,13 +128,16 @@ stdenvNoCC.mkDerivation {
     cp transport/* "$src_dir/"
     cp "$kbuildPath" "$src_dir/Makefile"
     cp "$dkmsConfPath" "$src_dir/dkms.conf"
+    cp "$abiCheckConfPath" "$src_dir/nvme-tcp-abi-check.conf"
     printf '%s\n' \
-      'kernel=${decl.kernelRelease}' \
+      'series=${decl.series}' \
+      'validated-kernel=${decl.kernelRelease}' \
       'baseline=${decl.baseline.version}' \
       'transport=${decl.transport.version} (${lib.concatStringsSep " " decl.transportFiles})' \
       > "$src_dir/SOURCE_SELECTION"
     find "$pkgroot" -type d -exec chmod 0755 {} +
     find "$pkgroot" -type f -exec chmod 0644 {} +
+    install -m 0755 ${./nvme-tcp-abi-check} "$src_dir/nvme-tcp-abi-check"
     ${
       if decl.packageFormat == "deb" then
         ''
@@ -143,7 +154,7 @@ stdenvNoCC.mkDerivation {
           cat > "$pkgroot/.PKGINFO" <<EOF
           pkgname = ${decl.packageName}
           pkgbase = ${decl.packageName}
-          pkgver = ${decl.version}-1
+          pkgver = ${decl.packageVersion}
           pkgdesc = ${description}
           url = https://github.com/isac322/homelab
           builddate = 1
@@ -154,6 +165,8 @@ stdenvNoCC.mkDerivation {
           conflict = nvme-extras-dkms
           replaces = nvme-extras-dkms
           depend = dkms
+          depend = binutils
+          depend = pahole
           depend = ${decl.headersPackage}
           EOF
           find "$pkgroot" -exec touch -h -d @1 {} +
