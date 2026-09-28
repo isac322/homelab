@@ -9,6 +9,11 @@ spec:
 # Non-replicated SSD pool on rock5bp (nvme1n1p5). The pool is created and
 # owned host-natively (preserveNasState); see README. The layout must match
 # agent.backends in values/pillar-csi/backbone.yaml.
+# Volumes are thick (ZFS default refreservation) so a full pool cannot turn
+# into I/O errors inside a running volume. A PVC opts into thin with
+# `zfs: {properties: {refreservation: none}}` in its backend annotation; the
+# reverse is not expressible, because `zfs create -V` rejects
+# `refreservation=auto` with "out of space".
 apiVersion: pillar-csi.bhyoo.com/v1alpha1
 kind: PillarStore
 metadata:
@@ -20,10 +25,6 @@ spec:
       volumeType: zvol
       pool: fast
       parentDataset: k8s
-      properties:
-        # Thin by default, like ssd-ha-xfs. A PVC that needs its space reserved
-        # sets `zfs: {properties: {refreservation: auto}}` in its backend doc.
-        refreservation: none
 ---
 apiVersion: pillar-csi.bhyoo.com/v1alpha1
 kind: PillarProtocol
