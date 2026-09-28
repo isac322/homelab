@@ -23,7 +23,7 @@ variable "github_personal_access_token" {
     cloudflare-e2e environment's Actions secrets on isac322/flareway.
     Resource owner: isac322.
     Repository permissions: Administration, Read and write; Environments, Read and write;
-    Pages, Read and write.
+    Pages, Read and write; Variables, Read and write.
     Metadata Read is granted automatically; no Contents or Actions Write permission is required.
     Because all repositories already exist and are imported, Repository access may select
     only isac322/flareway, isac322/krema, and isac322/pillar-csi.
