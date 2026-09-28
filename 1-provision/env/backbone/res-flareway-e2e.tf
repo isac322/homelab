@@ -105,12 +105,46 @@ resource "github_branch_protection" "flareway_main" {
 # `source` is only valid for the "legacy" build type. With provider 6.13.0 the
 # create call records the empty cname returned by EnablePages before reading
 # the configured one, so the custom domain is only applied on the next apply.
-# https_enforced needs the Pages certificate for the cname to exist first.
+#
+# https_enforced is deliberately NOT set here. Provider 6.13.0 updates Pages
+# with only the changed fields, and go-github's PagesUpdate always serializes
+# `cname` (no omitempty), so an https_enforced-only update sends cname=null
+# and removes the custom domain; setting the cname again then resets
+# https_enforced to false on GitHub's side. The two attributes oscillate on
+# every apply. terraform_data.flareway_pages_https below sends both in one
+# request instead.
 resource "github_repository_pages" "flareway" {
-  repository     = github_repository.flareway.name
-  build_type     = "workflow"
-  cname          = "flareway.bhyoo.com"
-  https_enforced = true
+  repository = github_repository.flareway.name
+  build_type = "workflow"
+  cname      = "flareway.bhyoo.com"
+}
+
+# Enforce HTTPS together with the custom domain in a single Pages update.
+# Re-runs whenever the cname changes (or Pages is recreated). Requires the
+# Pages certificate for the cname to exist, which GitHub issues shortly after
+# the DNS record resolves.
+resource "terraform_data" "flareway_pages_https" {
+  triggers_replace = [
+    github_repository_pages.flareway.id,
+    github_repository_pages.flareway.cname,
+  ]
+
+  provisioner "local-exec" {
+    command = <<-EOT
+      curl --fail-with-body --silent --show-error -X PUT \
+        -H "Authorization: Bearer $GITHUB_TOKEN" \
+        -H "Accept: application/vnd.github+json" \
+        -H "X-GitHub-Api-Version: 2022-11-28" \
+        "https://api.github.com/repos/isac322/$REPO/pages" \
+        -d "{\"cname\":\"$CNAME\",\"https_enforced\":true}"
+    EOT
+
+    environment = {
+      GITHUB_TOKEN = var.github_personal_access_token
+      REPO         = github_repository.flareway.name
+      CNAME        = github_repository_pages.flareway.cname
+    }
+  }
 }
 
 # Manage the `github-pages` deployment environment explicitly so the Pages
