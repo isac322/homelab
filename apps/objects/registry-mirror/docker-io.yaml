@@ -128,7 +128,7 @@ spec:
             name: registry-docker-io
         - name: data
           persistentVolumeClaim:
-            claimName: registry-docker-io-fast
+            claimName: registry-docker-io-pillar
 ---
 apiVersion: v1
 kind: Service
