@@ -19,6 +19,8 @@ data:
     proxy:
       remoteurl: https://registry-1.docker.io
 ---
+# Previous cache volume, no longer mounted. Kept only as a rollback target
+# for the pillar-csi move; delete once the new volume has proven itself.
 apiVersion: v1
 kind: PersistentVolumeClaim
 metadata:
@@ -32,8 +34,8 @@ spec:
     requests:
       storage: 50Gi
 ---
-# Being migrated onto pillar-csi (non-replicated SSD). A pull-through cache
-# can be refetched, so it does not need a replicated pool, and thin is fine.
+# Cache volume on pillar-csi (non-replicated SSD). A pull-through cache can
+# be refetched, so it does not need a replicated pool, and thin is fine.
 apiVersion: v1
 kind: PersistentVolumeClaim
 metadata:
@@ -73,6 +75,9 @@ spec:
         app: registry-docker-io
     spec:
       enableServiceLinks: false
+      # pillar-csi volumes attach only where its node plugin is registered.
+      nodeSelector:
+        pillar-csi.bhyoo.com/nvmeof: "true"
       containers:
         - name: registry
           image: docker.io/library/registry:3.1.1@sha256:1be55279f18a2fe1a74edf2664cac61c1bea305b7b4642dab412e7affdcb3e33
@@ -105,7 +110,7 @@ spec:
             name: registry-docker-io
         - name: data
           persistentVolumeClaim:
-            claimName: registry-docker-io
+            claimName: registry-docker-io-fast
 ---
 apiVersion: v1
 kind: Service
