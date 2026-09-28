@@ -15,7 +15,7 @@ resource "cloudflare_dns_record" "pillar_csi_pages" {
 # Set to the full "google-site-verification=..." string Search Console shows;
 # the record is only created once a value is present.
 locals {
-  pillar_csi_google_site_verification = null
+  pillar_csi_google_site_verification = "google-site-verification=0pSh_E5nuUmD48si-5Cl-dZuHv-UedaAWDWZfFeg710"
 }
 
 resource "cloudflare_dns_record" "pillar_csi_google_site_verification" {
