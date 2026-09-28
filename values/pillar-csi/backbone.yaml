@@ -1,0 +1,105 @@
+# Tier 1 (CSI driver). Sized from the 2026-09-26..28 pillar-csi QA run on this
+# cluster (the only history available, ~2 days incl. provisioning, expansion,
+# node moves and storage-node reboots): request ≈ 1.1–1.25 × P50 working set,
+# limit ≈ 1.25 × observed peak. CPU limits are unset per the repo policy; the
+# chart defaults set one, so each is cleared with null.
+
+controller:
+  resources:
+    requests:
+      cpu: 100m
+      memory: 32Mi
+    limits:
+      cpu: null
+      memory: 48Mi
+  sidecars:
+    provisioner:
+      resources:
+        requests:
+          cpu: 10m
+          memory: 64Mi
+        limits:
+          cpu: null
+          memory: 80Mi
+    attacher:
+      resources:
+        requests:
+          cpu: 5m
+          memory: 56Mi
+        limits:
+          cpu: null
+          memory: 64Mi
+    resizer:
+      resources:
+        requests:
+          cpu: 5m
+          memory: 64Mi
+        limits:
+          cpu: null
+          memory: 80Mi
+    livenessProbe:
+      resources:
+        requests:
+          cpu: 5m
+          memory: 32Mi
+        limits:
+          cpu: null
+          memory: 40Mi
+
+node:
+  resources:
+    requests:
+      cpu: 50m
+      memory: 56Mi
+    limits:
+      cpu: null
+      memory: 64Mi
+  initModprobe:
+    resources:
+      requests:
+        cpu: 5m
+        memory: 8Mi
+      limits:
+        cpu: null
+        memory: 16Mi
+  sidecars:
+    nodeDriverRegistrar:
+      resources:
+        requests:
+          cpu: 5m
+          memory: 28Mi
+        limits:
+          cpu: null
+          memory: 32Mi
+    livenessProbe:
+      resources:
+        requests:
+          cpu: 5m
+          memory: 32Mi
+        limits:
+          cpu: null
+          memory: 40Mi
+
+agent:
+  # Must match PillarStore rock5bp-fast (apps/objects/pillar-csi/store.yaml).
+  # The pool itself is host-native (preserveNasState); see README.
+  backends:
+    - zfs:
+        volumeType: zvol
+        pool: fast
+        parentDataset: k8s
+  resources:
+    requests:
+      cpu: 100m
+      memory: 16Mi
+    limits:
+      cpu: null
+      memory: 32Mi
+  initModprobe:
+    resources:
+      requests:
+        cpu: 5m
+        memory: 8Mi
+      limits:
+        cpu: null
+        memory: 16Mi

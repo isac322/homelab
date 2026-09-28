@@ -1,0 +1,85 @@
+apiVersion: argoproj.io/v1alpha1
+kind: Application
+metadata:
+  name: pillar-csi
+  finalizers:
+    - resources-finalizer.argocd.argoproj.io
+spec:
+  destination:
+    name: backbone
+    namespace: pillar-csi
+  project: dfs
+  sources:
+    - repoURL: https://github.com/isac322/homelab.git
+      targetRevision: HEAD
+      ref: homelab
+    - chart: pillar-csi
+      repoURL: ghcr.io/isac322/charts
+      targetRevision: 0.3.0
+      helm:
+        releaseName: pillar-csi
+        valueFiles:
+          - values.yaml
+          - $homelab/values/pillar-csi/backbone.yaml
+  # The chart generates the admission webhook certificate with genCA and only
+  # reuses it through `lookup`, which ArgoCD rendering does not support. Keep the
+  # certificate created by the first sync instead of rotating it on every refresh.
+  ignoreDifferences:
+    - kind: Secret
+      name: pillar-csi-webhook-cert
+      namespace: pillar-csi
+      jqPathExpressions:
+        - .data
+    - group: admissionregistration.k8s.io
+      kind: MutatingWebhookConfiguration
+      name: pillar-csi-mutating-webhook
+      jqPathExpressions:
+        - .webhooks[].clientConfig.caBundle
+    - group: admissionregistration.k8s.io
+      kind: ValidatingWebhookConfiguration
+      name: pillar-csi-validating-webhook
+      jqPathExpressions:
+        - .webhooks[].clientConfig.caBundle
+  syncPolicy:
+    automated:
+      prune: true
+      selfHeal: true
+    retry:
+      backoff:
+        duration: 5s
+        factor: 2
+        maxDuration: 3m0s
+      limit: 100
+    syncOptions:
+      - CreateNamespace=true
+      - ServerSideApply=true
+      - RespectIgnoreDifferences=true
+---
+apiVersion: argoproj.io/v1alpha1
+kind: Application
+metadata:
+  name: pillar-csi-objects
+  finalizers:
+    - resources-finalizer.argocd.argoproj.io
+spec:
+  destination:
+    name: backbone
+    namespace: pillar-csi
+  project: dfs
+  source:
+    path: apps/objects/pillar-csi
+    repoURL: https://github.com/isac322/homelab.git
+    targetRevision: HEAD
+  syncPolicy:
+    automated:
+      prune: true
+      selfHeal: true
+    retry:
+      backoff:
+        duration: 5s
+        factor: 2
+        maxDuration: 3m0s
+      limit: 100
+    syncOptions:
+      - CreateNamespace=true
+      - ServerSideApply=true

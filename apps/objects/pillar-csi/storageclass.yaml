@@ -1,0 +1,39 @@
+# StorageClass names follow <media>-<redundancy>[-retain]:
+#   media:      ssd | hdd
+#   redundancy: ha (replicated pool, e.g. raidz1 hot-data / nas) | single (no replication)
+# A class only picks storage + protocol plus the StorageClass-only fields a PVC
+# cannot set (reclaimPolicy, binding mode, expansion). Per-workload tuning such
+# as volblocksize, compression, refreservation, NVMe queue size and
+# fsType/mkfs/mount options goes on the PVC through the pillar-csi.bhyoo.com/
+# backend, /protocol and /filesystem annotations, so it is not encoded here.
+apiVersion: pillar-csi.bhyoo.com/v1alpha1
+kind: PillarStorageClass
+metadata:
+  name: ssd-single
+spec:
+  storeRef: rock5bp-fast
+  protocolRef: nvmeof-tcp
+  storageClass:
+    name: ssd-single
+    reclaimPolicy: Delete
+    volumeBindingMode: WaitForFirstConsumer
+    allowVolumeExpansion: true
+  filesystem:
+    fsType: xfs
+---
+# Same as ssd-single, but the volume survives PVC deletion (for data that must
+# not disappear with a mistaken delete, e.g. databases).
+apiVersion: pillar-csi.bhyoo.com/v1alpha1
+kind: PillarStorageClass
+metadata:
+  name: ssd-single-retain
+spec:
+  storeRef: rock5bp-fast
+  protocolRef: nvmeof-tcp
+  storageClass:
+    name: ssd-single-retain
+    reclaimPolicy: Retain
+    volumeBindingMode: WaitForFirstConsumer
+    allowVolumeExpansion: true
+  filesystem:
+    fsType: xfs

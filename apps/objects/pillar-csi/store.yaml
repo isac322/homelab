@@ -1,0 +1,41 @@
+apiVersion: pillar-csi.bhyoo.com/v1alpha1
+kind: PillarAgent
+metadata:
+  name: rock5bp
+spec:
+  nodeRef:
+    name: rock5bp
+---
+# Non-replicated SSD pool on rock5bp (nvme1n1p5). The pool is created and
+# owned host-natively (preserveNasState); see README. The layout must match
+# agent.backends in values/pillar-csi/backbone.yaml.
+apiVersion: pillar-csi.bhyoo.com/v1alpha1
+kind: PillarStore
+metadata:
+  name: rock5bp-fast
+spec:
+  agentRef: rock5bp
+  backend:
+    zfs:
+      volumeType: zvol
+      pool: fast
+      parentDataset: k8s
+      properties:
+        # Thin by default, like ssd-ha-xfs. A PVC that needs its space reserved
+        # sets `zfs: {properties: {refreservation: auto}}` in its backend doc.
+        refreservation: none
+---
+apiVersion: pillar-csi.bhyoo.com/v1alpha1
+kind: PillarProtocol
+metadata:
+  name: nvmeof-tcp
+spec:
+  protocol:
+    nvmeofTcp:
+      port: 4420
+      acl: true
+      # rock5bp takes ~7.5 minutes to come back from a reboot; the kernel
+      # default (600s) leaves too little margin before consumers give up and
+      # their filesystems shut down.
+      ctrlLossTmo: 1200
+      reconnectDelay: 5

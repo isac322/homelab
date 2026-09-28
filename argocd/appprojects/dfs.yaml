@@ -9,12 +9,15 @@ spec:
     - https://openebs.github.io/zfs-localpv
     - https://raw.githubusercontent.com/kubernetes-csi/csi-driver-nfs/master/charts
     - https://democratic-csi.github.io/charts/
+    - ghcr.io/isac322/charts
   destinations:
     - namespace: openebs
       name: backbone
     - namespace: csi-driver-nfs
       name: backbone
     - namespace: democratic-csi
+      name: backbone
+    - namespace: pillar-csi
       name: backbone
   clusterResourceWhitelist:
     - group: '*'
