@@ -176,9 +176,11 @@ spec:
         - name: home
           persistentVolumeClaim:
             claimName: issue-agent-runner-home
+        # Agent scratch (/tmp/issue-agent/<worktree>) and repository test suites
+        # that build temporary Cargo workspaces under /tmp; 2Gi evicted the pod.
         - name: tmp
           emptyDir:
-            sizeLimit: 2Gi
+            sizeLimit: 16Gi
         - name: github
           secret:
             secretName: issue-agent-github-read
