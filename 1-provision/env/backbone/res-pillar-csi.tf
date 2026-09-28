@@ -102,3 +102,14 @@ resource "github_repository_environment" "pillar_csi_github_pages" {
 
   depends_on = [github_repository_pages.pillar_csi]
 }
+
+
+# Expose the Cloudflare Web Analytics beacon token to the repo's Actions
+# workflows so the site build can embed it (the record is DNS-only, so
+# Cloudflare cannot inject the beacon). Requires `Variables` RW on the PAT,
+# which it does not currently hold (Administration/Environments/Pages RW only).
+resource "github_actions_variable" "pillar_csi_cf_web_analytics_token" {
+  repository    = github_repository.pillar_csi.name
+  variable_name = "CF_WEB_ANALYTICS_TOKEN"
+  value         = cloudflare_web_analytics_site.pillar_csi.site_token
+}
