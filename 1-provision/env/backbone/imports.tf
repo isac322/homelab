@@ -97,3 +97,25 @@ import {
   to = github_repository_environment_deployment_policy.krema_github_pages_master
   id = "krema:github-pages:61197925"
 }
+
+# The repository predates Terraform; its Pages site and github-pages
+# environment do not exist yet and are created by Terraform.
+import {
+  to = github_repository.pillar_csi
+  id = "pillar-csi"
+}
+
+import {
+  to = github_repository_vulnerability_alerts.pillar_csi
+  id = "pillar-csi"
+}
+
+import {
+  to = github_repository_dependabot_security_updates.pillar_csi
+  id = "pillar-csi"
+}
+
+import {
+  to = github_actions_repository_permissions.pillar_csi
+  id = "pillar-csi"
+}
