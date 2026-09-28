@@ -31,7 +31,9 @@ resource "cloudflare_dns_record" "pillar_csi_google_site_verification" {
 
 # Cloudflare Web Analytics for the pillar-csi site. The default provider token
 # only issues tokens and edits DNS, so it issues a dedicated token carrying the
-# account-level permission the RUM API requires.
+# account-level permissions the RUM API requires. Creating a site needs
+# Account Settings Write, but reading it only accepts Account Settings Read
+# (Write does not imply it there), so the token carries both.
 data "cloudflare_api_token_permission_groups_list" "account" {
   scope = "com.cloudflare.api.account"
 }
@@ -43,12 +45,12 @@ resource "cloudflare_api_token" "web_analytics" {
     {
       effect = "allow"
       permission_groups = [
-        {
+        for name in ["Account Settings Read", "Account Settings Write"] : {
           id = one([
             for p in data.cloudflare_api_token_permission_groups_list.account.result :
-            p.id if p.name == "Account Settings Write"
+            p.id if p.name == name
           ])
-        },
+        }
       ]
       resources = jsonencode({
         "com.cloudflare.api.account.${var.cloudflare_account_id}" = "*"

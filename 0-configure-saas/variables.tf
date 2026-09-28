@@ -86,9 +86,9 @@ variable "github_app_private_key_arc_cc_lb" {
   sensitive = true
 }
 
-variable "github_app_private_key_archon" {
+variable "github_app_private_key_ironeater" {
   type        = string
-  description = "Private key of the dedicated Archon GitHub App installed on isac322/cc-lb."
+  description = "Private key of the ironeater GitHub App (App ID 5063990) used by the issue-agent platform."
   sensitive   = true
 }
 

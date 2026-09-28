@@ -54,14 +54,14 @@ Nix와 distro 전역 패키지 목록에 같은 이름을 선언하면 module ev
 
 ### NVMe/TCP DKMS
 
-vendor 커널에 없는 NVMe/TCP 모듈(`rpi4`, `rpi5`, `macmini`는 `nvme-fabrics`/`nvme-tcp`, `rock5bp`는 `nvmet-tcp`)은 Nix가 node별로 만든 DKMS 패키지로 설치한다. 선언은 `nix/lib/nvme-tcp-dkms.json`에 있다. 패키지는 선언된 커널 release 하나만 빌드하며(`BUILD_EXCLUSIVE_KERNEL`), 공유 헤더는 그 커널의 upstream release(`baseline`)에서, transport 소스(`tcp.c`, `fabrics.c`)만 같은 stable series에서 node 커널과 컴파일·링크되는 가장 새 release(`transport`)에서 가져온다. node에서 DKMS가 빌드할 때 네트워크를 쓰지 않는다.
+vendor 커널에 없는 NVMe/TCP 모듈(`rpi4`, `rpi5`, `macmini`는 `nvme-fabrics`/`nvme-tcp`, `rock5bp`는 `nvmet-tcp`)은 Nix가 node별로 만든 DKMS 패키지로 설치한다. 선언은 `nix/lib/nvme-tcp-dkms.json`에 있다. 패키지는 같은 stable series(`baseline`의 major.minor) 커널이면 자동으로 DKMS 빌드되며, 빌드 직후 `nvme-tcp-abi-check`가 패키지의 private NVMe 헤더가 대상 커널과 ABI가 같은지 확인하고 다르면 빌드를 실패시킨다(MODVERSIONS 커널은 export 심볼 CRC 비교, CRC가 없는 커널(macmini)은 vmlinux BTF와 struct/enum 비교). 확인할 수 없거나 series가 바뀌면 실패하므로 `select`/`install`로 갱신한다. 공유 헤더는 node 커널의 upstream release(`baseline`)에서, transport 소스(`tcp.c`, `fabrics.c`)만 같은 stable series에서 node 커널과 컴파일·링크되는 가장 새 release(`transport`)에서 가져온다. node에서 DKMS가 빌드할 때 네트워크를 쓰지 않는다.
 
 ```bash
 nix run .#nvme-tcp-dkms -- select rpi5   # node에서 후보를 scratch 빌드하고 선언을 갱신, 결과를 commit
 nix run .#nvme-tcp-dkms -- install rpi5  # Nix로 deb/pkg.tar.zst를 빌드해 apt/pacman으로 설치
 ```
 
-`reconcile-distro-packages`는 선언된 일반 host에 이 패키지를 설치하고, `rock5bp`에서는 설치하지 않으므로 `install`을 명시적으로 실행한다. 설치한 모듈은 재부팅하거나 모듈을 다시 load해야 적용된다. 커널이 바뀌면 pre-activation assertion이 다음 generation을 막으므로 `select`로 선언을 갱신하고 `install`한다.
+`reconcile-distro-packages`는 선언된 일반 host에 이 패키지를 설치하고, `rock5bp`에서는 설치하지 않으므로 `install`을 명시적으로 실행한다. 설치한 모듈은 재부팅하거나 모듈을 다시 load해야 적용된다. 실행 중인 커널의 series가 다르거나 headers가 설치된 커널 중 하나라도 installed module이 없으면 pre-activation assertion이 다음 generation을 막으므로 `select`로 선언을 갱신하고 `install`한다.
 
 `rock5bp`의 vendor 6.1.84 `nvmet-tcp`에 남아 있는 allocation failure crash(upstream `5572a55a6f830ee3f3a994b6b962a5c327d28cb3`, nvmet-tcp: fix kernel crash if commands allocation fails)는 transport 소스(6.1.186)에 이미 포함되어 있으므로 별도 patch를 적용하지 않는다. 이미 설치된 module은 새 패키지를 `install`하고 다시 load하기 전까지 취약 상태 그대로다.
 
@@ -212,7 +212,7 @@ K3s version과 순차 rollout은 기존 Rancher `system-upgrade-controller`가 �
 - 이미지: HAPI Hub와 Runner는 공개 이미지 `ghcr.io/isac322/issue-agent-hapi`, `ghcr.io/isac322/issue-agent-runner`를 digest로 고정하며 pull Secret이 필요 없다. 이미지에는 레포에 있는 지침·스킬·스크립트만 들어가고 자격증명은 넣지 않는다. n8n은 공식 이미지를 digest로 고정한다.
 - Provider: `external-secret-provider.yaml`이 기존 CLIProxyAPI SSM 항목에서 Runner용 `issue-agent-provider` Secret(`OPENAI_API_KEY`, Codex `config.toml`)과 n8n 분류용 `issue-agent-n8n-model` Secret을 만든다. 값은 파일 마운트로만 전달하므로 변경 후 해당 Pod를 재시작한다.
 - GitHub 인증: 기존 GitHub App(App ID `5063990`, installation `164533066`)을 재사용한다. App 이름은 `ironeater`이며 bot 계정은 `ironeater[bot]`(user ID `333478113`)이다.
-  - 개인키는 Terraform Cloud 민감 변수와 SSM `/homelab/cluster/backbone/github-app/archon/private-key`가 소유한다. 경로 이름에 `archon`이 있지만 이 App의 정식 자격증명이므로 삭제하거나 이름을 바꾸지 않는다.
+  - 개인키는 Terraform Cloud 민감 변수 `github_app_private_key_ironeater`와 SSM `/homelab/cluster/backbone/github-app/ironeater/private-key`가 소유한다.
   - ESO가 `cc-lb`로 제한된 설치 토큰을 15분마다 `issue-agent-github-token`에 갱신한다. Git과 `gh`는 디렉터리로 마운트한 `hosts.yml`을 읽는다.
   - `GH_TOKEN`·`GITHUB_TOKEN` 환경변수나 `subPath` 마운트를 추가하지 않는다. Git 작성자와 bridge의 `GITHUB_BOT_LOGIN`은 `ironeater[bot]`으로 설정한다. App 이름을 바꾸면 이 값들도 함께 바꾼다.
 - 인터넷 공개 경로: `https://issue-agent-webhook.bhyoo.com/webhooks/github`만 Cloudflare tunnel로 노출한다. App webhook의 서명 secret은 `issue-agent-webhook` Secret의 `secret` 키와 일치해야 한다. n8n 내부 webhook과 bridge의 `/ops`는 클러스터 내부 전용이며, 서로 다른 bearer 토큰(`issue-agent-bridge-ops`)으로 인증한다.
@@ -234,7 +234,7 @@ bridge DB에 이슈 생성 이벤트가 없는 이슈의 후속 댓글은 `unman
 
 기록 조회·내보내기는 [`issue-agent-records`](apps/objects/issue-agent/operations/issue-agent-records), 온라인 SQLite 백업은 [`issue-agent-backup`](apps/objects/issue-agent/operations/issue-agent-backup)을 사용한다. 사용법·복원 전제조건은 [운영 절차](apps/objects/issue-agent/operations/README.md)에 있다. 네이티브 기록은 보관된 세션도 조회할 수 있다. 원본 DB 백업은 인증 자료가 포함될 수 있는 비공개 운영자 자료이며 외부 조회용 export와 구분한다.
 
-기존 Archon은 새 시스템 webhook 전환 검증 후 완전히 제거했다. 전용 코드·Kubernetes/ArgoCD 정의 19개, `archon` namespace와 두 PVC(20Gi+1Gi), rock5bp의 backing zvol, `archon.bhyoo.com`·`archon-webhook.bhyoo.com` DNS가 제거됐다. GitHub App과 SSM 개인키는 새 시스템에서 재사용하므로 유지한다. 인증 경로에 남은 `archon` 문자열은 기존 자격증명 경로이며 Archon 서비스가 남아 있다는 뜻이 아니다. GitHub의 기존 이슈·PR은 삭제하지 않았다.
+기존 Archon은 새 시스템 webhook 전환 검증 후 완전히 제거했다. 전용 코드·Kubernetes/ArgoCD 정의 19개, `archon` namespace와 두 PVC(20Gi+1Gi), rock5bp의 backing zvol, `archon.bhyoo.com`·`archon-webhook.bhyoo.com` DNS가 제거됐다. 재사용하는 GitHub App과 인증 경로는 `ironeater`로 이름을 바꿨다. GitHub의 기존 이슈·PR은 삭제하지 않았다.
 
 ## Ansible ownership boundary
 

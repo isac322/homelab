@@ -157,12 +157,12 @@ resource "aws_ssm_parameter" "github_app_private_key_arc_cc_lb" {
   value       = var.github_app_private_key_arc_cc_lb
 }
 
-resource "aws_ssm_parameter" "github_app_private_key_archon" {
-  count       = nonsensitive(var.github_app_private_key_archon != null) ? 1 : 0
-  name        = "/homelab/cluster/${var.k8s_cluster_name}/github-app/archon/private-key"
-  description = "GitHub App private key for Archon on isac322/cc-lb"
+resource "aws_ssm_parameter" "github_app_private_key_ironeater" {
+  count       = nonsensitive(var.github_app_private_key_ironeater != null) ? 1 : 0
+  name        = "/homelab/cluster/${var.k8s_cluster_name}/github-app/ironeater/private-key"
+  description = "Private key of the ironeater GitHub App (issue-agent)"
   type        = "SecureString"
-  value       = var.github_app_private_key_archon
+  value       = var.github_app_private_key_ironeater
 }
 
 # --- External Secrets IAM ---
@@ -199,7 +199,7 @@ data "aws_iam_policy_document" "secret_read" {
       var.github_app_id_arc_cc_lb == null ? [] : [aws_ssm_parameter.github_app_id_arc_cc_lb[0].arn],
       var.github_app_installation_id_arc_cc_lb == null ? [] : [aws_ssm_parameter.github_app_installation_id_arc_cc_lb[0].arn],
       var.github_app_private_key_arc_cc_lb == null ? [] : [aws_ssm_parameter.github_app_private_key_arc_cc_lb[0].arn],
-      nonsensitive(var.github_app_private_key_archon != null) ? [aws_ssm_parameter.github_app_private_key_archon[0].arn] : [],
+      nonsensitive(var.github_app_private_key_ironeater != null) ? [aws_ssm_parameter.github_app_private_key_ironeater[0].arn] : [],
     )
   }
 }

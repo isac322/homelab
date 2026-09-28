@@ -117,7 +117,7 @@ variable "github_app_private_key_arc_cc_lb" {
   default   = null
 }
 
-variable "github_app_private_key_archon" {
+variable "github_app_private_key_ironeater" {
   type      = string
   sensitive = true
   default   = null

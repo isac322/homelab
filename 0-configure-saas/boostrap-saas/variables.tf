@@ -166,7 +166,7 @@ variable "github_app_private_key_arc_cc_lb" {
   sensitive = true
 }
 
-variable "github_app_private_key_archon" {
+variable "github_app_private_key_ironeater" {
   type      = string
   sensitive = true
 }
