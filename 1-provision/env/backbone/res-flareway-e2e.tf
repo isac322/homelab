@@ -101,14 +101,16 @@ resource "github_branch_protection" "flareway_main" {
 }
 
 # github_repository_pages is used instead of the deprecated `pages` block on
-# github_repository: the inline block does not send `cname` when enabling
-# Pages (expandPagesUpdate vs EnablePages), so the custom domain would only be
-# set on a second apply. build_type "workflow" deploys from GitHub Actions;
-# `source` is only valid for the "legacy" build type.
+# github_repository. build_type "workflow" deploys from GitHub Actions;
+# `source` is only valid for the "legacy" build type. With provider 6.13.0 the
+# create call records the empty cname returned by EnablePages before reading
+# the configured one, so the custom domain is only applied on the next apply.
+# https_enforced needs the Pages certificate for the cname to exist first.
 resource "github_repository_pages" "flareway" {
-  repository = github_repository.flareway.name
-  build_type = "workflow"
-  cname      = "flareway.bhyoo.com"
+  repository     = github_repository.flareway.name
+  build_type     = "workflow"
+  cname          = "flareway.bhyoo.com"
+  https_enforced = true
 }
 
 # Manage the `github-pages` deployment environment explicitly so the Pages
