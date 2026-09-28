@@ -324,6 +324,10 @@ class Fake:
             return 201, body
         if rest[0] == "pulls":
             return self.pulls(method, repo, rest[1:], query, body)
+        if rest[:3] == ["git", "ref", "heads"]:
+            branch = "/".join(rest[3:])
+            return ((200, {"object": {"sha": self.branch_heads[branch]}}) if branch in self.branch_heads
+                    else (404, {"message": "Reference does not exist"}))
         number = int(rest[1])
         if len(rest) == 2:
             return 200, {"number": number, "title": "Fix it", "body": "details", "state": "open",
@@ -1300,6 +1304,53 @@ class PullRequestOpsTests(BridgeTestCase):
         unpushed = self.op("github.pr_upsert", head_sha=SHA_A, title="t", body="Fixes #7")
         self.assertTrue(unpushed["retryable"])
         self.assertIn("push first", unpushed["error"])
+
+    def test_pr_upsert_waits_for_lagging_pr_head(self) -> None:
+        self.started()
+        self.op("ensure_session")
+        self.fake.add_pr(88, sha=SHA_B)
+        self.fake.branch_heads["hapi-issue-7"] = SHA_B
+        now = 0.0
+
+        def fake_sleep(seconds: float) -> None:
+            nonlocal now
+            now += seconds
+            if now >= 4:  # third read still lags; the fourth one converges
+                self.fake.prs[88]["head"]["sha"] = SHA_B
+
+        self.bridge.clock, self.bridge.sleep = lambda: now, fake_sleep
+        updated = self.op("github.pr_upsert", head_sha=SHA_B, title="t", body="Fixes #7")
+        self.assertTrue(updated["ok"], updated)
+        self.assertEqual(updated["number"], 88)
+        self.assertEqual(self.fake.pr_patches, [{"title": "t", "body": "Fixes #7"}])
+
+    def test_pr_upsert_push_first_error_when_branch_ref_differs(self) -> None:
+        self.started()
+        self.op("ensure_session")
+        self.fake.add_pr(88, sha=SHA_A)
+        self.fake.branch_heads["hapi-issue-7"] = SHA_A  # ref still reports the old sha: nothing was pushed
+        self.bridge.sleep = lambda seconds: self.fail(f"slept {seconds}s")  # type: ignore[assignment]
+        result = self.op("github.pr_upsert", head_sha=SHA_B, title="t", body="Fixes #7")
+        self.assertTrue(result["retryable"])
+        self.assertIn("push first", result["error"])
+        self.assertEqual(self.fake.pr_patches, [])
+
+    def test_pr_upsert_reports_unpropagated_head(self) -> None:
+        self.started()
+        self.op("ensure_session")
+        self.fake.add_pr(88, sha=SHA_A)
+        self.fake.branch_heads["hapi-issue-7"] = SHA_B
+        now = 0.0
+
+        def fake_sleep(seconds: float) -> None:
+            nonlocal now
+            now += seconds
+
+        self.bridge.clock, self.bridge.sleep = lambda: now, fake_sleep
+        result = self.op("github.pr_upsert", head_sha=SHA_B, title="t", body="Fixes #7")
+        self.assertTrue(result["retryable"])
+        self.assertIn("propagated the pushed head", result["error"])
+        self.assertEqual(self.fake.pr_patches, [])
 
     def test_publisher_push_errors_are_surfaced(self) -> None:
         self.started()

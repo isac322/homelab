@@ -96,6 +96,9 @@ PATCH_LIMIT = 4000
 MAX_IDEMPOTENCY_PAGES = 10  # review/comment lists scanned for hidden markers
 PUBLISHER_CHECKOUT_TIMEOUT = 600.0
 PUBLISHER_PUSH_TIMEOUT = 300.0
+# A push updates the branch ref immediately but the open PR's head asynchronously.
+PR_HEAD_WAIT_SECONDS = 60.0
+PR_HEAD_WAIT_INTERVAL = 2.0
 REVIEW_STATE_EVENTS = {"APPROVED": "APPROVE", "CHANGES_REQUESTED": "REQUEST_CHANGES", "COMMENTED": "COMMENT"}
 
 PR_THREADS_QUERY = """
@@ -1324,12 +1327,16 @@ def fit_pr_context(ctx: dict[str, Any], budget: int = PR_CONTEXT_BUDGET) -> dict
 
 
 class Bridge:
-    def __init__(self, config: Config, store: Store, hapi: Hapi, github: GitHub, publisher: Publisher):
+    def __init__(self, config: Config, store: Store, hapi: Hapi, github: GitHub, publisher: Publisher,
+                 *, clock: Callable[[], float] = time.monotonic,
+                 sleep: Callable[[float], None] = time.sleep):
         self.config = config
         self.store = store
         self.hapi = hapi
         self.github = github
         self.publisher = publisher
+        self.clock = clock
+        self.sleep = sleep
         self.session_lock = threading.Lock()
         self.ops: dict[str, Callable[[dict[str, Any]], dict[str, Any]]] = {
             "begin": self.op_begin,
@@ -2320,6 +2327,26 @@ class Bridge:
             if sha != head:
                 raise OpError(f"pull request head {sha} is not {head}; push first", retryable=True)
 
+        def await_head(pr: dict[str, Any]) -> dict[str, Any]:
+            # GitHub updates a PR's head asynchronously after a push; the branch ref moves first.
+            # A pushed head that has not reached the PR object yet gets a bounded wait, not an error.
+            sha = (pr.get("head") or {}).get("sha")
+            if sha == head:
+                return pr
+            status, data = self._gh_raw("GET", f"/repos/{repo}/git/ref/heads/{branch}")
+            ref_sha = data.get("object", {}).get("sha") if status == 200 and isinstance(data, dict) else None
+            if ref_sha != head:
+                raise OpError(f"pull request head {sha} is not {head}; push first", retryable=True)
+            deadline = self.clock() + PR_HEAD_WAIT_SECONDS
+            while True:
+                self.sleep(PR_HEAD_WAIT_INTERVAL)
+                fresh = self._gh("GET", f"/repos/{repo}/pulls/{pr['number']}")
+                if isinstance(fresh, dict) and (fresh.get("head") or {}).get("sha") == head:
+                    return fresh
+                if self.clock() >= deadline:
+                    raise OpError(f"github has not propagated the pushed head {head} to pull request "
+                                  f"#{pr['number']} yet", retryable=True)
+
         existing, created = open_pr(), False
         if existing is None:
             status, data = self._gh_raw("POST", f"/repos/{repo}/pulls", {
@@ -2333,7 +2360,7 @@ class Bridge:
                 raise OpError(f"github pull request create HTTP {status} {message or ''}".strip(),
                               retryable=status >= 500 or status == 429)
         if existing is not None:
-            check_head(existing)
+            existing = await_head(existing)
             pr = self._gh("PATCH", f"/repos/{repo}/pulls/{existing['number']}", {"title": title, "body": body})
             if not isinstance(pr, dict):
                 raise OpError("github pull request update: unexpected response", retryable=True)
