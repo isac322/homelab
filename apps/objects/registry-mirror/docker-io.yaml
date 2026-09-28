@@ -32,6 +32,24 @@ spec:
     requests:
       storage: 50Gi
 ---
+# Being migrated onto pillar-csi (non-replicated SSD). A pull-through cache
+# can be refetched, so it does not need a replicated pool, and thin is fine.
+apiVersion: v1
+kind: PersistentVolumeClaim
+metadata:
+  name: registry-docker-io-fast
+  namespace: arc-systems
+  annotations:
+    pillar-csi.bhyoo.com/backend: |
+      zfs: {properties: {refreservation: none}}
+spec:
+  accessModes:
+    - ReadWriteOnce
+  storageClassName: ssd-single
+  resources:
+    requests:
+      storage: 50Gi
+---
 apiVersion: apps/v1
 kind: Deployment
 metadata:
