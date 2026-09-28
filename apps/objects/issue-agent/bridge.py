@@ -1338,6 +1338,10 @@ class Bridge:
         self.clock = clock
         self.sleep = sleep
         self.session_lock = threading.Lock()
+        # At most one in-flight attention notice per delivery and one check-then-post per comment
+        # key; ``setdefault`` makes lock lookup atomic. Entries are kept forever: deleting a key
+        # while another thread holds its lock would reopen the race they close.
+        self._keyed_locks: dict[Any, threading.Lock] = {}
         self.ops: dict[str, Callable[[dict[str, Any]], dict[str, Any]]] = {
             "begin": self.op_begin,
             "stage": self.op_stage,
@@ -1375,6 +1379,9 @@ class Bridge:
             LOG.warning("op %s transport failure: %s", request["op"], exc)
             return {"ok": False, "error": f"transport: {exc}", "retryable": True, "needs_operator": False}
         return {"ok": True, **result}
+
+    def _keyed_lock(self, key: Any) -> threading.Lock:
+        return self._keyed_locks.setdefault(key, threading.Lock())
 
     def registry(self) -> Registry:
         try:
@@ -1579,11 +1586,16 @@ class Bridge:
         return "\n".join(lines)
 
     def mark_attention(self, ev: sqlite3.Row, detail: str, node: str | None = None) -> None:
-        """Park the event, then make it visible on GitHub (``notify_attention``)."""
+        """Park the event, then make it visible on GitHub (``notify_attention``).
+
+        Parking claims the retry slot (``next_attempt_at`` in the future) in the same write, so the
+        dispatcher's pending-notice scan cannot pick the event up while this inline notice is in flight.
+        """
         if ev["state"] != "needs_attention":
             self.store.update_issue(ev["repo"], ev["issue_number"], blocked=1, detail=detail)
             self.store.update_event(ev["delivery_id"], state="needs_attention", detail=detail,
-                                    attention_pending=1, attention_node=node)
+                                    attention_pending=1, attention_node=node,
+                                    next_attempt_at=time.time() + DISPATCH_BACKOFF)
         LOG.error("%s#%d event %s needs attention: %s", ev["repo"], ev["issue_number"], ev["delivery_id"], detail)
         self.notify_attention(ev["delivery_id"])
 
@@ -1592,27 +1604,41 @@ class Bridge:
 
         Both steps are idempotent (hidden comment marker, label add). Until both succeed ``attention_pending``
         stays set and the dispatcher retries after a backoff. Returns whether the notice is complete.
+
+        Ops threads and the dispatcher both call this. At most one attempt per delivery runs at a time: a
+        caller that finds one in flight returns at once, since that attempt re-arms the retry if it fails.
+        Each attempt claims the retry slot before touching GitHub so the dispatcher skips it meanwhile.
         """
         ev = self.store.event(delivery_id)
         if ev is None or ev["state"] != "needs_attention" or not ev["attention_pending"]:
             return True
-        done = True
+        lock = self._keyed_lock(("attention", delivery_id))
+        if not lock.acquire(blocking=False):
+            return False
         try:
-            self._comment(ev["repo"], ev["issue_number"], f"{delivery_id}:attention",
-                          self.attention_body(ev, ev["detail"] or "needs attention", ev["attention_node"]))
-        except (OpError, TransportError) as exc:
-            LOG.error("attention notice for %s not posted (will retry): %s", delivery_id, exc)
-            done = False
-        try:
-            self._apply_labels(ev["repo"], ev["issue_number"], [NEEDS_ATTENTION], [])
-        except (OpError, TransportError) as exc:
-            LOG.error("attention label for %s not applied (will retry): %s", delivery_id, exc)
-            done = False
-        if done:
-            self.store.update_event(delivery_id, attention_pending=0)
-        else:
+            ev = self.store.event(delivery_id)  # the attempt that held the lock may have finished it
+            if ev is None or ev["state"] != "needs_attention" or not ev["attention_pending"]:
+                return True
             self.store.update_event(delivery_id, next_attempt_at=time.time() + DISPATCH_BACKOFF)
-        return done
+            done = True
+            try:
+                self._comment(ev["repo"], ev["issue_number"], f"{delivery_id}:attention",
+                              self.attention_body(ev, ev["detail"] or "needs attention", ev["attention_node"]))
+            except (OpError, TransportError) as exc:
+                LOG.error("attention notice for %s not posted (will retry): %s", delivery_id, exc)
+                done = False
+            try:
+                self._apply_labels(ev["repo"], ev["issue_number"], [NEEDS_ATTENTION], [])
+            except (OpError, TransportError) as exc:
+                LOG.error("attention label for %s not applied (will retry): %s", delivery_id, exc)
+                done = False
+            if done:
+                self.store.update_event(delivery_id, attention_pending=0)
+            else:
+                self.store.update_event(delivery_id, next_attempt_at=time.time() + DISPATCH_BACKOFF)
+            return done
+        finally:
+            lock.release()
 
     def op_retry_event(self, req: dict[str, Any]) -> dict[str, Any]:
         """Operator: requeue a needs_attention event. Recorded stages are kept so the workflow resumes."""
@@ -2023,11 +2049,15 @@ class Bridge:
         raise OpError("too many comments to verify idempotency", needs_operator=True)
 
     def _comment(self, repo: str, number: int, key: str, body: str) -> dict[str, Any]:
+        """Post ``body`` once per hidden ``key`` marker. The marker scan and the POST are one critical
+        section per key; otherwise a concurrent caller scans before the other's POST lands and posts again."""
         marker = f"{BOT_MARKER_PREFIX}:{key} -->"
-        for c in self._comments(repo, number):
-            if isinstance(c.get("body"), str) and marker in c["body"]:
-                return {"url": c.get("html_url"), "created": False}
-        data = self._gh("POST", f"/repos/{repo}/issues/{number}/comments", {"body": f"{marker}\n{body}"}, ok=(201,))
+        with self._keyed_lock(("comment", repo, number, key)):
+            for c in self._comments(repo, number):
+                if isinstance(c.get("body"), str) and marker in c["body"]:
+                    return {"url": c.get("html_url"), "created": False}
+            data = self._gh("POST", f"/repos/{repo}/issues/{number}/comments", {"body": f"{marker}\n{body}"},
+                            ok=(201,))
         return {"url": data.get("html_url") if isinstance(data, dict) else None, "created": True}
 
     def op_github_issue(self, req: dict[str, Any]) -> dict[str, Any]:

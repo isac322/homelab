@@ -177,7 +177,7 @@ v2는 Runner Pod에 publisher 사이드카를 추가했다. manifest의 값은 C
 - [x] n8n `IssueAgentMain01`을 triage → implement / followup / review 흐름으로 재작성. n8n 모델 분류 호출·중복 검색 노드·`issue-agent-n8n-model` Secret 제거
 - [x] 오류 워크플로 `IssueAgentError01`과 attention 댓글·`agent:needs-attention` 라벨(전달될 때까지 재시도) 구현, bootstrap이 두 워크플로를 동기화
 - [x] 전역 `AGENTS.md`와 스킬을 결과 필드 기반으로 수정하고 `/etc/codex/skills`에 설치
-- [ ] v2 이미지·manifest 배포 후 네 Deployment Ready, publisher `/healthz`, 세 GitHub 토큰 Secret 동기화 확인
+- [x] v2 이미지·manifest 배포 후 네 Deployment Ready, publisher `/healthz`, 세 GitHub 토큰 Secret 동기화 확인
 
 ## 수용 기준과 검증 기록
 
@@ -201,11 +201,12 @@ v2는 Runner Pod에 publisher 사이드카를 추가했다. manifest의 값은 C
 
 각 항목은 허용 사용자의 실제 GitHub 이벤트로 실행하고, 이슈/PR 번호·delivery ID·n8n 실행 ID·관찰 결과를 함께 기록한 뒤 체크한다.
 
-- [ ] triage 결과를 n8n이 적용한다: 새 이슈에서 에이전트가 TriageResult만 반환하고, 카탈로그 라벨과 분석 댓글이 bridge op(`github.labels`, `github.comment`)로 게시된다. 에이전트 토큰으로는 GitHub 쓰기가 거절된다.
-- [ ] 구현 PR이 publisher로 만들어진다: `next_action: implement`에서 에이전트가 `hapi-issue-<n>`에 로컬 커밋만 하고, n8n이 `git.push`(publisher)로 push한 뒤 `github.pr_upsert`로 일반 PR을 열고 이슈에 PR 링크를 남긴다. 후속 댓글은 같은 PR을 갱신한다.
-- [ ] PR 리뷰가 게시된다: `pull_request` opened/ready_for_review에서 ReviewResult로 리뷰 하나가 PR head에 제출된다. bot이 연 PR은 `COMMENT`와 `**Verdict: <event>**` 본문으로 제출된다.
-- [ ] 재리뷰 요청이 스레드 답글과 새 리뷰를 만든다: PR 댓글 `@ironeater review`에 기존 스레드 답글·resolve가 게시되고, 이전 지적의 Closed/Open 절을 담은 새 리뷰가 제출된다.
-- [ ] 오류가 알려진다: 실패한 실행에서 attention 댓글(노드·delivery·n8n 실행 링크·재시도 방법)과 `agent:needs-attention` 라벨이 붙고, `retry_event` 후 성공하면 라벨이 제거된다. n8n 오류 워크플로 `IssueAgentError01` 경로도 같은 결과를 낸다.
+- [x] triage 결과를 n8n이 적용한다: #887(delivery `768d455a…`, n8n 실행 12)에서 에이전트가 TriageResult만 반환했고, `bug`·`repro:reproduced`·`triage:root-cause-identified`·`triage:fix-direction-decided` 라벨과 분석 댓글이 `github.labels`·`github.comment`로 게시됐다. Runner 컨테이너에서 `gh api -X POST …/comments`와 `git push --dry-run`은 모두 403이다.
+- [x] 구현 PR이 publisher로 만들어진다: #887의 `next_action: implement`에서 에이전트는 로컬 커밋만 했고, n8n이 publisher로 `hapi-issue-887`을 push한 뒤 일반 PR #888을 열고 이슈에 PR 링크를 남겼다. 후속 댓글(delivery `74d2ce60…`)은 ADR 4개 파일의 링크를 같은 PR에 추가(`e53b11e`)하고 PR 제목·본문을 갱신했다. 이 과정에서 push 직후 PR head 반영 지연으로 한 번 멈췄고, `pr_upsert`가 branch ref를 확인한 뒤 PR head 반영을 기다리도록 고친 다음 `retry_event`로 완료했다.
+- [x] PR 리뷰가 게시된다: bot이 연 #888은 `pull_request.opened`로 리뷰가 시작돼 `COMMENT`와 `**Verdict: APPROVE**` 본문으로 제출됐다. 사용자 명의 QA PR #889에는 실제 `CHANGES_REQUESTED`와 128행 인라인 지적이 head `b24e8aa`에 제출됐다.
+- [x] 재리뷰 요청이 스레드 답글과 새 리뷰를 만든다: #889에서 수정 push, 제목·본문 변경, 사용자 스레드 답글 뒤 `@ironeater review`를 달자, 봇이 기존 스레드에 답글을 달고 resolve했으며 새 head `ab5bc4d`에 `Previous findings`의 Closed 절을 담은 `APPROVED` 리뷰를 제출했다. 세션 메시지에 수정된 제목·본문, 사용자 답글, 기존 스레드 ID가 들어 있음을 확인했다. 첫 시도는 `resolveReviewThread` 권한 부족으로 멈췄고, bridge 토큰에 contents write를 추가한 뒤 `retry_event`로 완료했다.
+- [x] 오류가 알려진다: 실제 실패 세 건(#889 `Review submitted?` 권한 오류, #889 실행 중 HAPI abort 후 `Turn state (review)`의 결과 없음, #887 `Pull request upserted?`)에서 노드·delivery·n8n 실행 링크·HAPI 세션 링크·재시도 방법을 담은 attention 댓글과 `agent:needs-attention` 라벨이 붙었고, `retry_event` 뒤 성공한 이벤트는 라벨이 제거됐다. n8n 오류 워크플로 `IssueAgentError01`은 알 수 없는 delivery로 실패시킨 실행에서 실제로 기동해 bridge `fail_execution`을 호출함을 확인했다(`unknown_execution` 응답). 실제 이벤트의 실행이 비정상 종료되는 경우의 댓글·라벨은 단위 테스트로만 확인했다.
+- [x] attention 알림은 이벤트당 하나다: #887에서 n8n `fail` 요청 스레드와 dispatcher의 재시도 tick이 같은 알림을 동시에 보내 같은 marker 댓글이 1초 간격으로 두 번 게시됐다(중복 하나는 삭제). 알림 전송을 delivery별로 직렬화하고, park할 때 재시도 시각을 미래로 잡으며, marker 확인과 댓글 POST를 한 잠금 안에서 하도록 고쳤다. 동시 경로를 재현하는 테스트는 수정 전 `2 != 1`로 실패하고 수정 후 통과한다.
 
 ### 현재 실행 증거
 

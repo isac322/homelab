@@ -64,6 +64,8 @@ class Fake:
         self.label_creates: list[dict[str, Any]] = []
         self.comment_posts = 0
         self.issue_writes_fail = False  # POST issue comments/labels answer 502
+        # (entered, release): the next issue-comment POST signals ``entered`` and waits for ``release``
+        self.comment_gate: tuple[threading.Event, threading.Event] | None = None
         self.prs: dict[int, dict[str, Any]] = {}
         self.pr_creates: list[dict[str, Any]] = []
         self.pr_patches: list[dict[str, Any]] = []
@@ -181,6 +183,13 @@ class Fake:
                 parsed = urllib.parse.urlsplit(self.path)
                 query = dict(urllib.parse.parse_qsl(parsed.query))
                 body = self._body()
+                with fake.lock:
+                    gate = None
+                    if method == "POST" and "/issues/" in parsed.path and parsed.path.endswith("/comments"):
+                        gate, fake.comment_gate = fake.comment_gate, None
+                if gate is not None:  # held outside the lock so concurrent requests are still served
+                    gate[0].set()
+                    gate[1].wait(10)
                 with fake.lock:
                     status, payload = fake.route(method, parsed.path, query, body, self.headers)
                 if status == -1:
@@ -814,6 +823,26 @@ class LifecycleOpsTests(BridgeTestCase):
         self.assertEqual((self.fake.labels[7], self.store.event("d1")["attention_pending"]), ([NEEDS], 0))
         self.dispatcher.tick(now + 4 * bridge.DISPATCH_BACKOFF)
         self.assertEqual(self.fake.comment_posts, 1)
+
+    def test_attention_notice_in_flight_is_not_posted_again_by_the_dispatcher(self) -> None:
+        # Live double post: `fail` parked the event and was posting its notice when the dispatcher's
+        # pending-notice scan notified the same delivery; both scans missed the marker and both POSTed.
+        self.started()
+        entered, release = threading.Event(), threading.Event()
+        self.addCleanup(release.set)
+        self.fake.comment_gate = (entered, release)
+        results: list[dict] = []
+        op = threading.Thread(target=lambda: results.append(
+            self.op("fail", detail="boom", node="Pull request upserted?")))
+        op.start()
+        self.assertTrue(entered.wait(5))  # the op's marker scan found nothing; its POST is in flight
+        self.dispatcher.tick()  # the retry slot is claimed while the notice is in flight
+        self.dispatcher.tick(time.time() + 10 * bridge.DISPATCH_BACKOFF)  # past the claim: still one notifier
+        release.set()
+        op.join(10)
+        self.assertEqual(results, [{"ok": True}])
+        self.assertEqual(self.fake.comment_posts, 1)
+        self.assertEqual((self.fake.labels[7], self.store.event("d1")["attention_pending"]), ([NEEDS], 0))
 
     def test_finish_clears_needs_attention_label(self) -> None:
         self.started()
