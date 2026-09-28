@@ -1,0 +1,75 @@
+{
+  "id": "IssueAgentError01",
+  "name": "Issue Agent errors",
+  "active": false,
+  "nodes": [
+    {
+      "parameters": {},
+      "id": "fd4a80d7-7ab4-51b7-b982-eeadd3a22e50",
+      "name": "Workflow error",
+      "type": "n8n-nodes-base.errorTrigger",
+      "typeVersion": 1,
+      "position": [
+        0,
+        0
+      ]
+    },
+    {
+      "parameters": {
+        "method": "POST",
+        "url": "={{ $env.ISSUE_AGENT_BRIDGE_URL }}/ops",
+        "authentication": "genericCredentialType",
+        "genericAuthType": "httpHeaderAuth",
+        "sendBody": true,
+        "specifyBody": "json",
+        "jsonBody": "={{ JSON.stringify({ op: 'fail_execution', execution_id: String(($json.execution || {}).id || ''), node: String(($json.execution || {}).lastNodeExecuted || ''), error: String((($json.execution || {}).error || {}).message || 'unknown error').slice(0, 1900) }) }}",
+        "options": {
+          "timeout": 120000
+        }
+      },
+      "id": "8b3276f8-0691-5437-82a6-d8b1e75b1eab",
+      "name": "Fail execution",
+      "type": "n8n-nodes-base.httpRequest",
+      "typeVersion": 4.2,
+      "position": [
+        240,
+        0
+      ],
+      "credentials": {
+        "httpHeaderAuth": {
+          "id": "iaBridgeOps00001",
+          "name": "issue-agent-bridge-ops"
+        }
+      },
+      "retryOnFail": true,
+      "maxTries": 3,
+      "waitBetweenTries": 5000
+    }
+  ],
+  "connections": {
+    "Workflow error": {
+      "main": [
+        [
+          {
+            "node": "Fail execution",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    }
+  },
+  "settings": {
+    "executionOrder": "v1",
+    "saveManualExecutions": true,
+    "saveDataErrorExecution": "all",
+    "saveDataSuccessExecution": "all",
+    "timezone": "UTC",
+    "callerPolicy": "workflowsFromSameOwner"
+  },
+  "pinData": {},
+  "meta": {
+    "templateCredsSetupCompleted": true
+  },
+  "tags": []
+}

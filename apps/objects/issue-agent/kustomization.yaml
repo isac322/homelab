@@ -7,6 +7,7 @@ resources:
   - external-secret-auth.yaml
   - external-secret-provider.yaml
   - external-secret-github.yaml
+  - external-secret-publisher.yaml
   - deployment-hub.yaml
   - deployment-n8n.yaml
   - deployment-runner.yaml
@@ -23,4 +24,5 @@ configMapGenerator:
   - name: issue-agent-n8n-workflow
     files:
       - n8n-workflow.json
+      - n8n-error-workflow.json
       - n8n-bootstrap.sh

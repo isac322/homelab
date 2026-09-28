@@ -36,7 +36,7 @@ spec:
                       - macmini
       containers:
         - name: runner
-          image: ghcr.io/isac322/issue-agent-runner:0.30.7-codex0.157.0-20260926-r2@sha256:359285ea165f65ff826b4f396a99237ed3baa5d63456fb806cfe3af73af4345c
+          image: ghcr.io/isac322/issue-agent-runner:0.30.7-codex0.157.0-20260929-r1@sha256:b88234063a543460449ac9075a6e4cb0779f8b1d4bc8557e7ca7d0d98c1829d1
           env:
             - name: HOME
               value: /home/agent
@@ -62,8 +62,6 @@ spec:
               value: "ironeater[bot]"
             - name: GIT_COMMITTER_EMAIL
               value: "333478113+ironeater[bot]@users.noreply.github.com"
-            - name: ISSUE_AGENT_REPOSITORIES
-              value: isac322/cc-lb
             - name: CARGO_BUILD_JOBS
               value: "4"
             - name: GOMAXPROCS
@@ -114,6 +112,66 @@ spec:
               readOnly: true
             - name: tmp
               mountPath: /tmp
+        # The only container holding the contents:write token. Called by the
+        # bridge only; the runner container cannot read either of its secrets.
+        - name: publisher
+          image: ghcr.io/isac322/issue-agent-runner:0.30.7-codex0.157.0-20260929-r1@sha256:b88234063a543460449ac9075a6e4cb0779f8b1d4bc8557e7ca7d0d98c1829d1
+          command:
+            - /usr/bin/tini
+            - --
+            - /opt/issue-agent/bin/publisher
+          env:
+            - name: HOME
+              value: /var/lib/issue-agent-publisher
+            - name: PUBLISHER_PORT
+              value: "8090"
+            - name: PUBLISHER_TOKEN_FILE
+              value: /run/issue-agent/publisher/token
+            - name: GITHUB_PUSH_TOKEN_FILE
+              value: /run/issue-agent/push/token
+            - name: PUBLISHER_STATE_DIR
+              value: /var/lib/issue-agent-publisher
+            - name: ISSUE_AGENT_CHECKOUTS
+              value: /home/agent/checkouts
+          ports:
+            - name: publisher
+              containerPort: 8090
+          readinessProbe:
+            httpGet:
+              path: /healthz
+              port: publisher
+          livenessProbe:
+            httpGet:
+              path: /healthz
+              port: publisher
+            initialDelaySeconds: 10
+            periodSeconds: 30
+          resources:
+            requests:
+              cpu: 10m
+              memory: 64Mi
+            limits:
+              memory: 256Mi
+          securityContext:
+            runAsNonRoot: true
+            runAsUser: 1000
+            runAsGroup: 1000
+            allowPrivilegeEscalation: false
+            readOnlyRootFilesystem: true
+            capabilities:
+              drop:
+                - ALL
+          volumeMounts:
+            - name: home
+              mountPath: /home/agent
+            - name: push
+              mountPath: /run/issue-agent/push
+              readOnly: true
+            - name: publisher-auth
+              mountPath: /run/issue-agent/publisher
+              readOnly: true
+            - name: publisher-state
+              mountPath: /var/lib/issue-agent-publisher
       volumes:
         - name: home
           persistentVolumeClaim:
@@ -123,9 +181,20 @@ spec:
             sizeLimit: 2Gi
         - name: github
           secret:
-            secretName: issue-agent-github-token
+            secretName: issue-agent-github-read
             defaultMode: 0440
         - name: provider
           secret:
             secretName: issue-agent-provider
             defaultMode: 0440
+        - name: push
+          secret:
+            secretName: issue-agent-github-push
+            defaultMode: 0440
+        - name: publisher-auth
+          secret:
+            secretName: issue-agent-publisher
+            defaultMode: 0440
+        - name: publisher-state
+          emptyDir:
+            sizeLimit: 4Gi

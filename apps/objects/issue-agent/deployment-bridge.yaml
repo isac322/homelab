@@ -56,6 +56,16 @@ spec:
               value: http://issue-agent-hub.issue-agent.svc.cluster.local:3006
             - name: HAPI_ACCESS_TOKEN_FILE
               value: /run/issue-agent/hapi/CLI_API_TOKEN
+            - name: PUBLISHER_URL
+              value: http://issue-agent-publisher.issue-agent.svc.cluster.local:8090
+            - name: PUBLISHER_TOKEN_FILE
+              value: /run/issue-agent/publisher/token
+            - name: N8N_PUBLIC_URL
+              value: https://n8n.bhyoo.com
+            - name: HAPI_PUBLIC_URL
+              value: https://hapi.bhyoo.com
+            - name: ISSUE_AGENT_WORKFLOW_ID
+              value: IssueAgentMain01
           ports:
             - name: webhook
               containerPort: 8080
@@ -101,6 +111,9 @@ spec:
             - name: hapi
               mountPath: /run/issue-agent/hapi
               readOnly: true
+            - name: publisher
+              mountPath: /run/issue-agent/publisher
+              readOnly: true
       volumes:
         - name: bridge-state
           persistentVolumeClaim:
@@ -130,3 +143,7 @@ spec:
             items:
               - key: CLI_API_TOKEN
                 path: CLI_API_TOKEN
+        - name: publisher
+          secret:
+            secretName: issue-agent-publisher
+            defaultMode: 0440

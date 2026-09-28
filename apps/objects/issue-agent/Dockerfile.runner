@@ -2,7 +2,7 @@
 # HAPI runner + native Codex CLI + the common Issue Agent profile.
 # Build context: apps/objects/issue-agent (see .dockerignore). linux/arm64 only.
 # No repository checkout, credential, or provider config is baked in; the
-# bootstrap clones configured repositories at runtime into the home PVC.
+# publisher sidecar clones repositories at runtime into the home PVC.
 
 # node:24.21.0-trixie-slim (linux/arm64). Node runs Codex's npm launcher.
 FROM node:24.21.0-trixie-slim@sha256:7da5980a342ed134ad56bb16c918f94548cd15cf3b961aa231c286598accb536
@@ -72,6 +72,7 @@ RUN install -d -m 0755 /etc/issue-agent /opt/issue-agent/bin /opt/issue-agent/pr
 COPY --chmod=0644 runner/gitconfig /etc/issue-agent/gitconfig
 COPY --chmod=0755 runner/bootstrap.sh /opt/issue-agent/bin/runner-bootstrap
 COPY --chmod=0755 runner/healthcheck.sh /opt/issue-agent/bin/runner-healthcheck
+COPY --chmod=0755 runner/publisher.py /opt/issue-agent/bin/publisher
 # Global instructions are copied into CODEX_HOME by the bootstrap. Skills use
 # Codex's ADMIN scope (/etc/codex/skills), so they never live on the PVC.
 COPY --chmod=0644 profile/AGENTS.md /opt/issue-agent/profile/AGENTS.md

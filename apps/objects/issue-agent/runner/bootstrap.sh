@@ -9,7 +9,7 @@ fail() {
 }
 
 for name in HOME HAPI_HOME CODEX_HOME HAPI_API_URL CLI_API_TOKEN GH_CONFIG_DIR GIT_CONFIG_SYSTEM \
-  ISSUE_AGENT_CHECKOUTS ISSUE_AGENT_PROVIDER_DIR ISSUE_AGENT_REPOSITORIES \
+  ISSUE_AGENT_CHECKOUTS ISSUE_AGENT_PROVIDER_DIR \
   GIT_AUTHOR_NAME GIT_AUTHOR_EMAIL GIT_COMMITTER_NAME GIT_COMMITTER_EMAIL; do
   [[ -n "${!name:-}" ]] || fail "$name is required"
 done
@@ -30,17 +30,16 @@ if [[ -e "$CODEX_HOME/AGENTS.override.md" ]]; then
 fi
 install -m 644 /opt/issue-agent/profile/AGENTS.md "$CODEX_HOME/AGENTS.md"
 
-# Base clones only. HAPI creates per-issue worktrees next to each clone
-# (<repo>-worktrees/<name>) from the clone's local HEAD, so keep it current.
-read -r -a repositories <<<"$ISSUE_AGENT_REPOSITORIES"
-for repository in "${repositories[@]}"; do
-  [[ "$repository" =~ ^[A-Za-z0-9_.-]+/[A-Za-z0-9_.-]+$ ]] || fail "invalid repository '$repository'; expected owner/name"
-  checkout="$ISSUE_AGENT_CHECKOUTS/$repository"
+# Base clones only; the publisher sidecar clones a repository on first use.
+# HAPI creates per-issue worktrees next to each clone (<repo>-worktrees/<name>)
+# from the clone's local HEAD, so fast-forward every existing clone.
+shopt -s nullglob
+for checkout in "$ISSUE_AGENT_CHECKOUTS"/*/*; do
+  [[ -d "$checkout" && ! -L "$checkout" ]] || continue
+  [[ "$checkout" != *-worktrees ]] || continue
+  repository="${checkout#"$ISSUE_AGENT_CHECKOUTS"/}"
+  [[ "$repository" =~ ^[A-Za-z0-9_.-]+/[A-Za-z0-9_.-]+$ ]] || fail "invalid checkout '$checkout'; expected owner/name"
   origin="https://github.com/$repository.git"
-  if [[ ! -e "$checkout" ]]; then
-    mkdir -p "$(dirname "$checkout")"
-    git clone --quiet -- "$origin" "$checkout"
-  fi
   [[ "$(git -C "$checkout" rev-parse --show-toplevel)" == "$checkout" ]] || fail "$checkout is not a repository root"
   [[ "$(git -C "$checkout" remote get-url origin)" == "$origin" ]] || fail "$checkout origin is not $origin"
 

@@ -69,6 +69,8 @@ spec:
               value: "false"
             - name: ISSUE_AGENT_WORKFLOW_ID
               value: IssueAgentMain01
+            - name: ISSUE_AGENT_ERROR_WORKFLOW_ID
+              value: IssueAgentError01
             - name: N8N_ENFORCE_SETTINGS_FILE_PERMISSIONS
               value: "true"
             - name: N8N_ENCRYPTION_KEY_FILE
