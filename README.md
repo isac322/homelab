@@ -209,7 +209,7 @@ K3s version과 순차 rollout은 기존 Rancher `system-upgrade-controller`가 �
   - `issue-agent-runner`: HAPI Runner로, Codex를 실행하며 네이티브 `CODEX_HOME`, checkout, 이슈별 worktree를 home PVC에 보존한다.
 
   Hub, n8n, runner home, bridge 상태는 각각 `ssd-ha-xfs` PVC에 저장한다. 모든 Pod는 non-root이며 Kubernetes API 토큰을 마운트하지 않는다.
-- 이미지: HAPI Hub와 Runner는 `ghcr.io/isac322/issue-agent-hapi`, `ghcr.io/isac322/issue-agent-runner`를 digest로 고정한다. 비공개 이미지 pull에는 namespace 안의 `ghcr-creds-isac322` Secret을 사용한다. n8n은 공식 이미지를 digest로 고정한다.
+- 이미지: HAPI Hub와 Runner는 공개 이미지 `ghcr.io/isac322/issue-agent-hapi`, `ghcr.io/isac322/issue-agent-runner`를 digest로 고정하며 pull Secret이 필요 없다. 이미지에는 레포에 있는 지침·스킬·스크립트만 들어가고 자격증명은 넣지 않는다. n8n은 공식 이미지를 digest로 고정한다.
 - Provider: `external-secret-provider.yaml`이 기존 CLIProxyAPI SSM 항목에서 Runner용 `issue-agent-provider` Secret(`OPENAI_API_KEY`, Codex `config.toml`)과 n8n 분류용 `issue-agent-n8n-model` Secret을 만든다. 값은 파일 마운트로만 전달하므로 변경 후 해당 Pod를 재시작한다.
 - GitHub 인증: 기존 GitHub App(App ID `5063990`, installation `164533066`)을 재사용한다. App 이름은 `ironeater`이며 bot 계정은 `ironeater[bot]`(user ID `333478113`)이다.
   - 개인키는 Terraform Cloud 민감 변수와 SSM `/homelab/cluster/backbone/github-app/archon/private-key`가 소유한다. 경로 이름에 `archon`이 있지만 이 App의 정식 자격증명이므로 삭제하거나 이름을 바꾸지 않는다.

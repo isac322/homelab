@@ -34,8 +34,6 @@ spec:
                     values:
                       - rock5bp
                       - macmini
-      imagePullSecrets:
-        - name: ghcr-creds-isac322
       containers:
         - name: runner
           image: ghcr.io/isac322/issue-agent-runner:0.30.7-codex0.157.0-20260926-r2@sha256:359285ea165f65ff826b4f396a99237ed3baa5d63456fb806cfe3af73af4345c
