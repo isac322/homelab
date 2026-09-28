@@ -57,8 +57,6 @@ spec:
               value: http://issue-agent-webhook.issue-agent.svc.cluster.local:8080
             - name: N8N_BLOCK_ENV_ACCESS_IN_NODE
               value: "false"
-            - name: ISSUE_AGENT_MODEL_NAME
-              value: gpt-6-sol
             - name: EXECUTIONS_DATA_SAVE_ON_SUCCESS
               value: all
             - name: EXECUTIONS_DATA_SAVE_ON_ERROR
@@ -133,9 +131,6 @@ spec:
             - name: ops
               mountPath: /run/issue-agent-n8n/ops
               readOnly: true
-            - name: model
-              mountPath: /run/issue-agent-n8n/model
-              readOnly: true
       volumes:
         - name: data
           persistentVolumeClaim:
@@ -161,8 +156,4 @@ spec:
         - name: ops
           secret:
             secretName: issue-agent-bridge-ops
-            defaultMode: 0440
-        - name: model
-          secret:
-            secretName: issue-agent-n8n-model
             defaultMode: 0440
