@@ -34,12 +34,30 @@ spec:
     requests:
       storage: 50Gi
 ---
+# Being replaced: formatted by pillar-csi 0.3.2 with XFS features rock5bp's
+# 6.1 kernel cannot mount (isac322/pillar-csi#133). Removed after the copy.
+apiVersion: v1
+kind: PersistentVolumeClaim
+metadata:
+  name: registry-docker-io-fast
+  namespace: arc-systems
+  annotations:
+    pillar-csi.bhyoo.com/backend: |
+      zfs: {properties: {refreservation: none}}
+spec:
+  accessModes:
+    - ReadWriteOnce
+  storageClassName: ssd-single
+  resources:
+    requests:
+      storage: 50Gi
+---
 # Cache volume on pillar-csi (non-replicated SSD). A pull-through cache can
 # be refetched, so it does not need a replicated pool, and thin is fine.
 apiVersion: v1
 kind: PersistentVolumeClaim
 metadata:
-  name: registry-docker-io-fast
+  name: registry-docker-io-pillar
   namespace: arc-systems
   annotations:
     pillar-csi.bhyoo.com/backend: |
