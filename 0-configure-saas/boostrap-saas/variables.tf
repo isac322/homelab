@@ -170,7 +170,8 @@ variable "github_personal_access_token" {
   type        = string
   description = <<-EOT
     Fine-grained GitHub PAT supplied to the homelab-backbone HCP Terraform workspace.
-    It must select isac322/flareway and grant Administration and Environments read/write.
+    It must select isac322/flareway and isac322/krema and grant Administration,
+    Environments, and Pages read/write.
   EOT
   sensitive   = true
 }
