@@ -200,35 +200,107 @@ K3s version과 순차 rollout은 기존 Rancher `system-upgrade-controller`가 �
 
 ### Issue agent (n8n + HAPI)
 
-`apps/objects/issue-agent/`는 `isac322/cc-lb` GitHub 이슈 자동화를 `issue-agent` namespace에 배포한다. 설계와 책임 경계는 `docs/issue-agent-platform.md`를 따른다. Argo CD 등록 파일은 `argocd/apps/issue-agent.yaml`과 `argocd/appprojects/issue-agent.yaml`이다. 자동 merge는 하지 않는다.
+`apps/objects/issue-agent/`는 GitHub App `ironeater`가 설치된 저장소의 이슈·PR 자동화를 `issue-agent` namespace에 배포한다. 현재 운영 대상은 `isac322/cc-lb`다. 설계와 책임 경계는 `docs/issue-agent-platform.md`를 따른다. Argo CD 등록 파일은 `argocd/apps/issue-agent.yaml`과 `argocd/appprojects/issue-agent.yaml`이다. 자동 merge는 하지 않는다.
 
 - 구성: 각 Deployment는 단일 replica이며 `Recreate`로 교체한다.
-  - `issue-agent-bridge`: GitHub webhook 검증·중복 방지·상태 SQLite를 담당한다.
-  - `issue-agent-n8n`: 분류·질문·구현·PR 전달 흐름을 담당한다.
+  - `issue-agent-bridge`: GitHub webhook 검증·중복 방지·상태 SQLite와 n8n용 `/ops` API를 담당한다. GitHub 이슈·PR 쓰기는 모두 bridge op로만 일어난다.
+  - `issue-agent-n8n`: 워크플로 `IssueAgentMain01`이 triage·구현·후속 댓글·PR 리뷰 단계와 모든 GitHub 반영(라벨·댓글·push·PR·리뷰)을 소유한다. 오류 워크플로는 `IssueAgentError01`이다.
   - `issue-agent-hub`: HAPI Hub로, 세션·메시지 SQLite와 웹 UI를 제공한다.
-  - `issue-agent-runner`: HAPI Runner로, Codex를 실행하며 네이티브 `CODEX_HOME`, checkout, 이슈별 worktree를 home PVC에 보존한다.
+  - `issue-agent-runner`: HAPI Runner로, Codex를 실행하며 네이티브 `CODEX_HOME`, checkout, 주제별 worktree를 home PVC에 보존한다. 같은 Pod의 `publisher` 사이드카(Service `issue-agent-publisher`, 포트 8090)가 checkout clone과 branch push만 담당한다.
 
   Hub, n8n, runner home, bridge 상태는 각각 `ssd-ha-xfs` PVC에 저장한다. 모든 Pod는 non-root이며 Kubernetes API 토큰을 마운트하지 않는다.
-- 이미지: HAPI Hub와 Runner는 공개 이미지 `ghcr.io/isac322/issue-agent-hapi`, `ghcr.io/isac322/issue-agent-runner`를 digest로 고정하며 pull Secret이 필요 없다. 이미지에는 레포에 있는 지침·스킬·스크립트만 들어가고 자격증명은 넣지 않는다. n8n은 공식 이미지를 digest로 고정한다.
-- Provider: `external-secret-provider.yaml`이 기존 CLIProxyAPI SSM 항목에서 Runner용 `issue-agent-provider` Secret(`OPENAI_API_KEY`, Codex `config.toml`)과 n8n 분류용 `issue-agent-n8n-model` Secret을 만든다. 값은 파일 마운트로만 전달하므로 변경 후 해당 Pod를 재시작한다.
+- 흐름: 에이전트(Codex)는 GitHub에 아무것도 쓰지 않는다. 턴 끝에 `ISSUE_AGENT_RESULT <nonce> {json}` 한 줄로 구조화된 결과를 내고, bridge가 모드별 스키마로 검증한 뒤 n8n이 bridge op로 GitHub에 반영한다. 세션은 주제마다 하나다(이슈 `issue-<n>`, PR `review-pr-<n>`, HAPI branch는 `hapi-<worktree>`).
+  - triage: 허용 사용자의 `issues.opened`, 또는 구현 단계가 아닌 이슈의 새 댓글. 에이전트가 `isac-issue-triage`로 분석해 TriageResult를 낸다. n8n이 카탈로그 라벨을 적용하고 분석 댓글을 게시한다. `next_action`이 `implement`면 같은 실행·같은 세션에서 구현으로 넘어가고, `await_info`/`await_decision`이면 질문 댓글에서 멈춘다.
+  - implement: `isac-issue-to-pr`로 `hapi-issue-<n>` branch에 로컬 커밋만 하고 ImplementResult(`head_sha`, PR 제목·본문)를 낸다. n8n이 `git.push`(publisher 경유, force 없음)로 push하고 `github.pr_upsert`로 일반(비 Draft) PR을 열거나 제목·본문을 갱신한 뒤 이슈에 PR 링크를 남긴다. `no_change`는 이슈 댓글, `needs_info`는 질문 댓글과 `triage:needs-info` 라벨로 끝난다.
+  - 후속 댓글: 구현 단계 이슈의 새 댓글은 `followup` 모드로 같은 세션에 전달되며(`receiving-code-review` 포함) 결과 처리는 implement와 같다.
+  - PR 리뷰: 허용 사용자 또는 bot이 연 PR의 `pull_request` `opened`/`reopened`/`ready_for_review`(Draft 제외), 또는 PR 댓글이 `@ironeater review`로 시작하는 재요청. 에이전트가 `isac-pr-review`로 ReviewResult를 내면 n8n의 `github.review`가 기존 스레드 답글·resolve를 먼저 게시하고 리뷰 하나를 제출한다. PR head가 결과의 `head_sha`와 다르면 `stale_head`로 멈춘다. bot이 연 PR은 GitHub가 자기 승인을 금지하므로 `COMMENT` 리뷰로 제출하고 본문 첫 줄에 `**Verdict: <event>**`와 이유를 적는다.
+- 이미지: HAPI Hub와 Runner는 공개 이미지 `ghcr.io/isac322/issue-agent-hapi`, `ghcr.io/isac322/issue-agent-runner`를 digest로 고정하며 pull Secret이 필요 없다. publisher는 Runner 이미지를 그대로 쓴다. 이미지에는 레포에 있는 지침(`profile/AGENTS.md`)·스킬(`profile/skills/` → `/etc/codex/skills`)·스크립트만 들어가고 자격증명은 넣지 않는다. n8n은 공식 이미지를 digest로 고정한다.
+- Provider: `external-secret-provider.yaml`이 기존 CLIProxyAPI SSM 항목에서 Runner용 `issue-agent-provider` Secret(`OPENAI_API_KEY`, Codex `config.toml`)을 만든다. n8n은 모델을 호출하지 않는다. 값은 파일 마운트로만 전달하므로 변경 후 Runner Pod를 재시작한다.
+- 저장소: `repo-registry.json`은 `defaults`(허용 사용자 `isac322`, agent `codex`, permission `yolo`)와 저장소별 override만 가진다. App 서명이 설치를 증명하므로 설치된 모든 저장소의 이벤트를 받는다. 기본 브랜치는 webhook payload에서 읽고, checkout(`/home/agent/checkouts/<owner>/<name>`)은 첫 세션 생성 때 publisher가 clone한다. 대상 저장소를 늘리려면 App 설치 범위를 바꾼다.
 - GitHub 인증: 기존 GitHub App(App ID `5063990`, installation `164533066`)을 재사용한다. App 이름은 `ironeater`이며 bot 계정은 `ironeater[bot]`(user ID `333478113`)이다.
   - 개인키는 Terraform Cloud 민감 변수 `github_app_private_key_ironeater`와 SSM `/homelab/cluster/backbone/github-app/ironeater/private-key`가 소유한다.
-  - ESO가 `cc-lb`로 제한된 설치 토큰을 15분마다 `issue-agent-github-token`에 갱신한다. Git과 `gh`는 디렉터리로 마운트한 `hosts.yml`을 읽는다.
-  - `GH_TOKEN`·`GITHUB_TOKEN` 환경변수나 `subPath` 마운트를 추가하지 않는다. Git 작성자와 bridge의 `GITHUB_BOT_LOGIN`은 `ironeater[bot]`으로 설정한다. App 이름을 바꾸면 이 값들도 함께 바꾼다.
+  - ESO가 설치 토큰 세 개를 15분마다 갱신한다. 저장소 제한은 없고 App 설치 범위를 따른다.
+    - `issue-agent-github-read`: Runner 에이전트 컨테이너용 읽기 전용(contents/issues/pull_requests read). Git과 `gh`는 디렉터리로 마운트한 `hosts.yml`을 읽는다.
+    - `issue-agent-github-push`: contents write. publisher 컨테이너에만 마운트한다.
+    - `issue-agent-github-token`: bridge용 issues/pull_requests/contents write. GraphQL `resolveReviewThread`가 GitHub App에 contents write를 요구해서 넣었다. bridge는 push하지 않는다.
+  - bridge는 `issue-agent-publisher` Secret의 bearer 토큰으로 publisher를 호출한다. 이 Secret과 push 토큰은 에이전트 컨테이너에 마운트하지 않는다.
+  - `GH_TOKEN`·`GITHUB_TOKEN` 환경변수나 `subPath` 마운트를 추가하지 않는다. Git 작성자와 bridge의 `GITHUB_BOT_LOGIN`은 `ironeater[bot]`으로 설정한다. App 이름을 바꾸면 이 값들과 `@ironeater review` 명령도 함께 바뀐다.
 - 인터넷 공개 경로: `https://issue-agent-webhook.bhyoo.com/webhooks/github`만 Cloudflare tunnel로 노출한다. App webhook의 서명 secret은 `issue-agent-webhook` Secret의 `secret` 키와 일치해야 한다. n8n 내부 webhook과 bridge의 `/ops`는 클러스터 내부 전용이며, 서로 다른 bearer 토큰(`issue-agent-bridge-ops`)으로 인증한다.
 - 운영자 접근: WireGuard 연결 후 내부 `bhyoo-gateway`로 접속한다. 두 UI 모두 인증을 유지한다.
   - HAPI: `https://hapi.bhyoo.com`에 `issue-agent-hapi-auth` Secret의 `CLI_API_TOKEN`으로 로그인한다.
   - n8n: `https://n8n.bhyoo.com`에 `bhyoo@bhyoo.com`으로 로그인한다. 비밀번호는 `issue-agent-n8n-owner` Secret의 `password` 키에 있다. n8n에는 bcrypt 해시만 전달되며, 소유자 정보는 시작할 때마다 이 Secret으로 다시 적용된다.
 
-  비밀값은 채팅·로그·문서에 남기지 않는다. 생성된 인증 값(HAPI 토큰, webhook secret, n8n 암호화 키와 소유자 비밀번호, bridge·n8n 토큰)은 ESO Password generator가 한 번 만들고 다시 생성하지 않는다.
+  비밀값은 채팅·로그·문서에 남기지 않는다. 생성된 인증 값(HAPI 토큰, webhook secret, n8n 암호화 키와 소유자 비밀번호, bridge·n8n·publisher 토큰)은 ESO Password generator가 한 번 만들고 다시 생성하지 않는다.
 
 ```bash
 kubectl --context homelab-backbone -n issue-agent get secret issue-agent-n8n-owner -o jsonpath='{.data.password}' | base64 -d
 kubectl --context homelab-backbone -n issue-agent logs deployment/issue-agent-bridge
 kubectl --context homelab-backbone -n issue-agent logs deployment/issue-agent-n8n
+kubectl --context homelab-backbone -n issue-agent logs deployment/issue-agent-runner -c publisher
 ```
 
-n8n은 시작 전 `n8n-bootstrap.sh`로 자격증명을 고정 ID로 갱신한다. Git의 workflow(`IssueAgentMain01`)는 원본이 바뀌었고 UI에서 수정되지 않은 경우에만 가져와 게시한다. UI 수정과 Git 변경이 겹치면 가져오지 않고 로그에 `CONFLICT`를 남긴다. 이때 수정본을 export해 Git에 반영한다. n8n 실행 기록은 성공·실패 모두 저장하며 자동 정리하지 않는다.
+#### 라벨
+
+에이전트는 bridge의 라벨 카탈로그 이름만 요청할 수 있다. 저장소에 없는 라벨은 카탈로그의 설명·색으로 만들고, 있는 라벨은 그대로 쓴다. 같은 그룹의 라벨을 추가하면 그 그룹의 다른 라벨은 같은 op에서 제거된다.
+
+| 라벨 | 그룹 | 의미 |
+|---|---|---|
+| `repro:reproduced` / `repro:not-reproduced` / `repro:blocked` | repro | 로컬 재현됨 / 재현 안 됨 / 조건 부족으로 판단 불가 |
+| `triage:root-cause-identified` | — | 증거로 원인 확정 |
+| `triage:needs-info` | — | 제보자 답변 대기 |
+| `triage:fix-direction-decided` / `triage:needs-structural-change` | direction | 수정 방향 확정 / 구조 변경이라 메인테이너 결정 필요 |
+| `bug` / `enhancement` | kind | 결함 / 기능 요청 |
+| `documentation`, `duplicate` | — | 문서, 중복 |
+| `agent:needs-attention` | — | 자동화가 오류로 멈춤. bridge만 붙이고 뗀다 |
+
+#### 오류 알림과 재시도
+
+에이전트를 실행하는 모든 경로는 GitHub에 보이는 상태로 끝난다. 성공은 결과 댓글·리뷰, 실패는 해당 이슈/PR의 attention 댓글과 `agent:needs-attention` 라벨이다. attention 댓글에는 멈춘 n8n 노드 또는 단계, 이벤트 종류, delivery ID, n8n 실행 링크(`https://n8n.bhyoo.com/workflow/IssueAgentMain01/executions/<id>`), HAPI 세션 링크, 재시도 방법이 들어간다. 댓글과 라벨 중 하나라도 실패하면 bridge가 backoff 후 둘 다 적용될 때까지 다시 시도한다(숨은 marker로 중복 게시 없음).
+
+- 워크플로 노드 실패는 `Mark needs attention`(bridge `fail`)으로, 처리되지 않은 n8n 오류는 `settings.errorWorkflow`의 `IssueAgentError01`(Error Trigger → bridge `fail_execution`)로 들어온다. bridge 자신이 포기하는 경우(dispatch 8회 실패, stale dispatch, n8n 응답 없음)도 같은 경로다. 자동 재시도는 하지 않는다.
+- attention 상태가 되면 그 이슈/PR은 block되고, 이후 이벤트는 쌓이기만 하고 dispatch되지 않는다.
+- 원인을 고친 뒤 `retry_event`로 그 이벤트를 다시 큐에 넣는다. 기록된 단계는 유지되어 이어서 실행되고, 성공하면 `finish`가 `agent:needs-attention`을 제거한다. 그 이벤트를 다시 실행하지 않고 이후 이벤트만 진행하려면 `unblock_issue`(`{"op":"unblock_issue","repo":"owner/name","issue_number":N}`)를 쓴다. 이때 라벨은 다음 성공 실행이 제거한다. 상태 확인은 `issue-agent-records bridge events`로 한다.
+
+```bash
+kubectl --context homelab-backbone -n issue-agent exec deploy/issue-agent-bridge -c bridge -- python -B -c '
+import json, sys, urllib.request
+token = open("/run/issue-agent/ops/bridge-ops-token").read().strip()
+req = urllib.request.Request("http://127.0.0.1:8080/ops", sys.argv[1].encode(),
+                             {"Content-Type": "application/json", "Authorization": "Bearer " + token})
+print(urllib.request.urlopen(req).read().decode())
+' '{"op":"retry_event","delivery_id":"<delivery-id>"}'
+```
+
+#### PR 리뷰 재요청과 merge 제한
+
+GitHub App은 PR reviewer로 지정할 수 없다. REST로 `ironeater[bot]`을 reviewer로 요청하면 오류 없이 무시되는 것을 확인했다. 그래서 재리뷰는 PR 댓글 `@ironeater review`로 요청한다. 재리뷰 본문의 첫 절은 이전 지적의 Closed/Open 상태다. `isac322/cc-lb`는 GitHub Free의 private 저장소라 branch protection과 ruleset API가 403을 반환하므로 bot 승인을 merge 조건으로 강제할 수 없다. merge는 사람이 판단한다.
+
+#### n8n UI 수정
+
+n8n은 시작 전 `n8n-bootstrap.sh`로 자격증명을 고정 ID로 갱신하고, 오류 워크플로 `IssueAgentError01`, 메인 `IssueAgentMain01` 순으로 Git 원본을 동기화한다. 워크플로별 마지막 가져오기 기록은 `/home/node/.n8n/issue-agent/workflow-import-<id>.json`(`sourceSha256`, `versionId`)이다. 규칙은 다음과 같다.
+
+- n8n에 워크플로가 없으면 가져와 게시한다.
+- Git 원본 sha256이 기록과 같으면 아무것도 하지 않는다. UI 수정본이 그대로 실행된다.
+- Git 원본이 바뀌었고 저장된 `versionId`가 기록과 같으면(UI 미수정) 가져와 게시한다.
+- Git 원본이 바뀌었는데 UI에서도 수정됐으면 가져오지 않고 로그에 `CONFLICT workflow <id> ...`를 남긴다. UI 수정본이 계속 실행된다.
+
+UI에서 고쳤거나 `CONFLICT`가 나면 다음 순서로 조정한다.
+
+1. `issue-agent-records n8n-workflows`로 현재 워크플로와 `versionId`를 export해 Git 원본과 비교한다.
+2. UI 변경을 유지하려면 그 내용을 `n8n-workflow.json`(또는 `n8n-error-workflow.json`)에 옮긴다. `id`와 메인 워크플로의 `settings.errorWorkflow`는 그대로 둔다. 버리려면 Git 원본을 그대로 둔다.
+3. Git을 최종본으로 가져오려면 export한 현재 `versionId`를 `workflow-import-<id>.json`의 `versionId`에 기록하고 `sourceSha256`을 비운 뒤 n8n을 재시작한다. 다음 시작에서 Git 원본을 가져와 게시한다. `versionId`를 기록하지 않으면 Git 원본이 UI 수정본과 같아도 계속 `CONFLICT`이고, `sourceSha256`을 비우지 않으면 Git 원본이 바뀌지 않은 경우 UI 수정본이 남는다.
+
+```bash
+kubectl --context homelab-backbone -n issue-agent exec deploy/issue-agent-n8n -- cat /home/node/.n8n/issue-agent/workflow-import-IssueAgentMain01.json
+kubectl --context homelab-backbone -n issue-agent exec deploy/issue-agent-n8n -- node -e '
+const fs = require("fs"), [file, version] = process.argv.slice(1);
+const state = JSON.parse(fs.readFileSync(file, "utf8"));
+fs.writeFileSync(file, JSON.stringify({ ...state, sourceSha256: "", versionId: version }));
+' /home/node/.n8n/issue-agent/workflow-import-IssueAgentMain01.json '<live-versionId>'
+kubectl --context homelab-backbone -n issue-agent rollout restart deployment/issue-agent-n8n
+```
+
+n8n 실행 기록은 성공·실패 모두 저장하며 자동 정리하지 않는다.
 
 bridge DB에 이슈 생성 이벤트가 없는 이슈의 후속 댓글은 `unmanaged`로 기록만 하고 처리하지 않는다. 배포 전 bridge 회귀 검증은 `python3 -B -m unittest apps/objects/issue-agent/test_bridge.py`로 실행한다.
 
