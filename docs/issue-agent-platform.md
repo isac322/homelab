@@ -211,11 +211,12 @@ v2는 Runner Pod에 publisher 사이드카를 추가했다. manifest의 값은 C
 
 ### 리뷰 App 분리와 merge 강제 수용 기준
 
-- [ ] 리뷰 App `ironeater-reviewer`(App ID `5118831`, installation `166063086`)가 flareway·krema·cc-lb에 설치되고, 키가 TFC → SSM → ESO(`issue-agent-github-review`)로 bridge에 전달된다.
-- [ ] ironeater가 연 PR에 리뷰 App이 실제 `APPROVED` 리뷰와 `issue-agent/review=success` 상태를 남기고 merge가 가능해진다.
-- [ ] 변경 요청이면 `CHANGES_REQUESTED`와 `failure` 상태가 남고 ruleset이 merge를 막는다.
-- [ ] triage 질문이 댓글에 그대로 없어도 거절하지 않고 `## Questions` 절로 덧붙인다(#891 실패 원인).
-- [ ] 턴 도중 세션이 죽으면(runner eviction 등) `lost`로 판정하고 새 localId로 재전송한다(#890 실패 원인). 빌드 산출물은 `/tmp`가 아닌 worktree 기본 위치에 둔다.
+- [x] 리뷰 App `ironeater-reviewer`(App ID `5118831`, installation `166063086`)가 flareway·krema·cc-lb에 설치되고, 키가 TFC → SSM → ESO(`issue-agent-github-review`)로 bridge에 전달된다. JWT로 App 권한(contents/pull_requests/statuses write, issues/metadata read)과 설치 저장소 세 개를 확인했고, ExternalSecret 두 개가 `SecretSynced`다.
+- [x] ironeater가 연 PR에 리뷰 App이 실제 `APPROVED` 리뷰와 `issue-agent/review=success` 상태를 남기고 merge가 가능해진다: krema#48(README 배경 스타일 불일치)을 triage·구현한 ironeater PR krema#49에 `ironeater-reviewer[bot]`이 head `0e3fff4`로 `APPROVED`와 `success` 상태를 남겼고 GraphQL `mergeable=MERGEABLE`이다.
+- [x] 변경 요청이면 `CHANGES_REQUESTED`와 `failure` 상태가 남고 ruleset이 merge를 막는다: 사용자 QA PR krema#50에 inline 지적과 `CHANGES_REQUESTED`, `failure` 상태가 남았고 `mergeStateStatus=BLOCKED`였다(PR은 닫고 브랜치 삭제). 두 저장소의 활성 규칙은 `pull_request`와 `required_status_checks: issue-agent/review@5118831`이다.
+- [x] triage 질문이 댓글에 그대로 없어도 거절하지 않고 `## Questions` 절로 덧붙인다: 거절돼 멈췄던 cc-lb#891을 `retry_event`로 다시 돌리자 `questioned`로 끝났고, 게시된 댓글 끝에 `## Questions` 절이 붙었으며 attention 라벨이 제거됐다.
+- [x] 턴 도중 세션이 죽으면(runner eviction 등) `lost`로 판정하고 새 localId로 재전송한다(cc-lb#890 실패 원인: 2Gi `/tmp` 초과로 runner eviction). 재전송이 거절돼도 새 localId를 유지한다. 단위 테스트로만 확인했다. 빌드 산출물은 `/tmp`가 아닌 worktree 기본 위치에 두도록 지침을 바꿨다.
+- [x] 멈춘 리뷰가 있는 PR에 새 리뷰 요청이 오면 멈춘 리뷰를 `superseded`로 끝내고 PR 차단을 푼다. cc-lb#890에서 `@ironeater review` 댓글이 차단 때문에 `accepted`에 머문 것을 발견해 고쳤다(단위 테스트). 이미 쌓였던 요청은 `unblock_issue`로 풀었고, `ironeater-reviewer[bot]`이 head `3e483a4`에 `CHANGES_REQUESTED`를 남겼다.
 
 ### 현재 실행 증거
 
