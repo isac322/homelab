@@ -777,6 +777,39 @@ class DispatchTests(BridgeTestCase):
         self.assertEqual(self.dispatcher.tick(), "dispatched")
         self.assertEqual(self.fake.dispatched[-1][1]["delivery_id"], "d1")
 
+    def test_review_request_supersedes_parked_review_and_runs(self) -> None:
+        # Live cc-lb#890: the attention notice told the user to comment `@ironeater review`, but the queued
+        # comment never dispatched because the parked review kept the pull request blocked.
+        self.started_review(12, "p1")
+        self.assertTrue(self.op("fail", "p1", detail="Wait for review turn: stale_head")["ok"])
+        self.assertIn("`@ironeater review`", self.fake.comments[12][0]["body"])
+        self.assertEqual(self.fake.labels[12], [NEEDS])
+        command = comment_payload(12, 500, body="@ironeater review", on_pr=True)
+        self.assertEqual(self.deliver(command, event="issue_comment", delivery="c1").outcome, "queued")
+        old = self.store.event("p1")
+        self.assertEqual((old["state"], old["outcome"], old["attention_pending"]), ("completed", "superseded", 0))
+        self.assertEqual(self.store.issue(REPO, 12)["blocked"], 0)
+        # Redelivery and a second delivery of the same comment are duplicates and change nothing.
+        self.assertEqual(self.deliver(command, event="issue_comment", delivery="c1").outcome, "duplicate")
+        self.assertEqual(self.deliver(command, event="issue_comment", delivery="c2").outcome, "duplicate")
+        self.assertEqual(self.events(), [("p1", "completed"), ("c1", "accepted")])
+        self.assertEqual(self.op("retry_event", "p1")["error"], "event_terminal")
+        self.assertEqual(self.dispatcher.tick(), "dispatched")
+        self.assertEqual(self.fake.dispatched[-1][1]["delivery_id"], "c1")
+        self.assertEqual(self.op("begin", "c1", attempt=1)["status"], "started")
+        self.assertTrue(self.op("finish", "c1", outcome="reviewed")["ok"])
+        self.assertEqual(self.fake.labels[12], [])
+
+    def test_review_request_keeps_a_block_owned_by_a_non_review_event(self) -> None:
+        self.started(12, "d1")
+        self.assertTrue(self.op("fail", "d1", detail="boom")["ok"])
+        self.assertNotIn("review`", self.fake.comments[12][0]["body"])
+        self.fake.add_pr(12)
+        self.assertEqual(self.deliver(pr_payload(12), event="pull_request", delivery="p1").outcome, "queued")
+        self.assertEqual(self.events(), [("d1", "needs_attention"), ("p1", "accepted")])
+        self.assertEqual(self.store.issue(REPO, 12)["blocked"], 1)
+        self.assertEqual(self.dispatcher.tick(), "idle")
+
 
 class LifecycleOpsTests(BridgeTestCase):
     def test_ops_endpoint_requires_bearer_token(self) -> None:

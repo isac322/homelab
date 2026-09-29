@@ -444,7 +444,8 @@ SCHEMA = ";\n".join([
     ISSUES_DDL.format(name="issues"),
     TURNS_DDL.format(name="turns"),
 ]) + ";\n"
-# Event: accepted -> dispatched -> completed | needs_attention
+# Event: accepted -> dispatched -> completed | needs_attention; a new review request completes parked
+# reviews of its pull request with outcome 'superseded' (Store.enqueue)
 # Issue session: none -> pending -> ready (pending may fall back to none)
 # Issue phase: none -> triaged -> implementing; pull requests: none -> reviewing
 # Turn: sending -> sent -> lost (session died mid-turn) -> sending under a fresh localId
@@ -565,7 +566,31 @@ class Store:
                 "INSERT OR IGNORE INTO issues (repo, issue_number, subject, updated_at) VALUES (?, ?, ?, ?)",
                 (ev["repo"], ev["issue_number"], subject_of(ev["kind"]), now),
             )
+            if ev["kind"] == "pr_review":
+                self._supersede_parked_reviews(conn, ev, now)
         return "queued"
+
+    @staticmethod
+    def _supersede_parked_reviews(conn: sqlite3.Connection, ev: dict[str, Any], now: float) -> None:
+        """A new review request replaces reviews parked on the same pull request and lifts their block.
+
+        Only review parks are superseded: if any other event on the subject needs attention, the block
+        belongs to that event and stays until an operator resolves it.
+        """
+        parked = conn.execute(
+            "SELECT kind FROM events WHERE repo = ? AND issue_number = ? AND state = 'needs_attention'",
+            (ev["repo"], ev["issue_number"]),
+        ).fetchall()
+        if not parked or any(row["kind"] != "pr_review" for row in parked):
+            return
+        conn.execute(
+            "UPDATE events SET state = 'completed', outcome = 'superseded', attention_pending = 0,"
+            " next_attempt_at = 0, detail = ?, updated_at = ?"
+            " WHERE repo = ? AND issue_number = ? AND state = 'needs_attention'",
+            (f"superseded by review request {ev['delivery_id']}", now, ev["repo"], ev["issue_number"]),
+        )
+        conn.execute("UPDATE issues SET blocked = 0, detail = NULL, updated_at = ? WHERE repo = ? AND issue_number = ?",
+                     (now, ev["repo"], ev["issue_number"]))
 
     def event(self, delivery_id: str) -> sqlite3.Row | None:
         rows = self.query("SELECT * FROM events WHERE delivery_id = ?", (delivery_id,))
@@ -1632,6 +1657,14 @@ class Bridge:
             f"`{{\"delivery_id\": \"{ev['delivery_id']}\"}}`; the workflow resumes from its recorded stages and "
             f"`{NEEDS_ATTENTION}` is removed when the run finishes.",
         ]
+        commands = [c for c in (review_command(cfg.github_bot_login), review_command(cfg.github_review_bot_login))
+                    if c]
+        if ev["kind"] == "pr_review" and commands:
+            lines += [
+                "",
+                "Or re-request the review: an allowed user comments " + " or ".join(f"`{c}`" for c in commands)
+                + " on this pull request. The new request replaces this event and runs a fresh review.",
+            ]
         return "\n".join(lines)
 
     def mark_attention(self, ev: sqlite3.Row, detail: str, node: str | None = None) -> None:
