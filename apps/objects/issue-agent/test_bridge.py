@@ -31,6 +31,7 @@ N8N_TOKEN = "n8n-token"
 PUB_TOKEN = "publisher-token"
 HAPI_ACCESS = "hapi-access:default"
 BOT = "ironeater[bot]"
+REVIEWER = "ironeater-reviewer[bot]"
 REPO = "isac322/cc-lb"
 OTHER = "isac322/other"
 SHA_A = "a" * 40
@@ -76,8 +77,17 @@ class Fake:
         self.review_comments: list[dict[str, Any]] = []
         self.reply_posts: list[tuple[int, dict[str, Any]]] = []
         self.threads: list[dict[str, Any]] = []
-        self.closing: list[int] = []
+        self.closing: list[int | tuple[str, int]] = []  # a bare number is a reference in REPO
         self.resolved: list[str] = []
+        # second App used only for reviews; requests are attributed to the App whose token they carry
+        self.gh_review_token: str | None = None
+        self.gh_actor = BOT
+        self.gh_calls: list[tuple[str, str, str]] = []  # (actor, method, path)
+        self.statuses: dict[str, list[dict[str, Any]]] = {}  # sha -> newest first
+        self.status_posts: list[tuple[str, dict[str, Any]]] = []
+        self.status_fail = False
+        self.missing_issues: set[int] = set()
+        self.issue_status: dict[tuple[str, int], int] = {}  # (repo, number) -> forced error status
         # publisher
         self.checkouts: list[dict[str, Any]] = []
         self.pushes: list[dict[str, Any]] = []
@@ -222,8 +232,13 @@ class Fake:
             return self.publisher(path.removeprefix("/publisher"), body, auth)
         if path.startswith("/api/"):
             return self.hub(method, path, query, body, auth)
-        if auth != f"Bearer {self.gh_token}":
+        if auth == f"Bearer {self.gh_token}":
+            self.gh_actor = BOT
+        elif self.gh_review_token is not None and auth == f"Bearer {self.gh_review_token}":
+            self.gh_actor = REVIEWER
+        else:
             return 401, {"message": "Bad credentials"}
+        self.gh_calls.append((self.gh_actor, method, path))
         return self.github(method, path, query, body)
 
     def publisher(self, path: str, body: Any, auth: str) -> tuple[int, Any]:
@@ -333,13 +348,26 @@ class Fake:
             return 201, body
         if rest[0] == "pulls":
             return self.pulls(method, repo, rest[1:], query, body)
+        if rest[0] == "statuses" and method == "POST":
+            if self.status_fail:
+                return 502, {"message": "Bad Gateway"}
+            self.status_posts.append((rest[1], body))
+            self.statuses.setdefault(rest[1], []).insert(0, {**body, "creator": {"login": self.gh_actor}})
+            return 201, body
+        if rest[0] == "commits" and rest[2:] == ["statuses"]:
+            return 200, self.statuses.get(rest[1], [])
         if rest[:3] == ["git", "ref", "heads"]:
             branch = "/".join(rest[3:])
             return ((200, {"object": {"sha": self.branch_heads[branch]}}) if branch in self.branch_heads
                     else (404, {"message": "Reference does not exist"}))
         number = int(rest[1])
+        if len(rest) == 2 and (repo, number) in self.issue_status:
+            return self.issue_status[(repo, number)], {"message": "error"}
+        if len(rest) == 2 and number in self.missing_issues:
+            return 404, {"message": "Not Found"}
         if len(rest) == 2:
-            return 200, {"number": number, "title": "Fix it", "body": "details", "state": "open",
+            return 200, {"number": number, "title": "Fix it" if repo == REPO else f"{repo} issue",
+                         "body": "details", "state": "open", "comments": len(self.comments.get(number, [])),
                          "user": {"login": "isac322"}, "labels": [{"name": n} for n in self.labels.get(number, [])]}
         if rest[2] == "comments" and method == "GET":
             page = int(query.get("page", 1))
@@ -398,7 +426,7 @@ class Fake:
             state = {"APPROVE": "APPROVED", "REQUEST_CHANGES": "CHANGES_REQUESTED", "COMMENT": "COMMENTED"}
             review = {"id": self._next(), "html_url": f"https://github.com/{repo}/pull/{pr['number']}#r{self.seq}",
                       "state": state[body["event"]], "body": body["body"], "commit_id": body["commit_id"],
-                      "user": {"login": BOT}}
+                      "user": {"login": self.gh_actor}}
             self.reviews.append(review)
             return 200, review
         if rest[1] == "comments" and len(rest) == 2:
@@ -422,7 +450,9 @@ class Fake:
                     t["isResolved"] = True
             return 200, {"data": {"resolveReviewThread": {"thread": {"id": tid, "isResolved": True}}}}
         return 200, {"data": {"repository": {"pullRequest": {
-            "closingIssuesReferences": {"nodes": [{"number": n} for n in self.closing]},
+            "closingIssuesReferences": {"nodes": [
+                {"number": ref[1], "repository": {"nameWithOwner": ref[0]}} if isinstance(ref, tuple)
+                else {"number": ref, "repository": {"nameWithOwner": REPO}} for ref in self.closing]},
             "reviewThreads": {"pageInfo": {"hasNextPage": False, "endCursor": None}, "nodes": self.threads},
         }}}}
 
@@ -511,7 +541,7 @@ class BridgeTestCase(unittest.TestCase):
         }
         self.registry_path = os.path.join(d, "registry.json")
         self.write_registry(registry)
-        self.config = dataclasses.replace(bridge.Config.from_env({
+        self.env = {
             "BRIDGE_STATE_PATH": os.path.join(d, "state.sqlite3"),
             "GITHUB_WEBHOOK_SECRET_FILE": os.path.join(d, "secret"),
             "GITHUB_TOKEN_DIR": self.gh_dir,
@@ -529,8 +559,22 @@ class BridgeTestCase(unittest.TestCase):
             "GITHUB_BOT_LOGIN": BOT,
             "GITHUB_API_URL": self.fake.url,
             "PORT": "1",
-        }), http_timeout=1.0)
+        }
+        self.config = dataclasses.replace(bridge.Config.from_env(self.env), http_timeout=1.0)
         self.store = bridge.Store(self.config.state_path)
+        self.bridge = bridge.make_bridge(self.config, self.store)
+        self.dispatcher = bridge.Dispatcher(self.config, self.store, self.bridge)
+
+    def use_reviewer_app(self, **env: str) -> None:
+        """Configure the second (review-only) App, as the deployment does, and rebuild the bridge."""
+        review_dir = os.path.join(self.tmp.name, "github-review")
+        os.makedirs(review_dir, exist_ok=True)
+        with open(os.path.join(review_dir, "token"), "w") as fh:
+            fh.write("ghs-review")
+        self.fake.gh_review_token = "ghs-review"
+        self.config = dataclasses.replace(bridge.Config.from_env({
+            **self.env, "GITHUB_REVIEW_TOKEN_DIR": review_dir, "GITHUB_REVIEW_BOT_LOGIN": REVIEWER, **env,
+        }), http_timeout=1.0)
         self.bridge = bridge.make_bridge(self.config, self.store)
         self.dispatcher = bridge.Dispatcher(self.config, self.store, self.bridge)
 
@@ -655,6 +699,26 @@ class IntakeTests(BridgeTestCase):
         self.assertEqual(self.deliver(command, event="issue_comment", delivery="c2").outcome, "queued")
         row = self.store.event("c2")
         self.assertEqual((row["kind"], row["semantic_key"]), ("pr_review", f"{REPO}#comment:202"))
+
+    def test_reviewer_app_mention_also_queues_review_and_both_bots_stay_ignored(self) -> None:
+        mention = comment_payload(12, 300, body="@ironeater-reviewer review", on_pr=True)
+        self.assertEqual(self.deliver(mention, event="issue_comment", delivery="c0").outcome,
+                         "pull_request_comment_ignored")  # single App: only @ironeater is a command
+        self.use_reviewer_app()
+        for i, text in enumerate(["@Ironeater-Reviewer review", "@ironeater review"]):
+            payload = comment_payload(12, 301 + i, body=text, on_pr=True)
+            self.assertEqual(self.deliver(payload, event="issue_comment", delivery=f"c{i + 1}").outcome, "queued")
+        self.assertEqual(self.store.event("c1")["kind"], "pr_review")
+        by_reviewer = comment_payload(12, 310, body="@ironeater review", on_pr=True, login=REVIEWER)
+        self.assertEqual(self.deliver(by_reviewer, event="issue_comment", delivery="c9").outcome, "bot_sender")
+        opened = pr_payload(14, author=REVIEWER, sender=REVIEWER, sender_type="Bot")
+        self.assertEqual(self.deliver(opened, event="pull_request", delivery="p9").outcome, "bot_sender")
+
+    def test_reviewer_app_env_must_be_set_together(self) -> None:
+        for extra in ({"GITHUB_REVIEW_TOKEN_DIR": "/run/x"}, {"GITHUB_REVIEW_BOT_LOGIN": REVIEWER},
+                      {"GITHUB_REVIEW_TOKEN_DIR": "/run/x", "GITHUB_REVIEW_BOT_LOGIN": "REPLACE_REVIEWER_LOGIN"}):
+            with self.assertRaises(bridge.ConfigError):
+                bridge.Config.from_env({**self.env, **extra})
 
 
 class DispatchTests(BridgeTestCase):
@@ -1077,6 +1141,60 @@ class TurnTests(BridgeTestCase):
         self.assertEqual(states[-1], "attention")
         self.assertTrue(all(s == "running" for s in states[:-1]))
 
+    def test_session_lost_mid_turn_is_resent_under_a_fresh_local_id(self) -> None:
+        self.send()
+        self.fake.invoke(self.sid, self.lid)
+        self.say("building...")
+        self.fake.sessions[self.sid].update(active=False, thinking=True)  # runner evicted; thinking is stale
+        lost = self.op("session_turn")
+        self.assertEqual(lost["state"], "lost")
+        self.assertIn("ended mid-turn", lost["detail"])
+        self.assertIn("call session_send", self.op("session_turn")["error"])  # never polled as a live turn
+        resumed = self.op("ensure_session")
+        self.assertTrue(resumed["resumed"])
+        new_sid = resumed["session_id"]
+        retry_lid = f"{self.lid}-r1"
+        sent = self.send()
+        self.assertEqual((sent["delivery"], sent["session_id"], sent["local_id"]), ("sent", new_sid, retry_lid))
+        self.assertEqual(self.send()["delivery"], "already")
+        self.assertEqual([p["localId"] for p in self.fake.message_posts], [self.lid, retry_lid])
+        self.assertEqual(self.op("session_turn")["state"], "queued")
+        self.fake.invoke(new_sid, retry_lid)
+        self.fake.codex(new_sid, "message", message=self.result_line(retry_lid))
+        self.assertEqual(self.op("session_turn")["state"], "done")
+        self.assertEqual(bridge.resend_local_id("d1", "implement", retry_lid), f"{self.lid}-r2")
+
+    def test_rejected_resend_of_a_lost_turn_keeps_the_fresh_local_id(self) -> None:
+        self.send()
+        self.fake.invoke(self.sid, self.lid)
+        self.fake.sessions[self.sid]["active"] = False
+        self.assertEqual(self.op("session_turn")["state"], "lost")
+        rejected = self.send()  # session not resumed yet: HAPI 409 session_inactive
+        self.assertTrue(rejected["retryable"], rejected)
+        turn = self.store.turn("d1", "implement")
+        self.assertEqual((turn["state"], turn["local_id"]), ("lost", f"{self.lid}-r1"))
+        new_sid = self.op("ensure_session")["session_id"]
+        sent = self.send()
+        self.assertEqual((sent["delivery"], sent["session_id"], sent["local_id"]), ("sent", new_sid, f"{self.lid}-r1"))
+        self.assertEqual([p["localId"] for p in self.fake.message_posts], [self.lid, f"{self.lid}-r1"])
+
+    def test_result_emitted_before_the_session_ended_still_completes(self) -> None:
+        self.send()
+        self.fake.invoke(self.sid, self.lid)
+        self.say(self.result_line())
+        self.fake.sessions[self.sid]["active"] = False
+        self.assertEqual(self.op("session_turn")["state"], "done")
+
+    def test_triage_turn_returns_the_comment_with_appended_questions(self) -> None:
+        self.send("triage")
+        lid = bridge.local_id_for("d1", "triage")
+        self.fake.invoke(self.sid, lid)
+        paraphrased = variant(TRIAGE_OK, comment="Analysis. Please tell us your version.")
+        self.say(f"{bridge.RESULT_TAG} {lid} {json.dumps(paraphrased)}")
+        done = self.op("session_turn", mode="triage")
+        self.assertEqual(done["state"], "done")
+        self.assertTrue(done["result"]["comment"].endswith("## Questions\n\n1. Which version do you run?"))
+
     def test_history_is_paged_to_find_the_step_message(self) -> None:
         self.send()
         self.fake.invoke(self.sid, self.lid)
@@ -1116,8 +1234,21 @@ class ResultValidationTests(unittest.TestCase):
         self.assertInvalid("triage", variant(TRIAGE_OK, next_action="implement", questions=[]), "implementation_brief")
         self.assertInvalid("triage", variant(TRIAGE_OK, questions=[]), "questions")
         self.assertInvalid("triage", variant(TRIAGE_OK, next_action="none"), "questions")
-        self.assertInvalid("triage", variant(TRIAGE_OK, questions=["Unasked?"]), "appear in comment")
         self.assertInvalid("triage", variant(TRIAGE_OK, questions=["q"] * 6, comment="q"), "at most 5")
+
+    def test_triage_questions_missing_from_comment_are_appended(self) -> None:
+        verbatim = bridge.validate_result("triage", TRIAGE_OK, 7)
+        self.assertEqual(verbatim["comment"], TRIAGE_OK["comment"])  # whitespace/case-insensitive match
+        asked = "Can you confirm no rows lack stage timing?"
+        paraphrased = bridge.validate_result(
+            "triage", variant(TRIAGE_OK, comment="Analysis.\n\nPlease confirm the data check.\n",
+                              questions=["Which version do you run?", asked]), 7)
+        self.assertEqual(paraphrased["comment"], "Analysis.\n\nPlease confirm the data check.\n\n## Questions\n\n"
+                                                 "1. Which version do you run?\n2. " + asked)
+        self.assertEqual(paraphrased["questions"], ["Which version do you run?", asked])
+        built = bridge.validate_result("triage", variant(TRIAGE_OK, comment=None), 7)
+        self.assertEqual(built["comment"], "## Questions\n\n1. Which version do you run?")
+        self.assertInvalid("triage", variant(TRIAGE_OK, comment="x" * 60000), "appended questions exceeds")
 
     def test_triage_labels_follow_the_catalog(self) -> None:
         self.assertInvalid("triage", variant(TRIAGE_OK, labels={"add": [NEEDS], "remove": []}), "managed by the bridge")
@@ -1262,6 +1393,107 @@ class PullRequestOpsTests(BridgeTestCase):
         self.assertEqual(self.fake.review_posts[0]["event"], "COMMENT")
         self.assertIn("**Verdict: APPROVE**", body.splitlines()[1])
         self.assertIn("Needs work", body)
+        # Single App: everything goes through the issue App and no commit status is set.
+        self.assertIsNone(result["commit_status"])
+        self.assertEqual({actor for actor, _, _ in self.fake.gh_calls}, {BOT})
+        self.assertEqual(self.fake.status_posts, [])
+
+    def test_reviewer_app_submits_review_replies_resolution_and_status(self) -> None:
+        self.use_reviewer_app()
+        self.started_review(12)
+        self.fake.threads = [{"id": "T1", "isResolved": False, "isOutdated": False, "path": "a.py", "line": 3,
+                              "comments": {"nodes": [{"databaseId": 501, "author": {"login": BOT},
+                                                      "body": "old finding", "createdAt": "t"}]}}]
+        self.fake.gh_calls.clear()
+        result = self.op("github.review", "p1", result=variant(
+            REVIEW_OK, thread_replies=[{"comment_id": 501, "body": "fixed", "resolve": True}]))
+        self.assertTrue(result["ok"], result)
+        self.assertEqual({actor for actor, _, _ in self.fake.gh_calls}, {REVIEWER})
+        self.assertEqual((len(self.fake.reply_posts), self.fake.resolved), (1, ["T1"]))
+        self.assertEqual(self.fake.reviews[-1]["user"]["login"], REVIEWER)
+        self.assertEqual(self.fake.status_posts, [(SHA_A, {
+            "state": "failure", "target_url": result["html_url"], "description": "Changes requested",
+            "context": "issue-agent/review"})])
+        self.assertEqual(result["commit_status"], {"context": "issue-agent/review", "state": "failure",
+                                                   "created": True})
+
+    def test_reviewer_app_gives_a_real_verdict_on_the_issue_apps_own_pr(self) -> None:
+        self.use_reviewer_app()
+        self.started_review(12, author=BOT)
+        result = self.op("github.review", "p1", result=variant(REVIEW_OK, event="APPROVE", comments=[]))
+        self.assertEqual(result["event_submitted"], "APPROVE")
+        post = self.fake.review_posts[0]
+        self.assertEqual(post["event"], "APPROVE")
+        self.assertNotIn("Verdict:", post["body"])
+        state, description = self.fake.status_posts[0][1]["state"], self.fake.status_posts[0][1]["description"]
+        self.assertEqual((state, description), ("success", f"Approved by {REVIEWER}"))
+
+    def test_review_status_is_retried_after_failure_and_set_only_once(self) -> None:
+        self.use_reviewer_app(REVIEW_STATUS_CONTEXT="ci/agent-review")
+        self.started_review(12)
+        comment = variant(REVIEW_OK, event="COMMENT", comments=[])
+        self.fake.status_fail = True
+        failed = self.op("github.review", "p1", result=comment)
+        self.assertEqual((failed["ok"], failed["retryable"]), (False, True))
+        self.assertEqual(len(self.fake.review_posts), 1)
+        self.fake.status_fail = False
+        retried = self.op("github.review", "p1", result=comment)
+        self.assertEqual((retried["created"], retried["commit_status"]),
+                         (False, {"context": "ci/agent-review", "state": "failure", "created": True}))
+        again = self.op("github.review", "p1", result=comment)
+        self.assertFalse(again["commit_status"]["created"])
+        self.assertEqual(len(self.fake.review_posts), 1)
+        self.assertEqual([(sha, s["state"], s["description"]) for sha, s in self.fake.status_posts],
+                         [(SHA_A, "failure", "Not approved")])
+
+    def test_pr_context_includes_linked_issue_details_and_reviewer_login(self) -> None:
+        self.started_review(12, body="Related to #9, related to #404")
+        self.fake.closing = [7]
+        self.fake.missing_issues = {404}
+        self.fake.comments[7] = [
+            {"id": 1, "body": "<!-- issue-agent:d1:report -->\ntriaged", "user": {"login": BOT}, "created_at": "t1"},
+            {"id": 2, "body": "x" * 5000, "user": {"login": "isac322"}, "created_at": "t2"},
+        ]
+        ctx = self.op("github.pr_context", "p1")
+        self.assertTrue(ctx["ok"], ctx)
+        self.assertEqual(ctx["linked_issues"], [7, 9, 404])
+        self.assertEqual(ctx["reviewer_login"], BOT)
+        seven, nine = ctx["linked_issue_details"]
+        self.assertEqual({k: seven[k] for k in ("number", "title", "state", "body", "author")},
+                         {"number": 7, "title": "Fix it", "state": "open", "body": "details", "author": "isac322"})
+        self.assertEqual([(c["author"], c["from_agent"], len(c["body"])) for c in seven["comments"]],
+                         [(BOT, True, len(self.fake.comments[7][0]["body"])), ("isac322", False, 4000)])
+        self.assertEqual((nine["number"], nine["comments"]), (9, []))
+        self.use_reviewer_app()
+        self.assertEqual(self.op("github.pr_context", "p1")["reviewer_login"], REVIEWER)
+
+    def test_linked_issue_with_a_long_discussion_reads_only_its_newest_comments(self) -> None:
+        self.started_review(12)
+        self.fake.closing = [7]
+        self.fake.comments[7] = [{"id": i, "body": f"c{i}", "user": {"login": "u"}, "created_at": f"t{i}"}
+                                 for i in range(2050)]
+        ctx = self.op("github.pr_context", "p1")
+        self.assertTrue(ctx["ok"], ctx)
+        (seven,) = ctx["linked_issue_details"]
+        self.assertEqual([c["body"] for c in seven["comments"]],
+                         [f"c{i}" for i in range(2050 - bridge.LINKED_ISSUE_COMMENTS, 2050)])
+        pages = [p for _, m, p in self.fake.gh_calls if p == f"/repos/{REPO}/issues/7/comments"]
+        self.assertEqual(len(pages), 1)  # only the newest page, not the 21-page history
+        self.fake.comments[7] = self.fake.comments[7][:110]  # newest page holds 10: the page before is read too
+        (seven,) = self.op("github.pr_context", "p1")["linked_issue_details"]
+        self.assertEqual([c["body"] for c in seven["comments"]], [f"c{i}" for i in range(80, 110)])
+
+    def test_cross_repository_closing_references_are_fetched_from_their_repository(self) -> None:
+        self.started_review(12, body="Related to #9")
+        self.fake.closing = [7, (OTHER, 7), ("isac322/private", 3)]
+        self.fake.issue_status[("isac322/private", 3)] = 403
+        ctx = self.op("github.pr_context", "p1")
+        self.assertTrue(ctx["ok"], ctx)
+        self.assertEqual(ctx["linked_issues"], [7, 9])
+        self.assertEqual([(d["repo"], d["number"], d["title"]) for d in ctx["linked_issue_details"]],
+                         [(REPO, 7, "Fix it"), (REPO, 9, "Fix it"), (OTHER, 7, f"{OTHER} issue")])
+        self.fake.issue_status[(REPO, 9)] = 403  # this repository unreadable is an error, not a skip
+        self.assertIn("HTTP 403", self.op("github.pr_context", "p1")["error"])
 
     def test_rejected_inline_comments_are_folded_into_the_body(self) -> None:
         self.started_review(12)
@@ -1452,6 +1684,19 @@ class MigrationTests(unittest.TestCase):
             self.assertGreater(store.event("p1")["seq"], ev["seq"])
             store.put_turn("old1", "triage", "issue-agent-old1-triage", "s-old", "sent")
             self.assertEqual(len(store.query("SELECT * FROM turns")), 2)
+
+    def test_v2_turns_table_accepts_lost_turns_after_upgrade(self) -> None:
+        with tempfile.TemporaryDirectory() as d:
+            path = os.path.join(d, "state.sqlite3")
+            conn = sqlite3.connect(path)
+            conn.executescript(bridge.TURNS_DDL.format(name="turns").replace(", 'lost'", ""))
+            conn.execute("INSERT INTO turns VALUES ('d1', 'review', 'issue-agent-d1-review', 's1', 'sent', 2, 0)")
+            conn.commit()
+            conn.close()
+            store = bridge.Store(path)
+            store.put_turn("d1", "review", "issue-agent-d1-review-r1", "s1", "lost")
+            turn = store.turn("d1", "review")
+            self.assertEqual((turn["local_id"], turn["state"]), ("issue-agent-d1-review-r1", "lost"))
 
     def test_pre_v2_issues_with_an_implementation_continue_as_followups(self) -> None:
         with tempfile.TemporaryDirectory() as d:

@@ -83,6 +83,7 @@ module "dns_secrets" {
   github_app_installation_id_arc_cc_lb        = var.github_app_installation_id_arc_cc_lb
   github_app_private_key_arc_cc_lb            = var.github_app_private_key_arc_cc_lb
   github_app_private_key_ironeater            = var.github_app_private_key_ironeater
+  github_app_private_key_ironeater_reviewer   = var.github_app_private_key_ironeater_reviewer
 
   providers = {
     aws        = aws

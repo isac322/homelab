@@ -292,6 +292,15 @@ resource "tfe_variable" "github_app_private_key_ironeater" {
   workspace_id = tfe_workspace.backbone.id
 }
 
+resource "tfe_variable" "github_app_private_key_ironeater_reviewer" {
+  key          = "github_app_private_key_ironeater_reviewer"
+  value        = var.github_app_private_key_ironeater_reviewer
+  description  = "Private key of the ironeater-reviewer GitHub App (issue-agent PR reviews)"
+  category     = "terraform"
+  sensitive    = true
+  workspace_id = tfe_workspace.backbone.id
+}
+
 resource "tfe_variable" "github_personal_access_token" {
   key          = "github_personal_access_token"
   value        = var.github_personal_access_token

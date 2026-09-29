@@ -10,7 +10,7 @@ v2는 코딩 에이전트의 GitHub 쓰기를 모두 없앴다. 에이전트는 
 
 ## 확정된 요구사항
 
-- 공통 Issue Agent를 여러 GitHub 저장소에서 사용할 수 있게 구현한다. GitHub App `ironeater`의 설치 범위가 곧 대상 범위이며, bridge는 설치된 모든 저장소의 이벤트를 받는다. 현재 설치·운영 대상은 사용자 선택에 따라 `isac322/cc-lb`다. 설치 범위 확장은 사용자 지정 후에만 한다.
+- 공통 Issue Agent를 여러 GitHub 저장소에서 사용할 수 있게 구현한다. GitHub App `ironeater`의 설치 범위가 곧 대상 범위이며, bridge는 설치된 모든 저장소의 이벤트를 받는다. 현재 설치·운영 대상은 사용자 선택에 따라 `isac322/cc-lb`, `isac322/flareway`, `isac322/krema`다. 설치 범위 확장은 사용자 지정 후에만 한다.
 - GitHub 이슈마다 독립 세션과 해당 저장소의 worktree(`issue-<n>`)를 만든다. 동일 이슈 후속 댓글은 같은 논리 세션으로 전달한다. PR 리뷰는 PR마다 별도 세션(`review-pr-<n>`)을 쓴다. 이슈별 Pod도 허용하지만 최소 조건은 세션·worktree 분리다.
 - 웹에서 모든 이슈 세션을 찾고 실행 중 관찰·메시지 전달·중단·승인을 처리한다. UI 접속 때문에 자동화 구독이나 실행을 종료하지 않는다.
 - Codex·Claude Code면 충분하다. 자동 학습 기능은 범위에서 제외한다.
@@ -19,7 +19,7 @@ v2는 코딩 에이전트의 GitHub 쓰기를 모두 없앴다. 에이전트는 
 - 커스텀 provider와 모델 설정을 독립적으로 관리한다. 자체 ARM64 이미지 빌드는 허용된다.
 - 선호가 불명확한 경우 추측하지 않고 질문한다.
 - 허용 사용자의 명확한 요청은 triage(재현·원인·중복 판단)를 거친 뒤 자동으로 수정·검증·PR 생성까지 수행한다. 불명확한 요청은 질문하며 자동 머지는 하지 않는다.
-- 에이전트가 만들었거나 허용 사용자가 연 PR은 에이전트가 리뷰한다. 재리뷰는 PR 댓글 `@ironeater review`로 요청한다.
+- 에이전트가 만들었거나 허용 사용자가 연 PR은 에이전트가 구현 세션과 분리된 리뷰 세션에서 리뷰하고, 리뷰 전용 App `ironeater-reviewer`로 게시한다. 재리뷰는 PR 댓글 `@ironeater review`로 요청한다. ruleset을 쓸 수 있는 저장소(`flareway`, `krema`)는 리뷰 App의 `issue-agent/review` 상태가 `success`여야 merge된다.
 - 코딩 에이전트는 GitHub에 쓰지 않는다. 댓글·라벨·push·PR·리뷰는 모두 n8n이 에이전트 결과를 검증된 bridge op로 적용한다.
 
 ## 책임 분리
@@ -63,9 +63,10 @@ Codex의 공통 지침은 전용 `CODEX_HOME/AGENTS.md`에서 읽고 프로젝�
 
 ### 알려진 제한
 
-- GitHub App은 PR reviewer로 요청할 수 없다. REST API로 `ironeater[bot]`을 reviewer로 요청하면 오류 없이 무시되는 것을 확인했다. 그래서 재리뷰 요청은 PR 댓글 `@ironeater review`(앞뒤 공백 제외, 대소문자 무시, 본문 시작)로 받는다.
-- bot이 연 PR에는 GitHub가 자기 PR의 APPROVE/REQUEST_CHANGES를 금지한다. bridge는 이 경우 `COMMENT` 리뷰로 제출하고 본문 앞에 `**Verdict: <event>**`와 이유 한 문장을 붙인다.
-- `isac322/cc-lb`는 GitHub Free의 private 저장소라 branch protection과 ruleset API가 403을 반환한다. 따라서 bot 승인을 merge 조건으로 강제할 수 없고, merge 판단은 사람이 한다. 이번 범위에서 저장소 설정이나 요금제는 바꾸지 않는다.
+- GitHub App은 PR reviewer로 요청할 수 없다. REST API로 `ironeater[bot]`을 reviewer로 요청하면 오류 없이 무시되는 것을 확인했다. 그래서 재리뷰 요청은 PR 댓글 `@ironeater review` 또는 `@ironeater-reviewer review`(앞뒤 공백 제외, 대소문자 무시, 본문 시작)로 받는다.
+- GitHub는 PR 작성자의 APPROVE/REQUEST_CHANGES를 금지한다. 그래서 리뷰는 작성용 `ironeater`와 다른 App `ironeater-reviewer`로 제출하며, ironeater가 연 PR에도 실제 승인·변경 요청이 달린다. 리뷰 App 자신이 연 PR만 `COMMENT`와 `**Verdict: <event>**` 접두로 downgrade한다(현재 그런 PR은 없다).
+- 필수 승인 수에 GitHub App 승인이 포함되는지는 문서에 없어서, merge 강제는 특정 App이 남긴 상태만 인정하는 required status check(`issue-agent/review`, integration `5118831`)로 한다. 새 commit은 상태가 없으므로 재리뷰 전까지 merge되지 않는다.
+- `isac322/cc-lb`는 GitHub Free의 private 저장소라 branch protection과 ruleset API가 403을 반환한다. 이 저장소는 bot 승인을 merge 조건으로 강제하지 않는다.
 
 ## 이벤트와 세션 계약
 
@@ -102,7 +103,7 @@ Codex의 공통 지침은 전용 `CODEX_HOME/AGENTS.md`에서 읽고 프로젝�
 
 - TriageResult: `status`(`triaged|blocked`), `verdict`, `fault_domain`, `duplicate_of`, `labels.add/remove`(카탈로그 이름), `comment`, `next_action`(`implement|await_info|await_decision|none`), `implementation_brief`(implement일 때 필수), `questions`, `summary`, `blockers`. n8n은 결과 기록 → 라벨 적용 → 분석 댓글 게시 후 `next_action`으로 분기한다. `implement`면 brief를 implement 턴으로 넘기고, 질문이면 `questioned`, 그 외는 `triaged`로 끝난다. `blocked`는 attention이다.
 - ImplementResult: `status`(`ready|no_change|needs_info|blocked`), `head_sha`와 `pr{title, body}`(ready일 때 필수, 본문에 `Fixes #<n>` 또는 `Related to #<n>`), `issue_comment`, `questions`, `summary`, `blockers`. 에이전트는 `hapi-issue-<n>`에 로컬 커밋만 한다. `ready`면 n8n이 `git.push`(publisher `POST /push`, sha 일치·non-force) → `github.pr_upsert`(열린 PR이 없으면 기본 브랜치 대상 일반 PR 생성, 있으면 제목·본문 PATCH) → 이슈에 PR 링크 댓글 → `implemented`. `no_change`는 이슈 댓글, `needs_info`는 질문 댓글과 `triage:needs-info` 라벨, `blocked`는 attention이다. implement/followup 전송 시 이슈 phase는 `implementing`이 된다.
-- ReviewResult: `status`(`reviewed|blocked`), `head_sha`, `event`(`APPROVE|REQUEST_CHANGES|COMMENT`), `body`, `comments`(새 inline 지적, 최대 50), `thread_replies`(기존 스레드 comment ID에 대한 답글과 `resolve`, 최대 100), `summary`, `blockers`. n8n은 `github.pr_context`(PR·파일 patch·리뷰·GraphQL 스레드·댓글·연결 이슈)를 context로 넘긴다. `github.review`는 PR head가 `head_sha`와 다르면 `stale_head`로 거절하고, 스레드 답글 게시·resolve 후 `commit_id=head_sha`로 리뷰 하나를 제출한다. 모두 숨은 marker로 멱등이다. inline 지적이 422로 거절되면 본문의 "Findings outside the diff" 절로 옮겨 다시 제출한다. bot이 연 PR은 `COMMENT`와 `**Verdict: <event>**` 접두로 제출한다. 재리뷰 본문의 첫 절은 이전 지적의 Closed/Open 상태다.
+- ReviewResult: `status`(`reviewed|blocked`), `head_sha`, `event`(`APPROVE|REQUEST_CHANGES|COMMENT`), `body`, `comments`(새 inline 지적, 최대 50), `thread_replies`(기존 스레드 comment ID에 대한 답글과 `resolve`, 최대 100), `summary`, `blockers`. n8n은 `github.pr_context`(PR·파일 patch·리뷰·GraphQL 스레드·댓글·연결 이슈 번호, 그리고 `linked_issue_details`: 다른 저장소 참조를 포함한 연결 이슈 최대 10개의 제목·본문·최근 댓글 30개, `reviewer_login`)를 context로 넘긴다. `github.review`는 리뷰 App 토큰으로 동작하며, PR head가 `head_sha`와 다르면 `stale_head`로 거절하고, 스레드 답글 게시·resolve 후 `commit_id=head_sha`로 리뷰 하나를 제출하고 `issue-agent/review` 상태(APPROVE → success, 그 외 failure)를 남긴다. 모두 숨은 marker 또는 기존 상태 비교로 멱등이다. inline 지적이 422로 거절되면 본문의 "Findings outside the diff" 절로 옮겨 다시 제출한다. 재리뷰 본문의 첫 절은 이전 지적의 Closed/Open 상태다.
 
 라벨은 bridge `LABEL_CATALOG`의 이름만 허용한다(목록은 README `#### 라벨`). 저장소에 없으면 카탈로그 설명·색으로 만들고, 같은 그룹(`repro:*`, direction, kind) 라벨을 추가하면 나머지를 같은 op에서 제거한다. `agent:needs-attention`은 bridge만 다룬다.
 
@@ -207,6 +208,14 @@ v2는 Runner Pod에 publisher 사이드카를 추가했다. manifest의 값은 C
 - [x] 재리뷰 요청이 스레드 답글과 새 리뷰를 만든다: #889에서 수정 push, 제목·본문 변경, 사용자 스레드 답글 뒤 `@ironeater review`를 달자, 봇이 기존 스레드에 답글을 달고 resolve했으며 새 head `ab5bc4d`에 `Previous findings`의 Closed 절을 담은 `APPROVED` 리뷰를 제출했다. 세션 메시지에 수정된 제목·본문, 사용자 답글, 기존 스레드 ID가 들어 있음을 확인했다. 첫 시도는 `resolveReviewThread` 권한 부족으로 멈췄고, bridge 토큰에 contents write를 추가한 뒤 `retry_event`로 완료했다.
 - [x] 오류가 알려진다: 실제 실패 세 건(#889 `Review submitted?` 권한 오류, #889 실행 중 HAPI abort 후 `Turn state (review)`의 결과 없음, #887 `Pull request upserted?`)에서 노드·delivery·n8n 실행 링크·HAPI 세션 링크·재시도 방법을 담은 attention 댓글과 `agent:needs-attention` 라벨이 붙었고, `retry_event` 뒤 성공한 이벤트는 라벨이 제거됐다. n8n 오류 워크플로 `IssueAgentError01`은 알 수 없는 delivery로 실패시킨 실행에서 실제로 기동해 bridge `fail_execution`을 호출함을 확인했다(`unknown_execution` 응답). 실제 이벤트의 실행이 비정상 종료되는 경우의 댓글·라벨은 단위 테스트로만 확인했다.
 - [x] attention 알림은 이벤트당 하나다: #887에서 n8n `fail` 요청 스레드와 dispatcher의 재시도 tick이 같은 알림을 동시에 보내 같은 marker 댓글이 1초 간격으로 두 번 게시됐다(중복 하나는 삭제). 알림 전송을 delivery별로 직렬화하고, park할 때 재시도 시각을 미래로 잡으며, marker 확인과 댓글 POST를 한 잠금 안에서 하도록 고쳤다. 동시 경로를 재현하는 테스트는 수정 전 `2 != 1`로 실패하고 수정 후 통과한다.
+
+### 리뷰 App 분리와 merge 강제 수용 기준
+
+- [ ] 리뷰 App `ironeater-reviewer`(App ID `5118831`, installation `166063086`)가 flareway·krema·cc-lb에 설치되고, 키가 TFC → SSM → ESO(`issue-agent-github-review`)로 bridge에 전달된다.
+- [ ] ironeater가 연 PR에 리뷰 App이 실제 `APPROVED` 리뷰와 `issue-agent/review=success` 상태를 남기고 merge가 가능해진다.
+- [ ] 변경 요청이면 `CHANGES_REQUESTED`와 `failure` 상태가 남고 ruleset이 merge를 막는다.
+- [ ] triage 질문이 댓글에 그대로 없어도 거절하지 않고 `## Questions` 절로 덧붙인다(#891 실패 원인).
+- [ ] 턴 도중 세션이 죽으면(runner eviction 등) `lost`로 판정하고 새 localId로 재전송한다(#890 실패 원인). 빌드 산출물은 `/tmp`가 아닌 worktree 기본 위치에 둔다.
 
 ### 현재 실행 증거
 

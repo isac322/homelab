@@ -165,6 +165,14 @@ resource "aws_ssm_parameter" "github_app_private_key_ironeater" {
   value       = var.github_app_private_key_ironeater
 }
 
+resource "aws_ssm_parameter" "github_app_private_key_ironeater_reviewer" {
+  count       = nonsensitive(var.github_app_private_key_ironeater_reviewer != null) ? 1 : 0
+  name        = "/homelab/cluster/${var.k8s_cluster_name}/github-app/ironeater-reviewer/private-key"
+  description = "Private key of the ironeater-reviewer GitHub App (issue-agent PR reviews)"
+  type        = "SecureString"
+  value       = var.github_app_private_key_ironeater_reviewer
+}
+
 # --- External Secrets IAM ---
 
 resource "aws_iam_user" "external_secrets" {
@@ -200,6 +208,7 @@ data "aws_iam_policy_document" "secret_read" {
       var.github_app_installation_id_arc_cc_lb == null ? [] : [aws_ssm_parameter.github_app_installation_id_arc_cc_lb[0].arn],
       var.github_app_private_key_arc_cc_lb == null ? [] : [aws_ssm_parameter.github_app_private_key_arc_cc_lb[0].arn],
       nonsensitive(var.github_app_private_key_ironeater != null) ? [aws_ssm_parameter.github_app_private_key_ironeater[0].arn] : [],
+      nonsensitive(var.github_app_private_key_ironeater_reviewer != null) ? [aws_ssm_parameter.github_app_private_key_ironeater_reviewer[0].arn] : [],
     )
   }
 }

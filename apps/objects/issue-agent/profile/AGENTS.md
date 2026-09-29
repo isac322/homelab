@@ -36,6 +36,7 @@ The skills are adapted to this automation: wherever they say to post, label, pus
 - Commit only on your worktree branch (`hapi-issue-<n>` for implementation). Do not push; report the commit in `head_sha` and the automation pushes it.
 - To bring in upstream changes, merge `origin/<default-branch>` into your branch. Do not rebase, and do not force anything.
 - Put scratch files, logs, and evidence under `/tmp/issue-agent/<worktree-name>/`. Never commit them.
+- Keep build outputs (Cargo `target/` dirs, `node_modules`, caches and similar) in the worktree's default location, which is on the persistent home volume. Never point them at `/tmp` (for example `CARGO_TARGET_DIR=/tmp/...`): `/tmp` is a size-limited volume shared by every session on the runner, and overflowing it evicts the runner and kills every session.
 
 ## Working rules
 

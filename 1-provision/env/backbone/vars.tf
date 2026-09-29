@@ -122,3 +122,9 @@ variable "github_app_private_key_ironeater" {
   sensitive = true
   default   = null
 }
+
+variable "github_app_private_key_ironeater_reviewer" {
+  type      = string
+  sensitive = true
+  default   = null
+}

@@ -44,6 +44,10 @@ spec:
               value: /run/issue-agent/github
             - name: GITHUB_BOT_LOGIN
               value: "ironeater[bot]"
+            - name: GITHUB_REVIEW_TOKEN_DIR
+              value: /run/issue-agent/github-review
+            - name: GITHUB_REVIEW_BOT_LOGIN
+              value: ironeater-reviewer[bot]
             - name: REPO_REGISTRY_FILE
               value: /opt/issue-agent-bridge/repo-registry.json
             - name: N8N_WEBHOOK_URL
@@ -105,6 +109,9 @@ spec:
             - name: github
               mountPath: /run/issue-agent/github
               readOnly: true
+            - name: github-review
+              mountPath: /run/issue-agent/github-review
+              readOnly: true
             - name: ops
               mountPath: /run/issue-agent/ops
               readOnly: true
@@ -131,6 +138,10 @@ spec:
         - name: github
           secret:
             secretName: issue-agent-github-token
+            defaultMode: 0440
+        - name: github-review
+          secret:
+            secretName: issue-agent-github-review
             defaultMode: 0440
         - name: ops
           secret:

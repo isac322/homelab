@@ -92,6 +92,12 @@ variable "github_app_private_key_ironeater" {
   sensitive   = true
 }
 
+variable "github_app_private_key_ironeater_reviewer" {
+  type        = string
+  description = "Private key of the ironeater-reviewer GitHub App (App ID 5118831) that submits the issue-agent's pull request reviews."
+  sensitive   = true
+}
+
 variable "github_personal_access_token" {
   type        = string
   description = <<-EOT

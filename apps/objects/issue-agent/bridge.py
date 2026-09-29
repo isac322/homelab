@@ -100,12 +100,15 @@ PUBLISHER_PUSH_TIMEOUT = 300.0
 PR_HEAD_WAIT_SECONDS = 60.0
 PR_HEAD_WAIT_INTERVAL = 2.0
 REVIEW_STATE_EVENTS = {"APPROVED": "APPROVE", "CHANGES_REQUESTED": "REQUEST_CHANGES", "COMMENTED": "COMMENT"}
+DEFAULT_REVIEW_STATUS_CONTEXT = "issue-agent/review"
+MAX_LINKED_ISSUES = 10  # linked issues whose title/body/comments github.pr_context includes
+LINKED_ISSUE_COMMENTS = 30  # newest comments kept per linked issue
 
 PR_THREADS_QUERY = """
 query($owner: String!, $name: String!, $number: Int!, $after: String) {
   repository(owner: $owner, name: $name) {
     pullRequest(number: $number) {
-      closingIssuesReferences(first: 20) { nodes { number } }
+      closingIssuesReferences(first: 20) { nodes { number repository { nameWithOwner } } }
       reviewThreads(first: 50, after: $after) {
         pageInfo { hasNextPage endCursor }
         nodes {
@@ -183,6 +186,10 @@ class Config:
     port: int = 8080
     github_api_url: str = "https://api.github.com"
     github_bot_login: str | None = None
+    # Optional second GitHub App used only for pull request reviews (both set or neither).
+    github_review_token_dir: str | None = None
+    github_review_bot_login: str | None = None
+    review_status_context: str = DEFAULT_REVIEW_STATUS_CONTEXT
     n8n_public_url: str | None = None
     hapi_public_url: str | None = None
     workflow_id: str | None = None
@@ -198,6 +205,14 @@ class Config:
         if not port_raw.isdigit() or not 0 < int(port_raw) < 65536:
             raise ConfigError("PORT must be a TCP port number")
         bot = env.get("GITHUB_BOT_LOGIN", "").strip() or None
+        review_dir = env.get("GITHUB_REVIEW_TOKEN_DIR", "").strip() or None
+        review_bot = env.get("GITHUB_REVIEW_BOT_LOGIN", "").strip() or None
+        if (review_dir is None) != (review_bot is None):
+            raise ConfigError("GITHUB_REVIEW_TOKEN_DIR and GITHUB_REVIEW_BOT_LOGIN must be set together")
+        if review_bot is not None and (not review_bot.endswith("[bot]")
+                                       or not _LOGIN_RE.match(review_bot.removesuffix("[bot]"))):
+            raise ConfigError("GITHUB_REVIEW_BOT_LOGIN must be a GitHub App login like <slug>[bot]")
+        status_context = env.get("REVIEW_STATUS_CONTEXT", "").strip() or DEFAULT_REVIEW_STATUS_CONTEXT
         workflow_id = env.get("ISSUE_AGENT_WORKFLOW_ID", "").strip() or None
         if workflow_id is not None and not _EXECUTION_RE.match(workflow_id):
             raise ConfigError("ISSUE_AGENT_WORKFLOW_ID must be an n8n workflow id")
@@ -218,6 +233,9 @@ class Config:
             port=int(port_raw),
             github_api_url=_url(env.get("GITHUB_API_URL", "") or "https://api.github.com", "GITHUB_API_URL"),
             github_bot_login=bot.casefold() if bot else None,
+            github_review_token_dir=review_dir,
+            github_review_bot_login=review_bot.casefold() if review_bot else None,
+            review_status_context=status_context,
             n8n_public_url=_url(n8n_public, "N8N_PUBLIC_URL") if n8n_public else None,
             hapi_public_url=_url(hapi_public, "HAPI_PUBLIC_URL") if hapi_public else None,
             workflow_id=workflow_id,
@@ -414,7 +432,7 @@ CREATE TABLE IF NOT EXISTS {name} (
     mode        TEXT NOT NULL,
     local_id    TEXT NOT NULL UNIQUE,
     session_id  TEXT NOT NULL,
-    state       TEXT NOT NULL CHECK (state IN ('sending', 'sent')),
+    state       TEXT NOT NULL CHECK (state IN ('sending', 'sent', 'lost')),
     idle_polls  INTEGER NOT NULL DEFAULT 0,
     updated_at  REAL NOT NULL,
     PRIMARY KEY (delivery_id, mode)
@@ -429,6 +447,7 @@ SCHEMA = ";\n".join([
 # Event: accepted -> dispatched -> completed | needs_attention
 # Issue session: none -> pending -> ready (pending may fall back to none)
 # Issue phase: none -> triaged -> implementing; pull requests: none -> reviewing
+# Turn: sending -> sent -> lost (session died mid-turn) -> sending under a fresh localId
 
 
 def _columns(conn: sqlite3.Connection, table: str) -> list[str]:
@@ -475,6 +494,8 @@ def migrate(conn: sqlite3.Connection) -> None:
     if "turns" in tables and "mode" not in _columns(conn, "turns"):
         # v1 turns were keyed by delivery only; they stay readable under mode 'legacy'.
         _rebuild(conn, "turns", TURNS_DDL, {"mode": "'legacy'"})
+    elif "turns" in tables and "'lost'" not in tables["turns"]:
+        _rebuild(conn, "turns", TURNS_DDL)  # widens the state CHECK for session-lost turns
 # Event: accepted -> dispatched -> completed | needs_attention
 # Issue session: none -> pending -> ready (pending may fall back to none)
 
@@ -594,8 +615,8 @@ class Store:
             conn.execute(
                 "INSERT INTO turns (delivery_id, mode, local_id, session_id, state, idle_polls, updated_at)"
                 " VALUES (?, ?, ?, ?, ?, ?, ?) ON CONFLICT(delivery_id, mode) DO UPDATE SET"
-                " session_id = excluded.session_id, state = excluded.state, idle_polls = excluded.idle_polls,"
-                " updated_at = excluded.updated_at",
+                " local_id = excluded.local_id, session_id = excluded.session_id, state = excluded.state,"
+                " idle_polls = excluded.idle_polls, updated_at = excluded.updated_at",
                 (delivery_id, mode, local_id, session_id, state, idle_polls, time.time()),
             )
 
@@ -783,7 +804,7 @@ def review_command(bot_login: str | None) -> str | None:
 
 
 def classify_event(registry: Registry, event: str, delivery: str, payload: Any,
-                   bot_login: str | None = None) -> dict[str, Any] | str:
+                   bot_login: str | None = None, reviewer_login: str | None = None) -> dict[str, Any] | str:
     """Normalized event dict, or a string reason for not queueing it.
 
     Any repository delivered by the App is accepted (the signature proves the installation);
@@ -878,8 +899,8 @@ def classify_event(registry: Registry, event: str, delivery: str, payload: Any,
         if is_agent_text(body):
             return "bot_sender"
         if "pull_request" in issue:
-            command = review_command(bot_login)
-            if command is None or not body.strip().casefold().startswith(command):
+            commands = [c for c in (review_command(bot_login), review_command(reviewer_login)) if c]
+            if not any(body.strip().casefold().startswith(c) for c in commands):
                 return "pull_request_comment_ignored"
             return {**base, "semantic_key": f"{cfg.name}#comment:{comment_id}", "kind": "pr_review",
                     "comment_id": comment_id, "body": body}
@@ -912,7 +933,8 @@ def handle_webhook(config: Config, store: Store, headers: Mapping[str, str], bod
     except (OSError, ValueError, ConfigError) as exc:
         LOG.error("registry unavailable: %s", exc)
         return Intake(503, "registry_unavailable")
-    classified = classify_event(registry, event, delivery, payload, config.github_bot_login)
+    classified = classify_event(registry, event, delivery, payload, config.github_bot_login,
+                                config.github_review_bot_login)
     if isinstance(classified, str):
         LOG.info("delivery %s not queued: %s", delivery, classified)
         return Intake(400 if classified == "malformed" else 202, classified)
@@ -931,6 +953,14 @@ def local_id_for(delivery_id: str, mode: str) -> str:
     return f"issue-agent-{delivery_id}-{mode}"
 
 
+def resend_local_id(delivery_id: str, mode: str, current: str) -> str:
+    """localId for re-sending a step whose session died: ``<base>-r<n>``, so no result or history of an
+    earlier send can be mistaken for the re-sent one."""
+    base = local_id_for(delivery_id, mode)
+    n = int(current[len(base) + 2:]) if current.startswith(base + "-r") else 0
+    return f"{base}-r{n + 1}"
+
+
 def _fence(nonce: str, label: str, text: str) -> str:
     tag = "UNTRUSTED-" + hashlib.sha256(f"{nonce}:{label}".encode()).hexdigest()[:16]
     return f"<<<{tag} {label}\n{text.replace(tag, '')}\n{tag}>>>"
@@ -945,7 +975,7 @@ _TRIAGE_SCHEMA = """\
  "comment": null | "English markdown <=60000 (analysis comment per comment-template)",
  "next_action":"implement|await_info|await_decision|none",
  "implementation_brief": null | "string <=16000 (fix design, regression test contract, scope) - required non-null iff next_action implement",
- "questions":[strings <=500, max 5] (non-empty iff next_action await_info or await_decision; they must also appear in comment),
+ "questions":[strings <=500, max 5] (non-empty iff next_action await_info or await_decision; ask them in comment too - the automation appends any question missing from comment under `## Questions`),
  "summary":"string <=2000",
  "blockers":[strings]}
 status "blocked" = triage could not run (tooling/infra).
@@ -1146,6 +1176,17 @@ def label_change_error(add: Any, remove: Any, *, managed: bool = False) -> str |
     return None
 
 
+def _with_questions(comment: str | None, questions: list[str]) -> str | None:
+    """``comment`` with every question it does not already carry (whitespace/case-insensitive) appended
+    under a ``## Questions`` list, so the published comment always asks what ``questions`` records."""
+    have = _squash(comment or "")
+    missing = [q for q in questions if _squash(q) not in have]
+    if not missing:
+        return comment
+    section = "## Questions\n\n" + "\n".join(f"{i}. {q.strip()}" for i, q in enumerate(missing, 1))
+    return section if comment is None else f"{comment.rstrip()}\n\n{section}"
+
+
 def _triage(v: dict[str, Any]) -> dict[str, Any]:
     status = _choice(v["status"], ("triaged", "blocked"), "status")
     verdict = _choice(v["verdict"], TRIAGE_VERDICTS, "verdict")
@@ -1164,8 +1205,8 @@ def _triage(v: dict[str, Any]) -> dict[str, Any]:
     questions = _texts(v["questions"], 500, 5, "questions")
     _require(bool(questions) == (next_action in ("await_info", "await_decision")),
              "questions must be non-empty iff next_action is await_info or await_decision")
-    _require(not questions or (comment is not None and all(_squash(q) in _squash(comment) for q in questions)),
-             "every question must also appear in comment")
+    comment = _with_questions(comment, questions)
+    _require(comment is None or len(comment) <= 60000, "comment with the appended questions exceeds 60000 chars")
     return {"status": status, "verdict": verdict, "fault_domain": fault_domain, "duplicate_of": dup,
             "labels": {"add": list(labels["add"]), "remove": list(labels["remove"])}, "comment": comment,
             "next_action": next_action, "implementation_brief": brief, "questions": questions,
@@ -1273,9 +1314,10 @@ def fit_pr_context(ctx: dict[str, Any], budget: int = PR_CONTEXT_BUDGET) -> dict
     """Shrink a github.pr_context result to ``budget`` bytes so it can be passed on as session_send context.
 
     In order, until it fits: drop file patches, largest first (the agent reads the diff from git); cap
-    review, comment and thread bodies (the PR body keeps at least 4000 characters) at shrinking lengths;
-    finally drop whole entries: files from the tail, resolved threads, then the oldest comments, reviews
-    and threads. ``truncated`` counts what was left out.
+    review, comment, thread and linked-issue comment bodies (the PR body keeps at least 4000 characters,
+    linked issue bodies 2000) at shrinking lengths; finally drop whole entries: files from the tail,
+    resolved threads, then the oldest linked-issue comments, comments, reviews and threads. ``truncated``
+    counts what was left out.
     """
     size = _json_size(ctx)
     if size <= budget:
@@ -1293,11 +1335,14 @@ def fit_pr_context(ctx: dict[str, Any], budget: int = PR_CONTEXT_BUDGET) -> dict
         size -= before - _json_size(f)
         bump("files_patch_omitted")
 
-    bodies = [c for t in ctx["threads"] for c in t["comments"]] + ctx["comments"] + ctx["reviews"]
+    linked = ctx.get("linked_issue_details") or []
+    linked_comments = [c for li in linked for c in li["comments"]]
+    bodies = [c for t in ctx["threads"] for c in t["comments"]] + ctx["comments"] + ctx["reviews"] + linked_comments
     for limit in PR_CONTEXT_BODY_STEPS:
         if size <= budget:
             break
-        for holder, cap in [(b, limit) for b in bodies] + [(ctx["pr"], max(limit, 4000))]:
+        for holder, cap in ([(b, limit) for b in bodies] + [(li, max(limit, 2000)) for li in linked]
+                            + [(ctx["pr"], max(limit, 4000))]):
             text = holder.get("body")
             if isinstance(text, str) and len(text) > cap:
                 before = _json_size(text)
@@ -1308,6 +1353,7 @@ def fit_pr_context(ctx: dict[str, Any], budget: int = PR_CONTEXT_BUDGET) -> dict
     threads = ctx["threads"]
     candidates = ([("files_omitted", ctx["files"], f) for f in reversed(ctx["files"])]
                   + [("threads_omitted", threads, t) for t in threads if t["is_resolved"]]
+                  + [("linked_issue_comments_omitted", li["comments"], c) for li in linked for c in li["comments"]]
                   + [("comments_omitted", ctx["comments"], c) for c in ctx["comments"]]
                   + [("reviews_omitted", ctx["reviews"], r) for r in ctx["reviews"]]
                   + [("threads_omitted", threads, t) for t in threads if not t["is_resolved"]])
@@ -1328,12 +1374,15 @@ def fit_pr_context(ctx: dict[str, Any], budget: int = PR_CONTEXT_BUDGET) -> dict
 
 class Bridge:
     def __init__(self, config: Config, store: Store, hapi: Hapi, github: GitHub, publisher: Publisher,
-                 *, clock: Callable[[], float] = time.monotonic,
+                 *, review_github: GitHub | None = None,
+                 clock: Callable[[], float] = time.monotonic,
                  sleep: Callable[[float], None] = time.sleep):
         self.config = config
         self.store = store
         self.hapi = hapi
         self.github = github
+        # Reviews go through a separate App when configured, so the issue App's own PRs get real verdicts.
+        self.review_github = review_github
         self.publisher = publisher
         self.clock = clock
         self.sleep = sleep
@@ -1903,8 +1952,12 @@ class Bridge:
             session_id = issue["session_id"]
             turn = self.store.turn(delivery, mode)
             if turn is not None and turn["state"] == "sent":
-                return {"delivery": "already", "session_id": turn["session_id"], "local_id": local_id, "mode": mode}
+                return {"delivery": "already", "session_id": turn["session_id"], "local_id": turn["local_id"],
+                        "mode": mode}
             if turn is not None:
+                # A lost turn carries the fresh localId its re-send must use; only a 'sending' one may have landed.
+                local_id = turn["local_id"]
+            if turn is not None and turn["state"] == "sending":
                 found = self._delivery(turn["session_id"], local_id)
                 if found == "indeterminate":
                     raise OpError("hub reports message delivery indeterminate", needs_operator=True)
@@ -1920,14 +1973,14 @@ class Bridge:
                                                                      "deliveryMode": "queue"})
             except TransportError as exc:
                 if exc.not_sent:
-                    self.store.drop_turn(delivery, mode)
+                    self._unsend(delivery, mode, local_id, session_id)
                     raise OpError(f"message not sent: {exc}", retryable=True) from None
                 status, data = 0, None
             if status == 200 and isinstance(data, dict) and data.get("ok") is True:
                 self.store.put_turn(delivery, mode, local_id, session_id, "sent")
                 return {"delivery": "sent", "session_id": session_id, "local_id": local_id, "mode": mode}
             if 400 <= status < 500:
-                self.store.drop_turn(delivery, mode)
+                self._unsend(delivery, mode, local_id, session_id)
                 code = data.get("code") if isinstance(data, dict) else None
                 raise OpError(f"message rejected: HTTP {status} {code or ''}".strip(),
                               retryable=code == "session_inactive")
@@ -1938,6 +1991,14 @@ class Bridge:
             if found == "indeterminate":
                 raise OpError("hub reports message delivery indeterminate", needs_operator=True)
             raise OpError(f"message delivery unconfirmed (HTTP {status})", retryable=True)
+
+    def _unsend(self, delivery: str, mode: str, local_id: str, session_id: str) -> None:
+        """Forget a send that provably did not land. A re-send keeps its fresh localId (back to 'lost'): the original
+        localId is already in the resumed conversation, so reverting to it would confuse the old turn with the new."""
+        if local_id == local_id_for(delivery, mode):
+            self.store.drop_turn(delivery, mode)
+        else:
+            self.store.put_turn(delivery, mode, local_id, session_id, "lost")
 
     def op_session_turn(self, req: dict[str, Any]) -> dict[str, Any]:
         ev = self._event(req)
@@ -1978,7 +2039,9 @@ class Bridge:
                 if texts:
                     last_text = texts
             requests = (session.get("agentState") or {}).get("requests") or {}
-            if session.get("thinking") or requests:
+            # HAPI clears `active` once the agent process is gone; `thinking` may then be stale.
+            alive = session.get("active") is not False
+            if alive and (session.get("thinking") or requests):
                 self.store.put_turn(ev["delivery_id"], mode, local_id, turn["session_id"], "sent", 0)
                 return {"state": "running", "session_id": sid, "pending_requests": len(requests)}
             raw = find_result(last_text, local_id)
@@ -1989,6 +2052,13 @@ class Bridge:
                 if mode == "triage" and self.store.issue(ev["repo"], ev["issue_number"])["phase"] != "implementing":
                     self.store.update_issue(ev["repo"], ev["issue_number"], phase="triaged")
                 return {"state": "done", "session_id": sid, "mode": mode, "result": result}
+            if not alive:
+                # The step died with the process (runner restart or eviction). Park the turn under a fresh localId so
+                # the workflow re-ensures the session and re-sends the step instead of waiting on a dead turn.
+                self.store.put_turn(ev["delivery_id"], mode, resend_local_id(ev["delivery_id"], mode, local_id),
+                                    sid, "lost")
+                return {"state": "lost", "session_id": sid,
+                        "detail": "agent session ended mid-turn (runner restart or eviction)"}
             idle = turn["idle_polls"] + 1
             self.store.put_turn(ev["delivery_id"], mode, local_id, turn["session_id"], "sent", idle)
             if idle >= IDLE_WITHOUT_RESULT_LIMIT:
@@ -2001,24 +2071,26 @@ class Bridge:
 
     # -- GitHub ------------------------------------------------------------
 
-    def _gh_raw(self, method: str, path: str, body: Any = None) -> tuple[int, Any]:
+    def _gh_raw(self, method: str, path: str, body: Any = None, *, client: GitHub | None = None) -> tuple[int, Any]:
         try:
-            return self.github.request(method, path, body)
+            return (client or self.github).request(method, path, body)
         except TransportError as exc:
             raise OpError(f"github {method} transport: {exc}", retryable=True) from None
 
-    def _gh(self, method: str, path: str, body: Any = None, ok: tuple[int, ...] = (200,)) -> Any:
-        status, data = self._gh_raw(method, path, body)
+    def _gh(self, method: str, path: str, body: Any = None, ok: tuple[int, ...] = (200,), *,
+            client: GitHub | None = None) -> Any:
+        status, data = self._gh_raw(method, path, body, client=client)
         if status not in ok:
             raise OpError(f"github {method} {path.split('?')[0]} HTTP {status}", retryable=status >= 500 or status == 429)
         return data
 
-    def _paged(self, path: str, max_pages: int, *, strict: bool = False) -> list[dict[str, Any]]:
+    def _paged(self, path: str, max_pages: int, *, strict: bool = False,
+               client: GitHub | None = None) -> list[dict[str, Any]]:
         """List endpoint, 100 per page. ``strict`` refuses a truncated list (needed for idempotency checks)."""
         out: list[dict[str, Any]] = []
         sep = "&" if "?" in path else "?"
         for page in range(1, max_pages + 1):
-            data = self._gh("GET", f"{path}{sep}per_page=100&page={page}")
+            data = self._gh("GET", f"{path}{sep}per_page=100&page={page}", client=client)
             if not isinstance(data, list):
                 raise OpError(f"github {path}: unexpected response", retryable=True)
             out.extend(item for item in data if isinstance(item, dict))
@@ -2028,8 +2100,8 @@ class Bridge:
             raise OpError(f"github {path}: too many items to verify idempotency", needs_operator=True)
         return out
 
-    def _graphql(self, query: str, variables: Mapping[str, Any]) -> dict[str, Any]:
-        data = self._gh("POST", "/graphql", {"query": query, "variables": dict(variables)})
+    def _graphql(self, query: str, variables: Mapping[str, Any], *, client: GitHub | None = None) -> dict[str, Any]:
+        data = self._gh("POST", "/graphql", {"query": query, "variables": dict(variables)}, client=client)
         errors = data.get("errors") if isinstance(data, dict) else None
         if errors or not isinstance(data, dict) or not isinstance(data.get("data"), dict):
             first = errors[0] if isinstance(errors, list) and errors and isinstance(errors[0], dict) else {}
@@ -2060,32 +2132,57 @@ class Bridge:
                             ok=(201,))
         return {"url": data.get("html_url") if isinstance(data, dict) else None, "created": True}
 
-    def op_github_issue(self, req: dict[str, Any]) -> dict[str, Any]:
-        ev = self._event(req)
-        issue = self._gh("GET", f"/repos/{ev['repo']}/issues/{ev['issue_number']}")
+    @staticmethod
+    def _issue_comment_view(c: Mapping[str, Any]) -> dict[str, Any]:
+        return {
+            "id": c.get("id"),
+            "author": (c.get("user") or {}).get("login"),
+            "from_agent": is_agent_text(c.get("body") or ""),
+            "body": (c.get("body") or "")[:4000],
+            "created_at": c.get("created_at"),
+        }
+
+    def _recent_comments(self, repo: str, number: int, total: Any, limit: int) -> list[dict[str, Any]]:
+        """Newest ``limit`` comments for read-only context: the last pages located from the issue's comment count,
+        never the full idempotency scan (which refuses long discussions)."""
+        path = f"/repos/{repo}/issues/{number}/comments?per_page=100&page="
+        page = max(1, -(-total // 100)) if isinstance(total, int) and total > 0 else 1
+        out: list[dict[str, Any]] = []
+        for _ in range(-(-limit // 100) + 2):  # the needed pages plus slack for a stale count
+            data = self._gh("GET", f"{path}{page}")
+            if not isinstance(data, list):
+                raise OpError("github comments: unexpected response", retryable=True)
+            out = [c for c in data if isinstance(c, dict)] + out
+            if len(out) >= limit or page == 1:
+                break
+            page -= 1
+        return out[-limit:]
+
+    def _issue_snapshot(self, repo: str, number: int, *, comment_limit: int = 50, issue: Any = None,
+                        recent_only: bool = False) -> tuple[dict[str, Any], list[dict[str, Any]]]:
+        """Issue fields and its newest ``comment_limit`` comments, bodies capped (issue 20000, comment 4000).
+        ``recent_only`` reads just the newest pages instead of the full history."""
+        if issue is None:
+            issue = self._gh("GET", f"/repos/{repo}/issues/{number}")
         if not isinstance(issue, dict):
             raise OpError("github issue: unexpected response", retryable=True)
-        comments = self._comments(ev["repo"], ev["issue_number"])[-50:]
-        return {
-            "issue": {
-                "number": issue.get("number"),
-                "title": issue.get("title"),
-                "body": (issue.get("body") or "")[:20000],
-                "state": issue.get("state"),
-                "author": (issue.get("user") or {}).get("login"),
-                "labels": [lbl.get("name") for lbl in issue.get("labels") or [] if isinstance(lbl, dict)],
-            },
-            "comments": [
-                {
-                    "id": c.get("id"),
-                    "author": (c.get("user") or {}).get("login"),
-                    "from_agent": is_agent_text(c.get("body") or ""),
-                    "body": (c.get("body") or "")[:4000],
-                    "created_at": c.get("created_at"),
-                }
-                for c in comments
-            ],
-        }
+        if recent_only:
+            comments = self._recent_comments(repo, number, issue.get("comments"), comment_limit)
+        else:
+            comments = self._comments(repo, number)[-comment_limit:]
+        return ({
+            "number": issue.get("number"),
+            "title": issue.get("title"),
+            "body": (issue.get("body") or "")[:20000],
+            "state": issue.get("state"),
+            "author": (issue.get("user") or {}).get("login"),
+            "labels": [lbl.get("name") for lbl in issue.get("labels") or [] if isinstance(lbl, dict)],
+        }, [self._issue_comment_view(c) for c in comments])
+
+    def op_github_issue(self, req: dict[str, Any]) -> dict[str, Any]:
+        ev = self._event(req)
+        issue, comments = self._issue_snapshot(ev["repo"], ev["issue_number"])
+        return {"issue": issue, "comments": comments}
 
     def op_github_comment(self, req: dict[str, Any]) -> dict[str, Any]:
         ev = self._event(req)
@@ -2148,20 +2245,25 @@ class Bridge:
             raise OpError("no pull request recorded for this issue")
         return int(number)
 
-    def _threads(self, repo: str, number: int) -> tuple[list[dict[str, Any]], list[int]]:
-        """Review threads (bounded pagination) and closing issue references via GraphQL."""
+    def _threads(self, repo: str, number: int, *,
+                 client: GitHub | None = None) -> tuple[list[dict[str, Any]], list[tuple[str, int]]]:
+        """Review threads (bounded pagination) and closing issue references ``(repo, number)`` via GraphQL."""
         owner, name = repo.split("/", 1)
         threads: list[dict[str, Any]] = []
-        linked: list[int] = []
+        linked: list[tuple[str, int]] = []
         after = None
         for _ in range(MAX_THREAD_PAGES):
-            data = self._graphql(PR_THREADS_QUERY, {"owner": owner, "name": name, "number": number, "after": after})
+            data = self._graphql(PR_THREADS_QUERY, {"owner": owner, "name": name, "number": number, "after": after},
+                                 client=client)
             pr = (data.get("repository") or {}).get("pullRequest")
             if not isinstance(pr, dict):
                 raise OpError(f"pull request #{number} not found")
             if after is None:
-                linked = [n["number"] for n in (pr.get("closingIssuesReferences") or {}).get("nodes") or []
-                          if isinstance(n, dict) and _positive_int(n.get("number"))]
+                for n in (pr.get("closingIssuesReferences") or {}).get("nodes") or []:
+                    ref_repo = ((n.get("repository") or {}).get("nameWithOwner") if isinstance(n, dict) else None)
+                    if _positive_int(n.get("number") if isinstance(n, dict) else None) and isinstance(ref_repo, str) \
+                            and valid_repo_name(ref_repo):
+                        linked.append((ref_repo, n["number"]))
             conn = pr.get("reviewThreads") or {}
             for t in conn.get("nodes") or []:
                 if not isinstance(t, dict):
@@ -2184,11 +2286,36 @@ class Bridge:
             after = page["endCursor"]
         return threads, linked
 
-    def _get_pr(self, repo: str, number: int) -> dict[str, Any]:
-        pr = self._gh("GET", f"/repos/{repo}/pulls/{number}")
+    def _get_pr(self, repo: str, number: int, *, client: GitHub | None = None) -> dict[str, Any]:
+        pr = self._gh("GET", f"/repos/{repo}/pulls/{number}", client=client)
         if not isinstance(pr, dict):
             raise OpError("github pull request: unexpected response", retryable=True)
         return pr
+
+    def reviewer_login(self) -> str | None:
+        """Login that submits reviews: the review App when configured, else the issue App."""
+        return self.config.github_review_bot_login if self.review_github is not None else self.config.github_bot_login
+
+    def _linked_issue_details(self, repo: str, refs: list[tuple[str, int]]) -> list[dict[str, Any]]:
+        """Title/body/newest comments of each ``(repo, number)`` reference. References that do not exist, and
+        other repositories this App cannot read, are skipped."""
+        out: list[dict[str, Any]] = []
+        for ref_repo, n in refs[:MAX_LINKED_ISSUES]:
+            status, issue = self._gh_raw("GET", f"/repos/{ref_repo}/issues/{n}")
+            other = ref_repo.casefold() != repo.casefold()
+            if status in (404, 410) or other and status == 403:  # missing, deleted, or not readable by the App
+                continue
+            if status != 200:
+                raise OpError(f"github GET /repos/{ref_repo}/issues/{n} HTTP {status}",
+                              retryable=status >= 500 or status == 429)
+            fields, comments = self._issue_snapshot(ref_repo, n, comment_limit=LINKED_ISSUE_COMMENTS, issue=issue,
+                                                    recent_only=True)
+            out.append({
+                "repo": ref_repo, "number": fields["number"], "title": fields["title"], "state": fields["state"],
+                "body": fields["body"], "author": fields["author"],
+                "comments": [{k: c[k] for k in ("author", "body", "created_at", "from_agent")} for c in comments],
+            })
+        return out
 
     def op_github_pr_context(self, req: dict[str, Any]) -> dict[str, Any]:
         ev = self._event(req)
@@ -2200,6 +2327,10 @@ class Bridge:
         comments = self._comments(repo, number)[-50:]
         body = pr.get("body") or ""
         related = {int(m) for m in re.findall(r"(?i)\brelated to #(\d+)\b", body)}
+        # `linked_issues` stays this repository's numbers; other-repository references appear only in the details.
+        same = {n for r, n in closing if r.casefold() == repo.casefold()}
+        linked = sorted(same | related)
+        others = list(dict.fromkeys((r, n) for r, n in closing if r.casefold() != repo.casefold()))
         head, base = pr.get("head") or {}, pr.get("base") or {}
         return fit_pr_context({
             "pr": {
@@ -2231,7 +2362,9 @@ class Bridge:
                  "from_agent": is_agent_text(c.get("body") or "")}
                 for c in comments
             ],
-            "linked_issues": sorted(set(closing) | related),
+            "linked_issues": linked,
+            "linked_issue_details": self._linked_issue_details(repo, [(repo, n) for n in linked] + others),
+            "reviewer_login": self.reviewer_login(),
         })
 
     def op_github_review(self, req: dict[str, Any]) -> dict[str, Any]:
@@ -2244,7 +2377,8 @@ class Bridge:
             raise OpError(f"invalid review result: {result}")
         if result["status"] != "reviewed":
             raise OpError("review result status is not reviewed")
-        pr = self._get_pr(repo, number)
+        gh = self.review_github
+        pr = self._get_pr(repo, number, client=gh)
         head = (pr.get("head") or {}).get("sha")
         if head != result["head_sha"]:
             raise OpError("stale_head")
@@ -2252,13 +2386,14 @@ class Bridge:
         replies: list[int] = []
         resolved: list[str] = []
         if result["thread_replies"]:
-            threads, _ = self._threads(repo, number)
+            threads, _ = self._threads(repo, number, client=gh)
             by_comment = {c["comment_id"]: t for t in threads for c in t["comments"]}
             unknown = [r["comment_id"] for r in result["thread_replies"] if r["comment_id"] not in by_comment]
             if unknown:
                 raise OpError(f"review thread comments not found: {unknown}")
             posted = [c.get("body") or "" for c in
-                      self._paged(f"/repos/{repo}/pulls/{number}/comments", MAX_IDEMPOTENCY_PAGES, strict=True)]
+                      self._paged(f"/repos/{repo}/pulls/{number}/comments", MAX_IDEMPOTENCY_PAGES, strict=True,
+                                  client=gh)]
             for r in result["thread_replies"]:
                 cid = r["comment_id"]
                 marker = f"{BOT_MARKER_PREFIX}:{delivery}:reply:{cid} -->"
@@ -2267,23 +2402,26 @@ class Bridge:
                 root = thread["comments"][0]["comment_id"] or cid
                 if not any(marker in b for b in posted):
                     self._gh("POST", f"/repos/{repo}/pulls/{number}/comments/{root}/replies",
-                             {"body": f"{marker}\n{r['body']}"}, ok=(201,))
+                             {"body": f"{marker}\n{r['body']}"}, ok=(201,), client=gh)
                 replies.append(cid)
                 if r["resolve"]:
                     if not thread["is_resolved"]:
-                        self._graphql(RESOLVE_THREAD_MUTATION, {"threadId": thread["thread_id"]})
+                        self._graphql(RESOLVE_THREAD_MUTATION, {"threadId": thread["thread_id"]}, client=gh)
                         thread["is_resolved"] = True
                     resolved.append(thread["thread_id"])
 
         marker = f"{BOT_MARKER_PREFIX}:{delivery}:review -->"
-        for r in self._paged(f"/repos/{repo}/pulls/{number}/reviews", MAX_IDEMPOTENCY_PAGES, strict=True):
+        for r in self._paged(f"/repos/{repo}/pulls/{number}/reviews", MAX_IDEMPOTENCY_PAGES, strict=True,
+                             client=gh):
             if marker in (r.get("body") or ""):
-                return {"review_id": r.get("id"), "html_url": r.get("html_url"),
-                        "event_submitted": REVIEW_STATE_EVENTS.get(r.get("state"), r.get("state")),
-                        "replies": replies, "resolved": resolved, "created": False}
+                submitted = REVIEW_STATE_EVENTS.get(r.get("state"), r.get("state"))
+                return {"review_id": r.get("id"), "html_url": r.get("html_url"), "event_submitted": submitted,
+                        "replies": replies, "resolved": resolved, "created": False,
+                        "commit_status": self._review_status(repo, head, submitted, r.get("html_url"))}
         event, body = result["event"], result["body"]
         author = ((pr.get("user") or {}).get("login") or "").casefold()
-        if event != "COMMENT" and self.config.github_bot_login and author == self.config.github_bot_login:
+        reviewer = self.reviewer_login()
+        if event != "COMMENT" and reviewer and author == reviewer:
             action = "approve" if event == "APPROVE" else "request changes on"
             body = (f"**Verdict: {event}** — GitHub does not let the app {action} its own pull request, "
                     f"so this verdict is submitted as a comment review.\n\n{body}")
@@ -2297,18 +2435,41 @@ class Bridge:
         if inline:
             payload["comments"] = inline
         path = f"/repos/{repo}/pulls/{number}/reviews"
-        status, data = self._gh_raw("POST", path, payload)
+        status, data = self._gh_raw("POST", path, payload, client=gh)
         folded = False
         if status == 422 and inline:
             # GitHub rejects inline comments outside the diff; keep the findings in the review body.
             payload = {"commit_id": head, "event": event,
                        "body": f"{marker}\n{body}\n\n{findings_section(result['comments'])}"}
-            status, data = self._gh_raw("POST", path, payload)
+            status, data = self._gh_raw("POST", path, payload, client=gh)
             folded = True
         if status != 200 or not isinstance(data, dict):
             raise OpError(f"github review HTTP {status}", retryable=status >= 500 or status == 429)
         return {"review_id": data.get("id"), "html_url": data.get("html_url"), "event_submitted": event,
-                "replies": replies, "resolved": resolved, "created": True, "inline_folded": folded}
+                "replies": replies, "resolved": resolved, "created": True, "inline_folded": folded,
+                "commit_status": self._review_status(repo, head, event, data.get("html_url"))}
+
+    def _review_status(self, repo: str, sha: str, event: str, target_url: Any) -> dict[str, Any] | None:
+        """Mirror the submitted verdict as a commit status on the reviewed head (review App only).
+
+        Idempotent: the newest status for our context already carrying this verdict is left alone."""
+        gh = self.review_github
+        if gh is None:
+            return None
+        context = self.config.review_status_context
+        state = "success" if event == "APPROVE" else "failure"
+        description = {"APPROVE": f"Approved by {self.config.github_review_bot_login}",
+                       "REQUEST_CHANGES": "Changes requested"}.get(event, "Not approved")[:140]
+        want = {"state": state, "target_url": target_url if isinstance(target_url, str) else None,
+                "description": description, "context": context}
+        current = self._gh("GET", f"/repos/{repo}/commits/{sha}/statuses?per_page=100", client=gh)
+        if not isinstance(current, list):
+            raise OpError("github commit statuses: unexpected response", retryable=True)
+        latest = next((s for s in current if isinstance(s, dict) and s.get("context") == context), None)
+        created = latest is None or any(latest.get(k) != v for k, v in want.items())
+        if created:
+            self._gh("POST", f"/repos/{repo}/statuses/{sha}", want, ok=(201,), client=gh)
+        return {"context": context, "state": state, "created": created}
 
     def _issue_branch(self, ev: sqlite3.Row) -> str:
         if subject_of(ev["kind"]) != "issue":
@@ -2596,12 +2757,15 @@ def make_server(config: Config, store: Store, bridge: Bridge, host: str = "0.0.0
 
 
 def make_bridge(config: Config, store: Store) -> Bridge:
+    review_github = (GitHub(config.github_api_url, config.github_review_token_dir, config.http_timeout)
+                     if config.github_review_token_dir else None)
     return Bridge(
         config,
         store,
         Hapi(config.hapi_base_url, config.hapi_access_token_file, config.http_timeout),
         GitHub(config.github_api_url, config.github_token_dir, config.http_timeout),
         Publisher(config.publisher_url, config.publisher_token_file, config.http_timeout),
+        review_github=review_github,
     )
 
 

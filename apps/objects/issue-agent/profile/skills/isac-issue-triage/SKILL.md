@@ -9,7 +9,7 @@ description: Use in the issue-agent `triage` mode (a new issue, or a new comment
 
 - **GitHub 쓰기 금지.** 에이전트는 GitHub에 아무것도 쓰지 않는다(읽기 전용 토큰). 라벨 부착·교체, 댓글 게시·제자리 수정, 이슈 닫기, 외부 저장소 이슈 등록을 시도하지 않는다. 원본의 모든 쓰기 단계는 턴 끝의 `ISSUE_AGENT_RESULT <nonce> {json}` 줄에 담는 TriageResult 필드로 바뀌고, n8n이 bridge ops로 적용한다.
 - **게시/초안 모드 없음.** 항상 초안을 결과에 담는다. "게시"는 "결과 필드에 담아 반환"으로, "게시 전"은 "반환 전"으로 읽는다.
-- **질문·승인 대기 없음.** 사용자에게 묻거나 승인을 기다리는 단계(`isac-decision-brief` 포함)는 질문을 `questions`와 `comment`에 함께 넣고 `next_action`을 `await_decision`(메인테이너 결정·TRI-25) 또는 `await_info`(제보자 정보)로 두고 턴을 끝낸다. 채팅 답을 기다리지 않는다.
+- **질문·승인 대기 없음.** 사용자에게 묻거나 승인을 기다리는 단계(`isac-decision-brief` 포함)는 질문을 `questions`에 넣고 `comment`에서도 묻고, `next_action`을 `await_decision`(메인테이너 결정·TRI-25) 또는 `await_info`(제보자 정보)로 두고 턴을 끝낸다. `comment`에 그대로 들어 있지 않은 질문은 자동화가 `comment` 끝의 `## Questions` 절에 덧붙인다. 채팅 답을 기다리지 않는다.
 - **최종 보고(한국어) → `summary`.** 사용자 보고·최종 보고는 짧은 영어 `summary`가 되고, 실질 내용은 다른 결과 필드가 담는다.
 - **독립 검토·합의 유지.** 반환 전 독립 검토자와 `isac-multi-agent-consensus` 단계는 서브에이전트로 그대로 수행한다.
 - **작업 위치.** HAPI 워크트리가 유일한 체크아웃이며 트리아지는 추적 파일을 수정·커밋하지 않는다. scratch 산출물(`dossier.md`, `result.json`, `comment.md`, 로그)은 `/tmp/issue-agent/<worktree-name>/` 아래에 두고 커밋하지 않는다.
@@ -26,7 +26,7 @@ description: Use in the issue-agent `triage` mode (a new issue, or a new comment
 | 분석·재현 안 됨·중복·상태 갱신 댓글(TRI-30/31, `references/comment-template.md`) | `comment` (영어 markdown 하나, 댓글이 없으면 `null`) |
 | `references/labels.md`의 "다음 단계" 열 | `next_action` (아래 표) |
 | `isac-issue-to-pr` 인계 내용(수정 설계 + 회귀 테스트 계약 + 범위) | `implementation_brief` (`next_action: implement`일 때만) |
-| 사용자·제보자·메인테이너에게 묻는 것 | `questions` (`comment`에도 같은 질문을 넣는다) |
+| 사용자·제보자·메인테이너에게 묻는 것 | `questions` (`comment`에서도 묻는다. `comment`에 그대로 없는 질문은 자동화가 `## Questions` 절로 덧붙인다) |
 | 최종 보고(TRI-52/TRI-45) | `summary` |
 | 합의 실패·실행 불가 블로커 | `blockers` (+ `status: blocked`) |
 

@@ -171,6 +171,11 @@ variable "github_app_private_key_ironeater" {
   sensitive = true
 }
 
+variable "github_app_private_key_ironeater_reviewer" {
+  type      = string
+  sensitive = true
+}
+
 variable "github_personal_access_token" {
   type        = string
   description = <<-EOT
