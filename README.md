@@ -200,7 +200,7 @@ K3s version과 순차 rollout은 기존 Rancher `system-upgrade-controller`가 �
 
 ### Issue agent (n8n + HAPI)
 
-`apps/objects/issue-agent/`는 GitHub App `ironeater`가 설치된 저장소의 이슈·PR 자동화를 `issue-agent` namespace에 배포한다. 현재 운영 대상은 `isac322/cc-lb`다. 설계와 책임 경계는 `docs/issue-agent-platform.md`를 따른다. Argo CD 등록 파일은 `argocd/apps/issue-agent.yaml`과 `argocd/appprojects/issue-agent.yaml`이다. 자동 merge는 하지 않는다.
+`apps/objects/issue-agent/`는 GitHub App `bulgasaribot`이 설치된 저장소의 이슈·PR 자동화를 `issue-agent` namespace에 배포한다. 현재 운영 대상은 `isac322/cc-lb`다. 설계와 책임 경계는 `docs/issue-agent-platform.md`를 따른다. Argo CD 등록 파일은 `argocd/apps/issue-agent.yaml`과 `argocd/appprojects/issue-agent.yaml`이다. 자동 merge는 하지 않는다.
 
 - 구성: 각 Deployment는 단일 replica이며 `Recreate`로 교체한다.
   - `issue-agent-bridge`: GitHub webhook 검증·중복 방지·상태 SQLite와 n8n용 `/ops` API를 담당한다. GitHub 이슈·PR 쓰기는 모두 bridge op로만 일어난다.
@@ -213,19 +213,19 @@ K3s version과 순차 rollout은 기존 Rancher `system-upgrade-controller`가 �
   - triage: 허용 사용자의 `issues.opened`, 또는 구현 단계가 아닌 이슈의 새 댓글. 에이전트가 `isac-issue-triage`로 분석해 TriageResult를 낸다. n8n이 카탈로그 라벨을 적용하고 분석 댓글을 게시한다. `next_action`이 `implement`면 같은 실행·같은 세션에서 구현으로 넘어가고, `await_info`/`await_decision`이면 질문 댓글에서 멈춘다.
   - implement: `isac-issue-to-pr`로 `hapi-issue-<n>` branch에 로컬 커밋만 하고 ImplementResult(`head_sha`, PR 제목·본문)를 낸다. n8n이 `git.push`(publisher 경유, force 없음)로 push하고 `github.pr_upsert`로 일반(비 Draft) PR을 열거나 제목·본문을 갱신한 뒤 이슈에 PR 링크를 남긴다. `no_change`는 이슈 댓글, `needs_info`는 질문 댓글과 `triage:needs-info` 라벨로 끝난다.
   - 후속 댓글: 구현 단계 이슈의 새 댓글은 `followup` 모드로 같은 세션에 전달되며(`receiving-code-review` 포함) 결과 처리는 implement와 같다.
-  - PR 리뷰: 허용 사용자 또는 bot이 연 PR의 `pull_request` `opened`/`reopened`/`ready_for_review`(Draft 제외), 또는 PR 댓글이 `@ironeater review`나 `@ironeater-reviewer review`로 시작하는 재요청. 댓글 재요청은 PR 작성자를 따지지 않으므로 dependabot·외부 기여자 PR도 허용 사용자가 댓글로 리뷰를 요청할 수 있다. 리뷰 세션은 구현 세션과 분리되어 있고(`review-pr-<n>`), PR head를 `git fetch origin pull/<n>/head`로 checkout해 base diff를 본다. context에는 PR·파일·리뷰·스레드·댓글과 연결 이슈(다른 저장소 포함)의 제목·본문·최근 댓글이 들어간다. 에이전트가 `isac-pr-review`로 ReviewResult를 내면 n8n의 `github.review`가 리뷰 App(`ironeater-reviewer[bot]`)으로 기존 스레드 답글·resolve를 먼저 게시하고 리뷰 하나를 제출한 뒤, 리뷰한 head에 commit status `issue-agent/review`를 남긴다(APPROVE → `success`, REQUEST_CHANGES·COMMENT → `failure`). 작성 App과 리뷰 App이 다르므로 ironeater가 연 PR에도 실제 APPROVE/REQUEST_CHANGES가 달린다. PR head가 결과의 `head_sha`와 다르면 `stale_head`로 멈춘다.
+  - PR 리뷰: 설치된 저장소의 Draft가 아닌 모든 PR이 `pull_request` `opened`/`reopened`/`ready_for_review`로 자동 리뷰된다(작성자·sender 무관, dependabot·외부 기여자·bot PR 포함). 재요청은 PR 작성자 또는 등록부 허용 사용자가 `User` sender로 남긴 `@haechibot review`(본문 시작, 앞 공백·대소문자 무시) PR 댓글뿐이다. 리뷰 세션은 구현 세션과 분리되어 있고(`review-pr-<n>`), PR head를 `git fetch origin pull/<n>/head`로 checkout해 base diff를 본다. context에는 PR·파일·리뷰·스레드·댓글과 연결 이슈(다른 저장소 포함)의 제목·본문·최근 댓글이 들어간다. 에이전트가 `isac-pr-review`로 ReviewResult를 내면 n8n의 `github.review`가 리뷰 App(`haechibot[bot]`)으로 기존 스레드 답글·resolve를 먼저 게시하고 리뷰 하나를 제출한 뒤, 리뷰한 head에 commit status `issue-agent/review`를 남긴다(APPROVE → `success`, REQUEST_CHANGES·COMMENT → `failure`). 작성 App과 리뷰 App이 다르므로 bulgasaribot이 연 PR에도 실제 APPROVE/REQUEST_CHANGES가 달린다. 리뷰 본문과 리뷰 이벤트의 attention 댓글은 bridge가 단일 footer 블록(재리뷰 방법과 요청 자격 안내)을 덧붙여 게시하며 에이전트는 footer를 쓰지 않는다. PR 리뷰 이벤트의 attention 댓글과 `agent:needs-attention` 라벨도 리뷰 App이 게시한다. PR head가 결과의 `head_sha`와 다르면 `stale_head`로 멈춘다.
 - 이미지: HAPI Hub와 Runner는 공개 이미지 `ghcr.io/isac322/issue-agent-hapi`, `ghcr.io/isac322/issue-agent-runner`를 digest로 고정하며 pull Secret이 필요 없다. publisher는 Runner 이미지를 그대로 쓴다. 이미지에는 레포에 있는 지침(`profile/AGENTS.md`)·스킬(`profile/skills/` → `/etc/codex/skills`)·스크립트만 들어가고 자격증명은 넣지 않는다. n8n은 공식 이미지를 digest로 고정한다.
 - Provider: `external-secret-provider.yaml`이 기존 CLIProxyAPI SSM 항목에서 Runner용 `issue-agent-provider` Secret(`OPENAI_API_KEY`, Codex `config.toml`)을 만든다. n8n은 모델을 호출하지 않는다. 값은 파일 마운트로만 전달하므로 변경 후 Runner Pod를 재시작한다.
 - 저장소: `repo-registry.json`은 `defaults`(허용 사용자 `isac322`, agent `codex`, permission `yolo`)와 저장소별 override만 가진다. App 서명이 설치를 증명하므로 설치된 모든 저장소의 이벤트를 받는다. 기본 브랜치는 webhook payload에서 읽고, checkout(`/home/agent/checkouts/<owner>/<name>`)은 첫 세션 생성 때 publisher가 clone한다. 대상 저장소를 늘리려면 App 설치 범위를 바꾼다.
-- GitHub 인증: 작성용 App `ironeater`(App ID `5063990`, installation `164533066`, bot `ironeater[bot]`, user ID `333478113`)와 리뷰 전용 App `ironeater-reviewer`(App ID `5118831`, installation `166063086`, bot `ironeater-reviewer[bot]`, user ID `335401592`)를 쓴다. 두 App 모두 `isac322/cc-lb`, `isac322/flareway`, `isac322/krema`에 설치돼 있다. 리뷰 App은 webhook이 없고 이벤트는 ironeater webhook으로만 받는다.
-  - 개인키는 Terraform Cloud 민감 변수 `github_app_private_key_ironeater`/`github_app_private_key_ironeater_reviewer`와 SSM `/homelab/cluster/backbone/github-app/{ironeater,ironeater-reviewer}/private-key`가 소유한다.
+- GitHub 인증: 작성용 App `bulgasaribot`(App ID `5063990`, installation `164533066`, bot `bulgasaribot[bot]`, user ID `333478113`)과 리뷰 전용 App `haechibot`(App ID `5118831`, installation `166063086`, bot `haechibot[bot]`, user ID `335401592`)을 쓴다. 두 App 모두 `isac322/cc-lb`, `isac322/flareway`, `isac322/krema`에 설치돼 있다. 리뷰 App은 webhook이 없고 이벤트는 bulgasaribot webhook으로만 받는다.
+  - 개인키는 Terraform Cloud 민감 변수 `github_app_private_key_ironeater`/`github_app_private_key_ironeater_reviewer`와 SSM `/homelab/cluster/backbone/github-app/{ironeater,ironeater-reviewer}/private-key`가 소유한다. 이 식별자들은 git-crypt로 잠긴 Terraform apply가 필요해서 App 이름을 바꿔도 예전 `ironeater*` 이름을 유지한다.
   - ESO가 설치 토큰 네 개를 15분마다 갱신한다. 저장소 제한은 없고 App 설치 범위를 따른다.
     - `issue-agent-github-read`: Runner 에이전트 컨테이너용 읽기 전용(contents/issues/pull_requests read). Git과 `gh`는 디렉터리로 마운트한 `hosts.yml`을 읽는다.
     - `issue-agent-github-push`: contents write. publisher 컨테이너에만 마운트한다.
     - `issue-agent-github-token`: bridge용 issues/pull_requests/contents write. GraphQL `resolveReviewThread`가 GitHub App에 contents write를 요구해서 넣었다. bridge는 push하지 않는다.
     - `issue-agent-github-review`: 리뷰 App 토큰(pull_requests/statuses/contents write, issues read). bridge에만 마운트하며 리뷰 제출·스레드 답글·resolve·commit status에만 쓴다.
   - bridge는 `issue-agent-publisher` Secret의 bearer 토큰으로 publisher를 호출한다. 이 Secret과 push 토큰은 에이전트 컨테이너에 마운트하지 않는다.
-  - `GH_TOKEN`·`GITHUB_TOKEN` 환경변수나 `subPath` 마운트를 추가하지 않는다. Git 작성자와 bridge의 `GITHUB_BOT_LOGIN`은 `ironeater[bot]`으로 설정한다. App 이름을 바꾸면 이 값들과 `@ironeater review` 명령도 함께 바뀐다.
+  - `GH_TOKEN`·`GITHUB_TOKEN` 환경변수나 `subPath` 마운트를 추가하지 않는다. Git 작성자와 bridge의 `GITHUB_BOT_LOGIN`은 `bulgasaribot[bot]`, 리뷰용 `GITHUB_REVIEW_BOT_LOGIN`은 `haechibot[bot]`으로 설정하며 재리뷰 명령 `@haechibot review`도 이 값에서 온다.
 - 인터넷 공개 경로: `https://issue-agent-webhook.bhyoo.com/webhooks/github`만 Cloudflare tunnel로 노출한다. App webhook의 서명 secret은 `issue-agent-webhook` Secret의 `secret` 키와 일치해야 한다. n8n 내부 webhook과 bridge의 `/ops`는 클러스터 내부 전용이며, 서로 다른 bearer 토큰(`issue-agent-bridge-ops`)으로 인증한다.
 - 운영자 접근: WireGuard 연결 후 내부 `bhyoo-gateway`로 접속한다. 두 UI 모두 인증을 유지한다.
   - HAPI: `https://hapi.bhyoo.com`에 `issue-agent-hapi-auth` Secret의 `CLI_API_TOKEN`으로 로그인한다.
@@ -274,7 +274,7 @@ print(urllib.request.urlopen(req).read().decode())
 
 #### PR 리뷰 재요청과 merge 제한
 
-GitHub App은 PR reviewer로 지정할 수 없다. REST로 `ironeater[bot]`을 reviewer로 요청하면 오류 없이 무시되는 것을 확인했다. 그래서 재리뷰는 PR 댓글 `@ironeater review`(또는 `@ironeater-reviewer review`)로 요청한다. 재리뷰 본문의 첫 절은 이전 지적의 Closed/Open 상태다. PR에 새 commit이 올라오면 새 head에는 상태가 없으므로 다시 리뷰를 요청해야 merge할 수 있다.
+GitHub App은 PR reviewer로 지정할 수 없다. REST로 `ironeater[bot]`(현 `bulgasaribot[bot]`)을 reviewer로 요청하면 오류 없이 무시되는 것을 확인했다. 그래서 재리뷰는 PR 댓글 `@haechibot review`로 요청한다. 재리뷰 본문의 첫 절은 이전 지적의 Closed/Open 상태다. PR에 새 commit이 올라오면 새 head에는 상태가 없으므로 다시 리뷰를 요청해야 merge할 수 있다.
 
 merge 강제는 ruleset `issue-agent review`가 맡는다: `isac322/flareway`(`main`)와 `isac322/krema`(`master`)에서 리뷰 App(integration `5118831`)이 남긴 `issue-agent/review` 상태가 `success`여야 merge·push할 수 있다. bypass는 없으므로 기본 브랜치에 직접 push할 수 없고 모든 변경은 PR과 봇 승인을 거친다. `isac322/cc-lb`는 GitHub Free의 private 저장소라 ruleset API가 403을 반환하므로 강제하지 않는다.
 

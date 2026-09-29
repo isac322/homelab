@@ -36,7 +36,7 @@ spec:
                       - macmini
       containers:
         - name: runner
-          image: ghcr.io/isac322/issue-agent-runner:0.30.7-codex0.157.0-20260929-r2@sha256:749bc11321676ea37f5f492b4961a8dd15361e4130492a7123422510f2228d3a
+          image: ghcr.io/isac322/issue-agent-runner:0.30.7-codex0.157.0-20260929-r3@sha256:8d7bb5dcf8351e8544b6188fac66d22ad950477356b8c1391bf9bf5990f9a76f
           env:
             - name: HOME
               value: /home/agent
@@ -55,13 +55,13 @@ spec:
             - name: GIT_TERMINAL_PROMPT
               value: "0"
             - name: GIT_AUTHOR_NAME
-              value: "ironeater[bot]"
+              value: "bulgasaribot[bot]"
             - name: GIT_AUTHOR_EMAIL
-              value: "333478113+ironeater[bot]@users.noreply.github.com"
+              value: "333478113+bulgasaribot[bot]@users.noreply.github.com"
             - name: GIT_COMMITTER_NAME
-              value: "ironeater[bot]"
+              value: "bulgasaribot[bot]"
             - name: GIT_COMMITTER_EMAIL
-              value: "333478113+ironeater[bot]@users.noreply.github.com"
+              value: "333478113+bulgasaribot[bot]@users.noreply.github.com"
             - name: CARGO_BUILD_JOBS
               value: "4"
             - name: GOMAXPROCS
@@ -115,7 +115,7 @@ spec:
         # The only container holding the contents:write token. Called by the
         # bridge only; the runner container cannot read either of its secrets.
         - name: publisher
-          image: ghcr.io/isac322/issue-agent-runner:0.30.7-codex0.157.0-20260929-r2@sha256:749bc11321676ea37f5f492b4961a8dd15361e4130492a7123422510f2228d3a
+          image: ghcr.io/isac322/issue-agent-runner:0.30.7-codex0.157.0-20260929-r3@sha256:8d7bb5dcf8351e8544b6188fac66d22ad950477356b8c1391bf9bf5990f9a76f
           command:
             - /usr/bin/tini
             - --

@@ -43,11 +43,11 @@ spec:
             - name: GITHUB_TOKEN_DIR
               value: /run/issue-agent/github
             - name: GITHUB_BOT_LOGIN
-              value: "ironeater[bot]"
+              value: "bulgasaribot[bot]"
             - name: GITHUB_REVIEW_TOKEN_DIR
               value: /run/issue-agent/github-review
             - name: GITHUB_REVIEW_BOT_LOGIN
-              value: ironeater-reviewer[bot]
+              value: haechibot[bot]
             - name: REPO_REGISTRY_FILE
               value: /opt/issue-agent-bridge/repo-registry.json
             - name: N8N_WEBHOOK_URL

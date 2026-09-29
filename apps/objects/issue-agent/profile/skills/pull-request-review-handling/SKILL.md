@@ -8,7 +8,7 @@ description: "Apply when an issue agent turn collects, handles, and responds to 
 This copy adapts the global `pull-request-review-handling` rule for the homelab issue agent (n8n + bridge + HAPI + Codex). The agent runs unattended with a read-only GitHub token and ends each turn with an `ISSUE_AGENT_RESULT <nonce> {json}` line; n8n performs every GitHub write through bridge ops. Changes:
 
 - Replying in review threads, resolving threads, and requesting or re-requesting reviews are not done by the agent. The replies go into result fields; n8n publishes them.
-- Waiting on reviewers is removed; review requests and re-requests arrive as new events (`@ironeater review`, ready/reopen, or a new issue comment).
+- Waiting on reviewers is removed; review requests and re-requests arrive as new events (`@haechibot review` comments from the PR author or an allowed user, ready/reopen, or a new issue comment).
 
 | Original step | Result field |
 |---|---|

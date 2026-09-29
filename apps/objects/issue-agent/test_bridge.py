@@ -30,8 +30,8 @@ OPS_TOKEN = "ops-token"
 N8N_TOKEN = "n8n-token"
 PUB_TOKEN = "publisher-token"
 HAPI_ACCESS = "hapi-access:default"
-BOT = "ironeater[bot]"
-REVIEWER = "ironeater-reviewer[bot]"
+BOT = "bulgasaribot[bot]"
+REVIEWER = "haechibot[bot]"
 REPO = "isac322/cc-lb"
 OTHER = "isac322/other"
 SHA_A = "a" * 40
@@ -377,7 +377,7 @@ class Fake:
             return 502, {"message": "Bad Gateway"}
         if rest[2] == "comments":
             self.comment_posts += 1
-            c = {"id": self._next(), "body": body["body"], "user": {"login": BOT},
+            c = {"id": self._next(), "body": body["body"], "user": {"login": self.gh_actor},
                  "html_url": f"https://github.com/{repo}/issues/{number}#c{self.seq}"}
             self.comments.setdefault(number, []).append(c)
             return 201, c
@@ -475,8 +475,9 @@ def issue_payload(number: int = 7, *, login: str = "isac322", repo: str = REPO, 
 
 
 def comment_payload(number: int = 7, comment_id: int = 100, *, body: str = "also X", repo: str = REPO,
-                    login: str = "isac322", on_pr: bool = False) -> dict:
-    issue: dict[str, Any] = {"number": number, "title": "Fix it", "body": "", "user": {"login": "isac322"}}
+                    login: str = "isac322", on_pr: bool = False, issue_user: str | None = None) -> dict:
+    issue: dict[str, Any] = {"number": number, "title": "Fix it", "body": "",
+                             "user": {"login": issue_user or "isac322"}}
     if on_pr:
         issue["pull_request"] = {"url": f"https://api.github.com/repos/{repo}/pulls/{number}"}
     return {
@@ -677,13 +678,18 @@ class IntakeTests(BridgeTestCase):
                                                     (f"{REPO}#pr:13:review:{SHA_A}", "pr_review", SHA_A)])
         self.assertEqual(self.store.issue(REPO, 12)["subject"], "pull_request")
 
+    def test_pull_request_events_queue_review_for_any_author_and_sender(self) -> None:
+        external = pr_payload(12, author="outside-dev", sender="outside-dev")
+        self.assertEqual(self.deliver(external, event="pull_request", delivery="p1").outcome, "queued")
+        dependabot = pr_payload(13, author="dependabot[bot]", sender="dependabot[bot]", sender_type="Bot")
+        self.assertEqual(self.deliver(dependabot, event="pull_request", delivery="p2").outcome, "queued")
+        self.assertEqual([row["kind"] for row in self.store.query("SELECT kind FROM events ORDER BY seq")],
+                         ["pr_review", "pr_review"])
+
     def test_pull_request_events_that_must_not_queue(self) -> None:
         cases = [
             (pr_payload(draft=True), "draft_ignored"),
             (pr_payload(action="synchronize"), "action_ignored"),
-            (pr_payload(author="stranger"), "actor_not_allowed"),
-            (pr_payload(sender="stranger"), "actor_not_allowed"),
-            (pr_payload(sender="dependabot[bot]", sender_type="Bot"), "bot_sender"),
         ]
         for i, (payload, outcome) in enumerate(cases):
             self.assertEqual(self.deliver(payload, event="pull_request", delivery=f"p{i}").outcome, outcome)
@@ -693,26 +699,45 @@ class IntakeTests(BridgeTestCase):
         ignored = comment_payload(12, 200, body="lgtm", on_pr=True)
         self.assertEqual(self.deliver(ignored, event="issue_comment", delivery="c0").outcome,
                          "pull_request_comment_ignored")
-        stranger = comment_payload(12, 201, body="@ironeater review", on_pr=True, login="stranger")
+        stranger = comment_payload(12, 201, body="@bulgasaribot review", on_pr=True, login="stranger")
         self.assertEqual(self.deliver(stranger, event="issue_comment", delivery="c1").outcome, "actor_not_allowed")
-        command = comment_payload(12, 202, body="  @IronEater Review please", on_pr=True)
+        command = comment_payload(12, 202, body="  @BulgasariBot Review please", on_pr=True)
         self.assertEqual(self.deliver(command, event="issue_comment", delivery="c2").outcome, "queued")
         row = self.store.event("c2")
         self.assertEqual((row["kind"], row["semantic_key"]), ("pr_review", f"{REPO}#comment:202"))
 
-    def test_reviewer_app_mention_also_queues_review_and_both_bots_stay_ignored(self) -> None:
-        mention = comment_payload(12, 300, body="@ironeater-reviewer review", on_pr=True)
-        self.assertEqual(self.deliver(mention, event="issue_comment", delivery="c0").outcome,
-                         "pull_request_comment_ignored")  # single App: only @ironeater is a command
-        self.use_reviewer_app()
-        for i, text in enumerate(["@Ironeater-Reviewer review", "@ironeater review"]):
-            payload = comment_payload(12, 301 + i, body=text, on_pr=True)
-            self.assertEqual(self.deliver(payload, event="issue_comment", delivery=f"c{i + 1}").outcome, "queued")
+    def test_pr_author_may_request_a_review_without_being_an_allowed_user(self) -> None:
+        # "outside-dev" opened the PR but is not in allowed_users: the author may still re-request a review.
+        by_author = comment_payload(12, 210, body="@bulgasaribot review", on_pr=True,
+                                    login="outside-dev", issue_user="outside-dev")
+        self.assertEqual(self.deliver(by_author, event="issue_comment", delivery="c1").outcome, "queued")
         self.assertEqual(self.store.event("c1")["kind"], "pr_review")
-        by_reviewer = comment_payload(12, 310, body="@ironeater review", on_pr=True, login=REVIEWER)
+        # On plain issues strangers stay gated, even when the commenter wrote the issue.
+        issue_comment = comment_payload(7, 211, body="more info", login="outside-dev",
+                                        issue_user="outside-dev")
+        self.assertEqual(self.deliver(issue_comment, event="issue_comment", delivery="c2").outcome,
+                         "actor_not_allowed")
+
+    def test_reviewer_app_command_queues_review_and_the_issue_apps_no_longer_does(self) -> None:
+        mention = comment_payload(12, 300, body="@haechibot review", on_pr=True)
+        self.assertEqual(self.deliver(mention, event="issue_comment", delivery="c0").outcome,
+                         "pull_request_comment_ignored")  # single App: only @bulgasaribot is a command
+        self.use_reviewer_app()
+        self.assertEqual(self.deliver(mention, event="issue_comment", delivery="c1").outcome, "queued")
+        self.assertEqual(self.store.event("c1")["kind"], "pr_review")
+        by_stranger = comment_payload(12, 301, body="@haechibot review", on_pr=True, login="stranger")
+        self.assertEqual(self.deliver(by_stranger, event="issue_comment", delivery="c2").outcome,
+                         "actor_not_allowed")
+        issue_bot = comment_payload(12, 302, body="@bulgasaribot review", on_pr=True)
+        self.assertEqual(self.deliver(issue_bot, event="issue_comment", delivery="c3").outcome,
+                         "pull_request_comment_ignored")
+        by_author = comment_payload(12, 303, body="@haechibot review", on_pr=True,
+                                    login="outside-dev", issue_user="outside-dev")
+        self.assertEqual(self.deliver(by_author, event="issue_comment", delivery="c4").outcome, "queued")
+        by_reviewer = comment_payload(12, 310, body="@haechibot review", on_pr=True, login=REVIEWER)
         self.assertEqual(self.deliver(by_reviewer, event="issue_comment", delivery="c9").outcome, "bot_sender")
         opened = pr_payload(14, author=REVIEWER, sender=REVIEWER, sender_type="Bot")
-        self.assertEqual(self.deliver(opened, event="pull_request", delivery="p9").outcome, "bot_sender")
+        self.assertEqual(self.deliver(opened, event="pull_request", delivery="p9").outcome, "queued")
 
     def test_reviewer_app_env_must_be_set_together(self) -> None:
         for extra in ({"GITHUB_REVIEW_TOKEN_DIR": "/run/x"}, {"GITHUB_REVIEW_BOT_LOGIN": REVIEWER},
@@ -778,13 +803,15 @@ class DispatchTests(BridgeTestCase):
         self.assertEqual(self.fake.dispatched[-1][1]["delivery_id"], "d1")
 
     def test_review_request_supersedes_parked_review_and_runs(self) -> None:
-        # Live cc-lb#890: the attention notice told the user to comment `@ironeater review`, but the queued
+        # Live cc-lb#890: the attention notice told the user to comment `@bulgasaribot review`, but the queued
         # comment never dispatched because the parked review kept the pull request blocked.
         self.started_review(12, "p1")
         self.assertTrue(self.op("fail", "p1", detail="Wait for review turn: stale_head")["ok"])
-        self.assertIn("`@ironeater review`", self.fake.comments[12][0]["body"])
+        body = self.fake.comments[12][0]["body"]
+        self.assertTrue(body.endswith(bridge.review_footer(BOT)))
+        self.assertIn("`@bulgasaribot review`", body)
         self.assertEqual(self.fake.labels[12], [NEEDS])
-        command = comment_payload(12, 500, body="@ironeater review", on_pr=True)
+        command = comment_payload(12, 500, body="@bulgasaribot review", on_pr=True)
         self.assertEqual(self.deliver(command, event="issue_comment", delivery="c1").outcome, "queued")
         old = self.store.event("p1")
         self.assertEqual((old["state"], old["outcome"], old["attention_pending"]), ("completed", "superseded", 0))
@@ -852,16 +879,33 @@ class LifecycleOpsTests(BridgeTestCase):
     def test_fail_posts_rich_attention_comment_and_label(self) -> None:
         self.started()
         sid = self.op("ensure_session")["session_id"]
+        self.fake.gh_calls.clear()
         self.assertTrue(self.op("fail", detail="HAPI timed out", node="Wait for turn")["ok"])
         body = self.fake.comments[7][0]["body"]
         for expected in ("<!-- issue-agent:d1:attention -->", "n8n node `Wait for turn`", "`issue_opened`",
                          "delivery `d1`", "https://n8n.example/workflow/WF1/executions/ex-d1",
                          f"https://hapi.example/sessions/{sid}", "HAPI timed out", "retry_event"):
             self.assertIn(expected, body)
+        self.assertNotIn("To request another review", body)  # the footer belongs to PR review posts only
+        self.assertEqual({actor for actor, _, _ in self.fake.gh_calls}, {BOT})
         self.assertEqual(self.fake.labels[7], [NEEDS])
         self.assertEqual(self.fake.label_creates[0]["name"], NEEDS)
         self.assertEqual(self.fake.label_creates[0]["color"], "b60205")
         self.assertEqual(self.events(), [("d1", "needs_attention")])
+
+    def test_pr_review_attention_is_posted_by_the_review_app_with_the_footer(self) -> None:
+        self.use_reviewer_app()
+        self.started_review(12, "p1")
+        self.fake.gh_calls.clear()
+        self.assertTrue(self.op("fail", "p1", detail="Wait for review turn: stale_head")["ok"])
+        body = self.fake.comments[12][0]["body"]
+        self.assertIn("retry_event", body)
+        self.assertTrue(body.endswith(bridge.review_footer(REVIEWER)))
+        self.assertIn("`@haechibot review`", body)
+        self.assertEqual(self.fake.labels[12], [NEEDS])
+        self.assertEqual(self.fake.comments[12][0]["user"]["login"], REVIEWER)
+        self.assertEqual({actor for actor, _, _ in self.fake.gh_calls}, {REVIEWER})
+        self.assertEqual(self.events(), [("p1", "needs_attention")])
 
     def test_fail_omits_links_that_are_not_configured(self) -> None:
         self.bridge = bridge.make_bridge(dataclasses.replace(self.config, workflow_id=None, hapi_public_url=None),
@@ -1413,6 +1457,7 @@ class PullRequestOpsTests(BridgeTestCase):
         post = self.fake.review_posts[0]
         self.assertEqual((post["commit_id"], post["event"]), (SHA_A, "REQUEST_CHANGES"))
         self.assertTrue(post["body"].startswith("<!-- issue-agent:p1:review -->"))
+        self.assertTrue(post["body"].endswith(bridge.review_footer(BOT)))
         self.assertEqual(post["comments"], [{"path": "a.py", "line": 3, "side": "RIGHT", "body": "bug here"}])
         again = self.op("github.review", "p1", result=REVIEW_OK)
         self.assertEqual((again["created"], again["review_id"]), (False, first["review_id"]))
@@ -1426,6 +1471,7 @@ class PullRequestOpsTests(BridgeTestCase):
         self.assertEqual(self.fake.review_posts[0]["event"], "COMMENT")
         self.assertIn("**Verdict: APPROVE**", body.splitlines()[1])
         self.assertIn("Needs work", body)
+        self.assertTrue(body.endswith(bridge.review_footer(BOT)))
         # Single App: everything goes through the issue App and no commit status is set.
         self.assertIsNone(result["commit_status"])
         self.assertEqual({actor for actor, _, _ in self.fake.gh_calls}, {BOT})
@@ -1490,7 +1536,7 @@ class PullRequestOpsTests(BridgeTestCase):
         ctx = self.op("github.pr_context", "p1")
         self.assertTrue(ctx["ok"], ctx)
         self.assertEqual(ctx["linked_issues"], [7, 9, 404])
-        self.assertEqual(ctx["reviewer_login"], BOT)
+        self.assertEqual((ctx["reviewer_login"], ctx["bot_login"]), (BOT, BOT))
         seven, nine = ctx["linked_issue_details"]
         self.assertEqual({k: seven[k] for k in ("number", "title", "state", "body", "author")},
                          {"number": 7, "title": "Fix it", "state": "open", "body": "details", "author": "isac322"})
@@ -1498,7 +1544,8 @@ class PullRequestOpsTests(BridgeTestCase):
                          [(BOT, True, len(self.fake.comments[7][0]["body"])), ("isac322", False, 4000)])
         self.assertEqual((nine["number"], nine["comments"]), (9, []))
         self.use_reviewer_app()
-        self.assertEqual(self.op("github.pr_context", "p1")["reviewer_login"], REVIEWER)
+        ctx = self.op("github.pr_context", "p1")
+        self.assertEqual((ctx["reviewer_login"], ctx["bot_login"]), (REVIEWER, BOT))
 
     def test_linked_issue_with_a_long_discussion_reads_only_its_newest_comments(self) -> None:
         self.started_review(12)
@@ -1540,6 +1587,7 @@ class PullRequestOpsTests(BridgeTestCase):
         self.assertIn("## Findings outside the diff", retry["body"])
         self.assertIn("- `a.py` line 3 (RIGHT): bug here", retry["body"])
         self.assertIn("- `b.py` line 4-9 (LEFT): first\n  second", retry["body"])
+        self.assertTrue(retry["body"].endswith(bridge.review_footer(BOT)))
 
     def test_thread_replies_are_idempotent_and_resolve_threads(self) -> None:
         self.started_review(12)

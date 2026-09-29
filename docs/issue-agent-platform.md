@@ -10,7 +10,7 @@ v2는 코딩 에이전트의 GitHub 쓰기를 모두 없앴다. 에이전트는 
 
 ## 확정된 요구사항
 
-- 공통 Issue Agent를 여러 GitHub 저장소에서 사용할 수 있게 구현한다. GitHub App `ironeater`의 설치 범위가 곧 대상 범위이며, bridge는 설치된 모든 저장소의 이벤트를 받는다. 현재 설치·운영 대상은 사용자 선택에 따라 `isac322/cc-lb`, `isac322/flareway`, `isac322/krema`다. 설치 범위 확장은 사용자 지정 후에만 한다.
+- 공통 Issue Agent를 여러 GitHub 저장소에서 사용할 수 있게 구현한다. GitHub App `bulgasaribot`의 설치 범위가 곧 대상 범위이며, bridge는 설치된 모든 저장소의 이벤트를 받는다. 현재 설치·운영 대상은 사용자 선택에 따라 `isac322/cc-lb`, `isac322/flareway`, `isac322/krema`다. 설치 범위 확장은 사용자 지정 후에만 한다.
 - GitHub 이슈마다 독립 세션과 해당 저장소의 worktree(`issue-<n>`)를 만든다. 동일 이슈 후속 댓글은 같은 논리 세션으로 전달한다. PR 리뷰는 PR마다 별도 세션(`review-pr-<n>`)을 쓴다. 이슈별 Pod도 허용하지만 최소 조건은 세션·worktree 분리다.
 - 웹에서 모든 이슈 세션을 찾고 실행 중 관찰·메시지 전달·중단·승인을 처리한다. UI 접속 때문에 자동화 구독이나 실행을 종료하지 않는다.
 - Codex·Claude Code면 충분하다. 자동 학습 기능은 범위에서 제외한다.
@@ -19,7 +19,7 @@ v2는 코딩 에이전트의 GitHub 쓰기를 모두 없앴다. 에이전트는 
 - 커스텀 provider와 모델 설정을 독립적으로 관리한다. 자체 ARM64 이미지 빌드는 허용된다.
 - 선호가 불명확한 경우 추측하지 않고 질문한다.
 - 허용 사용자의 명확한 요청은 triage(재현·원인·중복 판단)를 거친 뒤 자동으로 수정·검증·PR 생성까지 수행한다. 불명확한 요청은 질문하며 자동 머지는 하지 않는다.
-- 에이전트가 만들었거나 허용 사용자가 연 PR은 에이전트가 구현 세션과 분리된 리뷰 세션에서 리뷰하고, 리뷰 전용 App `ironeater-reviewer`로 게시한다. 재리뷰는 PR 댓글 `@ironeater review`로 요청한다. ruleset을 쓸 수 있는 저장소(`flareway`, `krema`)는 리뷰 App의 `issue-agent/review` 상태가 `success`여야 merge된다.
+- 설치된 저장소의 Draft가 아닌 모든 PR은 작성자·sender와 무관하게(dependabot·외부 기여자·bot PR 포함) 에이전트가 구현 세션과 분리된 리뷰 세션에서 리뷰하고, 리뷰 전용 App `haechibot`으로 게시한다. 재리뷰는 PR 작성자 또는 등록부 허용 사용자의 PR 댓글 `@haechibot review`로 요청한다. ruleset을 쓸 수 있는 저장소(`flareway`, `krema`)는 리뷰 App의 `issue-agent/review` 상태가 `success`여야 merge된다.
 - 코딩 에이전트는 GitHub에 쓰지 않는다. 댓글·라벨·push·PR·리뷰는 모두 n8n이 에이전트 결과를 검증된 bridge op로 적용한다.
 
 ## 책임 분리
@@ -63,8 +63,8 @@ Codex의 공통 지침은 전용 `CODEX_HOME/AGENTS.md`에서 읽고 프로젝�
 
 ### 알려진 제한
 
-- GitHub App은 PR reviewer로 요청할 수 없다. REST API로 `ironeater[bot]`을 reviewer로 요청하면 오류 없이 무시되는 것을 확인했다. 그래서 재리뷰 요청은 PR 댓글 `@ironeater review` 또는 `@ironeater-reviewer review`(앞뒤 공백 제외, 대소문자 무시, 본문 시작)로 받는다.
-- GitHub는 PR 작성자의 APPROVE/REQUEST_CHANGES를 금지한다. 그래서 리뷰는 작성용 `ironeater`와 다른 App `ironeater-reviewer`로 제출하며, ironeater가 연 PR에도 실제 승인·변경 요청이 달린다. 리뷰 App 자신이 연 PR만 `COMMENT`와 `**Verdict: <event>**` 접두로 downgrade한다(현재 그런 PR은 없다).
+- GitHub App은 PR reviewer로 요청할 수 없다. REST API로 `ironeater[bot]`(당시 이름, 현 `bulgasaribot[bot]`)을 reviewer로 요청하면 오류 없이 무시되는 것을 확인했다. 그래서 재리뷰 요청은 PR 댓글 `@haechibot review`(본문 시작, 앞 공백·대소문자 무시)로 받되, PR 작성자 또는 등록부 허용 사용자가 `User` sender로 남긴 댓글만 받는다.
+- GitHub는 PR 작성자의 APPROVE/REQUEST_CHANGES를 금지한다. 그래서 리뷰는 작성용 `bulgasaribot`과 다른 App `haechibot`으로 제출하며, bulgasaribot이 연 PR에도 실제 승인·변경 요청이 달린다. 리뷰 App 자신이 연 PR만 `COMMENT`와 `**Verdict: <event>**` 접두로 downgrade한다(현재 그런 PR은 없다).
 - 필수 승인 수에 GitHub App 승인이 포함되는지는 문서에 없어서, merge 강제는 특정 App이 남긴 상태만 인정하는 required status check(`issue-agent/review`, integration `5118831`)로 한다. 새 commit은 상태가 없으므로 재리뷰 전까지 merge되지 않는다.
 - `isac322/cc-lb`는 GitHub Free의 private 저장소라 branch protection과 ruleset API가 403을 반환한다. 이 저장소는 bot 승인을 merge 조건으로 강제하지 않는다.
 
@@ -84,8 +84,8 @@ Codex의 공통 지침은 전용 `CODEX_HOME/AGENTS.md`에서 읽고 프로젝�
 ### 이벤트 분류(bridge `classify_event`)
 
 - `issues.opened`: 허용 사용자가 작성한 이슈 → `issue_opened`.
-- `issue_comment.created`(허용 사용자): 이슈 댓글 → `issue_comment`. PR 댓글은 본문이 `@ironeater review`로 시작할 때만(앞뒤 공백 제외, 대소문자 무시) `pr_review`(semantic key `repo#comment:<id>`)이고, 나머지는 `pull_request_comment_ignored`다.
-- `pull_request` `opened`/`reopened`/`ready_for_review`: Draft가 아니고 PR 작성자와 sender가 허용 사용자이거나 bot 자신이면 `pr_review`(semantic key `repo#pr:<n>:review:<head_sha>`). 구현 흐름이 연 bot PR도 이렇게 리뷰된다.
+- `issue_comment.created`: 이슈 댓글은 허용 사용자가 쓴 것만 `issue_comment`. PR 댓글은 본문이 `@haechibot review`로 시작하고(앞 공백·대소문자 무시) sender가 PR 작성자 또는 등록부 허용 사용자인 `User`일 때만 `pr_review`(semantic key `repo#comment:<id>`)이고, 나머지는 `pull_request_comment_ignored`다. 리뷰 App이 없을 때는 작성 App의 명령으로 fallback한다.
+- `pull_request` `opened`/`reopened`/`ready_for_review`: Draft가 아니면 작성자·sender와 무관하게 `pr_review`(semantic key `repo#pr:<n>:review:<head_sha>`). dependabot·외부 기여자 PR과 구현 흐름이 연 bot PR도 이렇게 리뷰된다.
 - bot·자기 댓글과 에이전트 marker가 있는 댓글은 무시한다. bridge DB에 생성 이벤트가 없는 이슈의 댓글은 `unmanaged`로 기록만 한다.
 
 ### 모드와 결과 계약
@@ -103,13 +103,20 @@ Codex의 공통 지침은 전용 `CODEX_HOME/AGENTS.md`에서 읽고 프로젝�
 
 - TriageResult: `status`(`triaged|blocked`), `verdict`, `fault_domain`, `duplicate_of`, `labels.add/remove`(카탈로그 이름), `comment`, `next_action`(`implement|await_info|await_decision|none`), `implementation_brief`(implement일 때 필수), `questions`, `summary`, `blockers`. n8n은 결과 기록 → 라벨 적용 → 분석 댓글 게시 후 `next_action`으로 분기한다. `implement`면 brief를 implement 턴으로 넘기고, 질문이면 `questioned`, 그 외는 `triaged`로 끝난다. `blocked`는 attention이다.
 - ImplementResult: `status`(`ready|no_change|needs_info|blocked`), `head_sha`와 `pr{title, body}`(ready일 때 필수, 본문에 `Fixes #<n>` 또는 `Related to #<n>`), `issue_comment`, `questions`, `summary`, `blockers`. 에이전트는 `hapi-issue-<n>`에 로컬 커밋만 한다. `ready`면 n8n이 `git.push`(publisher `POST /push`, sha 일치·non-force) → `github.pr_upsert`(열린 PR이 없으면 기본 브랜치 대상 일반 PR 생성, 있으면 제목·본문 PATCH) → 이슈에 PR 링크 댓글 → `implemented`. `no_change`는 이슈 댓글, `needs_info`는 질문 댓글과 `triage:needs-info` 라벨, `blocked`는 attention이다. implement/followup 전송 시 이슈 phase는 `implementing`이 된다.
-- ReviewResult: `status`(`reviewed|blocked`), `head_sha`, `event`(`APPROVE|REQUEST_CHANGES|COMMENT`), `body`, `comments`(새 inline 지적, 최대 50), `thread_replies`(기존 스레드 comment ID에 대한 답글과 `resolve`, 최대 100), `summary`, `blockers`. n8n은 `github.pr_context`(PR·파일 patch·리뷰·GraphQL 스레드·댓글·연결 이슈 번호, 그리고 `linked_issue_details`: 다른 저장소 참조를 포함한 연결 이슈 최대 10개의 제목·본문·최근 댓글 30개, `reviewer_login`)를 context로 넘긴다. `github.review`는 리뷰 App 토큰으로 동작하며, PR head가 `head_sha`와 다르면 `stale_head`로 거절하고, 스레드 답글 게시·resolve 후 `commit_id=head_sha`로 리뷰 하나를 제출하고 `issue-agent/review` 상태(APPROVE → success, 그 외 failure)를 남긴다. 모두 숨은 marker 또는 기존 상태 비교로 멱등이다. inline 지적이 422로 거절되면 본문의 "Findings outside the diff" 절로 옮겨 다시 제출한다. 재리뷰 본문의 첫 절은 이전 지적의 Closed/Open 상태다.
+- ReviewResult: `status`(`reviewed|blocked`), `head_sha`, `event`(`APPROVE|REQUEST_CHANGES|COMMENT`), `body`, `comments`(새 inline 지적, 최대 50), `thread_replies`(기존 스레드 comment ID에 대한 답글과 `resolve`, 최대 100), `summary`, `blockers`. n8n은 `github.pr_context`(PR·파일 patch·리뷰·GraphQL 스레드·댓글·연결 이슈 번호, 그리고 `linked_issue_details`: 다른 저장소 참조를 포함한 연결 이슈 최대 10개의 제목·본문·최근 댓글 30개, `reviewer_login`)를 context로 넘긴다. `github.review`는 리뷰 App(`haechibot[bot]`) 토큰으로 동작하며, PR head가 `head_sha`와 다르면 `stale_head`로 거절하고, 스레드 답글 게시·resolve 후 `commit_id=head_sha`로 리뷰 하나를 제출하고 `issue-agent/review` 상태(APPROVE → success, 그 외 failure)를 남긴다. 모두 숨은 marker 또는 기존 상태 비교로 멱등이다. inline 지적이 422로 거절되면 본문의 "Findings outside the diff" 절로 옮겨 다시 제출한다. 재리뷰 본문의 첫 절은 이전 지적의 Closed/Open 상태다. bridge가 제출하는 리뷰 본문과 `pr_review` 이벤트의 attention 댓글 끝에는 항상 같은 footer 블록이 붙고 에이전트는 body에 footer를 쓰지 않는다:
+
+  ```
+  ---
+  <sub>To request another review, comment `@haechibot review` on this pull request after pushing fixes or replying to the findings. The same comment restarts a review that stopped with an error. The pull request author or a maintainer can request it.</sub>
+  ```
+
+  footer의 bot login은 설정값(`GITHUB_REVIEW_BOT_LOGIN`의 `[bot]` 제외)이며 코드에 하드코딩하지 않는다.
 
 라벨은 bridge `LABEL_CATALOG`의 이름만 허용한다(목록은 README `#### 라벨`). 저장소에 없으면 카탈로그 설명·색으로 만들고, 같은 그룹(`repro:*`, direction, kind) 라벨을 추가하면 나머지를 같은 op에서 제거한다. `agent:needs-attention`은 bridge만 다룬다.
 
 ### 오류 알림
 
-에이전트를 실행하는 모든 경로는 GitHub에 보이는 상태로 끝난다. 실패는 bridge `mark_attention`으로 모인다. 입구는 워크플로의 `Mark needs attention`(`fail`), n8n 오류 워크플로 `IssueAgentError01`(Error Trigger → `fail_execution`, 메인 워크플로 `settings.errorWorkflow`), bridge 자체 포기(dispatch 8회 실패, stale dispatch, n8n 응답 없음)다. `mark_attention`은 이벤트를 `needs_attention`으로 두고 해당 이슈/PR을 block한 뒤, 멈춘 노드·단계, 이벤트 종류, delivery ID, n8n 실행 링크, HAPI 세션 링크, `retry_event` 방법을 담은 댓글과 `agent:needs-attention` 라벨을 붙인다. 둘 다 적용될 때까지 backoff 후 재시도한다. 자동 재실행은 하지 않는다. 운영자는 `retry_event`(기록된 단계부터 재개) 또는 `unblock_issue`(이후 이벤트만 진행)로 푼다. 성공한 `finish`는 `agent:needs-attention`을 제거한다.
+에이전트를 실행하는 모든 경로는 GitHub에 보이는 상태로 끝난다. 실패는 bridge `mark_attention`으로 모인다. 입구는 워크플로의 `Mark needs attention`(`fail`), n8n 오류 워크플로 `IssueAgentError01`(Error Trigger → `fail_execution`, 메인 워크플로 `settings.errorWorkflow`), bridge 자체 포기(dispatch 8회 실패, stale dispatch, n8n 응답 없음)다. `mark_attention`은 이벤트를 `needs_attention`으로 두고 해당 이슈/PR을 block한 뒤, 멈춘 노드·단계, 이벤트 종류, delivery ID, n8n 실행 링크, HAPI 세션 링크, `retry_event` 방법을 담은 댓글과 `agent:needs-attention` 라벨을 붙인다. attention 댓글·라벨은 이벤트가 `pr_review`면 리뷰 App(`haechibot[bot]`)으로 게시하고 위의 재리뷰 footer도 붙이며, 그 외 이벤트는 작성 App(`bulgasaribot[bot]`)으로 게시한다. 둘 다 적용될 때까지 backoff 후 재시도한다. 자동 재실행은 하지 않는다. 운영자는 `retry_event`(기록된 단계부터 재개) 또는 `unblock_issue`(이후 이벤트만 진행)로 푼다. 성공한 `finish`는 `agent:needs-attention`을 제거한다.
 
 ## 데이터 보존
 
@@ -136,6 +143,8 @@ HAPI `v0.30.7`은 agent 메시지 내부의 65,536자 초과 문자열을 저장
 ### 관리자 계정
 
 n8n 관리자 이메일은 사용자 지정 `bhyoo@bhyoo.com`이다. 비밀번호는 암호학적으로 안전한 난수로 생성하여 Kubernetes Secret에 보관한다. 비밀번호·HAPI 접속 토큰·GitHub 자격증명은 채팅, 로그, 저장소, 이미지에 출력하거나 포함하지 않는다. 재시작 때 비밀번호를 재생성하거나 기존 계정을 임의로 초기화하지 않는다. 최종 운영 안내에는 로그인 주소와 Secret의 namespace·이름·키만 기록한다.
+
+GitHub App 이름은 `bulgasaribot`(작성)·`haechibot`(리뷰)이지만 인증 인프라 식별자는 바꾸지 않는다. Terraform Cloud 변수 `github_app_private_key_ironeater`/`github_app_private_key_ironeater_reviewer`, SSM `/homelab/cluster/backbone/github-app/ironeater/private-key`와 `…/ironeater-reviewer/private-key`, 연결된 Secret·ExternalSecret 이름은 git-crypt로 잠긴 Terraform apply가 필요하므로 예전 `ironeater*` 이름을 유지한다.
 
 ### 승인된 초기 자원 예외
 
@@ -217,6 +226,13 @@ v2는 Runner Pod에 publisher 사이드카를 추가했다. manifest의 값은 C
 - [x] triage 질문이 댓글에 그대로 없어도 거절하지 않고 `## Questions` 절로 덧붙인다: 거절돼 멈췄던 cc-lb#891을 `retry_event`로 다시 돌리자 `questioned`로 끝났고, 게시된 댓글 끝에 `## Questions` 절이 붙었으며 attention 라벨이 제거됐다.
 - [x] 턴 도중 세션이 죽으면(runner eviction 등) `lost`로 판정하고 새 localId로 재전송한다(cc-lb#890 실패 원인: 2Gi `/tmp` 초과로 runner eviction). 재전송이 거절돼도 새 localId를 유지한다. 단위 테스트로만 확인했다. 빌드 산출물은 `/tmp`가 아닌 worktree 기본 위치에 두도록 지침을 바꿨다.
 - [x] 멈춘 리뷰가 있는 PR에 새 리뷰 요청이 오면 멈춘 리뷰를 `superseded`로 끝내고 PR 차단을 푼다. cc-lb#890에서 `@ironeater review` 댓글이 차단 때문에 `accepted`에 머문 것을 발견해 고쳤다(단위 테스트). 이미 쌓였던 요청은 `unblock_issue`로 풀었고, `ironeater-reviewer[bot]`이 head `3e483a4`에 `CHANGES_REQUESTED`를 남겼다.
+
+### 이름 변경과 전체 PR 리뷰 수용 기준
+
+- [ ] 설치된 저장소의 Draft가 아닌 모든 PR이 작성자·sender와 무관하게 자동 리뷰된다. dependabot이나 외부 기여자 등 허용 사용자·bot이 아닌 작성자의 PR이 `pull_request` `opened`/`reopened`/`ready_for_review`에서 `pr_review`로 분류되고 리뷰가 게시된다. Draft는 리뷰하지 않는다.
+- [ ] 재리뷰는 PR 작성자 또는 등록부 `allowed_users`의 `User` sender 댓글 `@haechibot review`(본문 시작, 앞 공백·대소문자 무시)로만 시작된다. 그 외 사용자의 동일 댓글과 `@bulgasaribot review`는 리뷰를 시작하지 않는다.
+- [ ] `pr_review` 이벤트가 park되면 리뷰 App(`haechibot[bot]`)이 attention 댓글과 `agent:needs-attention` 라벨을 게시하고, 댓글 끝에는 bridge가 붙이는 재리뷰 footer 블록이 있다. 리뷰 본문도 같은 footer로 끝나며 에이전트 결과의 `body`에는 footer가 없다.
+- [ ] 두 GitHub App이 `bulgasaribot`과 `haechibot`으로 이름이 바뀌었고 각각 구분되는 귀여운 로고가 설정됐다. App ID·installation·bot user ID와 infra 식별자(TFC 변수, SSM 경로, Secret 이름)는 바뀌지 않았다.
 
 ### 현재 실행 증거
 

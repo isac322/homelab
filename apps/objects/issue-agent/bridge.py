@@ -827,6 +827,15 @@ def review_command(bot_login: str | None) -> str | None:
         return None
     return f"@{bot_login.removesuffix('[bot]')} review".casefold()
 
+def review_footer(bot_login: str | None) -> str:
+    """The ``---`` + re-request block appended to every post the review App makes (empty without a login)."""
+    command = review_command(bot_login)
+    if command is None:
+        return ""
+    return ("---\n<sub>To request another review, comment `" + command + "` on this pull request after "
+            "pushing fixes or replying to the findings. The same comment restarts a review that stopped with "
+            "an error. The pull request author or a maintainer can request it.</sub>")
+
 
 def classify_event(registry: Registry, event: str, delivery: str, payload: Any,
                    bot_login: str | None = None, reviewer_login: str | None = None) -> dict[str, Any] | str:
@@ -853,13 +862,9 @@ def classify_event(registry: Registry, event: str, delivery: str, payload: Any,
     action = payload.get("action")
 
     if event == "pull_request":
-        # The bot's own PR (opened by the implement flow) must be reviewed, so a self sender is allowed here.
+        # Every non-draft pull request is reviewed, whoever authored or triggered it.
         if action not in ("opened", "reopened", "ready_for_review"):
             return "action_ignored"
-        if not is_self and (sender.get("type") != "User" or login.endswith("[bot]")):
-            return "bot_sender"
-        if not is_self and login.casefold() not in cfg.allowed_users:
-            return "actor_not_allowed"
         pr = payload.get("pull_request")
         if not isinstance(pr, dict):
             return "malformed"
@@ -872,16 +877,12 @@ def classify_event(registry: Registry, event: str, delivery: str, payload: Any,
             return "malformed"
         if pr.get("draft"):
             return "draft_ignored"
-        if author.casefold() != bot_login and author.casefold() not in cfg.allowed_users:
-            return "actor_not_allowed"
         return {"delivery_id": delivery, "repo": cfg.name, "issue_number": number, "actor": login, "title": title,
                 "semantic_key": f"{cfg.name}#pr:{number}:review:{head_sha}", "kind": "pr_review",
                 "comment_id": None, "body": body or "", "default_branch": default_branch, "head_sha": head_sha}
 
     if sender.get("type") != "User" or login.endswith("[bot]") or is_self:
         return "bot_sender"
-    if login.casefold() not in cfg.allowed_users:
-        return "actor_not_allowed"
     issue = payload.get("issue")
     if not isinstance(issue, dict):
         return "malformed"
@@ -889,17 +890,23 @@ def classify_event(registry: Registry, event: str, delivery: str, payload: Any,
     title = issue.get("title")
     if number is None or not isinstance(title, str):
         return "malformed"
+    on_pr = "pull_request" in issue
+    issue_author = issue.get("user")
+    issue_author_login = issue_author.get("login") if isinstance(issue_author, dict) else None
+    # Review commands on a PR also come from the PR author; issue threads keep the allowed-users gate.
+    if login.casefold() not in cfg.allowed_users and not (
+            event == "issue_comment" and on_pr and isinstance(issue_author_login, str)
+            and login.casefold() == issue_author_login.casefold()):
+        return "actor_not_allowed"
     base = {"delivery_id": delivery, "repo": cfg.name, "issue_number": number, "actor": login, "title": title,
             "default_branch": default_branch, "head_sha": None}
 
     if event == "issues":
-        if "pull_request" in issue:
+        if on_pr:
             return "pull_request"
         if action != "opened":
             return "action_ignored"
-        author = issue.get("user")
-        if not isinstance(author, dict) or not isinstance(author.get("login"), str) \
-                or author["login"].casefold() != login.casefold():
+        if not isinstance(issue_author_login, str) or issue_author_login.casefold() != login.casefold():
             return "actor_not_allowed"
         body = issue.get("body")
         if body is not None and not isinstance(body, str):
@@ -923,9 +930,10 @@ def classify_event(registry: Registry, event: str, delivery: str, payload: Any,
             return "bot_sender"
         if is_agent_text(body):
             return "bot_sender"
-        if "pull_request" in issue:
-            commands = [c for c in (review_command(bot_login), review_command(reviewer_login)) if c]
-            if not any(body.strip().casefold().startswith(c) for c in commands):
+        if on_pr:
+            # The review App owns re-review requests when configured, so its command is the only trigger.
+            command = review_command(reviewer_login or bot_login)
+            if command is None or not body.strip().casefold().startswith(command):
                 return "pull_request_comment_ignored"
             return {**base, "semantic_key": f"{cfg.name}#comment:{comment_id}", "kind": "pr_review",
                     "comment_id": comment_id, "body": body}
@@ -1657,14 +1665,9 @@ class Bridge:
             f"`{{\"delivery_id\": \"{ev['delivery_id']}\"}}`; the workflow resumes from its recorded stages and "
             f"`{NEEDS_ATTENTION}` is removed when the run finishes.",
         ]
-        commands = [c for c in (review_command(cfg.github_bot_login), review_command(cfg.github_review_bot_login))
-                    if c]
-        if ev["kind"] == "pr_review" and commands:
-            lines += [
-                "",
-                "Or re-request the review: an allowed user comments " + " or ".join(f"`{c}`" for c in commands)
-                + " on this pull request. The new request replaces this event and runs a fresh review.",
-            ]
+        footer = review_footer(self.reviewer_login())
+        if ev["kind"] == "pr_review" and footer:
+            lines += ["", footer]
         return "\n".join(lines)
 
     def mark_attention(self, ev: sqlite3.Row, detail: str, node: str | None = None) -> None:
@@ -1702,15 +1705,18 @@ class Bridge:
             if ev is None or ev["state"] != "needs_attention" or not ev["attention_pending"]:
                 return True
             self.store.update_event(delivery_id, next_attempt_at=time.time() + DISPATCH_BACKOFF)
+            # Review-owned posts (attention notice and label on a PR) go out as the review App.
+            gh = self.review_github if ev["kind"] == "pr_review" else None
             done = True
             try:
                 self._comment(ev["repo"], ev["issue_number"], f"{delivery_id}:attention",
-                              self.attention_body(ev, ev["detail"] or "needs attention", ev["attention_node"]))
+                              self.attention_body(ev, ev["detail"] or "needs attention", ev["attention_node"]),
+                              client=gh)
             except (OpError, TransportError) as exc:
                 LOG.error("attention notice for %s not posted (will retry): %s", delivery_id, exc)
                 done = False
             try:
-                self._apply_labels(ev["repo"], ev["issue_number"], [NEEDS_ATTENTION], [])
+                self._apply_labels(ev["repo"], ev["issue_number"], [NEEDS_ATTENTION], [], client=gh)
             except (OpError, TransportError) as exc:
                 LOG.error("attention label for %s not applied (will retry): %s", delivery_id, exc)
                 done = False
@@ -2142,10 +2148,12 @@ class Bridge:
                           retryable=first.get("type") == "RATE_LIMITED" or not errors)
         return data["data"]
 
-    def _comments(self, repo: str, number: int, max_pages: int = 20) -> list[dict[str, Any]]:
+    def _comments(self, repo: str, number: int, max_pages: int = 20, *,
+                  client: GitHub | None = None) -> list[dict[str, Any]]:
         out: list[dict[str, Any]] = []
         for page in range(1, max_pages + 1):
-            data = self._gh("GET", f"/repos/{repo}/issues/{number}/comments?per_page=100&page={page}")
+            data = self._gh("GET", f"/repos/{repo}/issues/{number}/comments?per_page=100&page={page}",
+                            client=client)
             if not isinstance(data, list):
                 raise OpError("github comments: unexpected response", retryable=True)
             out.extend(c for c in data if isinstance(c, dict))
@@ -2153,16 +2161,17 @@ class Bridge:
                 return out
         raise OpError("too many comments to verify idempotency", needs_operator=True)
 
-    def _comment(self, repo: str, number: int, key: str, body: str) -> dict[str, Any]:
+    def _comment(self, repo: str, number: int, key: str, body: str, *,
+                 client: GitHub | None = None) -> dict[str, Any]:
         """Post ``body`` once per hidden ``key`` marker. The marker scan and the POST are one critical
         section per key; otherwise a concurrent caller scans before the other's POST lands and posts again."""
         marker = f"{BOT_MARKER_PREFIX}:{key} -->"
         with self._keyed_lock(("comment", repo, number, key)):
-            for c in self._comments(repo, number):
+            for c in self._comments(repo, number, client=client):
                 if isinstance(c.get("body"), str) and marker in c["body"]:
                     return {"url": c.get("html_url"), "created": False}
             data = self._gh("POST", f"/repos/{repo}/issues/{number}/comments", {"body": f"{marker}\n{body}"},
-                            ok=(201,))
+                            ok=(201,), client=client)
         return {"url": data.get("html_url") if isinstance(data, dict) else None, "created": True}
 
     @staticmethod
@@ -2226,27 +2235,29 @@ class Bridge:
             raise OpError("bad body")
         return self._comment(ev["repo"], ev["issue_number"], f"{ev['delivery_id']}:{purpose}", body)
 
-    def _ensure_label(self, repo: str, name: str) -> None:
+    def _ensure_label(self, repo: str, name: str, *, client: GitHub | None = None) -> None:
         """Create a missing catalog label with its catalog description/color; existing labels are reused as-is."""
-        status, _ = self._gh_raw("GET", f"/repos/{repo}/labels/{urllib.parse.quote(name, safe='')}")
+        status, _ = self._gh_raw("GET", f"/repos/{repo}/labels/{urllib.parse.quote(name, safe='')}",
+                                 client=client)
         if status == 200:
             return
         if status != 404:
             raise OpError(f"github label lookup HTTP {status}", retryable=status >= 500 or status == 429)
         description, color, _group = LABEL_CATALOG[name]
         status, _ = self._gh_raw("POST", f"/repos/{repo}/labels",
-                                 {"name": name, "color": color, "description": description})
+                                 {"name": name, "color": color, "description": description}, client=client)
         if status not in (201, 422):  # 422: created concurrently
             raise OpError(f"github label create HTTP {status}", retryable=status >= 500 or status == 429)
 
-    def _apply_labels(self, repo: str, number: int, add: list[str], remove: list[str]) -> dict[str, Any]:
+    def _apply_labels(self, repo: str, number: int, add: list[str], remove: list[str], *,
+                      client: GitHub | None = None) -> dict[str, Any]:
         """Add/remove catalog labels; adding a group member evicts the other members of its group."""
         base = f"/repos/{repo}/issues/{number}/labels"
         current: set[str] = set()
         for name in add:
-            self._ensure_label(repo, name)
+            self._ensure_label(repo, name, client=client)
         if add:
-            data = self._gh("POST", base, {"labels": add})
+            data = self._gh("POST", base, {"labels": add}, client=client)
             current = {lbl.get("name") for lbl in data or [] if isinstance(lbl, dict)}
             missing = [n for n in add if n not in current]
             if missing:
@@ -2256,7 +2267,7 @@ class Bridge:
                  if g in groups and n not in add and n not in remove and n in current]
         removed: list[str] = []
         for name in list(remove) + evict:
-            self._gh("DELETE", f"{base}/{urllib.parse.quote(name, safe='')}", ok=(200, 404))
+            self._gh("DELETE", f"{base}/{urllib.parse.quote(name, safe='')}", ok=(200, 404), client=client)
             removed.append(name)
         return {"applied": list(add), "removed": removed}
 
@@ -2398,6 +2409,7 @@ class Bridge:
             "linked_issues": linked,
             "linked_issue_details": self._linked_issue_details(repo, [(repo, n) for n in linked] + others),
             "reviewer_login": self.reviewer_login(),
+            "bot_login": self.config.github_bot_login,
         })
 
     def op_github_review(self, req: dict[str, Any]) -> dict[str, Any]:
@@ -2459,12 +2471,14 @@ class Bridge:
             body = (f"**Verdict: {event}** — GitHub does not let the app {action} its own pull request, "
                     f"so this verdict is submitted as a comment review.\n\n{body}")
             event = "COMMENT"
+        footer = review_footer(reviewer)
+        tail = f"\n\n{footer}" if footer else ""
         inline = [
             {"path": c["path"], "line": c["line"], "side": c["side"], "body": c["body"],
              **({"start_line": c["start_line"], "start_side": c["side"]} if c["start_line"] else {})}
             for c in result["comments"]
         ]
-        payload: dict[str, Any] = {"commit_id": head, "body": f"{marker}\n{body}", "event": event}
+        payload: dict[str, Any] = {"commit_id": head, "body": f"{marker}\n{body}{tail}", "event": event}
         if inline:
             payload["comments"] = inline
         path = f"/repos/{repo}/pulls/{number}/reviews"
@@ -2473,7 +2487,7 @@ class Bridge:
         if status == 422 and inline:
             # GitHub rejects inline comments outside the diff; keep the findings in the review body.
             payload = {"commit_id": head, "event": event,
-                       "body": f"{marker}\n{body}\n\n{findings_section(result['comments'])}"}
+                       "body": f"{marker}\n{body}\n\n{findings_section(result['comments'])}{tail}"}
             status, data = self._gh_raw("POST", path, payload, client=gh)
             folded = True
         if status != 200 or not isinstance(data, dict):
