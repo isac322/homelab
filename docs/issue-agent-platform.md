@@ -229,9 +229,9 @@ v2는 Runner Pod에 publisher 사이드카를 추가했다. manifest의 값은 C
 
 ### 이름 변경과 전체 PR 리뷰 수용 기준
 
-- [ ] 설치된 저장소의 Draft가 아닌 모든 PR이 작성자·sender와 무관하게 자동 리뷰된다. dependabot이나 외부 기여자 등 허용 사용자·bot이 아닌 작성자의 PR이 `pull_request` `opened`/`reopened`/`ready_for_review`에서 `pr_review`로 분류되고 리뷰가 게시된다. Draft는 리뷰하지 않는다.
-- [ ] 재리뷰는 PR 작성자 또는 등록부 `allowed_users`의 `User` sender 댓글 `@haechibot review`(본문 시작, 앞 공백·대소문자 무시)로만 시작된다. 그 외 사용자의 동일 댓글과 `@bulgasaribot review`는 리뷰를 시작하지 않는다.
-- [ ] `pr_review` 이벤트가 park되면 리뷰 App(`haechibot[bot]`)이 attention 댓글과 `agent:needs-attention` 라벨을 게시하고, 댓글 끝에는 bridge가 붙이는 재리뷰 footer 블록이 있다. 리뷰 본문도 같은 footer로 끝나며 에이전트 결과의 `body`에는 footer가 없다.
+- [x] 설치된 저장소의 Draft가 아닌 모든 PR이 작성자·sender와 무관하게 자동 리뷰된다. dependabot이나 외부 기여자 등 허용 사용자·bot이 아닌 작성자의 PR이 `pull_request` `opened`/`reopened`/`ready_for_review`에서 `pr_review`로 분류되고 리뷰가 게시된다. Draft는 리뷰하지 않는다. QA: 허용 목록 밖의 Bot 작성자(`haechibot[bot]`, 설치 토큰으로 직접 연 QA PR krema#51)의 PR이 이전 코드라면 `bot_sender`로 버려졌을 텐데 자동으로 리뷰됐고, 리뷰 본문이 footer로 끝났다(PR은 닫고 브랜치 삭제).
+- [x] 재리뷰는 PR 작성자 또는 등록부 `allowed_users`의 `User` sender 댓글 `@haechibot review`(본문 시작, 앞 공백·대소문자 무시)로만 시작된다. 그 외 사용자의 동일 댓글과 `@bulgasaribot review`는 리뷰를 시작하지 않는다. QA: krema#51에서 `@bulgasaribot review`는 `pull_request_comment_ignored`, `@haechibot review`는 `pr_review: queued` 후 재리뷰가 게시됐다. PR 작성자 경로와 비허용 사용자 거절은 단위 테스트로 확인했다.
+- [x] `pr_review` 이벤트가 park되면 리뷰 App(`haechibot[bot]`)이 attention 댓글과 `agent:needs-attention` 라벨을 게시하고, 댓글 끝에는 bridge가 붙이는 재리뷰 footer 블록이 있다. 리뷰 본문도 같은 footer로 끝나며 에이전트 결과의 `body`에는 footer가 없다. QA: krema#51 재리뷰 턴을 HAPI abort로 멈추자 `haechibot[bot]`이 footer가 붙은 attention 댓글과 라벨을 게시했고, footer대로 `@haechibot review`를 달자 멈춘 이벤트는 `superseded`로 끝나고 새 리뷰가 게시되며 라벨이 제거됐다.
 - [ ] 두 GitHub App이 `bulgasaribot`과 `haechibot`으로 이름이 바뀌었고 각각 구분되는 귀여운 로고가 설정됐다. App ID·installation·bot user ID와 infra 식별자(TFC 변수, SSM 경로, Secret 이름)는 바뀌지 않았다.
 
 ### 현재 실행 증거
