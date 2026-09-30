@@ -105,6 +105,8 @@ Codex의 공통 지침은 전용 `CODEX_HOME/AGENTS.md`에서 읽고 프로젝�
 
 이벤트가 `finish`로 끝나면 bridge가 그 주제의 HAPI 세션을 `archive`해 Codex 프로세스와 MCP 서버를 멈춘다. 같은 주제의 다음 이벤트는 `ensure_session`의 resume 경로로 같은 세션 ID·같은 Codex 대화를 다시 띄운다(운영 HAPI 0.30.7에서 archive → resume이 1.2초에 같은 ID로 돌아오는 것을 확인). archive 실패는 이벤트 완료를 막지 않고 로그만 남긴다. 멈추지 않으면 끝난 세션이 Runner 재시작 전까지 세션마다 수백 MB를 계속 차지한다. `needs_attention`으로 멈춘 이벤트의 세션은 운영자 확인을 위해 archive하지 않는다.
 
+닫힌 주제의 상태는 닫힌 시점에는 그대로 두고, 닫힌 지 30일이 지나면 지운다. n8n `IssueAgentMain01`의 `Daily cleanup`(매일 04:00 UTC)이 bridge `cleanup_closed` op(`older_than_days` 기본 30, `dry_run` 지원)를 부른다. bridge는 세션이나 worktree가 남은 `issues` 행마다 `accepted`/`dispatching`/`dispatched` 이벤트가 있으면 건너뛰고, 이슈 App 토큰으로 `GET /repos/{repo}/issues/{n}`을 읽어 `state == "closed"`이고 `closed_at`이 기준보다 오래된 주제만 정리한다(PR도 같은 API이며 merge도 closed다). 정리는 `session_lock`을 잡고 진행 중 이벤트를 다시 확인한 뒤 ① 현재·superseded HAPI 세션마다 `codexSessionId`를 모으고 archive → `DELETE /api/sessions/{id}`(운영 HAPI 0.30.7에서 이후 GET이 404임을 확인), ② publisher `POST /cleanup`으로 worktree·admin 디렉터리·`hapi-*` branch ref(loose와 `packed-refs`)·Codex rollout 파일 삭제, ③ `issues` 행을 세션·단계가 없는 상태로 되돌리는 순서다. branch ref까지 지우는 이유는 HAPI가 branch가 남은 이름을 피해 `issue-<n>-<4hex>` 같은 새 worktree 이름을 고르기 때문이다. publisher는 에이전트가 hook·config를 심을 수 있는 checkout에서 git을 실행하지 않는다는 원칙대로 git 없이 파일 연산만 쓰고, symlink이거나 checkout·`.git/worktrees`·`CODEX_HOME` 밖으로 풀리는 경로는 거부한다. 중간에 실패하면 행이 그대로 남아 다음 날 나머지를 다시 시도하고, 오류 목록이 비어 있지 않으면 n8n 실행을 실패로 끝내 error workflow에 보인다. GitHub 내용과 `events` 기록은 지우지 않으며, 정리된 주제의 다음 이벤트는 `session_state = none`에서 새 세션을 spawn한다.
+
 | mode | 시작 조건 | worktree | 스킬 | 결과 |
 |---|---|---|---|---|
 | `triage` | `issue_opened`, 또는 구현 단계가 아닌 이슈의 `issue_comment` | `issue-<n>` | `isac-issue-triage` | TriageResult |

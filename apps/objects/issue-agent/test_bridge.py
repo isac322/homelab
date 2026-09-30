@@ -57,6 +57,7 @@ class Fake:
         self.message_mode = "ok"
         self.seq = 0
         self.calls: list[str] = []
+        self.delete_status = 200  # DELETE /api/sessions/<id> answers this instead of deleting when not 200
         # github
         self.gh_token = "ghs-1"
         self.comments: dict[int, list[dict[str, Any]]] = {}
@@ -84,6 +85,7 @@ class Fake:
         self.statuses: dict[str, list[dict[str, Any]]] = {}  # sha -> newest first
         self.status_posts: list[tuple[str, dict[str, Any]]] = []
         self.status_fail = False
+        self.issue_states: dict[int, dict[str, Any]] = {}  # GET /repos/<repo>/issues/<n>; absent -> 404
         # collaborator permission: login (casefolded) -> permission, anyone else "read"
         self.permissions: dict[str, str] = {"isac322": "admin", "maintainer": "write"}
         self.unknown_logins: set[str] = set()  # the permission lookup answers 404
@@ -94,6 +96,8 @@ class Fake:
         self.pushes: list[dict[str, Any]] = []
         self.push_error: str | None = None
         self.branch_heads: dict[str, str] = {}
+        self.cleanups: list[dict[str, Any]] = []
+        self.cleanup_error: str | None = None
         # n8n
         self.n8n_status = 200
         self.n8n_hang = False
@@ -258,6 +262,11 @@ class Fake:
                 pr["head"]["sha"] = body["expected_sha"]
             self.branch_heads[body["branch"]] = body["expected_sha"]
             return 200, {"sha": body["expected_sha"]}
+        if path == "/cleanup":
+            self.cleanups.append(body)
+            if self.cleanup_error:
+                return 409, {"error": self.cleanup_error}
+            return 200, {"removed": []}
         return 404, {"error": "no route"}
 
     def hub(self, method: str, path: str, query: dict[str, str], body: Any, auth: str) -> tuple[int, Any]:
@@ -290,6 +299,12 @@ class Fake:
         if session is None:
             return 404, {"error": "Session not found"}
         rest = parts[2:]
+        if not rest and method == "DELETE":
+            self.calls.append(f"delete {sid}")
+            if self.delete_status != 200:
+                return self.delete_status, {"error": "boom"}
+            del self.sessions[sid]
+            return 200, {"ok": True}
         if not rest:
             return 200, {"session": session}
         if rest == ["resume"]:
@@ -376,6 +391,9 @@ class Fake:
                 return 404, {"message": "Not Found"}
             return 200, {"permission": self.permissions.get(login, "read"), "user": {"login": rest[1]}}
         number = int(rest[1])
+        if rest[0] == "issues" and len(rest) == 2 and method == "GET":
+            state = self.issue_states.get(number)
+            return (200, {"number": number, **state}) if state else (404, {"message": "Not Found"})
         if len(rest) < 3:
             return 404, {"message": "no route"}
         if rest[2] == "comments" and method == "GET":
@@ -1226,6 +1244,123 @@ class SessionTests(BridgeTestCase):
         self.fake.jwts.clear()
         self.assertTrue(self.op("ensure_session")["ok"])
         self.assertEqual(self.fake.auth_calls, 2)
+
+
+def closed_days_ago(days: float) -> dict[str, Any]:
+    closed_at = time.strftime("%Y-%m-%dT%H:%M:%SZ", time.gmtime(time.time() - days * 86400))
+    return {"state": "closed", "closed_at": closed_at}
+
+
+CODEX_1 = "019a0000-0000-7000-8000-000000000001"
+CODEX_2 = "019a0000-0000-7000-8000-000000000002"
+
+
+class CleanupTests(BridgeTestCase):
+    def finished_subject(self, number: int, delivery: str) -> str:
+        self.started(number, delivery)
+        sid = self.op("ensure_session", delivery)["session_id"]
+        self.assertFalse(self.op("finish", delivery, outcome="triaged")["already"])
+        return sid
+
+    def cleanup(self, **kw: Any) -> dict:
+        result = self.bridge.handle({"op": "cleanup_closed", **kw})
+        self.assertTrue(result["ok"], result)
+        return result
+
+    def test_subject_closed_past_the_cutoff_loses_its_state_and_the_next_event_starts_fresh(self) -> None:
+        first = self.finished_subject(7, "d1")
+        self.assertEqual(self.deliver(comment_payload(), event="issue_comment", delivery="c1").outcome, "queued")
+        self.assertEqual(self.dispatcher.tick(), "dispatched")
+        self.op("begin", "c1", attempt=1)
+        current = self.op("ensure_session", "c1")["session_id"]  # resumed: ``first`` becomes superseded
+        self.op("finish", "c1", outcome="triaged")
+        self.fake.sessions[first]["metadata"]["codexSessionId"] = CODEX_1
+        self.fake.sessions[current]["metadata"]["codexSessionId"] = CODEX_2.upper()
+        self.fake.issue_states[7] = closed_days_ago(31)
+        calls = len(self.fake.calls)
+
+        result = self.cleanup()
+        self.assertEqual(result["cleaned"], [{"repo": REPO, "issue_number": 7,
+                                              "closed_at": self.fake.issue_states[7]["closed_at"]}])
+        self.assertEqual((result["checked"], result["skipped_active"], result["errors"]), (1, [], []))
+        self.assertEqual(self.fake.sessions, {})
+        self.assertEqual(self.fake.calls[calls:], [f"archive {current}", f"delete {current}", f"archive {first}",
+                                                   f"delete {first}", "publisher/cleanup"])
+        self.assertEqual(self.fake.cleanups, [{"repo": REPO, "worktree": "issue-7", "branch": "hapi-issue-7",
+                                               "codex_session_ids": [CODEX_2, CODEX_1]}])
+        issue = self.store.issue(REPO, 7)
+        self.assertEqual(
+            {k: issue[k] for k in ("blocked", "session_state", "session_id", "pending_at", "worktree_path", "branch",
+                                   "superseded", "detail", "phase", "pr_number")},
+            {"blocked": 0, "session_state": "none", "session_id": None, "pending_at": None, "worktree_path": None,
+             "branch": None, "superseded": "[]", "detail": None, "phase": "none", "pr_number": None})
+        self.assertEqual(self.events(), [("d1", "completed"), ("c1", "completed")])  # history stays
+        self.assertEqual(self.cleanup()["checked"], 0)  # nothing left to clean
+
+        self.assertEqual(self.deliver(comment_payload(comment_id=101), event="issue_comment", delivery="c2").outcome,
+                         "queued")
+        self.assertEqual(self.dispatcher.tick(), "dispatched")
+        self.op("begin", "c2", attempt=1)
+        fresh = self.op("ensure_session", "c2")
+        self.assertTrue(fresh["ok"], fresh)
+        self.assertFalse(fresh["resumed"])
+        self.assertEqual((len(self.fake.spawns), self.fake.spawns[-1]["worktreeName"]), (2, "issue-7"))
+
+    def test_recent_open_and_active_subjects_are_skipped_and_dry_run_changes_nothing(self) -> None:
+        self.finished_subject(7, "d1")
+        self.finished_subject(8, "d2")
+        self.finished_subject(10, "d4")
+        self.started(9, "d3")
+        self.op("ensure_session", "d3")  # d3 stays dispatched
+        self.fake.issue_states.update({7: closed_days_ago(29), 8: {"state": "open", "closed_at": None},
+                                       9: closed_days_ago(90), 10: closed_days_ago(45)})
+        before = [dict(r) for r in self.store.query("SELECT * FROM issues ORDER BY issue_number")]
+        calls = len(self.fake.calls)
+
+        dry = self.cleanup(dry_run=True)
+        self.assertEqual([c["issue_number"] for c in dry["cleaned"]], [10])
+        self.assertEqual(dry["skipped_active"], [{"repo": REPO, "issue_number": 9}])
+        self.assertEqual((dry["checked"], dry["errors"]), (4, []))
+        self.assertEqual(self.fake.calls[calls:], [])
+        self.assertEqual(self.fake.cleanups, [])
+        self.assertEqual([dict(r) for r in self.store.query("SELECT * FROM issues ORDER BY issue_number")], before)
+
+        real = self.cleanup(older_than_days=30)
+        self.assertEqual([c["issue_number"] for c in real["cleaned"]], [10])
+        self.assertEqual([c["worktree"] for c in self.fake.cleanups], ["issue-10"])
+        for number in (7, 8, 9):
+            self.assertIsNotNone(self.store.issue(REPO, number)["session_id"])
+        self.assertEqual(self.cleanup(older_than_days=1)["cleaned"][0]["issue_number"], 7)  # cutoff is configurable
+        self.assertEqual(self.bridge.handle({"op": "cleanup_closed", "older_than_days": 0})["error"],
+                         "bad older_than_days")
+
+    def test_failures_leave_the_row_for_the_next_run(self) -> None:
+        sid = self.finished_subject(7, "d1")
+        self.finished_subject(8, "d2")
+        self.fake.issue_states[7] = closed_days_ago(40)  # 8 answers 404
+
+        self.fake.delete_status = 500
+        result = self.cleanup()
+        self.assertEqual(result["errors"], [
+            {"repo": REPO, "issue_number": 7, "error": f"hapi delete {sid}: HTTP 500 boom"},
+            {"repo": REPO, "issue_number": 8, "error": "github issue HTTP 404"},
+        ])
+        self.assertEqual((result["cleaned"], self.fake.cleanups), ([], []))
+        self.assertEqual(self.store.issue(REPO, 7)["session_id"], sid)
+
+        self.fake.delete_status = 200
+        self.fake.cleanup_error = "unsafe_path"
+        result = self.cleanup()
+        self.assertEqual(result["errors"][0], {"repo": REPO, "issue_number": 7, "error": "unsafe_path"})
+        self.assertNotIn(sid, self.fake.sessions)  # HAPI side is already gone ...
+        self.assertEqual(self.store.issue(REPO, 7)["worktree_path"],  # ... but the row keeps the worktree to retry
+                         "/home/agent/checkouts/isac322/cc-lb-worktrees/issue-7")
+
+        self.fake.cleanup_error = None
+        result = self.cleanup()
+        self.assertEqual([c["issue_number"] for c in result["cleaned"]], [7])
+        self.assertEqual(self.fake.cleanups[-1]["worktree"], "issue-7")
+        self.assertIsNone(self.store.issue(REPO, 7)["session_id"])
 
 
 class TurnTests(BridgeTestCase):

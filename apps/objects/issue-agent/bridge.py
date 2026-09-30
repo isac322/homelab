@@ -12,6 +12,8 @@ Responsibilities (business branching lives in the n8n workflow):
   ``MAX_ACTIVE_EVENTS`` at a time and one per subject (issue or pull request).
   n8n acknowledges ownership with the ``begin`` op and ends it with ``finish``
   or ``fail``.
+* A daily ``cleanup_closed`` op deletes the agent state (HAPI sessions, Codex
+  rollouts, worktree and branch) of subjects closed for at least 30 days.
 * ``POST /ops`` is the private, bearer-authenticated adapter n8n uses for every
   side effect: HAPI session lifecycle, message delivery and per-mode turn
   correlation, and every GitHub write. The coding agent reads GitHub itself
@@ -27,6 +29,7 @@ message the workflow sent, the op reports ``attention`` instead of success.
 
 from __future__ import annotations
 
+import datetime
 import hashlib
 import hmac
 import http.server
@@ -99,6 +102,10 @@ MAX_THREAD_PAGES = 4  # GraphQL reviewThreads: 50 per page
 MAX_IDEMPOTENCY_PAGES = 10  # review/comment lists scanned for hidden markers
 PUBLISHER_CHECKOUT_TIMEOUT = 600.0
 PUBLISHER_PUSH_TIMEOUT = 300.0
+PUBLISHER_CLEANUP_TIMEOUT = 300.0
+CLEANUP_AFTER_DAYS = 30  # a subject closed this long loses its agent state
+MAX_CLEANUP_CODEX_IDS = 50  # per publisher /cleanup request
+ACTIVE_EVENT_STATES = ("accepted", "dispatching", "dispatched")
 # A push updates the branch ref immediately but the open PR's head asynchronously.
 PR_HEAD_WAIT_SECONDS = 60.0
 PR_HEAD_WAIT_INTERVAL = 2.0
@@ -156,6 +163,7 @@ _PURPOSE_RE = re.compile(r"^[a-z0-9_-]{1,32}$")
 _STAGE_RE = re.compile(r"^[a-z0-9_]{1,40}$")
 _SHA_RE = re.compile(r"^[0-9a-f]{40}$")
 _EXECUTION_RE = re.compile(r"^[A-Za-z0-9_-]{1,64}$")
+_UUID_RE = re.compile(r"^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$")
 _OAUTH_RE = re.compile(r"^\s*oauth_token:\s*\"?([^\"\s]+)\"?\s*$", re.MULTILINE)
 
 
@@ -1480,6 +1488,7 @@ class Bridge:
             "fail_execution": self.op_fail_execution,
             "retry_event": self.op_retry_event,
             "unblock_issue": self.op_unblock_issue,
+            "cleanup_closed": self.op_cleanup_closed,
             "ensure_session": self.op_ensure_session,
             "session_send": self.op_session_send,
             "session_turn": self.op_session_turn,
@@ -2171,6 +2180,106 @@ class Bridge:
     @staticmethod
     def _attention(detail: str) -> dict[str, Any]:
         return {"state": "attention", "detail": detail}
+
+    # -- closed-subject cleanup ----------------------------------------------
+
+    def op_cleanup_closed(self, req: dict[str, Any]) -> dict[str, Any]:
+        """Delete the agent state of subjects closed for ``older_than_days``; GitHub content and events stay."""
+        days = _positive_int(req.get("older_than_days", CLEANUP_AFTER_DAYS))
+        if days is None:
+            raise OpError("bad older_than_days")
+        dry_run = req.get("dry_run", False)
+        if not isinstance(dry_run, bool):
+            raise OpError("bad dry_run")
+        cutoff = time.time() - days * 86400
+        rows = self.store.query("SELECT repo, issue_number FROM issues WHERE session_id IS NOT NULL"
+                                " OR worktree_path IS NOT NULL ORDER BY repo, issue_number")
+        cleaned: list[dict[str, Any]] = []
+        skipped: list[dict[str, Any]] = []
+        errors: list[dict[str, Any]] = []
+        for row in rows:
+            repo, number = row["repo"], int(row["issue_number"])
+            subject = {"repo": repo, "issue_number": number}
+            if self._subject_active(repo, number):
+                skipped.append(subject)
+                continue
+            try:
+                closed_at = self._closed_before(repo, number, cutoff)
+                if closed_at is None:
+                    continue
+                if not dry_run:
+                    # ensure_session takes the same lock: no event can spawn into a half-deleted subject.
+                    with self.session_lock:
+                        if self._subject_active(repo, number):
+                            skipped.append(subject)
+                            continue
+                        self._cleanup_subject(repo, number)
+            except (OpError, TransportError) as exc:
+                error = exc.error if isinstance(exc, OpError) else f"transport: {exc}"
+                LOG.warning("cleanup %s#%d failed: %s", repo, number, error)
+                errors.append({**subject, "error": error})
+                continue
+            LOG.info("cleanup %s#%d closed at %s%s", repo, number, closed_at, " (dry run)" if dry_run else "")
+            cleaned.append({**subject, "closed_at": closed_at})
+        LOG.info("cleanup_closed%s: checked %d, cleaned %d, skipped active %d, errors %d",
+                 " (dry run)" if dry_run else "", len(rows), len(cleaned), len(skipped), len(errors))
+        return {"checked": len(rows), "cleaned": cleaned, "skipped_active": skipped, "errors": errors}
+
+    def _subject_active(self, repo: str, number: int) -> bool:
+        marks = ", ".join("?" for _ in ACTIVE_EVENT_STATES)
+        return bool(self.store.query(
+            f"SELECT 1 FROM events WHERE repo = ? AND issue_number = ? AND state IN ({marks}) LIMIT 1",
+            (repo, number, *ACTIVE_EVENT_STATES)))
+
+    def _closed_before(self, repo: str, number: int, cutoff: float) -> str | None:
+        """``closed_at`` of an issue/PR closed before ``cutoff``, else None (open, reopened or closed recently)."""
+        status, data = self._gh_raw("GET", f"/repos/{repo}/issues/{number}")
+        if status != 200 or not isinstance(data, dict):
+            raise OpError(f"github issue HTTP {status}", retryable=status >= 500 or status == 429)
+        closed_at = data.get("closed_at")
+        if data.get("state") != "closed" or not isinstance(closed_at, str):
+            return None
+        try:
+            closed = datetime.datetime.fromisoformat(closed_at.replace("Z", "+00:00"))
+        except ValueError:
+            raise OpError(f"github issue: bad closed_at {closed_at[:40]!r}") from None
+        if closed.tzinfo is None:
+            closed = closed.replace(tzinfo=datetime.timezone.utc)
+        return closed_at if closed.timestamp() < cutoff else None
+
+    def _cleanup_subject(self, repo: str, number: int) -> None:
+        """Delete every HAPI session, then the runner files, then reset the row (caller holds ``session_lock``).
+
+        A failure stops before the row reset, so the next run retries whatever is left."""
+        issue = self.store.issue(repo, number)
+        sids = list(dict.fromkeys(s for s in [issue["session_id"], *json.loads(issue["superseded"] or "[]")] if s))
+        codex_ids: list[str] = []
+        for sid in sids:
+            session = self._get_session(sid)
+            if session is None:
+                continue
+            meta = session.get("metadata")
+            codex = meta.get("codexSessionId") if isinstance(meta, dict) else None
+            if isinstance(codex, str) and _UUID_RE.match(codex.lower()) and codex.lower() not in codex_ids:
+                codex_ids.append(codex.lower())
+            path = f"/api/sessions/{urllib.parse.quote(sid, safe='')}"
+            # 409: already inactive; 404: vanished since the lookup.
+            status, _ = self.hapi.request("POST", path + "/archive", body={})
+            if status not in (200, 404, 409):
+                raise OpError(f"hapi archive {sid}: HTTP {status}", retryable=status >= 500)
+            status, data = self.hapi.request("DELETE", path)
+            if status not in (200, 404):
+                error = data.get("error") if isinstance(data, dict) else None
+                raise OpError(f"hapi delete {sid}: HTTP {status} {error or ''}".strip(), retryable=status >= 500)
+        worktree = os.path.basename(issue["worktree_path"]) if issue["worktree_path"] else None
+        for start in range(0, max(len(codex_ids), 1), MAX_CLEANUP_CODEX_IDS):
+            self.publisher.request("/cleanup", {
+                "repo": repo, "worktree": worktree, "branch": issue["branch"],
+                "codex_session_ids": codex_ids[start:start + MAX_CLEANUP_CODEX_IDS],
+            }, timeout=PUBLISHER_CLEANUP_TIMEOUT)
+        self.store.update_issue(repo, number, blocked=0, session_state="none", session_id=None, pending_at=None,
+                                worktree_path=None, branch=None, superseded="[]", detail=None, phase="none",
+                                pr_number=None)
 
     # -- GitHub ------------------------------------------------------------
 

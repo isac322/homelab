@@ -3286,6 +3286,103 @@
         5280,
         2420
       ]
+    },
+    {
+      "parameters": {
+        "rule": {
+          "interval": [
+            {
+              "field": "days",
+              "daysInterval": 1,
+              "triggerAtHour": 4,
+              "triggerAtMinute": 0
+            }
+          ]
+        }
+      },
+      "id": "29853f64-371a-4896-9c73-1c9be4dd169e",
+      "name": "Daily cleanup",
+      "type": "n8n-nodes-base.scheduleTrigger",
+      "typeVersion": 1.2,
+      "position": [
+        0,
+        3300
+      ]
+    },
+    {
+      "parameters": {
+        "method": "POST",
+        "url": "={{ $env.ISSUE_AGENT_BRIDGE_URL }}/ops",
+        "authentication": "genericCredentialType",
+        "genericAuthType": "httpHeaderAuth",
+        "sendBody": true,
+        "specifyBody": "json",
+        "jsonBody": "={{ JSON.stringify({ op: 'cleanup_closed', older_than_days: 30 }) }}",
+        "options": {
+          "timeout": 900000
+        }
+      },
+      "id": "6e413ff3-42d0-4a8d-a7cd-442676211efc",
+      "name": "Cleanup closed subjects",
+      "type": "n8n-nodes-base.httpRequest",
+      "typeVersion": 4.2,
+      "position": [
+        240,
+        3300
+      ],
+      "credentials": {
+        "httpHeaderAuth": {
+          "id": "iaBridgeOps00001",
+          "name": "issue-agent-bridge-ops"
+        }
+      }
+    },
+    {
+      "parameters": {
+        "conditions": {
+          "options": {
+            "caseSensitive": true,
+            "leftValue": "",
+            "typeValidation": "loose",
+            "version": 2
+          },
+          "conditions": [
+            {
+              "id": "0d090b75-76a2-40be-963c-3a144836343d",
+              "leftValue": "={{ $json.ok !== true || ($json.errors || []).length > 0 }}",
+              "operator": {
+                "type": "boolean",
+                "operation": "true",
+                "singleValue": true
+              },
+              "rightValue": ""
+            }
+          ],
+          "combinator": "and"
+        },
+        "options": {}
+      },
+      "id": "e93dd97e-ac11-4263-a98c-8ae03b3fd5f4",
+      "name": "Cleanup errors?",
+      "type": "n8n-nodes-base.if",
+      "typeVersion": 2.2,
+      "position": [
+        480,
+        3300
+      ]
+    },
+    {
+      "parameters": {
+        "errorMessage": "={{ ('cleanup_closed failed: ' + ($json.ok === true ? $json.errors.map(e => e.repo + '#' + e.issue_number + ': ' + e.error).join('; ') : String($json.error || 'no response'))).slice(0, 1500) }}"
+      },
+      "id": "0619edd3-e48a-43ee-8c9f-d30f338942c4",
+      "name": "Cleanup failed",
+      "type": "n8n-nodes-base.stopAndError",
+      "typeVersion": 1,
+      "position": [
+        720,
+        3300
+      ]
     }
   ],
   "connections": {
@@ -4631,6 +4728,40 @@
             "index": 0
           }
         ]
+      ]
+    },
+    "Daily cleanup": {
+      "main": [
+        [
+          {
+            "node": "Cleanup closed subjects",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Cleanup closed subjects": {
+      "main": [
+        [
+          {
+            "node": "Cleanup errors?",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Cleanup errors?": {
+      "main": [
+        [
+          {
+            "node": "Cleanup failed",
+            "type": "main",
+            "index": 0
+          }
+        ],
+        []
       ]
     }
   },
