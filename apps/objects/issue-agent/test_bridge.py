@@ -297,6 +297,12 @@ class Fake:
             self.messages[new] = list(self.messages[sid])
             session["metadata"]["supersededBySessionId"] = new
             return 200, {"type": "success", "sessionId": new}
+        if rest == ["archive"]:
+            self.calls.append(f"archive {sid}")
+            if not session["active"]:
+                return 409, {"error": "Session is inactive"}
+            session["active"] = False
+            return 200, {"ok": True}
         if rest == ["messages"] and method == "POST":
             if not session["active"]:
                 return 409, {"error": "Session is inactive", "code": "session_inactive"}
@@ -1150,6 +1156,27 @@ class SessionTests(BridgeTestCase):
         self.assertNotEqual(again["session_id"], old)
         self.assertTrue(again["resumed"])
         self.assertIn(old, json.loads(self.store.issue(REPO, 7)["superseded"]))
+
+    def test_finish_stops_the_session_and_the_next_event_resumes_it(self) -> None:
+        self.started(7, "d1")
+        first = self.op("ensure_session", "d1")["session_id"]
+        self.assertEqual(self.op("finish", "d1", outcome="triaged")["already"], False)
+        self.assertIn(f"archive {first}", self.fake.calls)
+        self.assertFalse(self.fake.sessions[first]["active"])
+        self.assertEqual(self.deliver(comment_payload(), event="issue_comment", delivery="c1").outcome, "queued")
+        self.assertEqual(self.dispatcher.tick(), "dispatched")
+        self.assertEqual(self.op("begin", "c1", attempt=1)["status"], "started")
+        again = self.op("ensure_session", "c1")
+        self.assertTrue(again["resumed"])
+        self.assertEqual(len(self.fake.spawns), 1)  # same conversation, not a new session
+        self.assertIn(first, json.loads(self.store.issue(REPO, 7)["superseded"]))
+        # Already inactive (runner restart) or hub unreachable: the event still completes.
+        self.fake.sessions[again["session_id"]]["active"] = False
+        self.assertEqual(self.op("finish", "c1", outcome="triaged")["already"], False)
+        self.started(8, "d3")
+        del self.fake.sessions[self.op("ensure_session", "d3")["session_id"]]  # hub answers 404
+        self.assertEqual(self.op("finish", "d3", outcome="triaged")["already"], False)
+        self.assertEqual(self.store.event("d3")["state"], "completed")
 
     def test_deleted_session_needs_operator_instead_of_silent_respawn(self) -> None:
         self.started()

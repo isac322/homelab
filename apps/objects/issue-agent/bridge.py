@@ -1648,7 +1648,27 @@ class Bridge:
                            f"{urllib.parse.quote(NEEDS_ATTENTION, safe='')}", ok=(200, 404))
         self.store.update_event(ev["delivery_id"], state="completed", outcome=outcome,
                                 detail=detail[:2000] if isinstance(detail, str) else None)
+        self._archive_session(ev)
         return {"already": False}
+
+    def _archive_session(self, ev: sqlite3.Row) -> None:
+        """Stop the finished subject's agent process; the next event resumes it through ``ensure_session``.
+
+        Idle sessions otherwise keep their Codex process (and its MCP servers) alive until the runner restarts.
+        Best effort: the event is already completed, so a failure only leaves the process running."""
+        sid = self.store.issue(ev["repo"], int(ev["issue_number"]))["session_id"]
+        if not sid:
+            return
+        try:
+            status, data = self.hapi.request("POST", f"/api/sessions/{urllib.parse.quote(sid, safe='')}/archive",
+                                             body={})
+        except (TransportError, OpError) as exc:
+            LOG.warning("%s#%d session %s not archived: %s", ev["repo"], ev["issue_number"], sid, exc)
+            return
+        # 409: already inactive (e.g. the runner restarted), nothing left to stop.
+        if status not in (200, 409):
+            LOG.warning("%s#%d session %s not archived: HTTP %s %s", ev["repo"], ev["issue_number"], sid, status,
+                        data.get("error") if isinstance(data, dict) else "")
 
     def op_fail(self, req: dict[str, Any]) -> dict[str, Any]:
         ev = self._event(req, live=False)
