@@ -13,9 +13,9 @@ Responsibilities (business branching lives in the n8n workflow):
   ``finish`` or ``fail``.
 * ``POST /ops`` is the private, bearer-authenticated adapter n8n uses for every
   side effect: HAPI session lifecycle, message delivery and per-mode turn
-  correlation, and every GitHub write. The coding agent never writes to GitHub;
-  it returns a structured result, and branch pushes go through the publisher
-  sidecar.
+  correlation, and every GitHub write. The coding agent reads GitHub itself
+  with ``gh`` (a read-only token) and never writes; it returns a structured
+  result, and branch pushes go through the publisher sidecar.
 
 Nothing whose outcome is unknown is blindly repeated: session spawns are
 recovered from Hub session metadata, messages are reconciled through their
@@ -93,13 +93,8 @@ LABEL_CATALOG: dict[str, tuple[str, str, str | None]] = {
 TRIAGE_VERDICTS = ("CONFIRMED_CURRENT", "PARTIALLY_FIXED", "CONFIRMED_HISTORICAL_FIXED", "DUPLICATE",
                    "ENVIRONMENTAL", "NOT_A_BUG", "FEATURE_REQUEST", "NOT_REPRODUCED", "INCONCLUSIVE")
 REVIEW_EVENTS = ("APPROVE", "REQUEST_CHANGES", "COMMENT")
-MAX_CONTEXT_BYTES = 200 * 1024
-# github.pr_context is sent on as session_send context; keep headroom for the fields n8n adds around it.
-PR_CONTEXT_BUDGET = MAX_CONTEXT_BYTES - 40 * 1024
-PR_CONTEXT_BODY_STEPS = (2000, 500, 100)  # per-body character caps tried, in order, when still over budget
-MAX_LIST_PAGES = 3  # PR files / reviews / review comments: 100 per page
+MAX_CONTEXT_BYTES = 200 * 1024  # session_send context cap
 MAX_THREAD_PAGES = 4  # GraphQL reviewThreads: 50 per page
-PATCH_LIMIT = 4000
 MAX_IDEMPOTENCY_PAGES = 10  # review/comment lists scanned for hidden markers
 PUBLISHER_CHECKOUT_TIMEOUT = 600.0
 PUBLISHER_PUSH_TIMEOUT = 300.0
@@ -108,14 +103,11 @@ PR_HEAD_WAIT_SECONDS = 60.0
 PR_HEAD_WAIT_INTERVAL = 2.0
 REVIEW_STATE_EVENTS = {"APPROVED": "APPROVE", "CHANGES_REQUESTED": "REQUEST_CHANGES", "COMMENTED": "COMMENT"}
 DEFAULT_REVIEW_STATUS_CONTEXT = "issue-agent/review"
-MAX_LINKED_ISSUES = 10  # linked issues whose title/body/comments github.pr_context includes
-LINKED_ISSUE_COMMENTS = 30  # newest comments kept per linked issue
 
 PR_THREADS_QUERY = """
 query($owner: String!, $name: String!, $number: Int!, $after: String) {
   repository(owner: $owner, name: $name) {
     pullRequest(number: $number) {
-      closingIssuesReferences(first: 20) { nodes { number repository { nameWithOwner } } }
       reviewThreads(first: 50, after: $after) {
         pageInfo { hasNextPage endCursor }
         nodes {
@@ -1451,68 +1443,6 @@ def invoked(message: Mapping[str, Any]) -> bool:
     return not ("invokedAt" in message and message["invokedAt"] is None)
 
 
-def _json_size(value: Any) -> int:
-    """Bytes ``value`` takes as session_send context (the encoding its size check uses)."""
-    return len(json.dumps(value, ensure_ascii=False).encode())
-
-
-def fit_pr_context(ctx: dict[str, Any], budget: int = PR_CONTEXT_BUDGET) -> dict[str, Any]:
-    """Shrink a github.pr_context result to ``budget`` bytes so it can be passed on as session_send context.
-
-    In order, until it fits: drop file patches, largest first (the agent reads the diff from git); cap
-    review, comment, thread and linked-issue comment bodies (the PR body keeps at least 4000 characters,
-    linked issue bodies 2000) at shrinking lengths; finally drop whole entries: files from the tail,
-    resolved threads, then the oldest linked-issue comments, comments, reviews and threads. ``truncated``
-    counts what was left out.
-    """
-    size = _json_size(ctx)
-    if size <= budget:
-        return ctx
-    truncated: dict[str, int] = {}
-
-    def bump(key: str, n: int = 1) -> None:
-        truncated[key] = truncated.get(key, 0) + n
-
-    for f in sorted((f for f in ctx["files"] if "patch" in f), key=lambda f: len(f["patch"]), reverse=True):
-        if size <= budget:
-            break
-        before = _json_size(f)
-        del f["patch"]
-        size -= before - _json_size(f)
-        bump("files_patch_omitted")
-
-    linked = ctx.get("linked_issue_details") or []
-    linked_comments = [c for li in linked for c in li["comments"]]
-    bodies = [c for t in ctx["threads"] for c in t["comments"]] + ctx["comments"] + ctx["reviews"] + linked_comments
-    for limit in PR_CONTEXT_BODY_STEPS:
-        if size <= budget:
-            break
-        for holder, cap in ([(b, limit) for b in bodies] + [(li, max(limit, 2000)) for li in linked]
-                            + [(ctx["pr"], max(limit, 4000))]):
-            text = holder.get("body")
-            if isinstance(text, str) and len(text) > cap:
-                before = _json_size(text)
-                holder["body"] = text[:cap] + "…"
-                size -= before - _json_size(holder["body"])
-        truncated["body_chars_max"] = limit
-
-    threads = ctx["threads"]
-    candidates = ([("files_omitted", ctx["files"], f) for f in reversed(ctx["files"])]
-                  + [("threads_omitted", threads, t) for t in threads if t["is_resolved"]]
-                  + [("linked_issue_comments_omitted", li["comments"], c) for li in linked for c in li["comments"]]
-                  + [("comments_omitted", ctx["comments"], c) for c in ctx["comments"]]
-                  + [("reviews_omitted", ctx["reviews"], r) for r in ctx["reviews"]]
-                  + [("threads_omitted", threads, t) for t in threads if not t["is_resolved"]])
-    for key, items, item in candidates:
-        if size <= budget:
-            break
-        del items[next(i for i, x in enumerate(items) if x is item)]
-        size -= _json_size(item) + (2 if items else 0)  # the ", " separator goes with it
-        bump(key)
-    ctx["truncated"] = truncated
-    return ctx
-
-
 # --------------------------------------------------------------------------
 # Ops (the private n8n adapter)
 # --------------------------------------------------------------------------
@@ -1548,10 +1478,8 @@ class Bridge:
             "ensure_session": self.op_ensure_session,
             "session_send": self.op_session_send,
             "session_turn": self.op_session_turn,
-            "github.issue": self.op_github_issue,
             "github.comment": self.op_github_comment,
             "github.labels": self.op_github_labels,
-            "github.pr_context": self.op_github_pr_context,
             "github.review": self.op_github_review,
             "github.pr_upsert": self.op_github_pr_upsert,
             "git.push": self.op_git_push,
@@ -1685,6 +1613,8 @@ class Bridge:
                 "pr_number": issue["pr_number"],
                 "has_session": issue["session_state"] == "ready",
             },
+            "bot_login": self.config.github_bot_login,
+            "reviewer_login": self.reviewer_login(),
         }
 
     def op_stage(self, req: dict[str, Any]) -> dict[str, Any]:
@@ -2287,76 +2217,6 @@ class Bridge:
                             ok=(201,), client=client)
         return {"url": data.get("html_url") if isinstance(data, dict) else None, "created": True}
 
-    @staticmethod
-    def _issue_comment_view(c: Mapping[str, Any]) -> dict[str, Any]:
-        return {
-            "id": c.get("id"),
-            "author": (c.get("user") or {}).get("login"),
-            "from_agent": is_agent_text(c.get("body") or ""),
-            "body": (c.get("body") or "")[:4000],
-            "created_at": c.get("created_at"),
-        }
-
-    def _recent_comments(self, repo: str, number: int, total: Any, limit: int) -> list[dict[str, Any]]:
-        """Newest ``limit`` comments for read-only context: the last pages located from the issue's comment count,
-        never the full idempotency scan (which refuses long discussions)."""
-        path = f"/repos/{repo}/issues/{number}/comments?per_page=100&page="
-        page = max(1, -(-total // 100)) if isinstance(total, int) and total > 0 else 1
-        out: list[dict[str, Any]] = []
-        for _ in range(-(-limit // 100) + 2):  # the needed pages plus slack for a stale count
-            data = self._gh("GET", f"{path}{page}")
-            if not isinstance(data, list):
-                raise OpError("github comments: unexpected response", retryable=True)
-            out = [c for c in data if isinstance(c, dict)] + out
-            if len(out) >= limit or page == 1:
-                break
-            page -= 1
-        return out[-limit:]
-
-    def _issue_snapshot(self, repo: str, number: int, *, comment_limit: int = 50, issue: Any = None,
-                        recent_only: bool = False) -> tuple[dict[str, Any], list[dict[str, Any]]]:
-        """Issue fields and its newest ``comment_limit`` comments, bodies capped (issue 20000, comment 4000).
-        ``recent_only`` reads just the newest pages instead of the full history."""
-        if issue is None:
-            issue = self._gh("GET", f"/repos/{repo}/issues/{number}")
-        if not isinstance(issue, dict):
-            raise OpError("github issue: unexpected response", retryable=True)
-        if recent_only:
-            comments = self._recent_comments(repo, number, issue.get("comments"), comment_limit)
-        else:
-            comments = self._comments(repo, number)[-comment_limit:]
-        return ({
-            "number": issue.get("number"),
-            "title": issue.get("title"),
-            "body": (issue.get("body") or "")[:20000],
-            "state": issue.get("state"),
-            "author": (issue.get("user") or {}).get("login"),
-            "labels": [lbl.get("name") for lbl in issue.get("labels") or [] if isinstance(lbl, dict)],
-        }, [self._issue_comment_view(c) for c in comments])
-
-    def op_github_issue(self, req: dict[str, Any]) -> dict[str, Any]:
-        ev = self._event(req)
-        issue, comments = self._issue_snapshot(ev["repo"], ev["issue_number"])
-        pr_number = self.store.issue(ev["repo"], ev["issue_number"])["pr_number"]
-        pull_request = None
-        if pr_number is not None:
-            pr = self._get_pr(ev["repo"], pr_number)
-            head = pr.get("head") if isinstance(pr.get("head"), dict) else {}
-            base = pr.get("base") if isinstance(pr.get("base"), dict) else {}
-            pull_request = {
-                "number": pr.get("number"),
-                "html_url": pr.get("html_url"),
-                "state": pr.get("state"),
-                "merged": bool(pr.get("merged")),
-                "draft": bool(pr.get("draft")),
-                "title": pr.get("title"),
-                "body": (pr.get("body") or "")[:20000],
-                "head_ref": head.get("ref"),
-                "head_sha": head.get("sha"),
-                "base_ref": base.get("ref"),
-            }
-        return {"issue": issue, "comments": comments, "pull_request": pull_request}
-
     def op_github_comment(self, req: dict[str, Any]) -> dict[str, Any]:
         ev = self._event(req)
         purpose, body = req.get("purpose"), req.get("body")
@@ -2412,20 +2272,11 @@ class Bridge:
 
     # -- pull requests -----------------------------------------------------
 
-    def _pr_number(self, ev: sqlite3.Row) -> int:
-        if subject_of(ev["kind"]) == "pull_request":
-            return int(ev["issue_number"])
-        number = self.store.issue(ev["repo"], ev["issue_number"])["pr_number"]
-        if not number:
-            raise OpError("no pull request recorded for this issue")
-        return int(number)
-
     def _threads(self, repo: str, number: int, *,
-                 client: GitHub | None = None) -> tuple[list[dict[str, Any]], list[tuple[str, int]]]:
-        """Review threads (bounded pagination) and closing issue references ``(repo, number)`` via GraphQL."""
+                 client: GitHub | None = None) -> list[dict[str, Any]]:
+        """Review threads via GraphQL (bounded pagination)."""
         owner, name = repo.split("/", 1)
         threads: list[dict[str, Any]] = []
-        linked: list[tuple[str, int]] = []
         after = None
         for _ in range(MAX_THREAD_PAGES):
             data = self._graphql(PR_THREADS_QUERY, {"owner": owner, "name": name, "number": number, "after": after},
@@ -2433,12 +2284,6 @@ class Bridge:
             pr = (data.get("repository") or {}).get("pullRequest")
             if not isinstance(pr, dict):
                 raise OpError(f"pull request #{number} not found")
-            if after is None:
-                for n in (pr.get("closingIssuesReferences") or {}).get("nodes") or []:
-                    ref_repo = ((n.get("repository") or {}).get("nameWithOwner") if isinstance(n, dict) else None)
-                    if _positive_int(n.get("number") if isinstance(n, dict) else None) and isinstance(ref_repo, str) \
-                            and valid_repo_name(ref_repo):
-                        linked.append((ref_repo, n["number"]))
             conn = pr.get("reviewThreads") or {}
             for t in conn.get("nodes") or []:
                 if not isinstance(t, dict):
@@ -2459,7 +2304,7 @@ class Bridge:
             if not page.get("hasNextPage") or not page.get("endCursor"):
                 break
             after = page["endCursor"]
-        return threads, linked
+        return threads
 
     def _get_pr(self, repo: str, number: int, *, client: GitHub | None = None) -> dict[str, Any]:
         pr = self._gh("GET", f"/repos/{repo}/pulls/{number}", client=client)
@@ -2470,78 +2315,6 @@ class Bridge:
     def reviewer_login(self) -> str | None:
         """Login that submits reviews: the review App when configured, else the issue App."""
         return self.config.github_review_bot_login if self.review_github is not None else self.config.github_bot_login
-
-    def _linked_issue_details(self, repo: str, refs: list[tuple[str, int]]) -> list[dict[str, Any]]:
-        """Title/body/newest comments of each ``(repo, number)`` reference. References that do not exist, and
-        other repositories this App cannot read, are skipped."""
-        out: list[dict[str, Any]] = []
-        for ref_repo, n in refs[:MAX_LINKED_ISSUES]:
-            status, issue = self._gh_raw("GET", f"/repos/{ref_repo}/issues/{n}")
-            other = ref_repo.casefold() != repo.casefold()
-            if status in (404, 410) or other and status == 403:  # missing, deleted, or not readable by the App
-                continue
-            if status != 200:
-                raise OpError(f"github GET /repos/{ref_repo}/issues/{n} HTTP {status}",
-                              retryable=status >= 500 or status == 429)
-            fields, comments = self._issue_snapshot(ref_repo, n, comment_limit=LINKED_ISSUE_COMMENTS, issue=issue,
-                                                    recent_only=True)
-            out.append({
-                "repo": ref_repo, "number": fields["number"], "title": fields["title"], "state": fields["state"],
-                "body": fields["body"], "author": fields["author"],
-                "comments": [{k: c[k] for k in ("author", "body", "created_at", "from_agent")} for c in comments],
-            })
-        return out
-
-    def op_github_pr_context(self, req: dict[str, Any]) -> dict[str, Any]:
-        ev = self._event(req)
-        repo, number = ev["repo"], self._pr_number(ev)
-        pr = self._get_pr(repo, number)
-        files = self._paged(f"/repos/{repo}/pulls/{number}/files", MAX_LIST_PAGES)
-        reviews = self._paged(f"/repos/{repo}/pulls/{number}/reviews", MAX_LIST_PAGES)
-        threads, closing = self._threads(repo, number)
-        comments = self._comments(repo, number)[-50:]
-        body = pr.get("body") or ""
-        related = {int(m) for m in re.findall(r"(?i)\brelated to #(\d+)\b", body)}
-        # `linked_issues` stays this repository's numbers; other-repository references appear only in the details.
-        same = {n for r, n in closing if r.casefold() == repo.casefold()}
-        linked = sorted(same | related)
-        others = list(dict.fromkeys((r, n) for r, n in closing if r.casefold() != repo.casefold()))
-        head, base = pr.get("head") or {}, pr.get("base") or {}
-        return fit_pr_context({
-            "pr": {
-                "number": pr.get("number"),
-                "title": pr.get("title"),
-                "body": body[:20000],
-                "state": pr.get("state"),
-                "draft": bool(pr.get("draft")),
-                "author": (pr.get("user") or {}).get("login"),
-                "head": {"ref": head.get("ref"), "sha": head.get("sha")},
-                "base": {"ref": base.get("ref"), "sha": base.get("sha")},
-            },
-            "files": [
-                {"filename": f.get("filename"), "status": f.get("status"), "additions": f.get("additions"),
-                 "deletions": f.get("deletions"),
-                 **({"patch": f["patch"][:PATCH_LIMIT]} if isinstance(f.get("patch"), str) else {})}
-                for f in files
-            ],
-            "reviews": [
-                {"id": r.get("id"), "author": (r.get("user") or {}).get("login"), "state": r.get("state"),
-                 "body": (r.get("body") or "")[:4000], "commit_id": r.get("commit_id"),
-                 "submitted_at": r.get("submitted_at")}
-                for r in reviews
-            ],
-            "threads": threads,
-            "comments": [
-                {"id": c.get("id"), "author": (c.get("user") or {}).get("login"),
-                 "body": (c.get("body") or "")[:4000], "created_at": c.get("created_at"),
-                 "from_agent": is_agent_text(c.get("body") or "")}
-                for c in comments
-            ],
-            "linked_issues": linked,
-            "linked_issue_details": self._linked_issue_details(repo, [(repo, n) for n in linked] + others),
-            "reviewer_login": self.reviewer_login(),
-            "bot_login": self.config.github_bot_login,
-        })
 
     def op_github_review(self, req: dict[str, Any]) -> dict[str, Any]:
         ev = self._event(req)
@@ -2562,7 +2335,7 @@ class Bridge:
         replies: list[int] = []
         resolved: list[str] = []
         if result["thread_replies"]:
-            threads, _ = self._threads(repo, number, client=gh)
+            threads = self._threads(repo, number, client=gh)
             by_comment = {c["comment_id"]: t for t in threads for c in t["comments"]}
             unknown = [r["comment_id"] for r in result["thread_replies"] if r["comment_id"] not in by_comment]
             if unknown:

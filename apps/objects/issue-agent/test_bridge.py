@@ -70,14 +70,12 @@ class Fake:
         self.prs: dict[int, dict[str, Any]] = {}
         self.pr_creates: list[dict[str, Any]] = []
         self.pr_patches: list[dict[str, Any]] = []
-        self.pr_files: list[dict[str, Any]] = []
         self.reviews: list[dict[str, Any]] = []
         self.review_posts: list[dict[str, Any]] = []
         self.reject_inline = False
         self.review_comments: list[dict[str, Any]] = []
         self.reply_posts: list[tuple[int, dict[str, Any]]] = []
         self.threads: list[dict[str, Any]] = []
-        self.closing: list[int | tuple[str, int]] = []  # a bare number is a reference in REPO
         self.resolved: list[str] = []
         # second App used only for reviews; requests are attributed to the App whose token they carry
         self.gh_review_token: str | None = None
@@ -86,8 +84,6 @@ class Fake:
         self.statuses: dict[str, list[dict[str, Any]]] = {}  # sha -> newest first
         self.status_posts: list[tuple[str, dict[str, Any]]] = []
         self.status_fail = False
-        self.missing_issues: set[int] = set()
-        self.issue_status: dict[tuple[str, int], int] = {}  # (repo, number) -> forced error status
         # collaborator permission: login (casefolded) -> permission, anyone else "read"
         self.permissions: dict[str, str] = {"isac322": "admin"}
         self.unknown_logins: set[str] = set()  # the permission lookup answers 404
@@ -374,14 +370,8 @@ class Fake:
                 return 404, {"message": "Not Found"}
             return 200, {"permission": self.permissions.get(login, "read"), "user": {"login": rest[1]}}
         number = int(rest[1])
-        if len(rest) == 2 and (repo, number) in self.issue_status:
-            return self.issue_status[(repo, number)], {"message": "error"}
-        if len(rest) == 2 and number in self.missing_issues:
-            return 404, {"message": "Not Found"}
-        if len(rest) == 2:
-            return 200, {"number": number, "title": "Fix it" if repo == REPO else f"{repo} issue",
-                         "body": "details", "state": "open", "comments": len(self.comments.get(number, [])),
-                         "user": {"login": "isac322"}, "labels": [{"name": n} for n in self.labels.get(number, [])]}
+        if len(rest) < 3:
+            return 404, {"message": "no route"}
         if rest[2] == "comments" and method == "GET":
             page = int(query.get("page", 1))
             items = self.comments.get(number, [])
@@ -428,8 +418,6 @@ class Fake:
             return 200, pr
         if len(rest) == 1:
             return 200, pr
-        if rest[1] == "files":
-            return 200, self.pr_files
         if rest[1] == "reviews" and method == "GET":
             return 200, self.reviews
         if rest[1] == "reviews":
@@ -463,9 +451,6 @@ class Fake:
                     t["isResolved"] = True
             return 200, {"data": {"resolveReviewThread": {"thread": {"id": tid, "isResolved": True}}}}
         return 200, {"data": {"repository": {"pullRequest": {
-            "closingIssuesReferences": {"nodes": [
-                {"number": ref[1], "repository": {"nameWithOwner": ref[0]}} if isinstance(ref, tuple)
-                else {"number": ref, "repository": {"nameWithOwner": REPO}} for ref in self.closing]},
             "reviewThreads": {"pageInfo": {"hasNextPage": False, "endCursor": None}, "nodes": self.threads},
         }}}}
 
@@ -1504,20 +1489,9 @@ class GitHubOpsTests(BridgeTestCase):
 
     def test_rotated_token_is_read_per_call_including_hosts_yml_fallback(self) -> None:
         self.started()
-        self.assertTrue(self.op("github.issue")["ok"])
+        self.assertTrue(self.op("github.comment", purpose="report", body="hello")["ok"])
         self.set_github_token("ghs-2", hosts_only=True)
-        self.assertTrue(self.op("github.issue")["ok"])
-
-    def test_issue_snapshot_carries_the_pull_request_once_one_is_recorded(self) -> None:
-        self.started()
-        self.assertIsNone(self.op("github.issue")["pull_request"])
-        body = "Fixes #7\n" + "x" * 30000
-        self.fake.add_pr(21, body=body).update(state="closed", merged=True)
-        self.store.update_issue(REPO, 7, pr_number=21)
-        self.assertEqual(self.op("github.issue")["pull_request"], {
-            "number": 21, "html_url": f"https://github.com/{REPO}/pull/21", "state": "closed", "merged": True,
-            "draft": False, "title": "Fix it", "body": body[:20000], "head_ref": "hapi-issue-7", "head_sha": SHA_A,
-            "base_ref": "master"})
+        self.assertTrue(self.op("github.comment", purpose="report", body="hello")["ok"])
 
     def test_search_op_is_removed(self) -> None:
         self.started()
@@ -1525,54 +1499,6 @@ class GitHubOpsTests(BridgeTestCase):
 
 
 class PullRequestOpsTests(BridgeTestCase):
-    def test_pr_context_bounds_patches_and_collects_threads_and_links(self) -> None:
-        self.started_review(12, body="Related to #9")
-        self.fake.pr_files = [{"filename": "a.py", "status": "modified", "additions": 1, "deletions": 0,
-                               "patch": "x" * 5000}, {"filename": "img.png", "status": "added"}]
-        self.fake.threads = [{"id": "T1", "isResolved": False, "isOutdated": False, "path": "a.py", "line": 3,
-                              "comments": {"nodes": [{"databaseId": 501, "author": {"login": "isac322"},
-                                                      "body": "why?", "createdAt": "t"}]}}]
-        self.fake.closing = [7]
-        ctx = self.op("github.pr_context", "p1")
-        self.assertTrue(ctx["ok"], ctx)
-        self.assertEqual(ctx["pr"]["head"], {"ref": "hapi-issue-7", "sha": SHA_A})
-        self.assertEqual(len(ctx["files"][0]["patch"]), bridge.PATCH_LIMIT)
-        self.assertNotIn("patch", ctx["files"][1])
-        self.assertEqual(ctx["threads"][0]["comments"][0]["comment_id"], 501)
-        self.assertEqual(ctx["linked_issues"], [7, 9])
-
-    def test_pr_context_drops_largest_patches_first_to_fit_session_context(self) -> None:
-        self.started_review(12)
-        self.fake.pr_files = [{"filename": f"f{i}.py", "status": "modified", "additions": 1, "deletions": 0,
-                               "patch": "x" * (1000 + 30 * i)} for i in range(90)]
-        ctx = self.op("github.pr_context", "p1")
-        self.assertTrue(ctx["ok"], ctx)
-        self.assertLessEqual(len(json.dumps(ctx, ensure_ascii=False).encode()), bridge.PR_CONTEXT_BUDGET + 100)
-        self.assertEqual(len(ctx["files"]), 90)
-        omitted = [f["filename"] for f in ctx["files"] if "patch" not in f]
-        self.assertEqual(ctx["truncated"], {"files_patch_omitted": len(omitted)})
-        self.assertEqual(omitted, [f"f{i}.py" for i in range(90 - len(omitted), 90)])  # the largest ones
-        self.assertEqual(ctx["files"][0]["patch"], "x" * 1000)
-
-    def test_pr_context_trims_bodies_but_keeps_every_thread_when_patches_are_not_enough(self) -> None:
-        self.started_review(12)
-        self.fake.pr_files = [{"filename": "a.py", "status": "modified", "additions": 1, "deletions": 0,
-                               "patch": "x" * 3000}]
-        self.fake.threads = [
-            {"id": f"T{i}", "isResolved": False, "isOutdated": False, "path": "a.py", "line": 3,
-             "comments": {"nodes": [{"databaseId": 1000 + i, "author": {"login": "isac322"},
-                                     "body": "é" * 5000, "createdAt": "t"}]}}
-            for i in range(60)
-        ]
-        ctx = self.op("github.pr_context", "p1")
-        self.assertTrue(ctx["ok"], ctx)
-        self.assertLessEqual(len(json.dumps(ctx, ensure_ascii=False).encode()), bridge.PR_CONTEXT_BUDGET + 100)
-        self.assertEqual([t["thread_id"] for t in ctx["threads"]], [f"T{i}" for i in range(60)])
-        self.assertEqual(ctx["truncated"], {"files_patch_omitted": 1, "body_chars_max": 500})
-        self.assertEqual(ctx["threads"][0]["comments"][0]["body"], "é" * 500 + "…")
-        self.assertEqual(ctx["pr"]["head"], {"ref": "hapi-issue-7", "sha": SHA_A})
-        self.assertLessEqual(len(json.dumps(ctx, ensure_ascii=False).encode()), bridge.MAX_CONTEXT_BYTES)
-
     def test_review_is_single_idempotent_and_checks_head(self) -> None:
         self.started_review(12)
         stale = self.op("github.review", "p1", result=variant(REVIEW_OK, head_sha=SHA_B))
@@ -1650,56 +1576,6 @@ class PullRequestOpsTests(BridgeTestCase):
         self.assertEqual(len(self.fake.review_posts), 1)
         self.assertEqual([(sha, s["state"], s["description"]) for sha, s in self.fake.status_posts],
                          [(SHA_A, "failure", "Not approved")])
-
-    def test_pr_context_includes_linked_issue_details_and_reviewer_login(self) -> None:
-        self.started_review(12, body="Related to #9, related to #404")
-        self.fake.closing = [7]
-        self.fake.missing_issues = {404}
-        self.fake.comments[7] = [
-            {"id": 1, "body": "<!-- issue-agent:d1:report -->\ntriaged", "user": {"login": BOT}, "created_at": "t1"},
-            {"id": 2, "body": "x" * 5000, "user": {"login": "isac322"}, "created_at": "t2"},
-        ]
-        ctx = self.op("github.pr_context", "p1")
-        self.assertTrue(ctx["ok"], ctx)
-        self.assertEqual(ctx["linked_issues"], [7, 9, 404])
-        self.assertEqual((ctx["reviewer_login"], ctx["bot_login"]), (BOT, BOT))
-        seven, nine = ctx["linked_issue_details"]
-        self.assertEqual({k: seven[k] for k in ("number", "title", "state", "body", "author")},
-                         {"number": 7, "title": "Fix it", "state": "open", "body": "details", "author": "isac322"})
-        self.assertEqual([(c["author"], c["from_agent"], len(c["body"])) for c in seven["comments"]],
-                         [(BOT, True, len(self.fake.comments[7][0]["body"])), ("isac322", False, 4000)])
-        self.assertEqual((nine["number"], nine["comments"]), (9, []))
-        self.use_reviewer_app()
-        ctx = self.op("github.pr_context", "p1")
-        self.assertEqual((ctx["reviewer_login"], ctx["bot_login"]), (REVIEWER, BOT))
-
-    def test_linked_issue_with_a_long_discussion_reads_only_its_newest_comments(self) -> None:
-        self.started_review(12)
-        self.fake.closing = [7]
-        self.fake.comments[7] = [{"id": i, "body": f"c{i}", "user": {"login": "u"}, "created_at": f"t{i}"}
-                                 for i in range(2050)]
-        ctx = self.op("github.pr_context", "p1")
-        self.assertTrue(ctx["ok"], ctx)
-        (seven,) = ctx["linked_issue_details"]
-        self.assertEqual([c["body"] for c in seven["comments"]],
-                         [f"c{i}" for i in range(2050 - bridge.LINKED_ISSUE_COMMENTS, 2050)])
-        pages = [p for _, m, p in self.fake.gh_calls if p == f"/repos/{REPO}/issues/7/comments"]
-        self.assertEqual(len(pages), 1)  # only the newest page, not the 21-page history
-        self.fake.comments[7] = self.fake.comments[7][:110]  # newest page holds 10: the page before is read too
-        (seven,) = self.op("github.pr_context", "p1")["linked_issue_details"]
-        self.assertEqual([c["body"] for c in seven["comments"]], [f"c{i}" for i in range(80, 110)])
-
-    def test_cross_repository_closing_references_are_fetched_from_their_repository(self) -> None:
-        self.started_review(12, body="Related to #9")
-        self.fake.closing = [7, (OTHER, 7), ("isac322/private", 3)]
-        self.fake.issue_status[("isac322/private", 3)] = 403
-        ctx = self.op("github.pr_context", "p1")
-        self.assertTrue(ctx["ok"], ctx)
-        self.assertEqual(ctx["linked_issues"], [7, 9])
-        self.assertEqual([(d["repo"], d["number"], d["title"]) for d in ctx["linked_issue_details"]],
-                         [(REPO, 7, "Fix it"), (REPO, 9, "Fix it"), (OTHER, 7, f"{OTHER} issue")])
-        self.fake.issue_status[(REPO, 9)] = 403  # this repository unreadable is an error, not a skip
-        self.assertIn("HTTP 403", self.op("github.pr_context", "p1")["error"])
 
     def test_rejected_inline_comments_are_folded_into_the_body(self) -> None:
         self.started_review(12)
