@@ -65,7 +65,7 @@ Codex의 공통 지침은 전용 `CODEX_HOME/AGENTS.md`에서 읽고 프로젝�
 
 ### 알려진 제한
 
-- GitHub App은 PR reviewer로 요청할 수 없다. REST API로 `ironeater[bot]`(당시 이름, 현 `bulgasaribot[bot]`)을 reviewer로 요청하면 오류 없이 무시되는 것을 확인했다. 그래서 재리뷰 요청은 PR 댓글 `@haechibot review`(본문 시작, 앞 공백·대소문자 무시)로 받되, PR 작성자 또는 저장소 collaborator·owner가 `User` sender로 남긴 댓글만 받는다.
+- GitHub App은 PR reviewer로 요청할 수 없다. REST API로 `ironeater[bot]`(당시 이름, 현 `bulgasaribot[bot]`)을 reviewer로 요청하면 오류 없이 무시되는 것을 확인했다. 그래서 재리뷰 요청은 본문 어디든 `@haechibot` 멘션이 있는 PR 댓글(대소문자 무시)로 받되, PR 작성자 또는 저장소 collaborator·owner가 `User` sender로 남긴 댓글만 받는다.
 - GitHub는 PR 작성자의 APPROVE/REQUEST_CHANGES를 금지한다. 그래서 리뷰는 작성용 `bulgasaribot`과 다른 App `haechibot`으로 제출하며, bulgasaribot이 연 PR에도 실제 승인·변경 요청이 달린다. 리뷰 App 자신이 연 PR만 `COMMENT`와 `**Verdict: <event>**` 접두로 downgrade한다(현재 그런 PR은 없다).
 - 필수 승인 수에 GitHub App 승인이 포함되는지는 문서에 없어서, merge 강제는 특정 App이 남긴 상태만 인정하는 required status check(`issue-agent/review`, integration `5118831`)로 한다. 새 commit은 상태가 없으므로 재리뷰 전까지 merge되지 않는다.
 - `isac322/cc-lb`는 GitHub Free의 private 저장소라 branch protection과 ruleset API가 403을 반환한다. 이 저장소는 bot 승인을 merge 조건으로 강제하지 않는다.
@@ -89,7 +89,7 @@ Codex의 공통 지침은 전용 `CODEX_HOME/AGENTS.md`에서 읽고 프로젝�
 - `issues.opened`: 누구나(sender가 bot이 아닌 `User`이고 이슈 작성자와 같을 때) → `issue_opened`. 신뢰 사용자의 이슈는 항상 받는다. 비신뢰 사용자의 이슈는 전체 저장소 합산 최근 3600초(rolling) 안에 받은 비신뢰 `issue_opened`가 10개 미만일 때만 받고, 넘으면 `rate_limited`(202, 저장 안 함)다. 신뢰 사용자의 이슈는 한도에 세지 않는다.
 - 예외: 저장소 owner(저장소 이름의 `<owner>`와 같은 login, 예: `isac322/*`의 `isac322`)가 연 이슈는 자동 처리하지 않는다(`owner_issue_ignored`, 저장 안 함). owner는 자기 에이전트 작업용 메모로 이슈를 여는 경우가 많기 때문이다. 이런 이슈도 신뢰 사용자가 `@bulgasaribot` 멘션 댓글을 달면 그 댓글이 `issue_comment`로 들어와 triage부터 시작한다. 조직 저장소는 login이 조직 이름과 같을 수 없으므로 해당이 없다.
 - `issue_comment.created`(이슈): 이슈에 `agent:open-discussion` 라벨이 있으면 누구의 댓글이든 멘션 없이 `issue_comment`다(신뢰 조회·rate limit 없음). 누구나 의견과 자료를 보태 에이전트가 이슈를 더 잘 이해하게 하는 용도다. 라벨이 없으면 본문에 이슈 bot 멘션(`@bulgasaribot`, 대소문자 무시, `github_bot_login`에서 `[bot]` 제외)이 있어야 한다. 멘션이 없으면 `issue_comment_ignored`, 신뢰 사용자의 멘션은 `issue_comment`, 비신뢰 사용자의 멘션은 `actor_not_allowed`다. 에이전트가 처음 보는 이슈의 댓글도 같은 규칙으로 처리한다.
-- `issue_comment.created`(PR): 본문이 `@haechibot review`로 시작하고(앞 공백·대소문자 무시) sender가 PR 작성자 또는 신뢰 사용자인 `User`일 때만 `pr_review`(semantic key `repo#comment:<id>`)이고, 나머지는 `pull_request_comment_ignored`다. 리뷰 App이 없을 때는 작성 App의 명령으로 fallback한다.
+- `issue_comment.created`(PR): 본문 어디든 `@haechibot` 멘션이 있고(대소문자 무시, 더 긴 이름의 일부는 제외) sender가 PR 작성자 또는 신뢰 사용자인 `User`일 때만 `pr_review`(semantic key `repo#comment:<id>`)이고, 나머지는 `pull_request_comment_ignored`다. 리뷰 App이 없을 때는 작성 App 멘션으로 fallback한다.
 - `issues.edited`: `changes`에 `body`나 `title`이 있을 때만 본다(그 외 `edit_ignored`). sender는 bot이 아닌 `User`여야 하고, 이슈에 `agent:open-discussion` 라벨이 있거나 sender가 신뢰 사용자여야 한다(아니면 `actor_not_allowed`). 종류는 `issue_edited`, semantic key는 `repo#issue:<n>:edited:<delivery>`이며 새 제목·본문을 넘긴다. 이슈가 `phase: implementing`(PR을 만드는 중이거나 이미 있음)일 때만 큐에 넣고 그 외는 `edit_ignored`다.
 - `pull_request` `opened`/`reopened`/`ready_for_review`: Draft가 아니면 작성자·sender와 무관하게 `pr_review`(semantic key `repo#pr:<n>:review:<head_sha>`). dependabot·외부 기여자 PR과 구현 흐름이 연 bot PR도 이렇게 리뷰된다.
 - bot·자기 댓글과 에이전트 marker가 있는 댓글은 `bot_sender`로 무시한다.

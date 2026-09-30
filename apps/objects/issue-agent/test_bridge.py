@@ -837,16 +837,18 @@ class IntakeTests(BridgeTestCase):
             self.assertEqual(self.deliver(payload, event="pull_request", delivery=f"p{i}").outcome, outcome)
         self.assertEqual(self.events(), [])
 
-    def test_pr_comment_queues_review_only_for_the_review_command_by_the_author_or_a_collaborator(self) -> None:
-        ignored = comment_payload(12, 200, body="lgtm", on_pr=True)
-        self.assertEqual(self.deliver(ignored, event="issue_comment", delivery="c0").outcome,
-                         "pull_request_comment_ignored")
-        stranger = comment_payload(12, 201, body="@bulgasaribot review", on_pr=True, login="stranger")
+    def test_pr_comment_queues_review_for_a_bot_mention_by_the_author_or_a_collaborator(self) -> None:
+        for i, body in enumerate(("lgtm", "ping @bulgasaribotx", "mail isac@bulgasaribot.dev")):
+            ignored = comment_payload(12, 200 + i, body=body, on_pr=True)
+            self.assertEqual(self.deliver(ignored, event="issue_comment", delivery=f"c0{i}").outcome,
+                             "pull_request_comment_ignored")
+        stranger = comment_payload(12, 204, body="@bulgasaribot review", on_pr=True, login="stranger")
         self.assertEqual(self.deliver(stranger, event="issue_comment", delivery="c1").outcome, "actor_not_allowed")
-        command = comment_payload(12, 202, body="  @BulgasariBot Review please", on_pr=True, issue_user="outside-dev")
+        command = comment_payload(12, 205, body="Fixed the tests.\n\n@BulgasariBot", on_pr=True,
+                                  issue_user="outside-dev")
         self.assertEqual(self.deliver(command, event="issue_comment", delivery="c2").outcome, "queued")
         row = self.store.event("c2")
-        self.assertEqual((row["kind"], row["semantic_key"], row["trusted"]), ("pr_review", f"{REPO}#comment:202", 1))
+        self.assertEqual((row["kind"], row["semantic_key"], row["trusted"]), ("pr_review", f"{REPO}#comment:205", 1))
 
     def test_pr_author_may_request_a_review_without_being_a_collaborator(self) -> None:
         # "outside-dev" opened the PR but has only read access: the author may still re-request a review.

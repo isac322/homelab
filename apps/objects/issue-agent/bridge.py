@@ -1032,10 +1032,9 @@ def classify_event(registry: Registry, event: str, delivery: str, payload: Any, 
         if is_agent_text(body):
             return "bot_sender"
         if on_pr:
-            # The review App owns re-review requests when configured, so its command is the only trigger;
-            # the pull request author or a trusted collaborator may issue it.
-            command = review_command(reviewer_login or bot_login)
-            if command is None or not body.strip().casefold().startswith(command):
+            # The review App owns re-review requests when configured, so a mention of it anywhere in the comment
+            # is the only trigger; the pull request author or a trusted collaborator may issue it.
+            if not mentions(body, reviewer_login or bot_login):
                 return "pull_request_comment_ignored"
             is_author = isinstance(issue_author_login, str) and login.casefold() == issue_author_login.casefold()
             is_trusted = not is_author and trusted(cfg.name, login)

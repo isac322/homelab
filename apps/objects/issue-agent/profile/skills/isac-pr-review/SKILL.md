@@ -1,6 +1,6 @@
 ---
 name: isac-pr-review
-description: Use in the issue agent's `review` mode (a non-draft PR opened/reopened/ready_for_review from any author, or a PR comment starting with `@haechibot review` from the PR author or an allowed user) to review the PR at its current head and return the verdict, review body, inline findings, and thread replies as a ReviewResult that n8n publishes.
+description: Use in the issue agent's `review` mode (a non-draft PR opened/reopened/ready_for_review from any author, or a PR comment mentioning `@haechibot` from the PR author or an allowed user) to review the PR at its current head and return the verdict, review body, inline findings, and thread replies as a ReviewResult that n8n publishes.
 ---
 
 ## Automation adaptation
