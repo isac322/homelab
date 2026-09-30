@@ -11,11 +11,11 @@ FROM node:24.21.0-trixie-slim@sha256:7da5980a342ed134ad56bb16c918f94548cd15cf3b9
 # must match the hub image. Checksum = release checksums.txt = asset digest.
 ARG HAPI_VERSION=0.30.7
 ARG HAPI_SHA256=4c11ed308412e4510289ed5e5875a43f60f7ee5cee9cbfdc0e2d97f55851a193
-# @openai/codex 0.157.0 (HAPI shared sessions require >= 0.154.0).
+# @openai/codex 0.159.2 (HAPI shared sessions require >= 0.154.0).
 # SHA-256 of the npm tarballs whose sha512 matched the registry `integrity`.
-ARG CODEX_VERSION=0.157.0
-ARG CODEX_SHA256=f15a756cb568359327c47afcb5a6c5a5ce03215a96bbb284eef9e0ebd991f214
-ARG CODEX_LINUX_ARM64_SHA256=e94d36849541bb0e07aacbbf3edc99af7eba22ff813e6878eabd3e4c328309eb
+ARG CODEX_VERSION=0.159.2
+ARG CODEX_SHA256=cf1e5d7b6e317a4a1d36dbff2ebd9b3cf048ac98d06fcb6682c57248e023cad2
+ARG CODEX_LINUX_ARM64_SHA256=1c4756c2f67f1310ffb03234d61d540ad85916cef5383e46e0e7851f1721c142
 # GitHub CLI 2.101.0; checksum = release checksums.txt = asset digest.
 ARG GH_VERSION=2.101.0
 ARG GH_SHA256=b57e8063f18862647c9d22727c32e9da1b963f8bf9db648fe123a6975695640f
