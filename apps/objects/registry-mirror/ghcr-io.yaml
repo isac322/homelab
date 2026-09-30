@@ -40,7 +40,7 @@ metadata:
   labels:
     app: registry-ghcr-io
 spec:
-  replicas: 1
+  replicas: 0
   strategy:
     type: RollingUpdate
     rollingUpdate:
