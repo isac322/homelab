@@ -1,0 +1,2 @@
+# Patch context lines start with a space before the kernel's tabs.
+*.patch -whitespace

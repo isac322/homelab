@@ -21,6 +21,9 @@
     "modules": [
       "nvmet-tcp"
     ],
+    "patches": [
+      "nvmet-tcp-use-kvcalloc-for-commands-array"
+    ],
     "kernelRelease": "6.1.84-999-rk2410",
     "headersPackage": "linux-headers-6.1.84-999-rk2410",
     "baseline": {

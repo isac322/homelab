@@ -212,7 +212,7 @@ install_package() {
       chmod 0755 \"\$d\"
       cat > \"\$d/$file\"
       case $format in
-        deb) sudo -n env DEBIAN_FRONTEND=noninteractive apt-get install -y --allow-downgrades --no-install-recommends \"\$d/$file\" ;;
+        deb) sudo -n env DEBIAN_FRONTEND=noninteractive APT_LISTCHANGES_FRONTEND=none apt-get install -y --allow-downgrades --no-install-recommends \"\$d/$file\" ;;
         pacman) sudo -n pacman -U --noconfirm \"\$d/$file\" ;;
       esac
       # Runtime state of the former download-at-build package.

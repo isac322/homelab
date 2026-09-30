@@ -1,0 +1,62 @@
+From 0000000000000000000000000000000000000000 Mon Sep 17 00:00:00 2001
+From: Israel Rukshin <israelr@nvidia.com>
+Date: Mon, 24 Nov 2025 08:49:21 +0200
+Subject: [PATCH] nvmet-tcp: use kvcalloc for commands array
+
+commit 5c8d134f01556affce430a25e1551d78d45ebc9d upstream.
+
+Replace kcalloc with kvcalloc for allocation of the commands
+array. Each command structure is 712 bytes. The array typically
+exceeds a single page, and grows much larger with high queue depths
+(e.g., commands >182KB).
+
+kvcalloc automatically falls back to vmalloc for large or fragmented
+allocations, improving reliability. In our case, this memory is not
+aimed for DMA operations and could be safely allocated by kvcalloc.
+Using virtually contiguous memory helps to avoid allocation failures
+and out-of-memory conditions common with kcalloc on large pools.
+
+Signed-off-by: Israel Rukshin <israelr@nvidia.com>
+Reviewed-by: Max Gurtovoy <mgurtovoy@nvidia.com>
+Reviewed-by: Christoph Hellwig <hch@lst.de>
+Signed-off-by: Keith Busch <kbusch@kernel.org>
+[ homelab: backported to v6.1.186; context-only offsets, no code changes.
+  In the rock5bp 6.1.84-999-rk2410 build sizeof(struct nvmet_tcp_cmd) is 672 bytes, so a
+  128-entry I/O queue (nr_cmds = 256) needs 168 KiB, an order-6 kmalloc
+  that fails on fragmented hosts and makes queue connects return
+  NVME_SC_INTERNAL. See isac322/homelab#359. ]
+---
+ drivers/nvme/target/tcp.c | 6 +++---
+ 1 file changed, 3 insertions(+), 3 deletions(-)
+
+diff --git a/drivers/nvme/target/tcp.c b/drivers/nvme/target/tcp.c
+index b0f5822..ef10a33 100644
+--- a/drivers/nvme/target/tcp.c
++++ b/drivers/nvme/target/tcp.c
+@@ -1447,7 +1447,7 @@ static int nvmet_tcp_alloc_cmds(struct nvmet_tcp_queue *queue)
+ 	struct nvmet_tcp_cmd *cmds;
+ 	int i, ret = -EINVAL, nr_cmds = queue->nr_cmds;
+ 
+-	cmds = kcalloc(nr_cmds, sizeof(struct nvmet_tcp_cmd), GFP_KERNEL);
++	cmds = kvcalloc(nr_cmds, sizeof(struct nvmet_tcp_cmd), GFP_KERNEL);
+ 	if (!cmds)
+ 		goto out;
+ 
+@@ -1463,7 +1463,7 @@ static int nvmet_tcp_alloc_cmds(struct nvmet_tcp_queue *queue)
+ out_free:
+ 	while (--i >= 0)
+ 		nvmet_tcp_free_cmd(cmds + i);
+-	kfree(cmds);
++	kvfree(cmds);
+ out:
+ 	return ret;
+ }
+@@ -1477,7 +1477,7 @@ static void nvmet_tcp_free_cmds(struct nvmet_tcp_queue *queue)
+ 		nvmet_tcp_free_cmd(cmds + i);
+ 
+ 	nvmet_tcp_free_cmd(&queue->connect);
+-	kfree(cmds);
++	kvfree(cmds);
+ }
+ 
+ static void nvmet_tcp_restore_socket_callbacks(struct nvmet_tcp_queue *queue)
