@@ -1,0 +1,74 @@
+From 0000000000000000000000000000000000000000 Mon Sep 17 00:00:00 2001
+From: Chaitanya Kulkarni <kch@nvidia.com>
+Date: Sun, 26 Mar 2023 22:37:23 -0700
+Subject: [PATCH] nvmet-tcp: validate so_priority modparam value
+
+commit 44aef3b850757a371adde7e47c5c243d3988aa73 upstream.
+
+The module parameter so_priority is passed to the function
+sock_set_priority() which has following prototype and expect
+priotity arg type to be u32:-
+
+void sock_set_priority(struct sock *sk, u32 priority);
+
+Add a module parameter validation callback to reject any negative
+values for the so_priority as it is defigned as int. Use this
+oppurtunity to update the module parameter description and print the
+default value.
+
+Signed-off-by: Chaitanya Kulkarni <kch@nvidia.com>
+Reviewed-by: Sagi Grimberg <sagi@grimberg.me>
+Signed-off-by: Christoph Hellwig <hch@lst.de>
+[ homelab: backported to v6.1.186; context-only: v6.1.186 also defines
+  NVMET_TCP_MAXH2CDATA above so_priority; no code changes. ]
+---
+ drivers/nvme/target/tcp.c | 29 +++++++++++++++++++++++++++--
+ 1 file changed, 27 insertions(+), 2 deletions(-)
+
+diff --git a/drivers/nvme/target/tcp.c b/drivers/nvme/target/tcp.c
+index ef10a33..a226f45 100644
+--- a/drivers/nvme/target/tcp.c
++++ b/drivers/nvme/target/tcp.c
+@@ -20,6 +20,31 @@
+ #define NVMET_TCP_DEF_INLINE_DATA_SIZE	(4 * PAGE_SIZE)
+ #define NVMET_TCP_MAXH2CDATA		0x400000 /* 16M arbitrary limit */
+ 
++static int param_store_val(const char *str, int *val, int min, int max)
++{
++	int ret, new_val;
++
++	ret = kstrtoint(str, 10, &new_val);
++	if (ret)
++		return -EINVAL;
++
++	if (new_val < min || new_val > max)
++		return -EINVAL;
++
++	*val = new_val;
++	return 0;
++}
++
++static int set_params(const char *str, const struct kernel_param *kp)
++{
++	return param_store_val(str, kp->arg, 0, INT_MAX);
++}
++
++static const struct kernel_param_ops set_param_ops = {
++	.set	= set_params,
++	.get	= param_get_int,
++};
++
+ /* Define the socket priority to use for connections were it is desirable
+  * that the NIC consider performing optimized packet processing or filtering.
+  * A non-zero value being sufficient to indicate general consideration of any
+@@ -27,8 +52,8 @@
+  * values that may be unique for some NIC implementations.
+  */
+ static int so_priority;
+-module_param(so_priority, int, 0644);
+-MODULE_PARM_DESC(so_priority, "nvmet tcp socket optimize priority");
++device_param_cb(so_priority, &set_param_ops, &so_priority, 0644);
++MODULE_PARM_DESC(so_priority, "nvmet tcp socket optimize priority: Default 0");
+ 
+ /* Define a time period (in usecs) that io_work() shall sample an activated
+  * queue before determining it to be idle.  This optional module behavior

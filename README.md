@@ -67,6 +67,8 @@ nix run .#nvme-tcp-dkms -- install rpi5  # Nix로 deb/pkg.tar.zst를 빌드해 a
 
 `rock5bp`의 vendor 6.1.84 `nvmet-tcp`에 남아 있는 allocation failure crash(upstream `5572a55a6f830ee3f3a994b6b962a5c327d28cb3`, nvmet-tcp: fix kernel crash if commands allocation fails)는 transport 소스(6.1.186)에 이미 포함되어 있으므로 이 fix에는 별도 patch가 필요 없다. 그러나 이 fix는 crash만 막을 뿐 queue command 배열의 order-6 `kcalloc` 실패(단편화된 메모리에서 `NVME_SC_INTERNAL`로 connect 실패, #359)는 그대로이므로, `rock5bp`는 `patches`로 upstream `5c8d134f0155`(nvmet-tcp: use kvcalloc for commands array) backport를 적용한다. 이 commit은 mainline v6.19에서 처음 들어갔고 어떤 stable branch에도 backport되지 않았으므로 transport release를 올려도 대체되지 않는다. 이미 설치된 module은 새 패키지를 `install`하고 다시 load하기 전까지 기존 상태 그대로다.
 
+같은 이유로 `rock5bp`는 mainline v6.19까지 `drivers/nvme/target/tcp.c`에 들어갔지만 6.1 stable에는 없는 fix 중, 6.1.186 코드에 버그가 실제로 있고 transport 파일만으로 적용되는 것도 backport한다: `44aef3b85075`/`6fe240bc0d97`(modparam 값 검증), `bbacf79201a1`(softirq에서도 잡히는 `state_lock`을 `spin_lock_bh`로), `07a29b134ce8`(`install_queue()`의 `flush_workqueue` 순환 lock 제거), `2fa8961d3a6a`(`listen_data_ready()` hang). 나머지 미backport commit은 새 core·network API가 필요하거나 TLS·secure concat처럼 6.1.186에 없는 코드를 고치는 것이라 적용하지 않는다.
+
 ## Linux migration
 
 일반 activation은 다음 다섯 단계다. K3s version과 rolling upgrade는 기존 Rancher `system-upgrade-controller`, `server-plan`, `agent-plan`, `backbone-k3s-upgrade` Application이 계속 소유한다. Host migration 중에는 Plan version을 변경하거나 별도 rollout을 시작하지 않는다.

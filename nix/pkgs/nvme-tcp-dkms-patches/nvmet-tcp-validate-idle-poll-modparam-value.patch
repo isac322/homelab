@@ -1,0 +1,40 @@
+From 0000000000000000000000000000000000000000 Mon Sep 17 00:00:00 2001
+From: Chaitanya Kulkarni <kch@nvidia.com>
+Date: Sun, 26 Mar 2023 22:37:24 -0700
+Subject: [PATCH] nvmet-tcp: validate idle poll modparam value
+
+commit 6fe240bc0d97902ecebd811bb22bd85b36d75ee2 upstream.
+
+The module parameter idle_poll_period_usecs is passed to the function
+usecs_to_jiffies() which has following prototype and expect
+idle_poll_period_usecs arg type to be unsigned int:-
+
+unsigned long usecs_to_jiffies(const unsigned int u);
+
+Use similar module parameter validation callback as previous patch.
+
+Signed-off-by: Chaitanya Kulkarni <kch@nvidia.com>
+Reviewed-by: Sagi Grimberg <sagi@grimberg.me>
+Signed-off-by: Christoph Hellwig <hch@lst.de>
+[ homelab: backported to v6.1.186; applies cleanly. ]
+---
+ drivers/nvme/target/tcp.c | 5 +++--
+ 1 file changed, 3 insertions(+), 2 deletions(-)
+
+diff --git a/drivers/nvme/target/tcp.c b/drivers/nvme/target/tcp.c
+index a226f45..03bd693 100644
+--- a/drivers/nvme/target/tcp.c
++++ b/drivers/nvme/target/tcp.c
+@@ -61,9 +61,10 @@ MODULE_PARM_DESC(so_priority, "nvmet tcp socket optimize priority: Default 0");
+  * using advanced interrupt moderation techniques.
+  */
+ static int idle_poll_period_usecs;
+-module_param(idle_poll_period_usecs, int, 0644);
++device_param_cb(idle_poll_period_usecs, &set_param_ops,
++		&idle_poll_period_usecs, 0644);
+ MODULE_PARM_DESC(idle_poll_period_usecs,
+-		"nvmet tcp io_work poll till idle time period in usecs");
++		"nvmet tcp io_work poll till idle time period in usecs: Default 0");
+ 
+ #define NVMET_TCP_RECV_BUDGET		8
+ #define NVMET_TCP_SEND_BUDGET		8
