@@ -10,7 +10,7 @@ v2는 코딩 에이전트의 GitHub 쓰기를 모두 없앴다. 에이전트는 
 
 ## 확정된 요구사항
 
-- 공통 Issue Agent를 여러 GitHub 저장소에서 사용할 수 있게 구현한다. GitHub App `bulgasaribot`의 설치 범위가 곧 대상 범위이며, bridge는 설치된 모든 저장소의 이벤트를 받는다. 현재 설치·운영 대상은 사용자 선택에 따라 `isac322/cc-lb`, `isac322/flareway`, `isac322/krema`다. 설치 범위 확장은 사용자 지정 후에만 한다.
+- 공통 Issue Agent를 여러 GitHub 저장소에서 사용할 수 있게 구현한다. GitHub App `bulgasaribot`의 설치 범위가 곧 대상 범위이며, bridge는 설치된 모든 저장소의 이벤트를 받는다. 현재 설치·운영 대상은 사용자 선택에 따라 `isac322/cc-lb`, `isac322/pillar-csi`, `isac322/flareway`, `isac322/krema`다. 설치 범위 확장은 사용자 지정 후에만 한다.
 - GitHub 이슈마다 독립 세션과 해당 저장소의 worktree(`issue-<n>`)를 만든다. 동일 이슈 후속 댓글은 같은 논리 세션으로 전달한다. PR 리뷰는 PR마다 별도 세션(`review-pr-<n>`)을 쓴다. 이슈별 Pod도 허용하지만 최소 조건은 세션·worktree 분리다.
 - 웹에서 모든 이슈 세션을 찾고 실행 중 관찰·메시지 전달·중단·승인을 처리한다. UI 접속 때문에 자동화 구독이나 실행을 종료하지 않는다.
 - Codex·Claude Code면 충분하다. 자동 학습 기능은 범위에서 제외한다.
@@ -19,7 +19,7 @@ v2는 코딩 에이전트의 GitHub 쓰기를 모두 없앴다. 에이전트는 
 - 커스텀 provider와 모델 설정을 독립적으로 관리한다. 자체 ARM64 이미지 빌드는 허용된다.
 - 선호가 불명확한 경우 추측하지 않고 질문한다.
 - 누구나 이슈를 열 수 있다. 명확한 요청은 triage(재현·원인·중복 판단)를 거친 뒤 자동으로 수정·검증·PR 생성까지 수행한다. 불명확한 요청은 질문하며 자동 머지는 하지 않는다. 저장소 collaborator·owner가 아닌 사용자의 새 이슈는 전체 저장소 합산 1시간(rolling)에 10개까지만 받는다.
-- 설치된 저장소의 Draft가 아닌 모든 PR은 작성자·sender와 무관하게(dependabot·외부 기여자·bot PR 포함) 에이전트가 구현 세션과 분리된 리뷰 세션에서 리뷰하고, 리뷰 전용 App `haechibot`으로 게시한다. 재리뷰는 PR 작성자 또는 저장소 collaborator·owner의 PR 댓글 `@haechibot review`로 요청한다. ruleset을 쓸 수 있는 저장소(`flareway`, `krema`)는 리뷰 App의 `issue-agent/review` 상태가 `success`여야 merge된다.
+- 설치된 저장소에서 Draft가 아닌 PR을 생성·재개하거나 Ready for review로 바꾸면 이슈와 다른 `review-pr-<n>` 세션에서 리뷰한다. 리뷰 App이 설정되어 있으면 push로 head가 바뀔 때도 head별로 한 번 리뷰하고, 명시적 `@haechibot review` 요청은 같은 head를 다시 리뷰할 수 있다. ruleset·branch protection이 merge 조건을 소유하며 bridge는 필수 check 목록이나 reviewer 수를 하드코딩하지 않는다.
 - 코딩 에이전트는 GitHub에 쓰지 않는다. 댓글·라벨·push·PR·리뷰는 모두 n8n이 에이전트 결과를 검증된 bridge op로 적용한다.
 
 ## 책임 분리
@@ -32,7 +32,7 @@ v2는 코딩 에이전트의 GitHub 쓰기를 모두 없앴다. 에이전트는 
 | HAPI Hub | 세션 목록·메시지·승인 API, 웹 UI, 다중 구독, Hub 데이터 저장 |
 | HAPI Runner | 실제 Codex 실행, 저장소별 worktree, 하네스 설정·기록 보존. GitHub 토큰은 읽기 전용이며 에이전트가 `gh`(REST·`gh api graphql`)로 GitHub를 직접 읽는다 |
 | 공통 에이전트 프로필 | 전역 `AGENTS.md`(읽기 전용 GitHub, 결과 프로토콜, 모드별 스킬)와 자동화용으로 고친 스킬 |
-| 저장소 등록부 | `defaults`(agent, model, permission mode, machine)와 저장소별 override. 사용자 목록은 두지 않는다. 신뢰 여부는 GitHub collaborator 권한으로 정한다. 기본 브랜치는 webhook payload, checkout 경로는 `/home/agent/checkouts/<owner>/<name>`으로 정해진다. 라벨 매핑은 없다 |
+- 저장소 등록부: `defaults`(agent, model, permission_mode, machine_id, project_owner)와 저장소별 override. `project_owner`는 merge-ready 시 assign·멘션할 GitHub 사용자이며, 설정하지 않으면 알림을 건너뛴다. 기본 checkout 경로는 `/home/agent/checkouts/<owner>/<repo>`이다.
 
 n8n은 단순히 에이전트를 한 번 호출하는 장식이 아니라 실제 처리 단계와 분기를 소유한다. 연결 계층은 전송·인증·영속 상태의 정확성을 담당하고 같은 비즈니스 절차를 별도로 중복 구현하지 않는다.
 
@@ -59,9 +59,20 @@ Codex의 공통 지침은 전용 `CODEX_HOME/AGENTS.md`에서 읽고 프로젝�
 
 ### 자동 머지와 실행 격리의 한계
 
-워크플로는 PR 생성·갱신과 리뷰 제출에서 끝나고 merge 단계를 제공하지 않는다. merge하는 bridge op도 없다. 에이전트 컨테이너는 읽기 전용 토큰만 가지므로 GitHub 쓰기는 권한 차원에서 막힌다. push는 publisher 컨테이너의 push 토큰으로만 하고, publisher는 `^hapi-issue-[0-9]+$` branch에 대한 non-force push와 없는 checkout의 clone만 노출한다. bridge 토큰에도 contents write가 있지만 GraphQL `resolveReviewThread`가 GitHub App에 이를 요구하기 때문이며, bridge에는 push op가 없다. 토큰은 명령줄 `http.extraHeader`로만 전달하고 저장하지 않으며, push는 checkout을 cwd로 git을 실행하지 않고 private bare mirror로 가져온 뒤 `core.hooksPath=/dev/null`로 한다.
+워크플로는 PR 생성·갱신과 리뷰 제출까지 수행하고 **merge는 사람이 한다**. bridge는 GitHub가 현재 head를 merge-ready로 판정할 때만 설정된 project owner를 assign하고 멘션한다. 에이전트는 읽기 전용 GitHub 토큰으로 작업하며, bridge가 결과를 받아 GitHub 쓰기를 수행한다. push는 publisher가 checkout cwd에서 `hapi-issue-[0-9]+` branch에 non-force 방식으로 실행한다. push 토큰은 publisher 사이드카에만 마운트한다.
 
 다만 publisher와 에이전트는 Runner home PVC를 공유하므로 에이전트는 push될 커밋 내용을 정한다. n8n은 결과의 `head_sha`와 일치하는 커밋만 push한다. 공유 Runner는 악성 코드에 대한 주제별 보안 샌드박스가 아니다.
+
+### PR 자동 수정과 merge-ready 알림
+
+- 같은 저장소의 `hapi-issue-<n>` head를 가진 PR은 원본 이슈에 연결한다. SQLite `prs`에 head, dirty/revision, repair delivery lease, 마지막 시도 fingerprint, 수동 요청, 알림 head를 보관한다. fork의 같은 이름 branch는 관리 대상으로 삼지 않는다.
+- `pull_request` 상태 변경, `pull_request_review`, `pull_request_review_comment`, `check_run`, `check_suite`, `status`, 기본 branch `push`는 최신 상태 재조회를 예약한다. GitHub App webhook에 해당 이벤트를 구독해야 한다. 누락된 webhook과 재시작은 60초 주기의 reconciliation으로 보완한다.
+- 첫 actionable blocker에서 원본 `issue-<n>` worktree로 `pr_repair` followup을 보낸다. freshly fetched 기본 branch를 먼저 merge하고, 현재 head의 CI 실패와 리뷰 finding을 한 턴에서 검증·수정한다. rebase·reset·force-push와 자동 PR merge는 하지 않는다.
+- repair 중 새 이벤트는 두 번째 writer를 시작하지 않고 dirty/revision만 갱신한다. 끝난 턴은 push 이후 GitHub 상태를 다시 조회한다. 이전 head의 change request는 새 head의 repair 근거로 재사용하지 않고 재리뷰를 기다린다.
+- 시작 시 일시적인 GitHub 조회 실패는 같은 delivery를 backoff 후 재시도한다. 성공한 push·PR 갱신 뒤 상태 조회만 실패하면 성공 결과를 유지하고 reconciliation을 예약한다. 해결 불가능한 repair는 `needs_attention`으로 보류하며 새 repair writer를 막지만, 별도 worktree의 리뷰는 진행할 수 있다.
+- readiness는 일치하는 GraphQL/REST head·base에서 open, non-Draft, `MERGEABLE`, `CLEAN` 또는 `UNSTABLE`일 때만 인정한다. `UNSTABLE`은 비필수 check 실패를 포함할 수 있다. `UNKNOWN`이나 API 간 불일치는 기다리며, assign 전과 멘션 직전에 다시 확인한다.
+- 알림은 `(repo, PR, head)`별 SQLite acknowledgement와 `pr-ready:<PR>:<head>` comment marker로 중복을 방지한다. 같은 수동 repair 댓글의 재전송도 comment ID로 중복 처리한다. 현재 owner 설정은 `isac322/cc-lb`와 `isac322/pillar-csi`에만 있다.
+
 
 ### 알려진 제한
 
@@ -89,9 +100,9 @@ Codex의 공통 지침은 전용 `CODEX_HOME/AGENTS.md`에서 읽고 프로젝�
 - `issues.opened`: 누구나(sender가 bot이 아닌 `User`이고 이슈 작성자와 같을 때) → `issue_opened`. 신뢰 사용자의 이슈는 항상 받는다. 비신뢰 사용자의 이슈는 전체 저장소 합산 최근 3600초(rolling) 안에 받은 비신뢰 `issue_opened`가 10개 미만일 때만 받고, 넘으면 `rate_limited`(202, 저장 안 함)다. 신뢰 사용자의 이슈는 한도에 세지 않는다.
 - 예외: 저장소 owner(저장소 이름의 `<owner>`와 같은 login, 예: `isac322/*`의 `isac322`)가 연 이슈는 자동 처리하지 않는다(`owner_issue_ignored`, 저장 안 함). owner는 자기 에이전트 작업용 메모로 이슈를 여는 경우가 많기 때문이다. 이런 이슈도 신뢰 사용자가 `@bulgasaribot` 멘션 댓글을 달면 그 댓글이 `issue_comment`로 들어와 triage부터 시작한다. 조직 저장소는 login이 조직 이름과 같을 수 없으므로 해당이 없다.
 - `issue_comment.created`(이슈): 이슈에 `agent:open-discussion` 라벨이 있으면 누구의 댓글이든 멘션 없이 `issue_comment`다(신뢰 조회·rate limit 없음). 누구나 의견과 자료를 보태 에이전트가 이슈를 더 잘 이해하게 하는 용도다. 라벨이 없으면 본문에 이슈 bot 멘션(`@bulgasaribot`, 대소문자 무시, `github_bot_login`에서 `[bot]` 제외)이 있어야 한다. 멘션이 없으면 `issue_comment_ignored`, 신뢰 사용자의 멘션은 `issue_comment`, 비신뢰 사용자의 멘션은 `actor_not_allowed`다. 에이전트가 처음 보는 이슈의 댓글도 같은 규칙으로 처리한다.
-- `issue_comment.created`(PR): 본문 어디든 `@haechibot` 멘션이 있고(대소문자 무시, 더 긴 이름의 일부는 제외) sender가 PR 작성자 또는 신뢰 사용자인 `User`일 때만 `pr_review`(semantic key `repo#comment:<id>`)이고, 나머지는 `pull_request_comment_ignored`다. 리뷰 App이 없을 때는 작성 App 멘션으로 fallback한다.
+- `issue_comment.created` (PR): PR 작성자 또는 신뢰 사용자의 `@haechibot` 멘션은 재리뷰를 큐에 넣는다. 별도 리뷰 App이 있을 때 `@bulgasaribot` 멘션은 관리 PR의 원본 이슈 worktree에 수동 repair 요청을 기록한다. 그 외 댓글은 무시하며, 두 번째 App이 없으면 이슈 App 멘션으로 리뷰한다.
 - `issues.edited`: `changes`에 `body`나 `title`이 있을 때만 본다(그 외 `edit_ignored`). sender는 bot이 아닌 `User`여야 하고, 이슈에 `agent:open-discussion` 라벨이 있거나 sender가 신뢰 사용자여야 한다(아니면 `actor_not_allowed`). 종류는 `issue_edited`, semantic key는 `repo#issue:<n>:edited:<delivery>`이며 새 제목·본문을 넘긴다. 이슈가 `phase: implementing`(PR을 만드는 중이거나 이미 있음)일 때만 큐에 넣고 그 외는 `edit_ignored`다.
-- `pull_request` `opened`/`reopened`/`ready_for_review`: Draft가 아니면 작성자·sender와 무관하게 `pr_review`(semantic key `repo#pr:<n>:review:<head_sha>`). dependabot·외부 기여자 PR과 구현 흐름이 연 bot PR도 이렇게 리뷰된다.
+- `pull_request.opened`/`reopened`/`ready_for_review`: Draft가 아닌 PR은 `pr_review`로 분류한다(`repo#pr:<n>:review:<head_sha>`). 리뷰 App이 설정된 non-Draft PR의 `synchronize`도 같은 head별 key로 리뷰하고, 관리 PR의 상태 재조회도 예약한다. dependabot·자기 App의 PR도 리뷰할 수 있다.
 - bot·자기 댓글과 에이전트 marker가 있는 댓글은 `bot_sender`로 무시한다.
 - 이벤트 행에는 신뢰 여부(`trusted`)를 함께 기록한다.
 
@@ -112,6 +123,7 @@ Codex의 공통 지침은 전용 `CODEX_HOME/AGENTS.md`에서 읽고 프로젝�
 | `triage` | `issue_opened`, 또는 구현 단계가 아닌 이슈의 `issue_comment` | `issue-<n>` | `isac-issue-triage` | TriageResult |
 | `implement` | TriageResult `next_action: implement`(같은 n8n 실행·같은 세션) | `issue-<n>` | `isac-issue-to-pr` | ImplementResult |
 | `followup` | 구현 단계(`phase: implementing`) 이슈의 `issue_comment` 또는 `issue_edited` | `issue-<n>` | `isac-issue-to-pr` + `receiving-code-review` | ImplementResult |
+| followup (PR repair) | 현재 head의 CI·리뷰·base blocker 또는 명시적 repair 댓글 | `issue-<n>` | 원본 이슈 범위, `receiving-code-review` | ImplementResult |
 | `review` | `pr_review` | `review-pr-<n>` | `isac-pr-review` | ReviewResult |
 
 에이전트는 턴 끝에 `ISSUE_AGENT_RESULT <nonce> {json}` 한 줄을 낸다. `session_send`가 메시지에 nonce와 해당 모드의 정확한 스키마를 넣고, `context`(트리거 정보나 triage 결과 같은 작은 보조 데이터, 200KB 이하)는 신뢰하지 않는 데이터로 fence한다. `session_turn`이 턴 모드의 스키마로 결과를 검증한다(모든 필드 필수, 알 수 없는 키 거절). n8n은 턴마다 120초 간격으로 최대 180회(약 6시간) 확인한다.

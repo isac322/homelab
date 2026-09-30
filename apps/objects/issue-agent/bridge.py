@@ -1,17 +1,21 @@
 #!/usr/bin/env python3
 """GitHub issue webhook -> n8n -> HAPI bridge (stdlib only).
 
-Responsibilities (business branching lives in the n8n workflow):
+Responsibilities (agent turns live in n8n; durable PR coordination lives here):
 
 * ``POST /webhooks/github`` verifies the signature, applies the repository
   registry (defaults plus per-repository overrides) and the intake trust rules
   (repository collaborators, cached), and durably records accepted
-  ``issues.opened``, ``issues.edited``, ``issue_comment.created`` and pull
-  request review requests before answering 2xx.
+  issue changes, pull request review requests and PR/check/review/push
+  reconciliation signals before answering 2xx.
 * A single dispatcher hands events to the private n8n webhook, at most
   ``MAX_ACTIVE_EVENTS`` at a time and one per subject (issue or pull request).
   n8n acknowledges ownership with the ``begin`` op and ends it with ``finish``
   or ``fail``.
+* PR reconciliation holds one durable repair writer per PR, coalesces signals
+  into a dirty revision, and runs finite periodic passes as a webhook fallback.
+  GitHub's computed merge state owns repository policy. A ready current head
+  assigns and mentions the registry's ``project_owner`` once; this bridge never merges.
 * A daily ``cleanup_closed`` op deletes the agent state (HAPI sessions, Codex
   rollouts, worktree and branch) of subjects closed for at least 30 days.
 * ``POST /ops`` is the private, bearer-authenticated adapter n8n uses for every
@@ -111,6 +115,33 @@ PR_HEAD_WAIT_SECONDS = 60.0
 PR_HEAD_WAIT_INTERVAL = 2.0
 REVIEW_STATE_EVENTS = {"APPROVED": "APPROVE", "CHANGES_REQUESTED": "REQUEST_CHANGES", "COMMENTED": "COMMENT"}
 DEFAULT_REVIEW_STATUS_CONTEXT = "issue-agent/review"
+PR_RECONCILE_SECONDS = 60.0
+PR_STATE_QUERY = """
+query($owner: String!, $name: String!, $number: Int!, $after: String) {
+  repository(owner: $owner, name: $name) {
+    defaultBranchRef { name target { oid } }
+    pullRequest(number: $number) {
+      number title body state isDraft headRefName headRefOid baseRefName baseRefOid
+      mergeable mergeStateStatus reviewDecision
+      commits(last: 1) {
+        nodes { commit {
+          oid
+          statusCheckRollup {
+            state
+            contexts(first: 100, after: $after) {
+              pageInfo { hasNextPage endCursor }
+              nodes {
+                __typename
+                ... on CheckRun { name status conclusion detailsUrl }
+                ... on StatusContext { context state description targetUrl }
+              }
+            }
+          }
+        } }
+      }
+    }
+  }
+}"""
 
 PR_THREADS_QUERY = """
 query($owner: String!, $name: String!, $number: Int!, $after: String) {
@@ -286,7 +317,7 @@ def verify_signature(secret: bytes, body: bytes, header: str | None) -> bool:
 
 
 CHECKOUT_ROOT = "/home/agent/checkouts"
-REGISTRY_KEYS = ("agent", "model", "permission_mode", "machine_id")
+REGISTRY_KEYS = ("agent", "model", "permission_mode", "machine_id", "project_owner")
 
 
 @dataclass(frozen=True)
@@ -297,6 +328,7 @@ class RepoConfig:
     model: str | None
     permission_mode: str | None
     machine_id: str | None
+    project_owner: str | None = None
 
 
 def valid_repo_name(name: Any) -> bool:
@@ -323,6 +355,9 @@ def _repo_config(name: str, settings: Mapping[str, Any]) -> RepoConfig:
         if value is not None and (not isinstance(value, str) or not value):
             raise ConfigError(f"{name}: {key} must be a string or null")
         optional[key] = value
+    owner = settings.get("project_owner")
+    if owner is not None and (not isinstance(owner, str) or not _LOGIN_RE.fullmatch(owner)):
+        raise ConfigError(f"{name}: project_owner must be a GitHub user login or null")
     return RepoConfig(
         name=name,
         runner_path=f"{CHECKOUT_ROOT}/{name}",
@@ -330,6 +365,7 @@ def _repo_config(name: str, settings: Mapping[str, Any]) -> RepoConfig:
         model=optional["model"],
         permission_mode=optional["permission_mode"],
         machine_id=optional["machine_id"],
+        project_owner=owner,
     )
 
 
@@ -380,7 +416,7 @@ CREATE TABLE IF NOT EXISTS {name} (
     delivery_id     TEXT NOT NULL UNIQUE,
     semantic_key    TEXT NOT NULL UNIQUE,
     repo            TEXT NOT NULL,
-    kind            TEXT NOT NULL CHECK (kind IN ('issue_opened', 'issue_comment', 'issue_edited', 'pr_review')),
+    kind            TEXT NOT NULL CHECK (kind IN ('issue_opened', 'issue_comment', 'issue_edited', 'pr_review', 'pr_repair')),
     issue_number    INTEGER NOT NULL,
     comment_id      INTEGER,
     actor           TEXT NOT NULL,
@@ -400,13 +436,15 @@ CREATE TABLE IF NOT EXISTS {name} (
     head_sha        TEXT,
     attention_pending INTEGER NOT NULL DEFAULT 0,
     attention_node  TEXT,
-    trusted         INTEGER
+    trusted         INTEGER,
+    pr_number       INTEGER
 )"""
 # Columns added to ``events`` after the v2 kinds; ALTER TABLE ADD COLUMN keeps existing rows.
 EVENT_COLUMNS = (
     ("attention_pending", "INTEGER NOT NULL DEFAULT 0"),  # attention comment/label not yet both applied
     ("attention_node", "TEXT"),
     ("trusted", "INTEGER"),  # 1/0 collaborator verdict at intake; NULL for events recorded before it existed
+    ("pr_number", "INTEGER"),
 )
 ISSUES_DDL = """
 CREATE TABLE IF NOT EXISTS {name} (
@@ -451,6 +489,24 @@ CREATE TABLE IF NOT EXISTS {name} (
     checked_at REAL NOT NULL,
     PRIMARY KEY (repo, login)
 )"""
+PRS_DDL = """
+CREATE TABLE IF NOT EXISTS {name} (
+    repo            TEXT NOT NULL,
+    pr_number       INTEGER NOT NULL,
+    issue_number    INTEGER NOT NULL,
+    head_sha        TEXT,
+    dirty           INTEGER NOT NULL DEFAULT 1,
+    revision        INTEGER NOT NULL DEFAULT 0,
+    next_reconcile_at REAL NOT NULL DEFAULT 0,
+    active_delivery TEXT,
+    attempted_key   TEXT,
+    latest_signal   TEXT,
+    last_manual_id  INTEGER,
+    notified_head   TEXT,
+    closed          INTEGER NOT NULL DEFAULT 0,
+    updated_at      REAL NOT NULL,
+    PRIMARY KEY (repo, pr_number)
+)"""
 SCHEMA = ";\n".join([
     EVENTS_DDL.format(name="events"),
     "CREATE INDEX IF NOT EXISTS events_state_seq ON events (state, seq)",
@@ -458,6 +514,7 @@ SCHEMA = ";\n".join([
     ISSUES_DDL.format(name="issues"),
     TURNS_DDL.format(name="turns"),
     COLLABORATORS_DDL.format(name="collaborators"),
+    PRS_DDL.format(name="prs"),
 ]) + ";\n"
 # Event: accepted -> dispatched -> completed | needs_attention; a new review request completes parked
 # reviews of its pull request with outcome 'superseded' (Store.enqueue)
@@ -489,8 +546,8 @@ def _rebuild(conn: sqlite3.Connection, table: str, ddl: str, fill: Mapping[str, 
 def migrate(conn: sqlite3.Connection) -> None:
     """Upgrade a v1/v2 state file in place. Idempotent; every existing row is kept."""
     tables = {row[0]: row[1] or "" for row in conn.execute("SELECT name, sql FROM sqlite_master WHERE type = 'table'")}
-    if "events" in tables and "'issue_edited'" not in tables["events"]:
-        _rebuild(conn, "events", EVENTS_DDL)  # widens the kind CHECK and adds the v2/v3 columns
+    if "events" in tables and any(token not in tables["events"] for token in ("'issue_edited'", "'pr_repair'")):
+        _rebuild(conn, "events", EVENTS_DDL)  # widen event kinds while preserving existing deliveries
     elif "events" in tables:
         have = set(_columns(conn, "events"))
         for col, decl in EVENT_COLUMNS:
@@ -514,6 +571,11 @@ def migrate(conn: sqlite3.Connection) -> None:
         _rebuild(conn, "turns", TURNS_DDL, {"mode": "'legacy'"})
     elif "turns" in tables and "'lost'" not in tables["turns"]:
         _rebuild(conn, "turns", TURNS_DDL)  # widens the state CHECK for session-lost turns
+    if "prs" in tables:
+        have = set(_columns(conn, "prs"))
+        for col, decl in (("latest_signal", "TEXT"), ("last_manual_id", "INTEGER")):
+            if col not in have:
+                conn.execute(f"ALTER TABLE prs ADD COLUMN {col} {decl}")
 # Event: accepted -> dispatched -> completed | needs_attention
 # Issue session: none -> pending -> ready (pending may fall back to none)
 
@@ -531,6 +593,11 @@ class Store:
                 raise
             conn.execute("COMMIT")
             conn.executescript(SCHEMA)
+            conn.execute(
+                "INSERT OR IGNORE INTO prs (repo, pr_number, issue_number, updated_at)"
+                " SELECT repo, pr_number, issue_number, updated_at FROM issues"
+                " WHERE subject = 'issue' AND pr_number IS NOT NULL"
+            )
 
     def _connect(self) -> sqlite3.Connection:
         conn = sqlite3.connect(self.path, timeout=30, isolation_level=None)
@@ -558,15 +625,25 @@ class Store:
         self.query("SELECT 1")
 
     def enqueue(self, ev: dict[str, Any]) -> str:
-        """Durably record an event. Returns 'queued', 'duplicate', 'rate_limited', or 'edit_ignored'.
-
-        Untrusted ``issue_opened`` events are admitted at most ``UNTRUSTED_ISSUE_LIMIT`` per rolling
-        ``UNTRUSTED_ISSUE_WINDOW`` across every repository; the count and the insert share one transaction.
-        ``issue_edited`` is only recorded while the issue is ``implementing`` (a pull request is being made
-        or exists); other edits carry nothing the agent acts on.
-        """
+        """Durably record a webhook delivery and mark repair signals dirty."""
         now = time.time()
         with self.tx() as conn:
+            if ev.get("managed_issue"):
+                self._track_pr(conn, ev["repo"], int(ev["pr_number"]), int(ev["managed_issue"]),
+                               ev.get("head_sha"), now)
+            if ev["kind"] == "pr_signal":
+                numbers = ev.get("pr_numbers", [ev.get("pr_number")])
+                for number in numbers:
+                    if number:
+                        self._dirty_pr(conn, ev["repo"], number, now, ev.get("manual"))
+                if ev.get("head_sha"):
+                    conn.execute("UPDATE prs SET dirty = 1, revision = revision + 1, next_reconcile_at = 0,"
+                                 " updated_at = ? WHERE repo = ? AND head_sha = ?",
+                                 (now, ev["repo"], ev["head_sha"]))
+                if ev.get("all_prs"):
+                    conn.execute("UPDATE prs SET dirty = 1, revision = revision + 1, next_reconcile_at = 0,"
+                                 " updated_at = ? WHERE repo = ? AND closed = 0", (now, ev["repo"]))
+                return "reconcile_pending"
             if ev["kind"] == "issue_edited":
                 row = conn.execute("SELECT phase FROM issues WHERE repo = ? AND issue_number = ?",
                                    (ev["repo"], ev["issue_number"])).fetchone()
@@ -583,12 +660,12 @@ class Store:
                     return "duplicate" if seen else "rate_limited"
             try:
                 conn.execute(
-                    "INSERT INTO events (delivery_id, semantic_key, repo, kind, issue_number, comment_id, actor,"
+                    "INSERT INTO events (delivery_id, semantic_key, repo, kind, issue_number, pr_number, comment_id, actor,"
                     " title, body, default_branch, head_sha, trusted, received_at, updated_at)"
-                    " VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)",
+                    " VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)",
                     (ev["delivery_id"], ev["semantic_key"], ev["repo"], ev["kind"], ev["issue_number"],
-                     ev.get("comment_id"), ev["actor"], ev["title"], ev["body"], ev.get("default_branch"),
-                     ev.get("head_sha"), 1 if ev.get("trusted") else 0, now, now),
+                     ev.get("pr_number"), ev.get("comment_id"), ev["actor"], ev["title"], ev["body"],
+                     ev.get("default_branch"), ev.get("head_sha"), 1 if ev.get("trusted") else 0, now, now),
                 )
             except sqlite3.IntegrityError:
                 return "duplicate"
@@ -599,6 +676,87 @@ class Store:
             if ev["kind"] == "pr_review":
                 self._supersede_parked_reviews(conn, ev, now)
         return "queued"
+
+    @staticmethod
+    def _track_pr(conn: sqlite3.Connection, repo: str, pr_number: int, issue_number: int,
+                  head_sha: str | None, now: float) -> None:
+        conn.execute(
+            "INSERT INTO prs (repo, pr_number, issue_number, head_sha, updated_at) VALUES (?, ?, ?, ?, ?)"
+            " ON CONFLICT(repo, pr_number) DO UPDATE SET issue_number = excluded.issue_number,"
+            " head_sha = COALESCE(excluded.head_sha, prs.head_sha), dirty = 1, revision = prs.revision + 1,"
+            " next_reconcile_at = 0, closed = 0, updated_at = excluded.updated_at",
+            (repo, pr_number, issue_number, head_sha, now),
+        )
+        conn.execute("INSERT OR IGNORE INTO issues (repo, issue_number, branch, phase, pr_number, updated_at)"
+                     " VALUES (?, ?, ?, 'implementing', ?, ?)",
+                     (repo, issue_number, f"hapi-issue-{issue_number}", pr_number, now))
+        conn.execute("UPDATE issues SET pr_number = ?, updated_at = ? WHERE repo = ? AND issue_number = ?",
+                     (pr_number, now, repo, issue_number))
+
+    @staticmethod
+    def _dirty_pr(conn: sqlite3.Connection, repo: str, number: int, now: float,
+                  manual: dict[str, Any] | None = None) -> None:
+        manual_id = manual["id"] if manual is not None else None
+        conn.execute("UPDATE prs SET dirty = 1, revision = revision + 1, next_reconcile_at = 0,"
+                     " latest_signal = COALESCE(?, latest_signal), last_manual_id = COALESCE(?, last_manual_id),"
+                     " updated_at = ? WHERE repo = ? AND pr_number = ?"
+                     " AND (? IS NULL OR last_manual_id IS NULL OR last_manual_id < ?)",
+                     (json.dumps(manual) if manual is not None else None, manual_id, now, repo, number,
+                      manual_id, manual_id))
+
+    def dirty_pr(self, repo: str, number: int) -> None:
+        with self.tx() as conn:
+            self._dirty_pr(conn, repo, number, time.time())
+
+    def claim_pr_repair(self, repo: str, pr_number: int, delivery_id: str) -> dict[str, Any]:
+        now = time.time()
+        with self.tx() as conn:
+            row = conn.execute("SELECT * FROM prs WHERE repo = ? AND pr_number = ?", (repo, pr_number)).fetchone()
+            if row is None:
+                raise OpError("unknown_pr_repair", retryable=True)
+            if row["active_delivery"] not in (None, delivery_id):
+                return {"status": "duplicate", "repair_key": row["attempted_key"]}
+            conn.execute("UPDATE prs SET active_delivery = ?, updated_at = ? WHERE repo = ? AND pr_number = ?",
+                         (delivery_id, now, repo, pr_number))
+            key = row["attempted_key"]
+            return {"status": "started", "repair_key": key, "head_sha": row["head_sha"],
+                    "revision": row["revision"], "dirty": bool(row["dirty"])}
+
+    def track_pr(self, repo: str, pr_number: int, issue_number: int, head_sha: str | None) -> None:
+        now = time.time()
+        with self.tx() as conn:
+            conn.execute(
+                "INSERT INTO prs (repo, pr_number, issue_number, head_sha, updated_at) VALUES (?, ?, ?, ?, ?)"
+                " ON CONFLICT(repo, pr_number) DO UPDATE SET issue_number = excluded.issue_number,"
+                " head_sha = excluded.head_sha, closed = 0, updated_at = excluded.updated_at",
+                (repo, pr_number, issue_number, head_sha, now),
+            )
+            conn.execute("INSERT OR IGNORE INTO issues (repo, issue_number, branch, phase, pr_number, updated_at)"
+                         " VALUES (?, ?, ?, 'implementing', ?, ?)",
+                         (repo, issue_number, f"hapi-issue-{issue_number}", pr_number, now))
+            conn.execute("UPDATE issues SET pr_number = ?, updated_at = ? WHERE repo = ? AND issue_number = ?",
+                         (pr_number, now, repo, issue_number))
+
+    def pr_state(self, repo: str, pr_number: int) -> sqlite3.Row | None:
+        rows = self.query("SELECT * FROM prs WHERE repo = ? AND pr_number = ?", (repo, pr_number))
+        return rows[0] if rows else None
+
+    def release_pr_repair(self, repo: str, pr_number: int, delivery_id: str, *,
+                          success: bool, clear_attempted: bool = False) -> bool:
+        # A parked workflow retains its lease; retry_event resumes that writer, never a replacement.
+        if not success:
+            return False
+        with self.tx() as conn:
+            attempted = ", attempted_key = NULL" if clear_attempted else ""
+            conn.execute("UPDATE prs SET active_delivery = NULL, dirty = 1, next_reconcile_at = 0,"
+                         f" updated_at = ?{attempted} WHERE repo = ? AND pr_number = ? AND active_delivery = ?",
+                         (time.time(), repo, pr_number, delivery_id))
+            return bool(conn.total_changes)
+
+    def mark_pr_notified(self, repo: str, pr_number: int, head_sha: str) -> None:
+        with self.tx() as conn:
+            conn.execute("UPDATE prs SET notified_head = ?, updated_at = ? WHERE repo = ? AND pr_number = ?",
+                         (head_sha, time.time(), repo, pr_number))
 
     @staticmethod
     def _supersede_parked_reviews(conn: sqlite3.Connection, ev: dict[str, Any], now: float) -> None:
@@ -925,6 +1083,59 @@ def review_footer(bot_login: str | None) -> str:
             "pushing fixes or replying to the findings. The same comment restarts a review that stopped with "
             "an error. The pull request author or a maintainer can request it.</sub>")
 
+def _pull_request_issue_number(pr: Mapping[str, Any]) -> int | None:
+    """Map a generated PR back to its issue worktree."""
+    head = pr.get("head")
+    ref = head.get("ref") if isinstance(head, dict) else None
+    match = re.fullmatch(r"hapi-issue-(\d+)", ref) if isinstance(ref, str) else None
+    if match:
+        return int(match.group(1))
+    return None
+
+
+def _pr_signal(
+    cfg: RepoConfig,
+    delivery: str,
+    login: str,
+    default_branch: str,
+    pr: Mapping[str, Any],
+    *,
+    kind: str,
+    body: str,
+    issue_number: int | None = None,
+) -> dict[str, Any] | str:
+    number = _positive_int(pr.get("number"))
+    title = pr.get("title")
+    author = pr.get("user", {}).get("login") if isinstance(pr.get("user"), dict) else None
+    head = pr.get("head")
+    head_sha = head.get("sha") if isinstance(head, dict) else None
+    if number is None or not isinstance(title, str) or not isinstance(author, str) \
+            or not isinstance(head_sha, str) or not _SHA_RE.match(head_sha):
+        return "malformed"
+    mapped = issue_number if issue_number is not None else _pull_request_issue_number(pr)
+    head_repo = (head.get("repo") or {}).get("full_name") if isinstance(head, dict) else None
+    if head_repo != cfg.name:
+        mapped = None
+    if body is not None and not isinstance(body, str):
+        return "malformed"
+    return {
+        "delivery_id": delivery,
+        "repo": cfg.name,
+        "issue_number": number if kind == "pr_review" else mapped,
+        "pr_number": number,
+        "actor": login,
+        "title": title,
+        "semantic_key": f"{cfg.name}#pr:{number}:review:{head_sha}",
+        "kind": kind,
+        "comment_id": None,
+        "body": body,
+        "default_branch": default_branch,
+        "head_sha": head_sha,
+        "trusted": False,
+        "managed_issue": mapped,
+    }
+
+
 
 def classify_event(registry: Registry, event: str, delivery: str, payload: Any, trusted: Callable[[str, str], bool],
                    bot_login: str | None = None, reviewer_login: str | None = None) -> dict[str, Any] | str:
@@ -953,25 +1164,52 @@ def classify_event(registry: Registry, event: str, delivery: str, payload: Any, 
     action = payload.get("action")
 
     if event == "pull_request":
-        # Every non-draft pull request is reviewed, whoever authored or triggered it.
-        if action not in ("opened", "reopened", "ready_for_review"):
-            return "action_ignored"
         pr = payload.get("pull_request")
         if not isinstance(pr, dict):
             return "malformed"
-        number = _positive_int(pr.get("number"))
-        title, body = pr.get("title"), pr.get("body")
-        author = pr["user"].get("login") if isinstance(pr.get("user"), dict) else None
-        head_sha = pr["head"].get("sha") if isinstance(pr.get("head"), dict) else None
-        if number is None or not isinstance(title, str) or (body is not None and not isinstance(body, str)) \
-                or not isinstance(author, str) or not isinstance(head_sha, str) or not _SHA_RE.match(head_sha):
+        if action in ("opened", "reopened", "ready_for_review"):
+            if pr.get("draft"):
+                return "draft_ignored"
+            return _pr_signal(cfg, delivery, login, default_branch, pr,
+                              kind="pr_review", body=pr.get("body") or "")
+        if action == "synchronize" and reviewer_login and not pr.get("draft"):
+            return _pr_signal(cfg, delivery, login, default_branch, pr,
+                              kind="pr_review", body=pr.get("body") or "")
+        if action in ("synchronize", "closed", "converted_to_draft", "edited"):
+            return _pr_signal(cfg, delivery, login, default_branch, pr,
+                              kind="pr_signal", body="Pull request state changed.")
+        return "action_ignored"
+
+    if event == "pull_request_review":
+        pr = payload.get("pull_request")
+        review = payload.get("review")
+        if not isinstance(pr, dict) or not isinstance(review, dict):
             return "malformed"
-        if pr.get("draft"):
-            return "draft_ignored"
-        return {"delivery_id": delivery, "repo": cfg.name, "issue_number": number, "actor": login, "title": title,
-                "semantic_key": f"{cfg.name}#pr:{number}:review:{head_sha}", "kind": "pr_review",
-                "comment_id": None, "body": body or "", "default_branch": default_branch, "head_sha": head_sha,
-                "trusted": False}
+        if action not in ("submitted", "edited", "dismissed"):
+            return "action_ignored"
+        return _pr_signal(cfg, delivery, login, default_branch, pr, kind="pr_signal", body="")
+
+    if event in ("check_run", "check_suite", "status", "push", "pull_request_review_comment"):
+        base_signal = {"delivery_id": delivery, "repo": cfg.name, "kind": "pr_signal", "issue_number": 0}
+        if event == "push":
+            if payload.get("ref") != f"refs/heads/{default_branch}":
+                return "push_ignored"
+            return {**base_signal, "all_prs": True}
+        if event == "status":
+            sha = payload.get("sha")
+            if not isinstance(sha, str) or not _SHA_RE.fullmatch(sha):
+                return "malformed"
+            return {**base_signal, "head_sha": sha}
+        if event == "pull_request_review_comment":
+            pr = payload.get("pull_request")
+            if not isinstance(pr, dict):
+                return "malformed"
+            return _pr_signal(cfg, delivery, login, default_branch, pr, kind="pr_signal", body="")
+        check = payload.get(event)
+        if not isinstance(check, dict):
+            return "malformed"
+        numbers = [_positive_int(p.get("number")) for p in check.get("pull_requests", []) if isinstance(p, dict)]
+        return {**base_signal, "pr_numbers": [n for n in numbers if n], "head_sha": check.get("head_sha")}
 
     if sender.get("type") != "User" or login.endswith("[bot]") or is_self:
         return "bot_sender"
@@ -1032,16 +1270,19 @@ def classify_event(registry: Registry, event: str, delivery: str, payload: Any, 
         if is_agent_text(body):
             return "bot_sender"
         if on_pr:
-            # The review App owns re-review requests when configured, so a mention of it anywhere in the comment
-            # is the only trigger; the pull request author or a trusted collaborator may issue it.
-            if not mentions(body, reviewer_login or bot_login):
+            review_mention = mentions(body, reviewer_login or bot_login)
+            repair_mention = reviewer_login is not None and mentions(body, bot_login)
+            if not review_mention and not repair_mention:
                 return "pull_request_comment_ignored"
             is_author = isinstance(issue_author_login, str) and login.casefold() == issue_author_login.casefold()
             is_trusted = not is_author and trusted(cfg.name, login)
             if not is_author and not is_trusted:
                 return "actor_not_allowed"
+            if repair_mention:
+                return {**base, "kind": "pr_signal", "pr_number": number,
+                        "manual": {"id": comment_id, "author": login, "body": body}}
             return {**base, "semantic_key": f"{cfg.name}#comment:{comment_id}", "kind": "pr_review",
-                    "comment_id": comment_id, "body": body, "trusted": is_trusted}
+                    "pr_number": number, "comment_id": comment_id, "body": body, "trusted": is_trusted}
         # Open-discussion issues take any human's input; elsewhere a trusted collaborator must mention the bot.
         is_trusted = False
         if not open_discussion:
@@ -1089,8 +1330,27 @@ def handle_webhook(config: Config, store: Store, collaborators: Collaborators, h
     if isinstance(classified, str):
         LOG.info("delivery %s not queued: %s", delivery, classified)
         return Intake(400 if classified == "malformed" else 202, classified)
+    if classified["kind"] == "pr_signal" and classified.get("manual") and classified.get("pr_number") \
+            and store.pr_state(classified["repo"], classified["pr_number"]) is None:
+        # PR comments do not carry head metadata. Recover the issue mapping from GitHub,
+        # not a comment/body guess, before durably accepting an explicit repair request.
+        try:
+            status, pr = GitHub(config.github_api_url, config.github_token_dir, config.http_timeout).request(
+                "GET", f"/repos/{classified['repo']}/pulls/{classified['pr_number']}")
+        except (OpError, TransportError):
+            return Intake(503, "pr_state_unavailable")
+        if status != 200 or not isinstance(pr, dict):
+            return Intake(503, "pr_state_unavailable")
+        head = pr.get("head") or {}
+        mapped = _pull_request_issue_number(pr)
+        if not mapped or (head.get("repo") or {}).get("full_name") != classified["repo"]:
+            return Intake(202, "pull_request_not_managed")
+        if not isinstance(head.get("sha"), str) or not _SHA_RE.fullmatch(head["sha"]):
+            return Intake(503, "pr_state_unavailable")
+        classified["managed_issue"] = mapped
+        classified["head_sha"] = head["sha"]
     outcome = store.enqueue(classified)
-    LOG.info("delivery %s %s#%d %s: %s", delivery, classified["repo"], classified["issue_number"],
+    LOG.info("delivery %s %s#%s %s: %s", delivery, classified["repo"], classified["issue_number"],
              classified["kind"], outcome)
     return Intake(200 if outcome == "duplicate" else 202, outcome)
 
@@ -1166,9 +1426,10 @@ def build_message(ev: sqlite3.Row, mode: str, branch: str | None, default_branch
                   context: Any, nonce: str) -> str:
     n = int(ev["issue_number"])
     repo = ev["repo"]
-    is_pr = subject_of(ev["kind"]) == "pull_request"
-    where = f"Pull request: #{n} https://github.com/{repo}/pull/{n}" if is_pr \
-        else f"Issue: #{n} https://github.com/{repo}/issues/{n}"
+    pr_number = ev["pr_number"] or (n if ev["kind"] == "pr_review" else None)
+    is_pr = ev["kind"] == "pr_review"
+    where = f"Pull request: #{pr_number} https://github.com/{repo}/pull/{pr_number}" if pr_number else \
+        f"Issue: #{n} https://github.com/{repo}/issues/{n}"
     lines = [
         f"[issue-agent step {ev['delivery_id']} mode {mode}]",
         f"Repository: {repo}  {where}",
@@ -1583,6 +1844,8 @@ class Bridge:
     def _mode_hint(ev: sqlite3.Row, phase: str) -> str:
         if ev["kind"] == "pr_review":
             return "review"
+        if ev["kind"] == "pr_repair":
+            return "followup"
         if ev["kind"] in ("issue_comment", "issue_edited") and phase == "implementing":
             return "followup"
         return "triage"
@@ -1599,6 +1862,7 @@ class Bridge:
             execution_id = str(execution_id)
         if not isinstance(execution_id, str) or not _EXECUTION_RE.match(execution_id):
             raise OpError("bad execution_id")
+        repair: dict[str, Any] | None = None
         with self.store.tx() as conn:
             row = conn.execute("SELECT * FROM events WHERE seq = ?", (ev["seq"],)).fetchone()
             stages = json.loads(row["stages"])
@@ -1620,6 +1884,43 @@ class Bridge:
                     (json.dumps(stages), now, execution_id, now, row["seq"]),
                 )
                 status = "started"
+        if status == "started" and ev["kind"] == "pr_repair":
+            pr_number = ev["pr_number"] or self.store.issue(ev["repo"], ev["issue_number"])["pr_number"]
+            if not pr_number:
+                raise OpError("pull request number missing", needs_operator=True)
+            repair = self.store.claim_pr_repair(ev["repo"], int(pr_number), ev["delivery_id"])
+            if repair["status"] != "started":
+                self.store.update_event(ev["delivery_id"], state="completed", outcome="duplicate",
+                                        detail="repair lease held by another delivery")
+                status = "duplicate"
+            else:
+                try:
+                    current = self._pr_state(ev["repo"], int(pr_number))
+                    findings = self._pr_findings(ev["repo"], current)
+                except (OpError, TransportError) as exc:
+                    if isinstance(exc, OpError) and not exc.retryable:
+                        raise
+                    # No agent has started. Retry this delivery under the same lease, without
+                    # making a transient GitHub read an operator-owned failure.
+                    stages.pop("started", None)
+                    self.store.update_event(ev["delivery_id"], state="accepted", stages=json.dumps(stages),
+                                            execution_id=None, heartbeat_at=None, detail=str(exc),
+                                            next_attempt_at=time.time() + DISPATCH_BACKOFF)
+                    status = "retry"
+                else:
+                    repair = {**repair, "state": current, "findings": findings}
+                    manual = stages.get("repair_input", {}).get("manual")
+                    if not current["known"] or current["state"] != "OPEN" or current["draft"] \
+                            or (current["ready"] and not manual) or not (self._actionable(findings) or manual):
+                        self.store.update_event(ev["delivery_id"], state="completed", outcome="no_change",
+                                                detail="GitHub no longer has an actionable repair blocker")
+                        self.store.release_pr_repair(ev["repo"], int(pr_number), ev["delivery_id"],
+                                                     success=True, clear_attempted=True)
+                        status = "terminal"
+                    else:
+                        self.store.update_event(ev["delivery_id"], head_sha=current["head_sha"],
+                                                default_branch=current["default_branch"])
+        ev = self.store.event(ev["delivery_id"])
         issue = self.store.issue(ev["repo"], ev["issue_number"])
         return {
             "status": status,
@@ -1638,11 +1939,12 @@ class Bridge:
                 "body": ev["body"],
                 "head_sha": ev["head_sha"],
                 "default_branch": ev["default_branch"],
-                "pr_number": issue["pr_number"],
+                "pr_number": ev["pr_number"] or issue["pr_number"],
                 "has_session": issue["session_state"] == "ready",
             },
             "bot_login": self.config.github_bot_login,
             "reviewer_login": self.reviewer_login(),
+            "repair": repair,
         }
 
     def op_stage(self, req: dict[str, Any]) -> dict[str, Any]:
@@ -1677,6 +1979,15 @@ class Bridge:
         self.store.update_event(ev["delivery_id"], state="completed", outcome=outcome,
                                 detail=detail[:2000] if isinstance(detail, str) else None)
         self._archive_session(ev)
+        pr_number = ev["pr_number"] or self.store.issue(ev["repo"], ev["issue_number"])["pr_number"]
+        if pr_number:
+            if ev["kind"] == "pr_repair":
+                self.store.release_pr_repair(ev["repo"], int(pr_number), ev["delivery_id"], success=True)
+            self.store.dirty_pr(ev["repo"], int(pr_number))
+            try:
+                self.reconcile_pr(ev["repo"], int(pr_number))
+            except (OpError, TransportError) as exc:
+                LOG.warning("post-turn PR reconciliation pending for %s#%s: %s", ev["repo"], pr_number, exc)
         return {"already": False}
 
     def _archive_session(self, ev: sqlite3.Row) -> None:
@@ -1706,6 +2017,8 @@ class Bridge:
         detail = detail[:2000] if isinstance(detail, str) and detail.strip() else "workflow reported failure"
         node = req.get("node")
         self.mark_attention(ev, detail, node[:200] if isinstance(node, str) and node.strip() else None)
+        if ev["kind"] == "pr_repair" and ev["pr_number"]:
+            self.store.release_pr_repair(ev["repo"], int(ev["pr_number"]), ev["delivery_id"], success=False)
         return {}
 
     def op_fail_execution(self, req: dict[str, Any]) -> dict[str, Any]:
@@ -1726,6 +2039,8 @@ class Bridge:
         node, error = req.get("node"), req.get("error")
         detail = error[:2000] if isinstance(error, str) and error.strip() else "n8n execution failed"
         self.mark_attention(ev, detail, node[:200] if isinstance(node, str) and node.strip() else None)
+        if ev["kind"] == "pr_repair" and ev["pr_number"]:
+            self.store.release_pr_repair(ev["repo"], int(ev["pr_number"]), ev["delivery_id"], success=False)
         return {"delivery_id": ev["delivery_id"], "already": False}
 
     def attention_body(self, ev: sqlite3.Row, detail: str, node: str | None) -> str:
@@ -1826,6 +2141,10 @@ class Bridge:
             raise OpError("event_terminal")
         stages = json.loads(ev["stages"])
         stages.pop("started", None)
+        if ev["kind"] == "pr_repair" and self.store.turn(ev["delivery_id"]) is None:
+            # A retry before the first send needs current evidence, not a parked snapshot.
+            # Keep snapshots once a send may have landed so localId delivery remains idempotent.
+            stages.pop("repair_snapshot", None)
         self.store.update_event(ev["delivery_id"], state="accepted", stages=json.dumps(stages), attempts=0,
                                 next_attempt_at=0, detail=None, attention_pending=0, attention_node=None)
         self.store.update_issue(ev["repo"], ev["issue_number"], blocked=0, detail=None)
@@ -2057,6 +2376,80 @@ class Bridge:
             raise OpError("no ready session; call ensure_session first")
         return issue
 
+    @staticmethod
+    def _repair_context(context: Any, snapshot: Mapping[str, Any],
+                        findings: Mapping[str, Any], manual: Any) -> dict[str, Any]:
+        """Keep repair evidence useful without exceeding HAPI's context cap.
+
+        The agent re-reads GitHub with its read-only token, so this is a bounded
+        hint rather than a second copy of the complete PR and review history.
+        """
+        base = dict(context) if isinstance(context, dict) else {}
+
+        def clip(value: Any, limit: int) -> str:
+            return value[:limit] if isinstance(value, str) else value
+
+        def check(value: Any) -> dict[str, Any]:
+            if not isinstance(value, Mapping):
+                return {"value": clip(value, 200)}
+            return {key: clip(value.get(key), 400) for key in
+                    ("name", "state", "status", "conclusion", "details_url") if value.get(key) is not None}
+
+        def request(value: Any, limit: int) -> dict[str, Any]:
+            if not isinstance(value, Mapping):
+                return {"value": clip(value, limit)}
+            return {key: clip(value.get(key), limit) for key in
+                    ("id", "databaseId", "user", "path", "line", "side", "commit_id", "body")
+                    if value.get(key) is not None}
+
+        def thread(value: Any, body_limit: int, comments: int | None) -> dict[str, Any]:
+            if not isinstance(value, Mapping):
+                return {"value": clip(value, body_limit)}
+            result = {key: value.get(key) for key in
+                      ("thread_id", "path", "line", "is_resolved", "is_outdated")
+                      if value.get(key) is not None}
+            raw_comments = value.get("comments") if isinstance(value.get("comments"), list) else []
+            if comments is not None:
+                raw_comments = raw_comments[:comments]
+            result["comments"] = [request(item, body_limit) for item in raw_comments]
+            return result
+
+        def build(body_limit: int, thread_limit: int, comment_limit: int | None,
+                  request_limit: int, check_limit: int) -> dict[str, Any]:
+            state_keys = (
+                "number", "head_sha", "head_branch", "base_sha", "base_branch",
+                "default_branch", "default_sha", "state", "draft", "mergeable",
+                "merge_state", "review_decision", "ready", "known", "rollup_state",
+                "title", "url",
+            )
+            state = {key: clip(snapshot.get(key), 1000) for key in state_keys
+                     if snapshot.get(key) is not None}
+            if snapshot.get("body") is not None:
+                state["body"] = clip(snapshot.get("body"), body_limit)
+            return {
+                "state": state,
+                "findings": {
+                    "behind": bool(findings.get("behind")),
+                    "conflicts": bool(findings.get("conflicts")),
+                    "failed_checks": [check(item) for item in (findings.get("failed_checks") or [])[:check_limit]],
+                    "change_requests": [request(item, request_limit)
+                                        for item in (findings.get("change_requests") or [])[:check_limit]],
+                    "review_threads": [thread(item, body_limit, comment_limit)
+                                       for item in (findings.get("review_threads") or [])[:thread_limit]],
+                },
+                "manual": manual,
+            }
+
+        for args in ((4000, 32, 2, 2000, 64),
+                     (1000, 16, 1, 800, 32),
+                     (0, 8, None, 400, 16),
+                     (0, 4, None, 0, 8)):
+            candidate = build(*args)
+            merged = {**base, "repair": candidate}
+            if len(json.dumps(merged, ensure_ascii=False).encode()) <= MAX_CONTEXT_BYTES:
+                return merged
+        return {**base, "repair": build(0, 0, None, 0, 0)}
+
     def op_session_send(self, req: dict[str, Any]) -> dict[str, Any]:
         ev = self._event(req)
         mode = req.get("mode")
@@ -2068,6 +2461,32 @@ class Bridge:
         if not isinstance(instructions, str) or not instructions.strip() or len(instructions) > 16000:
             raise OpError("instructions required (<= 16000 chars)")
         context = req.get("context")
+        if ev["kind"] == "pr_repair":
+            lease = self.store.pr_state(ev["repo"], int(ev["pr_number"]))
+            if lease is None or lease["active_delivery"] != ev["delivery_id"]:
+                raise OpError("repair lease not owned", needs_operator=True)
+            recorded = json.loads(ev["stages"]).get("repair_snapshot")
+            if recorded is None:
+                snapshot = self._pr_state(ev["repo"], int(ev["pr_number"]))
+                findings = self._pr_findings(ev["repo"], snapshot)
+                recorded = self.op_stage({"delivery_id": ev["delivery_id"], "stage": "repair_snapshot",
+                                          "value": {"state": snapshot, "findings": findings}})["value"]
+            snapshot, findings = recorded["state"], recorded["findings"]
+            manual = json.loads(ev["stages"]).get("repair_input", {}).get("manual")
+            context = self._repair_context(context, snapshot, findings, manual)
+            instructions += (
+                "\nPR repair preparation: fetch origin and synchronize this issue worktree with the current PR "
+                "head using fast-forward or merge only; never reset, rebase, or force-push. Check whether the branch "
+                "contains the freshly fetched default branch, and if behind merge origin/"
+                f"{snapshot['default_branch']} FIRST, resolving conflicts before handling findings. "
+                "Evaluate ALL currently observed CI failures and review findings together in this ONE followup "
+                "with receiving-code-review. Read current CI logs, reviews and threads yourself, verify claims, "
+                "repair only supported blockers, and retain the full issue scope in the PR body. "
+                "Do not add a separate behind-only turn. GitHub owns merge policy; never merge the PR."
+            )
+            self.store.update_event(ev["delivery_id"], head_sha=snapshot["head_sha"],
+                                    default_branch=snapshot["default_branch"])
+            ev = self.store.event(ev["delivery_id"])
         if context is not None and len(json.dumps(context, ensure_ascii=False).encode()) > MAX_CONTEXT_BYTES:
             raise OpError(f"context exceeds {MAX_CONTEXT_BYTES} bytes")
         delivery = ev["delivery_id"]
@@ -2630,11 +3049,139 @@ class Bridge:
         if not isinstance(head, str) or not _SHA_RE.match(head):
             raise OpError("bad head_sha")
         branch = self._issue_branch(ev)
+        pr_number = ev["pr_number"] or self.store.issue(ev["repo"], ev["issue_number"])["pr_number"]
+        if ev["kind"] == "pr_repair" and pr_number:
+            fresh = self._get_pr(ev["repo"], int(pr_number))
+            remote = (fresh.get("head") or {}).get("sha")
+            if remote not in (ev["head_sha"], head) or fresh.get("state") != "open":
+                self.store.dirty_pr(ev["repo"], int(pr_number))
+                return {"branch": branch, "sha": remote, "superseded": True}
         data = self.publisher.request("/push", {"repo": ev["repo"], "branch": branch, "expected_sha": head},
                                       timeout=PUBLISHER_PUSH_TIMEOUT)
         if data.get("sha") != head:
             raise OpError(f"publisher pushed {data.get('sha')!r}, expected {head}", needs_operator=True)
-        return {"branch": branch, "sha": head}
+        pr_number = ev["pr_number"] or self.store.issue(ev["repo"], ev["issue_number"])["pr_number"]
+        state = None
+        if pr_number:
+            self.store.track_pr(ev["repo"], int(pr_number), int(ev["issue_number"]), head)
+            self.store.dirty_pr(ev["repo"], int(pr_number))
+            try:
+                state = self._pr_state(ev["repo"], int(pr_number))
+            except (OpError, TransportError) as exc:
+                LOG.warning("post-push PR state pending for %s#%s: %s", ev["repo"], pr_number, exc)
+        return {"branch": branch, "sha": head, "pr_state": state}
+
+    def _pr_state(self, repo: str, number: int) -> dict[str, Any]:
+        """GitHub owns merge policy; check/review evidence never replaces its computed state."""
+        owner, name = repo.split("/", 1)
+        after = None
+        checks: list[dict[str, Any]] = []
+        observed: tuple[str, str | None] | None = None
+        for _ in range(MAX_IDEMPOTENCY_PAGES):
+            data = self._graphql(PR_STATE_QUERY, {"owner": owner, "name": name, "number": number, "after": after})
+            repository = data.get("repository") or {}
+            pr = repository.get("pullRequest")
+            if not isinstance(pr, dict) or not _SHA_RE.fullmatch(str(pr.get("headRefOid", ""))):
+                raise OpError(f"github pull request #{number}: state unavailable", retryable=True)
+            pair = (pr["headRefOid"], pr.get("baseRefOid"))
+            if observed is not None and observed != pair:
+                raise OpError("github head moved during check pagination", retryable=True)
+            observed = pair
+            commits = (pr.get("commits") or {}).get("nodes") or []
+            commit = (commits[-1].get("commit") or {}) if commits else {}
+            if commit and commit.get("oid") != pr["headRefOid"]:
+                raise OpError("github head rollup is stale", retryable=True)
+            rollup = commit.get("statusCheckRollup") or {}
+            contexts = rollup.get("contexts") or {}
+            checks.extend(c for c in contexts.get("nodes", []) if isinstance(c, dict))
+            page = contexts.get("pageInfo") or {}
+            if not page.get("hasNextPage"):
+                break
+            cursor = page.get("endCursor")
+            if not cursor or cursor == after:
+                raise OpError("github check pagination incomplete", retryable=True)
+            after = cursor
+        else:
+            raise OpError("github check rollup too large to reconcile", needs_operator=True)
+        rest = self._get_pr(repo, number)
+        head = pr["headRefOid"]
+        consistent = (
+            (rest.get("head") or {}).get("sha") == head
+            and ((rest.get("head") or {}).get("repo") or {}).get("full_name") == repo
+            and (rest.get("base") or {}).get("sha") == pr.get("baseRefOid")
+            and str(rest.get("state", "")).upper() == pr.get("state")
+        )
+        branch = repository.get("defaultBranchRef") or {}
+        known = consistent and pr.get("mergeable") in ("MERGEABLE", "CONFLICTING") \
+            and pr.get("mergeStateStatus") not in (None, "UNKNOWN")
+        ready = known and pr.get("state") == "OPEN" and not pr.get("isDraft") \
+            and pr.get("mergeable") == "MERGEABLE" and pr.get("mergeStateStatus") in ("CLEAN", "UNSTABLE")
+        return {
+            "number": number, "head_sha": head, "head_branch": pr.get("headRefName"),
+            "base_sha": pr.get("baseRefOid"), "base_branch": pr.get("baseRefName"),
+            "default_branch": branch.get("name"), "default_sha": (branch.get("target") or {}).get("oid"),
+            "state": pr.get("state"), "draft": bool(pr.get("isDraft")),
+            "mergeable": pr.get("mergeable"), "merge_state": pr.get("mergeStateStatus"),
+            "review_decision": pr.get("reviewDecision"), "ready": bool(ready), "known": bool(known),
+            "checks": checks, "rollup_state": rollup.get("state"), "title": pr.get("title"), "body": pr.get("body"),
+            "url": rest.get("html_url"),
+        }
+
+    def _pr_findings(self, repo: str, state: Mapping[str, Any]) -> dict[str, Any]:
+        number = int(state["number"])
+        reviews = self._paged(f"/repos/{repo}/pulls/{number}/reviews", MAX_IDEMPOTENCY_PAGES, strict=True)
+        latest: dict[str, dict[str, Any]] = {}
+        for review in reviews:
+            author = (review.get("user") or {}).get("login")
+            if author and review.get("state") in ("APPROVED", "CHANGES_REQUESTED", "DISMISSED"):
+                latest[author] = review
+        requested = [r for r in latest.values() if r.get("state") == "CHANGES_REQUESTED"
+                     and r.get("commit_id") == state["head_sha"]]
+        failed = [c for c in state["checks"]
+                  if c.get("state") in ("FAILURE", "ERROR")
+                  or c.get("conclusion") in ("FAILURE", "CANCELLED", "TIMED_OUT", "ACTION_REQUIRED",
+                                            "STARTUP_FAILURE", "STALE")]
+        threads = [t for t in self._threads(repo, number) if not t["is_resolved"] and not t["is_outdated"]]
+        return {"behind": state["merge_state"] == "BEHIND",
+                "conflicts": state["mergeable"] == "CONFLICTING",
+                "failed_checks": failed, "change_requests": requested, "review_threads": threads}
+
+    @staticmethod
+    def _actionable(findings: Mapping[str, Any]) -> bool:
+        return any(findings.get(k) for k in ("behind", "conflicts", "failed_checks", "change_requests"))
+
+    def _notify_pr_ready(self, repo: str, number: int, expected_head: str) -> dict[str, Any]:
+        with self._keyed_lock(("pr-ready", repo, number)):
+            cfg = self.registry().get(repo)
+            owner = cfg.project_owner if cfg else None
+            row = self.store.pr_state(repo, number)
+            if not owner or row is None or row["active_delivery"] \
+                    or self._subject_active(repo, int(row["issue_number"])):
+                return {"ready": False, "owner": owner, "mentioned": False, "assigned": False}
+            state = self._pr_state(repo, number)
+            if not state["ready"] or expected_head != state["head_sha"]:
+                return {"ready": False, "owner": owner, "mentioned": False, "assigned": False}
+            if row["notified_head"] == expected_head:
+                return {"ready": True, "owner": owner, "mentioned": False, "assigned": True}
+            assigned = self._gh("POST", f"/repos/{repo}/issues/{number}/assignees",
+                                {"assignees": [owner]}, ok=(200, 201))
+            if not isinstance(assigned, dict) or owner.casefold() not in {
+                str(a.get("login", "")).casefold() for a in assigned.get("assignees", []) if isinstance(a, dict)
+            }:
+                raise OpError(f"github did not assign configured owner {owner}", needs_operator=True)
+            # Re-read immediately before mentioning: assignment can race a new head/check result.
+            fresh = self._pr_state(repo, number)
+            current_row = self.store.pr_state(repo, number)
+            if not fresh["ready"] or fresh["head_sha"] != expected_head or current_row is None \
+                    or current_row["revision"] != row["revision"] \
+                    or self._subject_active(repo, int(row["issue_number"])):
+                return {"ready": False, "owner": owner, "mentioned": False, "assigned": True}
+            posted = self._comment(repo, number, f"pr-ready:{number}:{expected_head}",
+                                   f"@{owner} GitHub reports this pull request merge-ready at `{expected_head}`. "
+                                   "Please merge it when ready; the automation will not merge it.")
+            self.store.mark_pr_notified(repo, number, expected_head)
+            return {"ready": True, "owner": owner, "mentioned": posted["created"], "assigned": True}
+
 
     def op_github_pr_upsert(self, req: dict[str, Any]) -> dict[str, Any]:
         ev = self._event(req)
@@ -2700,8 +3247,117 @@ class Bridge:
             if not isinstance(pr, dict):
                 raise OpError("github pull request update: unexpected response", retryable=True)
         check_head(pr)
-        self.store.update_issue(repo, n, pr_number=pr.get("number"))
-        return {"number": pr.get("number"), "html_url": pr.get("html_url"), "created": created}
+        pr_number = _positive_int(pr.get("number"))
+        if pr_number is None:
+            raise OpError("github pull request number missing", retryable=True)
+        self.store.update_issue(repo, n, pr_number=pr_number)
+        self.store.track_pr(repo, pr_number, n, head)
+        self.store.dirty_pr(repo, pr_number)
+        # Always re-read the computed state for the propagated pushed head; notification waits for finish.
+        try:
+            current = self._pr_state(repo, pr_number)
+        except (OpError, TransportError) as exc:
+            LOG.warning("post-upsert PR state pending for %s#%s: %s", repo, pr_number, exc)
+            ready = False
+        else:
+            ready = current["ready"] and current["head_sha"] == head
+        return {"number": pr_number, "html_url": pr.get("html_url"), "created": created, "ready": ready}
+
+    def _queue_head_review(self, repo: str, number: int, state: Mapping[str, Any]) -> None:
+        """Reuse the existing review flow for each pushed head, including missed synchronize webhooks."""
+        if self.review_github is None or state["state"] != "OPEN" or state["draft"]:
+            return
+        digest = hashlib.sha256(f"{repo}:{number}:{state['head_sha']}".encode()).hexdigest()[:48]
+        self.store.enqueue({
+            "delivery_id": f"pr-review-{digest}",
+            "semantic_key": f"{repo}#pr:{number}:review:{state['head_sha']}",
+            "repo": repo, "kind": "pr_review", "issue_number": number, "pr_number": number,
+            "actor": self.config.github_bot_login or "issue-agent", "title": state["title"],
+            "body": state["body"] or "", "default_branch": state["default_branch"],
+            "head_sha": state["head_sha"], "trusted": False,
+        })
+
+    def reconcile_pr(self, repo: str, number: int, now: float | None = None) -> str:
+        """A finite reconciliation pass; the SQLite lease is the only repair writer owner."""
+        now = time.time() if now is None else now
+        lock = self._keyed_lock(("reconcile", repo, number))
+        if not lock.acquire(blocking=False):
+            return "busy"
+        try:
+            row = self.store.pr_state(repo, number)
+            if row is None:
+                return "untracked"
+            with self.store.tx() as conn:
+                conn.execute("UPDATE prs SET next_reconcile_at = ? WHERE repo = ? AND pr_number = ?",
+                             (now + PR_RECONCILE_SECONDS, repo, number))
+            if row["active_delivery"] or self._subject_active(repo, int(row["issue_number"])):
+                return "active"
+            issue = self.store.issue(repo, int(row["issue_number"]))
+            if issue["blocked"]:
+                return "blocked"
+            state = self._pr_state(repo, number)
+            self._queue_head_review(repo, number, state)
+            if state["state"] != "OPEN":
+                with self.store.tx() as conn:
+                    conn.execute("UPDATE prs SET closed = 1, dirty = 0, head_sha = ? "
+                                 "WHERE repo = ? AND pr_number = ? AND revision = ?",
+                                 (state["head_sha"], repo, number, row["revision"]))
+                return "closed"
+            if not state["known"] or state["draft"]:
+                return "waiting"
+            if state["head_branch"] != f"hapi-issue-{row['issue_number']}":
+                raise OpError("managed PR no longer uses its issue worktree branch", needs_operator=True)
+            manual = json.loads(row["latest_signal"]) if row["latest_signal"] else None
+            if state["ready"] and not manual:
+                self._notify_pr_ready(repo, number, state["head_sha"])
+                with self.store.tx() as conn:
+                    conn.execute("UPDATE prs SET dirty = 0, head_sha = ?, latest_signal = NULL, attempted_key = NULL "
+                                 "WHERE repo = ? AND pr_number = ? AND revision = ?",
+                                 (state["head_sha"], repo, number, row["revision"]))
+                return "ready"
+            findings = self._pr_findings(repo, state)
+            if not self._actionable(findings) and not manual:
+                with self.store.tx() as conn:
+                    conn.execute("UPDATE prs SET dirty = 0, head_sha = ? WHERE repo = ? AND pr_number = ? "
+                                 "AND revision = ?", (state["head_sha"], repo, number, row["revision"]))
+                return "waiting"
+            evidence = {"repo": repo, "head": state["head_sha"], "base": state["default_sha"],
+                        "findings": findings, "manual": manual}
+            fingerprint = hashlib.sha256(json.dumps(evidence, sort_keys=True).encode()).hexdigest()
+            if row["attempted_key"] == fingerprint:
+                return "unchanged"
+            with self.store.tx() as conn:
+                active = conn.execute("SELECT 1 FROM events WHERE repo = ? AND issue_number = ? "
+                                      "AND state IN ('accepted', 'dispatching', 'dispatched') LIMIT 1",
+                                      (repo, row["issue_number"])).fetchone()
+                digest = hashlib.sha256(f"{repo}:{number}:{fingerprint}:{now}".encode()).hexdigest()[:48]
+                delivery = f"pr-repair-{digest}"
+                inserted = conn.execute(
+                    "INSERT OR IGNORE INTO events (delivery_id, semantic_key, repo, kind, issue_number, pr_number,"
+                    " actor, title, body, default_branch, head_sha, stages, received_at, updated_at) "
+                    "VALUES (?, ?, ?, 'pr_repair', ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)",
+                    (delivery, f"{repo}#pr:{number}:repair:{delivery}", repo, row["issue_number"], number,
+                     self.config.github_bot_login or "issue-agent", state["title"], state["body"] or "",
+                     state["default_branch"], state["head_sha"], json.dumps({"repair_input": {"manual": manual}}),
+                     now, now),
+                )
+                if not inserted.rowcount:
+                    return "unchanged"
+                conn.execute("UPDATE prs SET active_delivery = ?, attempted_key = ?, dirty = 0, head_sha = ?,"
+                             " latest_signal = NULL, updated_at = ? WHERE repo = ? AND pr_number = ?",
+                             (delivery, fingerprint, state["head_sha"], now, repo, number))
+            return "queued"
+        finally:
+            lock.release()
+
+    def reconcile_due_prs(self, now: float) -> None:
+        # The durable periodic fallback also covers missed webhook deliveries and bridge restarts.
+        for row in self.store.query("SELECT repo, pr_number FROM prs WHERE closed = 0 AND next_reconcile_at <= ? "
+                                    "ORDER BY next_reconcile_at LIMIT 10", (now,)):
+            try:
+                self.reconcile_pr(row["repo"], int(row["pr_number"]), now)
+            except (OpError, TransportError) as exc:
+                LOG.warning("PR reconciliation pending for %s#%s: %s", row["repo"], row["pr_number"], exc)
 
 
 # --------------------------------------------------------------------------
@@ -2737,6 +3393,7 @@ class Dispatcher:
         same event only; ``begin`` makes duplicates exit.
         """
         now = time.time() if now is None else now
+        self.bridge.reconcile_due_prs(now)
         for ev in self.store.query(
             "SELECT delivery_id FROM events WHERE state = 'needs_attention' AND attention_pending = 1"
             " AND next_attempt_at <= ? ORDER BY seq",
@@ -2766,6 +3423,10 @@ class Dispatcher:
                     "   AND p.issue_number = e.issue_number AND p.seq < e.seq AND p.state = 'accepted')"
                     " AND NOT EXISTS (SELECT 1 FROM events a WHERE a.repo = e.repo"
                     "   AND a.issue_number = e.issue_number AND a.state IN ('dispatching', 'dispatched'))"
+                    " AND (e.kind != 'pr_review' OR NOT EXISTS (SELECT 1 FROM prs r"
+                    "   JOIN events repair ON repair.delivery_id = r.active_delivery"
+                    "   WHERE r.repo = e.repo AND r.pr_number = e.issue_number"
+                    "   AND repair.state IN ('accepted', 'dispatching', 'dispatched')))"
                     " ORDER BY e.seq LIMIT 1",
                     (now,),
                 ).fetchone()
