@@ -19,19 +19,6 @@ data:
     proxy:
       remoteurl: https://ghcr.io
 ---
-apiVersion: v1
-kind: PersistentVolumeClaim
-metadata:
-  name: registry-ghcr-io
-  namespace: arc-systems
-spec:
-  accessModes:
-    - ReadWriteOnce
-  storageClassName: ssd-ha-xfs
-  resources:
-    requests:
-      storage: 50Gi
----
 apiVersion: apps/v1
 kind: Deployment
 metadata:
