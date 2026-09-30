@@ -46,7 +46,7 @@ readinessProbe:
   failureThreshold: 5
 
 persistentVolumeClaim:
-  enabled: true
+  enabled: false
   accessModes:
     - ReadWriteOnce
   storage: 50Gi
