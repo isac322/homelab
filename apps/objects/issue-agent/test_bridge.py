@@ -74,6 +74,7 @@ class Fake:
         self.reviews: list[dict[str, Any]] = []
         self.review_posts: list[dict[str, Any]] = []
         self.reject_inline = False
+        self.reject_review_commits: set[str] = set()  # commits a force-push dropped from the pull request
         self.review_comments: list[dict[str, Any]] = []
         self.reply_posts: list[tuple[int, dict[str, Any]]] = []
         self.threads: list[dict[str, Any]] = []
@@ -446,6 +447,8 @@ class Fake:
             return 200, self.reviews
         if rest[1] == "reviews":
             self.review_posts.append(body)
+            if body.get("commit_id") in self.reject_review_commits:
+                return 422, {"message": "Unprocessable Entity"}
             if self.reject_inline and body.get("comments"):
                 return 422, {"message": "Unprocessable Entity"}
             state = {"APPROVE": "APPROVED", "REQUEST_CHANGES": "CHANGES_REQUESTED", "COMMENT": "COMMENTED"}
@@ -1720,11 +1723,8 @@ class GitHubOpsTests(BridgeTestCase):
 
 
 class PullRequestOpsTests(BridgeTestCase):
-    def test_review_is_single_idempotent_and_checks_head(self) -> None:
+    def test_review_is_single_and_idempotent(self) -> None:
         self.started_review(12)
-        stale = self.op("github.review", "p1", result=variant(REVIEW_OK, head_sha=SHA_B))
-        self.assertEqual(stale["error"], "stale_head")
-        self.assertEqual(self.fake.review_posts, [])
         first = self.op("github.review", "p1", result=REVIEW_OK)
         self.assertEqual((first["created"], first["event_submitted"]), (True, "REQUEST_CHANGES"))
         post = self.fake.review_posts[0]
@@ -1735,6 +1735,38 @@ class PullRequestOpsTests(BridgeTestCase):
         again = self.op("github.review", "p1", result=REVIEW_OK)
         self.assertEqual((again["created"], again["review_id"]), (False, first["review_id"]))
         self.assertEqual(len(self.fake.review_posts), 1)
+
+    def test_stale_review_lands_on_the_reviewed_commit_and_leaves_the_head_unstamped(self) -> None:
+        self.use_reviewer_app()
+        self.started_review(12)
+        self.fake.prs[12]["head"]["sha"] = SHA_B  # pushed while the review ran
+        result = self.op("github.review", "p1", result=REVIEW_OK)
+        self.assertTrue(result["ok"], result)
+        self.assertEqual((result["stale"], result["created"], result["commit_status"]), (True, True, None))
+        post = self.fake.review_posts[0]
+        self.assertEqual((post["commit_id"], post["event"]), (SHA_A, "REQUEST_CHANGES"))
+        self.assertIn(f"moved to `{SHA_B}`", post["body"])
+        self.assertIn(f"`{bridge.review_command(REVIEWER)}`", post["body"])
+        self.assertEqual(self.fake.status_posts, [])
+        again = self.op("github.review", "p1", result=REVIEW_OK)
+        self.assertEqual((again["created"], again["commit_status"]), (False, None))
+        self.assertEqual((len(self.fake.review_posts), self.fake.status_posts), (1, []))
+
+    def test_stale_review_of_a_force_pushed_away_commit_becomes_a_comment(self) -> None:
+        self.use_reviewer_app()
+        self.started_review(12)
+        self.fake.prs[12]["head"]["sha"] = SHA_B
+        self.fake.reject_review_commits = {SHA_A}
+        result = self.op("github.review", "p1", result=REVIEW_OK)
+        self.assertTrue(result["ok"], result)
+        self.assertEqual((result["stale"], result["created"], result["event_submitted"]), (True, True, "COMMENT"))
+        self.assertEqual((self.fake.reviews, self.fake.status_posts), ([], []))
+        body = self.fake.comments[12][0]["body"]
+        self.assertIn("**Verdict: REQUEST_CHANGES**", body)
+        self.assertIn("- `a.py` line 3 (RIGHT): bug here", body)
+        self.assertTrue(body.endswith(bridge.review_footer(REVIEWER)))
+        again = self.op("github.review", "p1", result=REVIEW_OK)
+        self.assertEqual((again["created"], len(self.fake.comments[12])), (False, 1))
 
     def test_review_of_bots_own_pr_is_downgraded_to_comment_with_verdict(self) -> None:
         self.started_review(12, author=BOT)

@@ -2506,8 +2506,10 @@ class Bridge:
         gh = self.review_github
         pr = self._get_pr(repo, number, client=gh)
         head = (pr.get("head") or {}).get("sha")
-        if head != result["head_sha"]:
-            raise OpError("stale_head")
+        reviewed = result["head_sha"]
+        # A push during the review leaves the verdict valid only for the commit the agent read: submit it
+        # there and leave the new head unreviewed rather than stamping unread code or stopping the event.
+        stale = head != reviewed
 
         replies: list[int] = []
         resolved: list[str] = []
@@ -2542,8 +2544,9 @@ class Bridge:
             if marker in (r.get("body") or ""):
                 submitted = REVIEW_STATE_EVENTS.get(r.get("state"), r.get("state"))
                 return {"review_id": r.get("id"), "html_url": r.get("html_url"), "event_submitted": submitted,
-                        "replies": replies, "resolved": resolved, "created": False,
-                        "commit_status": self._review_status(repo, head, submitted, r.get("html_url"))}
+                        "replies": replies, "resolved": resolved, "created": False, "stale": stale,
+                        "commit_status": None if stale else self._review_status(repo, head, submitted,
+                                                                                r.get("html_url"))}
         event, body = result["event"], result["body"]
         author = ((pr.get("user") or {}).get("login") or "").casefold()
         reviewer = self.reviewer_login()
@@ -2554,12 +2557,17 @@ class Bridge:
             event = "COMMENT"
         footer = review_footer(reviewer)
         tail = f"\n\n{footer}" if footer else ""
+        if stale:
+            command = review_command(reviewer)
+            again = f" Comment `{command}` to review the new head." if command else ""
+            body = (f"**Stale review** — this reviews `{reviewed}`; the pull request head moved to `{head}` "
+                    f"while the review ran, so the new head is not reviewed.{again}\n\n{body}")
         inline = [
             {"path": c["path"], "line": c["line"], "side": c["side"], "body": c["body"],
              **({"start_line": c["start_line"], "start_side": c["side"]} if c["start_line"] else {})}
             for c in result["comments"]
         ]
-        payload: dict[str, Any] = {"commit_id": head, "body": f"{marker}\n{body}{tail}", "event": event}
+        payload: dict[str, Any] = {"commit_id": reviewed, "body": f"{marker}\n{body}{tail}", "event": event}
         if inline:
             payload["comments"] = inline
         path = f"/repos/{repo}/pulls/{number}/reviews"
@@ -2567,15 +2575,24 @@ class Bridge:
         folded = False
         if status == 422 and inline:
             # GitHub rejects inline comments outside the diff; keep the findings in the review body.
-            payload = {"commit_id": head, "event": event,
+            payload = {"commit_id": reviewed, "event": event,
                        "body": f"{marker}\n{body}\n\n{findings_section(result['comments'])}{tail}"}
             status, data = self._gh_raw("POST", path, payload, client=gh)
             folded = True
+        if status == 422 and stale:
+            # A force-push can drop the reviewed commit from the pull request, and GitHub then refuses a review
+            # anchored to it; keep the verdict and findings as a pull request comment instead.
+            findings = f"\n\n{findings_section(result['comments'])}" if result["comments"] else ""
+            posted = self._comment(repo, number, f"{delivery}:review",
+                                   f"**Verdict: {event}**\n\n{body}{findings}{tail}", client=gh)
+            return {"review_id": None, "html_url": posted["url"], "event_submitted": "COMMENT",
+                    "replies": replies, "resolved": resolved, "created": posted["created"], "stale": True,
+                    "inline_folded": bool(result["comments"]), "commit_status": None}
         if status != 200 or not isinstance(data, dict):
             raise OpError(f"github review HTTP {status}", retryable=status >= 500 or status == 429)
         return {"review_id": data.get("id"), "html_url": data.get("html_url"), "event_submitted": event,
-                "replies": replies, "resolved": resolved, "created": True, "inline_folded": folded,
-                "commit_status": self._review_status(repo, head, event, data.get("html_url"))}
+                "replies": replies, "resolved": resolved, "created": True, "inline_folded": folded, "stale": stale,
+                "commit_status": None if stale else self._review_status(repo, head, event, data.get("html_url"))}
 
     def _review_status(self, repo: str, sha: str, event: str, target_url: Any) -> dict[str, Any] | None:
         """Mirror the submitted verdict as a commit status on the reviewed head (review App only).

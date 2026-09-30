@@ -3215,7 +3215,7 @@
         "genericAuthType": "httpHeaderAuth",
         "sendBody": true,
         "specifyBody": "json",
-        "jsonBody": "={{ JSON.stringify(Object.assign({ op: 'fail', delivery_id: $('Begin').first().json.event.delivery_id }, { node: $prevNode.name, detail: String($prevNode.name + ': ' + ($json.error === 'stale_head' ? 'stale_head (the pull request head changed while the review ran)' : ($json.error || $json.detail || ($json.state ? 'agent turn still ' + $json.state + ' when the time budget ran out' : 'unexpected result')))).slice(0, 1700) })) }}",
+        "jsonBody": "={{ JSON.stringify(Object.assign({ op: 'fail', delivery_id: $('Begin').first().json.event.delivery_id }, { node: $prevNode.name, detail: String($prevNode.name + ': ' + ($json.error || $json.detail || ($json.state ? 'agent turn still ' + $json.state + ' when the time budget ran out' : 'unexpected result'))).slice(0, 1700) })) }}",
         "options": {
           "timeout": 120000,
           "response": {
