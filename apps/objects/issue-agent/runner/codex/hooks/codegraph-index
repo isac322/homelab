@@ -1,0 +1,16 @@
+#!/usr/bin/env bash
+# Managed Codex SessionStart hook: gives the session's worktree a CodeGraph
+# index (init when missing, sync otherwise) so codegraph_* tools work from the
+# first turn. It never blocks the session; the agent profile tells the agent to
+# run `codegraph init --yes` itself if the index is still missing.
+set -uo pipefail
+cat >/dev/null
+
+root="$(git rev-parse --show-toplevel 2>/dev/null)" || exit 0
+[[ "$root" == "${ISSUE_AGENT_CHECKOUTS:-/home/agent/checkouts}"/* ]] || exit 0
+if [[ -d "$root/.codegraph" ]]; then
+  /usr/local/bin/codegraph sync "$root" >/dev/null 2>&1
+else
+  /usr/local/bin/codegraph init --yes "$root" >/dev/null 2>&1
+fi
+exit 0

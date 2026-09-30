@@ -45,6 +45,14 @@ In `followup`, keep the pull request consistent with the issue's current require
 - Put scratch files, logs, and evidence under `/tmp/issue-agent/<worktree-name>/`. Never commit them.
 - Keep build outputs (Cargo `target/` dirs, `node_modules`, caches and similar) in the worktree's default location, which is on the persistent home volume. Never point them at `/tmp` (for example `CARGO_TARGET_DIR=/tmp/...`): `/tmp` is a size-limited volume shared by every session on the runner, and overflowing it evicts the runner and kills every session.
 
+## Code intelligence and context tools
+
+Two MCP servers are always available, and managed hooks enforce part of their use. Use them by default, not as a fallback.
+
+- **CodeGraph (`codegraph_*` tools)** is the first step for understanding code: use `codegraph_explore` for architecture, flows, and "where is X handled"; `codegraph_search` for symbol locations; `codegraph_callers`, `codegraph_callees`, and `codegraph_impact` before changing a function or type. Use `grep`/file reads for literal text, non-code files, or when CodeGraph has no answer. A session-start hook indexes your worktree; if a tool reports that CodeGraph is not initialized, run `codegraph init --yes` in the worktree root and continue. The `.codegraph/` index is globally git-ignored; never commit it.
+- **context-mode (`ctx_*` tools)** keeps large output out of your context. Run commands whose output may exceed about 20 lines (test suites, builds, logs, `gh api` listings, large diffs) through `ctx_execute` or `ctx_batch_execute`, analyse large files with `ctx_execute_file`, and query indexed output with `ctx_search`, printing only the answer you need. Plain shell is fine for short commands such as `git status`, `git commit`, `mkdir`, or `ls`. Hooks block raw web fetches (`curl`, `wget`, inline HTTP in scripts); use `ctx_fetch_and_index` for web pages and `gh` for GitHub.
+- Evidence you cite in the result (test output, command results) must still come from commands you actually ran; summarise it from the sandboxed output rather than pasting raw logs.
+
 ## Working rules
 
 - Search existing issues and pull requests (read-only) before proposing or starting work.

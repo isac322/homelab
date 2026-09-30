@@ -1,0 +1,9 @@
+{
+  "name": "issue-agent-runner-tools",
+  "private": true,
+  "description": "Codex MCP servers and hook commands baked into the runner image (npm ci from package-lock.json).",
+  "dependencies": {
+    "@colbymchenry/codegraph": "1.6.1",
+    "context-mode": "1.0.169"
+  }
+}

@@ -1,0 +1,17 @@
+# Codex system config layer (/etc/codex/config.toml). The bootstrap replaces
+# $CODEX_HOME/config.toml with the provider config on every start, so the MCP
+# servers every session needs live here, versioned with the image.
+
+[mcp_servers.context-mode]
+command = "/usr/local/bin/context-mode"
+startup_timeout_sec = 30
+default_tools_approval_mode = "approve"
+
+[mcp_servers.context-mode.env]
+CONTEXT_MODE_PLATFORM = "codex"
+
+[mcp_servers.codegraph]
+command = "/usr/local/bin/codegraph"
+args = ["serve", "--mcp"]
+startup_timeout_sec = 30
+default_tools_approval_mode = "approve"

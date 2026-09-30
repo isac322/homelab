@@ -1,5 +1,7 @@
 [include]
     path = /etc/gitconfig
+[core]
+    excludesFile = /etc/issue-agent/gitignore
 [credential "https://github.com"]
     helper =
     helper = !gh auth git-credential

@@ -1,0 +1,2 @@
+# Global excludes for agent worktrees: tool state that must never be committed.
+.codegraph/

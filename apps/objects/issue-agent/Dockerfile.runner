@@ -53,6 +53,26 @@ RUN curl -fsSLo /tmp/gh.tar.gz "https://github.com/cli/cli/releases/download/v${
     && tar -xzf /tmp/gh.tar.gz --strip-components=2 -C /usr/local/bin "gh_${GH_VERSION}_linux_arm64/bin/gh" \
     && rm /tmp/gh.tar.gz
 
+# Codex MCP servers/hook commands: context-mode and CodeGraph, pinned with
+# integrity by runner/tools/package-lock.json. Install scripts are skipped;
+# better-sqlite3 is compiled against the image's own Node headers (no prebuilt
+# download). context-mode's hooks look for it under their own package
+# directory and otherwise run `npm install` on every session start, so it is
+# linked there, and its per-ABI copy is seeded so nothing tries to rebuild it
+# inside the read-only /opt tree at runtime.
+COPY runner/tools/package.json runner/tools/package-lock.json /opt/issue-agent/tools/
+RUN cd /opt/issue-agent/tools \
+    && npm ci --omit=dev --ignore-scripts --no-audit --no-fund \
+    && npm_config_nodedir=/usr/local npm rebuild better-sqlite3 --ignore-scripts=false --build-from-source \
+    && release=node_modules/better-sqlite3/build/Release \
+    && cp "$release/better_sqlite3.node" "$release/better_sqlite3.abi$(node -p process.versions.modules).node" \
+    && rm -rf "$release"/obj* node_modules/better-sqlite3/deps /root/.npm \
+    && install -d node_modules/context-mode/node_modules \
+    && ln -s ../../better-sqlite3 node_modules/context-mode/node_modules/better-sqlite3 \
+    && ln -s /opt/issue-agent/tools/node_modules/context-mode/cli.bundle.mjs /usr/local/bin/context-mode \
+    && ln -s /opt/issue-agent/tools/node_modules/@colbymchenry/codegraph/npm-shim.js /usr/local/bin/codegraph \
+    && codegraph --version
+
 # Only the rustup proxies live in the image; RUSTUP_HOME/CARGO_HOME are
 # redirected to the PVC at runtime so rust-toolchain.toml installs persist.
 RUN curl -fsSLo /tmp/rustup-init "https://static.rust-lang.org/rustup/archive/${RUSTUP_VERSION}/aarch64-unknown-linux-gnu/rustup-init" \
@@ -68,8 +88,13 @@ RUN usermod --login agent --home /home/agent node \
 
 # BuildKit's COPY --chmod also sets that mode on auto-created parent
 # directories; create them 0755 first so uid 1000 can traverse them.
-RUN install -d -m 0755 /etc/issue-agent /opt/issue-agent/bin /opt/issue-agent/profile /etc/codex/skills
+RUN install -d -m 0755 /etc/issue-agent /opt/issue-agent/bin /opt/issue-agent/profile /etc/codex/skills /etc/codex/hooks
 COPY --chmod=0644 runner/gitconfig /etc/issue-agent/gitconfig
+COPY --chmod=0644 runner/gitignore /etc/issue-agent/gitignore
+# Codex system layer: MCP servers (config.toml) and managed, pre-trusted hooks
+# (requirements.toml + scripts in its managed_dir).
+COPY --chmod=0644 runner/codex/config.toml runner/codex/requirements.toml /etc/codex/
+COPY --chmod=0755 runner/codex/hooks/ /etc/codex/hooks/
 COPY --chmod=0755 runner/bootstrap.sh /opt/issue-agent/bin/runner-bootstrap
 COPY --chmod=0755 runner/healthcheck.sh /opt/issue-agent/bin/runner-healthcheck
 COPY --chmod=0755 runner/publisher.py /opt/issue-agent/bin/publisher
@@ -87,6 +112,7 @@ ENV HOME=/home/agent \
     GH_CONFIG_DIR=/run/issue-agent/github \
     GIT_CONFIG_SYSTEM=/etc/issue-agent/gitconfig \
     GIT_TERMINAL_PROMPT=0 \
+    CODEGRAPH_NO_DOWNLOAD=1 \
     GH_PROMPT_DISABLED=1 \
     GH_NO_UPDATE_NOTIFIER=1 \
     RUSTUP_HOME=/home/agent/.rustup \

@@ -1,0 +1,4 @@
+#!/usr/bin/env bash
+# Managed Codex hook: forwards the hook event on stdin to context-mode's Codex adapter.
+set -euo pipefail
+exec /usr/local/bin/context-mode hook codex "$1"

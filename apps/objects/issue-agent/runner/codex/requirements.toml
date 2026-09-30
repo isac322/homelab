@@ -1,0 +1,48 @@
+# Codex system requirements (/etc/codex/requirements.toml). Hooks declared here
+# are managed: trusted by policy without the interactive /hooks review that an
+# unattended runner cannot give, and not removable from user config layers.
+# The context-mode hooks route large tool output into its sandbox and block
+# raw fetches; the codegraph hook indexes the session worktree.
+
+[features]
+hooks = true
+
+[hooks]
+managed_dir = "/etc/codex/hooks"
+
+[[hooks.SessionStart]]
+[[hooks.SessionStart.hooks]]
+type = "command"
+command = "/etc/codex/hooks/codegraph-index"
+timeout = 600
+statusMessage = "Indexing the worktree with CodeGraph"
+
+[[hooks.SessionStart.hooks]]
+type = "command"
+command = "/etc/codex/hooks/context-mode sessionstart"
+
+[[hooks.PreToolUse]]
+matcher = "local_shell|shell|shell_command|exec_command|Bash|Shell|apply_patch|Edit|Write|grep_files|ctx_execute|ctx_execute_file|ctx_batch_execute|ctx_fetch_and_index|ctx_search|ctx_index|mcp__"
+[[hooks.PreToolUse.hooks]]
+type = "command"
+command = "/etc/codex/hooks/context-mode pretooluse"
+
+[[hooks.PostToolUse]]
+[[hooks.PostToolUse.hooks]]
+type = "command"
+command = "/etc/codex/hooks/context-mode posttooluse"
+
+[[hooks.PreCompact]]
+[[hooks.PreCompact.hooks]]
+type = "command"
+command = "/etc/codex/hooks/context-mode precompact"
+
+[[hooks.UserPromptSubmit]]
+[[hooks.UserPromptSubmit.hooks]]
+type = "command"
+command = "/etc/codex/hooks/context-mode userpromptsubmit"
+
+[[hooks.Stop]]
+[[hooks.Stop.hooks]]
+type = "command"
+command = "/etc/codex/hooks/context-mode stop"
