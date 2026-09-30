@@ -32,7 +32,7 @@ spec:
         # from falling back to the upstream entrypoint's TCP listener.
         - name: dockerd
           restartPolicy: Always
-          image: ghcr.io/isac322/issue-agent-dockerd:29.4.0-20260930@sha256:6b8013967fca108043a983153336d1793c2d2e0e7bbacdcfcb33ea7951cd7e6b
+          image: ghcr.io/isac322/issue-agent-dockerd:29.4.0-20261001-native-drm@sha256:bdc9d5a69c3aee6c15f9f27ba7807e54d6de41ff1b35b57c7005692e619ab2cc
           command:
             - /opt/issue-agent/bin/dockerd-start
           env:
@@ -77,8 +77,14 @@ spec:
               subPath: checkouts
             - name: tmp
               mountPath: /tmp
+            # Raw curated DRM pair outside /dev; native-dri-prepare projects it
+            # onto /dev/dri in the daemon's own mount namespace.
             - name: dri
-              mountPath: /dev/dri
+              mountPath: /run/issue-agent-dri
+            - name: dri-card0
+              mountPath: /run/issue-agent-dri/card0
+            - name: dri-render128
+              mountPath: /run/issue-agent-dri/renderD128
       affinity:
         nodeAffinity:
           requiredDuringSchedulingIgnoredDuringExecution:
@@ -91,7 +97,7 @@ spec:
                       - macmini
       containers:
         - name: runner
-          image: ghcr.io/isac322/issue-agent-runner:0.30.7-codex0.159.2-20260930-docker@sha256:90252e35f63751efef1dea0c5626c6aa547ccd7f040bd9a9193c8cd9888becc9
+          image: ghcr.io/isac322/issue-agent-runner:0.30.7-codex0.159.2-20261001-native-drm@sha256:81133550f5d2d058b8ce7c5ec3ef6472900773d0e721a8fa5e7ef664e6c62b6e
           env:
             - name: HOME
               value: /home/agent
@@ -173,13 +179,21 @@ spec:
               mountPath: /run/issue-agent-docker
             # Visible so Krema's harness detects the /dev/dri nodes it passes via
             # `docker run --device`; the daemon resolves them in its own mount.
+            # The native sidecar creates the two submount targets before its
+            # startup probe releases this container.
             - name: dri
               mountPath: /dev/dri
+              readOnly: true
+            - name: dri-card0
+              mountPath: /dev/dri/card0
+              readOnly: true
+            - name: dri-render128
+              mountPath: /dev/dri/renderD128
               readOnly: true
         # The only container holding the contents:write token. Called by the
         # bridge only; the runner container cannot read either of its secrets.
         - name: publisher
-          image: ghcr.io/isac322/issue-agent-runner:0.30.7-codex0.159.2-20260930-docker@sha256:90252e35f63751efef1dea0c5626c6aa547ccd7f040bd9a9193c8cd9888becc9
+          image: ghcr.io/isac322/issue-agent-runner:0.30.7-codex0.159.2-20261001-native-drm@sha256:81133550f5d2d058b8ce7c5ec3ef6472900773d0e721a8fa5e7ef664e6c62b6e
           command:
             - /usr/bin/tini
             - --
@@ -272,7 +286,21 @@ spec:
         - name: docker-data
           persistentVolumeClaim:
             claimName: issue-agent-runner-docker
+        # Curated /dev/dri contents: exactly the two CharDevice mounts below.
+        # The runner mounts it at /dev/dri; the privileged dockerd container
+        # mounts it outside /dev (its runtime would repopulate /dev/dri with
+        # every host DRM node) and native-dri-prepare projects it privately.
         - name: dri
+          emptyDir: {}
+        # Native DRM pair only (asahi on macmini, rockchip-drm on rock5bp),
+        # mounted per node rather than the whole /dev/dri so other DRM nodes
+        # such as rock5bp's RKNPU card1/renderD129 stay out of the pod.
+        # dockerd-probe verifies both belong to the same supported device.
+        - name: dri-card0
           hostPath:
-            path: /dev/dri
-            type: Directory
+            path: /dev/dri/card0
+            type: CharDevice
+        - name: dri-render128
+          hostPath:
+            path: /dev/dri/renderD128
+            type: CharDevice

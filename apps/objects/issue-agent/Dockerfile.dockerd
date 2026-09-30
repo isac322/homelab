@@ -16,6 +16,7 @@ RUN apk add --no-cache nftables=1.1.5-r2 util-linux-misc=2.41.6-r1 \
 RUN install -d -m 0755 /opt/issue-agent/bin
 COPY --chmod=0755 runner/dockerd-start.sh /opt/issue-agent/bin/dockerd-start
 COPY --chmod=0755 runner/dockerd-probe.sh /opt/issue-agent/bin/dockerd-probe
+COPY --chmod=0755 runner/native-dri-prepare.sh /opt/issue-agent/bin/native-dri-prepare
 
 ENTRYPOINT ["/opt/issue-agent/bin/dockerd-start"]
 CMD []

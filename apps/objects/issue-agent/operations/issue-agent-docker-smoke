@@ -49,7 +49,8 @@ printf 'Image build and non-root bind-mount round trip passed. Artifacts: %s\n' 
 
 if [[ -n $krema ]]; then
   # No fixed wait or AT-SPI-only substitute: the preview suite requires actual
-  # capture and live thumbnail rendering in its vgem/llvmpipe KWin session.
+  # capture and live thumbnail rendering in its KWin session, which renders
+  # with Mesa's software rasterizer on the node's native DRM nodes.
   cd "$krema"
   KREMA_E2E_ARTIFACTS="$artifacts/krema" sh tests/appium/run-e2e.sh test_smoke.py test_03_preview.py
 fi

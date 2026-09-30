@@ -61,6 +61,11 @@ mkdir -p /sys/fs/cgroup/.issue-agent-write-test 2>/dev/null ||
   fail '/sys/fs/cgroup is not writable; cgroupfs driver cannot create child cgroups'
 rmdir /sys/fs/cgroup/.issue-agent-write-test
 
+# Privileged containers get every host device under /dev, so replace /dev/dri
+# in this (private) mount namespace with the manifest's curated native pair.
+/opt/issue-agent/bin/native-dri-prepare ||
+  fail 'cannot project the native DRM pair onto /dev/dri'
+
 # With --firewall-backend=nftables dockerd never enables IPv4 forwarding
 # itself and fails on bridge creation otherwise. The sysctl is per-network
 # namespace, so this affects only the pod.

@@ -29,7 +29,7 @@ v2는 코딩 에이전트의 GitHub 쓰기를 모두 없앴다. 에이전트는 
 | n8n | GitHub 이벤트 처리 흐름, 모드별 단계(triage → implement, followup, review), 결과에 따른 분기, 모든 GitHub 반영(라벨·댓글·push·PR·리뷰)의 호출과 실패 처리. 에이전트에 보내는 메시지에는 대상 번호와 트리거 정보만 넣으며 GitHub 내용 조회는 담당하지 않는다 |
 | 연결 계층(bridge) | webhook 검증, collaborator 권한 판정(캐시)과 비신뢰 이슈 rate limit, 이벤트 영속화·중복 방지, 이슈/PR과 세션 매핑, HAPI API 인증·상태 확인, 모드별 결과 스키마 검증, GitHub 쓰기 op(issues/pull_requests/contents write 토큰. contents write는 리뷰 스레드 resolve용이며 push에 쓰지 않음), publisher 호출, attention 알림. 에이전트용 GitHub 읽기 op는 두지 않는다 |
 | publisher(Runner Pod 사이드카) | push 토큰(`issue-agent-github-push`)의 유일한 보유자. bridge 요청으로 저장소 checkout clone과 `hapi-issue-<n>` branch의 non-force push만 수행 |
-| dockerd(Runner Pod native sidecar) | runner·publisher와 같은 Pod의 Docker daemon. Unix socket만 열고 checkout·`/tmp`·Docker 데이터·`/dev/dri`만 마운트한다. startup probe가 daemon 응답과 vgem device를 확인해야 runner·publisher가 시작한다 |
+| dockerd(Runner Pod native sidecar) | runner·publisher와 같은 Pod의 Docker daemon. Unix socket만 열고 checkout·`/tmp`·Docker 데이터·native DRM 장치 두 개만 마운트한다. startup probe가 daemon 응답과 native DRM 장치 쌍을 확인해야 runner·publisher가 시작한다 |
 | HAPI Hub | 세션 목록·메시지·승인 API, 웹 UI, 다중 구독, Hub 데이터 저장 |
 | HAPI Runner | 실제 Codex 실행, 저장소별 worktree, 하네스 설정·기록 보존. `issue-agent-runner` namespace에서 publisher·dockerd와 한 Pod로 실행한다. GitHub 토큰은 읽기 전용이며 에이전트가 `gh`(REST·`gh api graphql`)로 GitHub를 직접 읽는다 |
 | 공통 에이전트 프로필 | 전역 `AGENTS.md`(읽기 전용 GitHub, 결과 프로토콜, 모드별 스킬)와 자동화용으로 고친 스킬 |
@@ -135,16 +135,17 @@ followup 턴은 PR을 이슈와 맞춘다. 에이전트는 `gh issue view`와 `g
 
 에이전트를 실행하는 모든 경로는 GitHub에 보이는 상태로 끝난다. 실패는 bridge `mark_attention`으로 모인다. 입구는 워크플로의 `Mark needs attention`(`fail`), n8n 오류 워크플로 `IssueAgentError01`(Error Trigger → `fail_execution`, 메인 워크플로 `settings.errorWorkflow`), bridge 자체 포기(dispatch 8회 실패, stale dispatch, n8n 응답 없음)다. `mark_attention`은 이벤트를 `needs_attention`으로 두고 해당 이슈/PR을 block한 뒤, 멈춘 노드·단계, 이벤트 종류, delivery ID, n8n 실행 링크, HAPI 세션 링크, `retry_event` 방법을 담은 댓글과 `agent:needs-attention` 라벨을 붙인다. attention 댓글·라벨은 이벤트가 `pr_review`면 리뷰 App(`haechibot[bot]`)으로 게시하고 위의 재리뷰 footer도 붙이며, 그 외 이벤트는 작성 App(`bulgasaribot[bot]`)으로 게시한다. 둘 다 적용될 때까지 backoff 후 재시도한다. 자동 재실행은 하지 않는다. 운영자는 `retry_event`(기록된 단계부터 재개) 또는 `unblock_issue`(이후 이벤트만 진행)로 푼다. 성공한 `finish`는 `agent:needs-attention`을 제거한다.
 
-## Runner Docker와 vgem
+## Runner Docker와 DRM 장치
 
 Runner Pod는 저장소 테스트가 Docker 이미지를 build하고 컨테이너를 실행할 수 있도록 Pod 전용 Docker daemon을 둔다. daemon에 privileged 컨테이너가 필요하므로 runner·publisher·dockerd는 `issue-agent-runner` namespace에서 실행한다. 이 namespace만 Pod Security `privileged`를 enforce하고 audit·warn은 `restricted`로 두어, dockerd 외의 위반도 audit 기록과 경고로 남긴다. hub·n8n·bridge는 `restricted`를 enforce하는 `issue-agent`에 남는다.
 
 - Pod 구성: runner, publisher, native sidecar `dockerd`가 한 Pod에 있다. Deployment는 replica 1과 `Recreate`를 유지하며 replica를 늘리지 않는다. publisher Service는 `issue-agent-publisher.issue-agent-runner`이고, runner는 `issue-agent`의 Hub에 접속한다.
 - 권한: `dockerd`만 root·privileged(seccomp `Unconfined`)로 실행한다. runner와 publisher는 UID 1000이며 모든 capability를 제거하고 권한 상승을 막는다. daemon은 TCP listener 없이 Unix socket만 열고, socket은 root:1000 0660이다.
-- 마운트: daemon은 home PVC의 `checkouts` subPath(`/home/agent/checkouts`), runner와 공유하는 `/tmp` emptyDir, socket 디렉터리, Docker 데이터 PVC(`/var/lib/docker`), host `/dev/dri`만 마운트한다. home root(`CODEX_HOME`, `HAPI_HOME`)와 Secret은 마운트하지 않는다. checkout과 `/tmp`는 runner와 daemon에서 경로가 같으므로, 이 두 경로 아래 파일만 bind mount와 build context로 쓸 수 있다.
+- 마운트: daemon은 home PVC의 `checkouts` subPath(`/home/agent/checkouts`), runner와 공유하는 `/tmp` emptyDir, socket 디렉터리, Docker 데이터 PVC(`/var/lib/docker`), native DRM 장치 두 개만 마운트한다. home root(`CODEX_HOME`, `HAPI_HOME`)와 Secret은 마운트하지 않는다. checkout과 `/tmp`는 runner와 daemon에서 경로가 같으므로, 이 두 경로 아래 파일만 bind mount와 build context로 쓸 수 있다.
 - cgroup: `dockerd-start`는 컨테이너 cgroup을 경계로 둔다. `/proc/self/cgroup`이 `0::/`인 private cgroup namespace면 바로 쓰고, host cgroup namespace를 공유해 scope가 node 경로(`/kubepods…/cri-containerd-…scope`)로 보이면 그 scope의 유한한 `memory.max`를 먼저 확인한 뒤 `unshare --cgroup --mount --propagation private`로 재실행하고 `/sys/fs/cgroup`에 cgroup2를 remount한다. 그래도 격리된 보기를 만들 수 없으면 daemon을 띄우지 않는다. 컨테이너는 cgroupfs driver와 `--cgroup-parent=/issue-agent-docker`로 자기 scope 아래에 생기므로 Pod 메모리 제한을 넘지 못한다. `unshare`는 BusyBox에 없어 이미지에 `util-linux-misc`를 넣는다. dockerd는 `/usr/local/bin/dind docker-init` 경유로 띄워 DinD의 mount 준비와 PID 1 zombie 수거를 쓰고, stock `dockerd-entrypoint`는 거치지 않는다. 방화벽은 nftables backend를 쓰고 IPv6 규칙은 만들지 않는다.
-- 시작 순서: `dockerd-start`는 home의 `checkouts/.issue-agent-home-ready`가 없으면 바로 종료한다. startup probe는 `docker info` 응답, 로드된 vgem 모듈, `/sys/devices/platform/vgem*`으로 해석되는 DRM card, 그 card의 `/dev/dri/cardN` character device를 모두 요구한다. 하나라도 빠지면 runner와 publisher는 시작하지 않고 Hub에 등록하지도 않는다. runner bootstrap도 `docker info`가 실패하면 종료한다.
-- vgem: Runner는 vgem DKMS 패키지를 설치할 `macmini`·`rock5bp`에만 스케줄된다. 실제 GPU만 있는 node에서는 probe가 실패하므로 host GPU로 테스트하는 상태가 생기지 않는다. 패키지 구성과 설치는 README의 `vgem DKMS` 절을 따른다.
+- DRM 장치: Pod는 host의 `/dev/dri/card0`·`/dev/dri/renderD128`만 `CharDevice` hostPath 두 개로 받는다(`macmini`는 `asahi`, `rock5bp`는 `rockchip-drm`). `rock5bp`의 RKNPU `card1`·`renderD129` 같은 다른 DRM node는 Pod에 넣지 않는다. runner는 두 장치를 `/dev/dri` 아래에 read-only로 마운트한다. privileged 컨테이너의 runtime은 volume mount 뒤에 host device 전체로 `/dev`를 채우므로 `/dev/dri`를 직접 가리면 다시 채워진다. 그래서 dockerd는 raw emptyDir `/run/issue-agent-dri`(`/dev` 밖)에 두 장치를 submount로 받고, `dockerd-start`가 cgroup 절차 뒤 `native-dri-prepare`를 실행한다. 이 helper는 raw 디렉터리에 `card0`·`renderD128` character device만 있는지 확인하고, `/dev` propagation을 private으로 바꾼 뒤 자기 mount namespace의 `/dev/dri`에 `--rbind`로 투영한다. host 경로와 device node는 만들거나 지우거나 바꾸지 않으며, 예상과 다른 상태면 daemon을 띄우지 않는다. 렌더링은 지금처럼 Mesa CPU rasterizer(llvmpipe)가 맡으므로 host 커널 module, 배포판 패키지, Nix 변경이 필요 없다.
+- 시작 순서: `dockerd-start`는 home의 `checkouts/.issue-agent-home-ready`가 없으면 바로 종료한다. startup probe는 `docker info` 응답과, `/dev/dri/card0`·`/dev/dri/renderD128`이 kernel의 같은 이름 node와 device 번호가 일치하고 `asahi` 또는 `rockchip-drm` driver인 한 DRM 장치에 속하는지를 모두 요구한다. 하나라도 빠지면 runner와 publisher는 시작하지 않고 Hub에 등록하지도 않는다. runner bootstrap도 `docker info`가 실패하면 종료한다. Runner는 이 장치가 있는 `macmini`·`rock5bp`에만 스케줄된다.
+- 배포 blocker: Docker 29.4의 nftables firewall backend는 kernel FIB expression을 쓴다. `rock5bp`의 현재 vendor 커널 `6.1.84-999-rk2410` config는 `CONFIG_NFT_FIB=m`, `CONFIG_NFT_FIB_IPV6=m`이지만 `# CONFIG_NFT_FIB_IPV4 is not set`이라 `nft_fib_ipv4`·`nft_fib_inet` module이 없다. 그래서 DRM 변경과 무관하게, 변경하지 않은 dockerd도 이 커널에서는 시작에 실패한다. 아직 해결하지 않았으며 별도 승인 없이 module 빌드·설치, 커널 교체, 방화벽 설정 변경을 하지 않는다.
 - 이미지: dockerd 이미지(`Dockerfile.dockerd`)는 digest로 고정한 `docker:29.4.0-dind` 위에 버전 고정한 `nftables`와 `util-linux-misc`를 빌드 때 설치하며 실행 중에는 패키지를 설치하지 않는다. Runner 이미지의 Docker CLI·buildx·compose는 digest로 고정한 `docker:29.4.0-cli`에서 복사한다. Krema처럼 KWin·CMake가 필요한 저장소는 harness가 자기 컨테이너 안에서 이를 쓰므로 Runner 이미지에는 넣지 않는다.
 - 저장소와 자원: Docker 데이터 PVC는 50Gi, Runner home PVC는 기존과 같은 20Gi다. dockerd 자원은 아래 `승인된 초기 자원 예외`에 있다.
 
@@ -299,33 +300,34 @@ Runner Pod의 native sidecar `dockerd`는 위 표의 dockerd 행 값을 쓴다. 
 - [ ] n8n `IssueAgentMain01`에서 `Load issue`·`Issue loaded?`·`Load PR context`·`PR context loaded?` 노드가 제거됐고, `Route by mode`의 triage·followup 출력은 `Issue step`으로, review 출력은 `Prepare review step`으로 직접 연결된다. Prepare 노드는 제거된 노드를 참조하지 않는다.
 - [ ] GitHub 쓰기 경로(bridge `github.comment`·`github.labels`·`github.review`·`git.push`·`github.pr_upsert`와 attention 알림)는 바뀌지 않았다.
 
-### Docker·vgem 배포 전 수용 기준
+### Docker 배포 전 수용 기준
 
-2026-09-30에 로컬 환경, 원격 Nix builder, 일회용 VM에서 확인한 항목이다. production node와 클러스터에는 아무것도 설치하거나 배포하지 않았다.
+로컬 환경과 일회용 VM에서 확인한 항목이다. production node와 클러스터에는 아무것도 설치하거나 배포하지 않았다. vgem module 기반의 이전 검증은 native DRM 전환으로 현재 근거에서 뺐다.
 
-- [x] 로컬 ARM64 Docker에서 Runner 이미지와 dockerd 이미지 빌드가 성공했다. Nix로 두 node의 vgem DKMS 소스 패키지(`rock5bp` deb, `macmini` pacman)도 빌드했다. 원격 native aarch64 Linux Nix store(`ssh-ng://`)에서는 이 변경의 영향을 받는 Linux check 네 개, `vgem-dkms-macmini`·`vgem-dkms-rock5bp` 패키지와 `host-macmini`·`host-rock5bp` host build가 통과했다. 패키지 metadata는 vgem 소스의 MIT 라이선스를 반영한 상태로 빌드했다. 결과는 Nix store artifact일 뿐이며 운영 OS 패키지 설치나 host activation이 아니다.
-- [x] Darwin에서 `nix flake check --no-build` 평가가 성공했다.
-- [ ] `nix flake check --all-systems`는 기존 rendered-contracts의 `requiredLinks == 35` assertion이 실제 36개로 실패한다. 따라서 전체 flake check는 통과하지 않았다. 이 assertion 코드는 수정하지 않은 기존 base 코드이고 실패는 이전부터 있었다. 이 변경은 topology 코드도 건드리지 않았다.
-- [x] vgem 모듈을 두 node의 실제 vendor headers archive(`linux-asahi-headers`, `linux-headers-6.1.84-999-rk2410`)에 대해 컴파일했다. `vgem-abi-check`는 6개 음성 사례에서 모두 빌드를 실패시켰다.
-- [x] 일회용 Lima Ubuntu VM(커널 `7.0.0-28-generic`)에서 platform patch를 적용한 7.1.13 vgem 소스를 컴파일·load했고, `card0`이 platform sysfs device로 해석됐다.
+- [x] 로컬 ARM64 Docker에서 Runner 이미지와 dockerd 이미지 빌드가 성공했다.
 - [x] 빌드한 non-root Runner 이미지가 Unix socket DinD로 실제 이미지를 build했고, 입력 bind mount와 artifact의 SHA-256 왕복이 일치했다.
-- [x] Krema commit `52f2d41a38d880b584b7e5bf7dd79adb81a29a56`의 harness에서 `test_smoke.py` 6개와 `test_03_preview.py` 11개, 합계 17개가 34.65초에 통과했고 skip은 없었다. vgem/llvmpipe 위의 실제 KWin OpenGL 세션에서 screenshot과 thumbnail을 렌더링했다.
-- [x] QA 환경의 실제 K3s `v1.36.4+k3s1` / containerd 2.3.4(`SystemdCgroup=true`) Pod에서, 위 Deployment와 같은 privileged 보안 설정·command·probe·자원·`/dev/dri`와 home bind를 쓴 dockerd sidecar를 검증했다. privileged Pod는 host cgroup namespace를 공유하므로 `dockerd-start`가 자기 scope의 유한한 `memory.max`를 확인한 뒤 `unshare`/`cgroup2` remount로 private namespace에 재진입했다. Docker 자식은 자기 scope 아래 `/issue-agent-docker`에 있고 그 root ancestor에 8Gi 제한(`memory.max` 8589934592)이 있다. `-m 64m` 컨테이너에서 200MB를 할당한 process는 OOM(exit 137)이 됐고, `-m 100m` 컨테이너의 leaf `memory.max`가 104857600인 것은 따로 확인했다.
-- [x] 최종 dockerd 이미지(`ghcr.io/isac322/issue-agent-dockerd@sha256:6b8013967fca…`)에서 marker가 없는 home은 startup gate가 막고, marker가 있는 home은 native sidecar가 재시작 0회로 60초 이상 Ready를 유지했다. exec probe는 daemon 응답과 vgem을 확인했다. QA fixture는 Docker 데이터에 emptyDir을 쓰고 HAPI·publisher를 실제 인증 대상 없는 클라이언트로 대체했다. production HAPI 등록, ESO mirror, Longhorn-backed PVC의 rollout은 이 증거에 포함하지 않는다.
-- [x] Docker private mode에서 최종 daemon 이미지와 변경 없는 실제 Runner 이미지로 Krema `52f2d41a38d880b584b7e5bf7dd79adb81a29a56`의 `test_smoke.py`·`test_03_preview.py` 17개가 37.15초에 통과했고 skip은 없었다(앞의 34.65초 결과도 동일한 통과다).
+- [x] 기존 `rock5bp` DRM 장치 위에서 vgem 없이 Krema commit `52f2d41a38d880b584b7e5bf7dd79adb81a29a56`의 standalone harness를 실행해 `test_smoke.py`·`test_03_preview.py` 17개가 68.268초에 모두 통과했다. 렌더링은 CPU llvmpipe다.
+- [x] native DRM 전환 전 QA K3s `v1.36.4+k3s1` / containerd 2.3.4(`SystemdCgroup=true`) Pod에서 당시 dockerd sidecar의 cgroup 경계를 검증했다. privileged Pod는 host cgroup namespace를 공유하므로 `dockerd-start`가 자기 scope의 유한한 `memory.max`를 확인한 뒤 `unshare`/`cgroup2` remount로 private namespace에 재진입했다. Docker 자식은 자기 scope 아래 `/issue-agent-docker`에 있고 root ancestor에 8Gi 제한(`memory.max` 8589934592)이 있다. `-m 64m` 컨테이너에서 200MB를 할당한 process는 OOM(exit 137)이 됐고, `-m 100m` 컨테이너의 leaf `memory.max`가 104857600인 것은 따로 확인했다. cgroup 코드는 이번 DRM 전환에서 바꾸지 않았으며, 이 결과는 새 DRM 이미지의 K3s rollout 증거가 아니다.
+- [x] native DRM 전환 전 dockerd 이미지(`ghcr.io/isac322/issue-agent-dockerd@sha256:6b8013967fca…`)에서 marker가 없는 home은 startup gate가 막고, marker가 있는 home은 native sidecar가 재시작 0회로 60초 이상 Ready를 유지했다. QA fixture는 Docker 데이터에 emptyDir을 쓰고 HAPI·publisher를 실제 인증 대상 없는 클라이언트로 대체했다. production HAPI 등록, ESO mirror, Longhorn-backed PVC의 rollout은 이 증거에 포함하지 않는다.
 - [x] 실제 `issue-agent-runner-home-migrate`로 QA K3s의 실제 PVC 두 개(`local-path`; Longhorn은 미검증)에서 namespace 이전을 검증했다. sha `075b4f3`에서 805,334,520 bytes, 116 entries(57 files)를 복사하고 양쪽 manifest sha가 `d13e6481d5d8cbe181a5ed0906d0ffb4348b0e4529b8e21f86b3013e7e2bca60`로 일치했다. 심볼릭 링크 5개(깨진 것 포함), fifo, hardlink, 유니코드·개행 이름, dirty worktree가 유지됐고 source의 ctime은 read-only 파일까지 변하지 않았다. archive는 `.`을 생략해 PVC root 소유권을 건드리지 않는다.
 - [x] 최종 도구(sha256 `6f8fc9ea50d1937b3eea98bc688f038aebe6c1d996b6c56814fd15ad1e08c455`)로 새 fixture에서 같은 경로를 다시 검증했다. 6개 사전 조건 검사가 동작했고, 중단한 copy는 rc 130으로 끝나 scratch Pod 0개, marker 없음 상태를 남겼다. 부분 복사는 wipe 없이 거절됐고 `--wipe-incomplete-destination` 후 116 entries가 동일하게 복사됐으며, source ctime은 변하지 않았고 ready claim은 거절됐다. `cleanup`은 label과 이름이 모두 맞는 도구의 slot 두 개만 지웠다. label 없는 foreign Pod 4개, 다른 slot 이름을 가진 Pod, 다른 label의 Pod는 남았고, 지울 것이 없을 때는 rc 0으로 끝났다.
 - [x] production `issue-agent/issue-agent-runner-home`의 read-only 소유권 검사는 260,493개 파일이 모두 1000:1000이고 오류가 없었다.
-- [x] 최종 Debian 패키지의 `pahole` 의존성을 추가한 뒤 두 vgem 패키지와 두 host 결과가 원격 native aarch64 Nix store에 생성됐다. 마지막 build client는 결과 JSON을 출력한 뒤 종료되지 않아 timeout으로 중단됐지만, 네 결과의 `nix path-info`는 exit 0으로 store 유효성을 확인했다. OS 설치나 activation은 수행하지 않았다.
-- [x] 실제 Asahi `7.1.13-3-2-ARCH` headers와 `vmlinux`를 쓴 일회용 Debian 컨테이너에서 `pahole`이 없으면 BTF 단계가 Error 127로 실패했다. `pahole` 1.30과 Debian의 `resolve_btfids` 제공 패키지인 `dwarves`를 설치한 대조군은 `.BTF`·`.BTF.base`가 있는 module을 생성했다. 현재 rk2410 headers는 BTF가 꺼져 있으므로 이 경로를 실행하지 않는다.
-- [x] 최종 deb의 apt simulation은 `pahole`을 선택했고, 이를 설치 대상에서 제외하면 DKMS 실행 전에 의존성 오류로 거절됐다. 실제 rk2410 headers를 payload로 담은 합성 headers deb를 일회용 컨테이너에 제공한 뒤 실제 vgem deb를 설치하자 postinst의 DKMS build/install이 `6.1.84-999-rk2410`에 대해 완료됐다. 합성 패키지는 vendor 배포 패키지가 아니며 module은 load하지 않았다.
-- [x] 이번 검증에서 만든 일회용 VM, 그 안의 K3s·Docker·PVC 데이터, 생성한 SSH 키와 별도 패키지 검증 컨테이너를 정리했다. 기존 VM과 운영 cluster는 건드리지 않았고 로그만 저장소 밖에 보존했다.
+- [x] 이번 검증에서 만든 일회용 VM, 그 안의 K3s·Docker·PVC 데이터, 생성한 SSH 키를 정리했다. 기존 VM과 운영 cluster는 건드리지 않았고 로그만 저장소 밖에 보존했다.
 
-### Docker·vgem 배포 후 확인 게이트
+- [x] 최종 native DRM daemon·Runner 이미지를 실제 ARM64 node의 격리된 Docker QA에서 실행했다. `native-dri-prepare`와 exec probe가 통과했고, daemon·UID 1000 Runner·중첩 Krema 컨테이너에는 `card0`·`renderD128`만 보였다. Runner의 DRM 디렉터리는 쓰기 불가였고, `card1`·`renderD129`는 가려졌다. 장치 누락·잘못된 device number에 probe가 실패하고, raw 장치 누락·추가 항목에 projection helper가 실패하는 음성 대조군도 통과했다.
+- [x] 같은 QA에서 Docker `29.4.0` 이미지 build와 non-root artifact SHA-256 왕복이 성공했다. 변경 없는 Krema `52f2d41a38d880b584b7e5bf7dd79adb81a29a56`의 smoke·preview 17개가 87.149초에 모두 통과했고 errors·failures·skips는 0이었다. KWin `6.7.5`는 OpenGL/llvmpipe로 렌더링했고 실제 `/dev/dri/renderD128` FD를 열었다. vgem은 로드되지 않았다. 중첩 테스트의 제한은 CPU 2·메모리 4Gi·swap 0이었다.
+- [x] 두 최종 이미지를 GHCR에 게시한 뒤 인증 없는 요청으로 index digest와 linux/arm64 manifest를 확인했고 Deployment를 같은 digest로 고정했다.
+
+위 native DRM QA는 커널의 IPv4 NFT FIB 부재를 분리하기 위해 임시 daemon의 bridge·firewall을 끄고 테스트 자식을 그 daemon 컨테이너의 network namespace에서 실행했다. 운영 node의 host network를 쓰지 않았으며, production `dockerd-start`의 nftables 설정은 바꾸지 않았다. 따라서 그래픽 경로 검증은 성공했지만 production daemon의 시작 성공을 의미하지 않는다. `macmini`의 native DRM graphics 실행과 새 이미지의 운영 K3s rollout은 아직 검증하지 않았다.
+
+이 QA의 컨테이너, 원격 checkout·Docker 데이터·artifact 복사본, 새로 전송한 native DRM 이미지와 SDK 복사본은 정리했다. 실행 로그·JUnit·renderer 근거는 저장소 밖에 보존했다. 운영 Runner는 원래 Pod UID·node·image·container 시작 시각·Ready 상태가 그대로였고 재시작 횟수도 0이었다.
+
+### Docker 배포 후 확인 게이트
 
 배포 뒤에만 확인할 수 있으며 아직 검증하지 않았다.
 
-- [ ] 운영자 승인 뒤 `macmini`·`rock5bp`에 vgem DKMS 패키지를 설치하고 재부팅한 다음 `/sys/module/vgem`, platform card, `/dev/dri/cardN`을 확인한다.
+- [ ] `rock5bp` 커널의 `CONFIG_NFT_FIB_IPV4` 부재로 인한 dockerd 시작 실패(위 배포 blocker)를 승인된 방법으로 해소한다.
+- [ ] 운영 node의 새 Runner Pod에서 `native-dri-prepare`와 dockerd startup probe가 통과하고, dockerd와 runner의 `/dev/dri`에 `card0`·`renderD128`만 있다.
 - [ ] production node의 privileged dockerd가 `dockerd-start`의 cgroup 절차(자기 scope `memory.max` 확인, private cgroup namespace 재진입, writable cgroup)를 통과하고 중첩 컨테이너가 Pod 메모리 제한 안에 있다. QA K3s 검증과 다른 점(실제 노드 cgroup 배치)만 확인 대상이다.
 - [ ] `issue-agent-runner`의 `SecretStore` `issue-agent`와 두 mirror ExternalSecret이 Ready다.
 - [ ] 승인된 전환 창에서 `issue-agent-runner-home-migrate migrate`가 manifest 일치와 marker 기록으로 끝나고, 기존 PV가 `Retain`이며 두 home claim이 남아 있다. QA는 `local-path` PVC로 확인했으므로 production의 Longhorn-backed PVC에서의 실행이 확인 대상이다.
