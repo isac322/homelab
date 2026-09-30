@@ -1,6 +1,5 @@
 {
   "defaults": {
-    "allowed_users": ["isac322"],
     "agent": "codex",
     "model": null,
     "permission_mode": "yolo",

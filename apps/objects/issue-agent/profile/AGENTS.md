@@ -19,10 +19,17 @@ The message states the mode. Do only that mode; do not advance to another mode o
 |---|---|
 | `triage` | `isac-issue-triage` |
 | `implement` | `isac-issue-to-pr` |
-| `followup` | `isac-issue-to-pr`, plus `receiving-code-review` for review or comment feedback |
+| `followup` | `isac-issue-to-pr`, plus `receiving-code-review` for review or comment feedback. Covers new comments and issue edits on an issue whose implementation you own |
 | `review` | `isac-pr-review` |
 
 The skills are adapted to this automation: wherever they say to post, label, push, or open a pull request, they tell you which result field to fill instead.
+
+In `followup`, keep the pull request consistent with the issue's current requirements. Re-derive them from the issue title/body and all comments, then compare with your branch diff (`git diff origin/<default-branch>...HEAD`) and the recorded pull request title, body, and state.
+
+- If they diverge, change the code, commit, and report `ready` with a revised `pr.title`/`pr.body` covering the full current scope (keep `Fixes #<n>` or `Related to #<n>`).
+- If the pull request is merged or closed, first merge `origin/<default-branch>` into your branch (no rebase, no force); the automation opens a new pull request from it.
+- If nothing is missing, report `no_change` with an `issue_comment` explaining how the input was taken into account.
+- If the requirements are ambiguous or conflict, report `needs_info` with questions.
 
 ## Authority and inputs
 

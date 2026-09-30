@@ -4,9 +4,10 @@
 Responsibilities (business branching lives in the n8n workflow):
 
 * ``POST /webhooks/github`` verifies the signature, applies the repository
-  registry (defaults plus per-repository overrides), and durably records
-  accepted ``issues.opened``, ``issue_comment.created`` and pull request review
-  requests before answering 2xx.
+  registry (defaults plus per-repository overrides) and the intake trust rules
+  (repository collaborators, cached), and durably records accepted
+  ``issues.opened``, ``issues.edited``, ``issue_comment.created`` and pull
+  request review requests before answering 2xx.
 * A single dispatcher hands at most one event at a time to the private n8n
   webhook. n8n acknowledges ownership with the ``begin`` op and ends it with
   ``finish`` or ``fail``.
@@ -61,6 +62,12 @@ MODES = ("triage", "implement", "followup", "review")
 FINISH_OUTCOMES = ("triaged", "implemented", "questioned", "reviewed", "no_change", "replied", "duplicate")
 TERMINAL_STATES = ("completed", "needs_attention")
 PHASES = ("none", "triaged", "implementing", "reviewing")
+# Intake trust: repository collaborators with write access are trusted (GitHub permission API, cached).
+PERMISSION_TTL = 600.0  # seconds a cached verdict (positive or negative) is reused
+TRUSTED_PERMISSIONS = ("admin", "write")  # GitHub reports maintain as write and triage as read
+UNTRUSTED_ISSUE_LIMIT = 10  # untrusted issues accepted per rolling window, across every repository
+UNTRUSTED_ISSUE_WINDOW = 3600.0
+OPEN_DISCUSSION_LABEL = "agent:open-discussion"  # any human comment on such an issue queues, no mention needed
 
 NEEDS_ATTENTION = "agent:needs-attention"
 # name -> (description, color, exclusive group); only these labels may be added or removed.
@@ -277,14 +284,13 @@ def verify_signature(secret: bytes, body: bytes, header: str | None) -> bool:
 
 
 CHECKOUT_ROOT = "/home/agent/checkouts"
-REGISTRY_KEYS = ("allowed_users", "agent", "model", "permission_mode", "machine_id")
+REGISTRY_KEYS = ("agent", "model", "permission_mode", "machine_id")
 
 
 @dataclass(frozen=True)
 class RepoConfig:
     name: str
     runner_path: str
-    allowed_users: frozenset[str]
     agent: str
     model: str | None
     permission_mode: str | None
@@ -306,9 +312,6 @@ def _settings(where: str, entry: Any) -> dict[str, Any]:
 
 
 def _repo_config(name: str, settings: Mapping[str, Any]) -> RepoConfig:
-    users = settings.get("allowed_users")
-    if not isinstance(users, list) or not users or not all(isinstance(u, str) and _LOGIN_RE.match(u) for u in users):
-        raise ConfigError(f"{name}: allowed_users must list GitHub logins")
     agent = settings.get("agent")
     if agent not in ("codex", "claude"):
         raise ConfigError(f"{name}: agent must be codex or claude")
@@ -321,7 +324,6 @@ def _repo_config(name: str, settings: Mapping[str, Any]) -> RepoConfig:
     return RepoConfig(
         name=name,
         runner_path=f"{CHECKOUT_ROOT}/{name}",
-        allowed_users=frozenset(u.casefold() for u in users),
         agent=agent,
         model=optional["model"],
         permission_mode=optional["permission_mode"],
@@ -376,7 +378,7 @@ CREATE TABLE IF NOT EXISTS {name} (
     delivery_id     TEXT NOT NULL UNIQUE,
     semantic_key    TEXT NOT NULL UNIQUE,
     repo            TEXT NOT NULL,
-    kind            TEXT NOT NULL CHECK (kind IN ('issue_opened', 'issue_comment', 'pr_review')),
+    kind            TEXT NOT NULL CHECK (kind IN ('issue_opened', 'issue_comment', 'issue_edited', 'pr_review')),
     issue_number    INTEGER NOT NULL,
     comment_id      INTEGER,
     actor           TEXT NOT NULL,
@@ -395,12 +397,14 @@ CREATE TABLE IF NOT EXISTS {name} (
     default_branch  TEXT,
     head_sha        TEXT,
     attention_pending INTEGER NOT NULL DEFAULT 0,
-    attention_node  TEXT
+    attention_node  TEXT,
+    trusted         INTEGER
 )"""
 # Columns added to ``events`` after the v2 kinds; ALTER TABLE ADD COLUMN keeps existing rows.
 EVENT_COLUMNS = (
     ("attention_pending", "INTEGER NOT NULL DEFAULT 0"),  # attention comment/label not yet both applied
     ("attention_node", "TEXT"),
+    ("trusted", "INTEGER"),  # 1/0 collaborator verdict at intake; NULL for events recorded before it existed
 )
 ISSUES_DDL = """
 CREATE TABLE IF NOT EXISTS {name} (
@@ -437,15 +441,25 @@ CREATE TABLE IF NOT EXISTS {name} (
     updated_at  REAL NOT NULL,
     PRIMARY KEY (delivery_id, mode)
 )"""
+COLLABORATORS_DDL = """
+CREATE TABLE IF NOT EXISTS {name} (
+    repo       TEXT NOT NULL,
+    login      TEXT NOT NULL,
+    trusted    INTEGER NOT NULL,
+    checked_at REAL NOT NULL,
+    PRIMARY KEY (repo, login)
+)"""
 SCHEMA = ";\n".join([
     EVENTS_DDL.format(name="events"),
     "CREATE INDEX IF NOT EXISTS events_state_seq ON events (state, seq)",
     "CREATE INDEX IF NOT EXISTS events_execution ON events (execution_id)",
     ISSUES_DDL.format(name="issues"),
     TURNS_DDL.format(name="turns"),
+    COLLABORATORS_DDL.format(name="collaborators"),
 ]) + ";\n"
 # Event: accepted -> dispatched -> completed | needs_attention; a new review request completes parked
 # reviews of its pull request with outcome 'superseded' (Store.enqueue)
+# issues.edited is accepted only while the issue is 'implementing' (Store.enqueue answers 'edit_ignored' otherwise)
 # Issue session: none -> pending -> ready (pending may fall back to none)
 # Issue phase: none -> triaged -> implementing; pull requests: none -> reviewing
 # Turn: sending -> sent -> lost (session died mid-turn) -> sending under a fresh localId
@@ -470,10 +484,10 @@ def _rebuild(conn: sqlite3.Connection, table: str, ddl: str, fill: Mapping[str, 
 
 
 def migrate(conn: sqlite3.Connection) -> None:
-    """Upgrade a v1 state file in place. Idempotent; every existing row is kept."""
+    """Upgrade a v1/v2 state file in place. Idempotent; every existing row is kept."""
     tables = {row[0]: row[1] or "" for row in conn.execute("SELECT name, sql FROM sqlite_master WHERE type = 'table'")}
-    if "events" in tables and "'pr_review'" not in tables["events"]:
-        _rebuild(conn, "events", EVENTS_DDL)  # widens the kind CHECK and adds the v2 columns
+    if "events" in tables and "'issue_edited'" not in tables["events"]:
+        _rebuild(conn, "events", EVENTS_DDL)  # widens the kind CHECK and adds the v2/v3 columns
     elif "events" in tables:
         have = set(_columns(conn, "events"))
         for col, decl in EVENT_COLUMNS:
@@ -541,24 +555,37 @@ class Store:
         self.query("SELECT 1")
 
     def enqueue(self, ev: dict[str, Any]) -> str:
-        """Durably record an event. Returns 'queued', 'duplicate', or 'unmanaged'."""
+        """Durably record an event. Returns 'queued', 'duplicate', 'rate_limited', or 'edit_ignored'.
+
+        Untrusted ``issue_opened`` events are admitted at most ``UNTRUSTED_ISSUE_LIMIT`` per rolling
+        ``UNTRUSTED_ISSUE_WINDOW`` across every repository; the count and the insert share one transaction.
+        ``issue_edited`` is only recorded while the issue is ``implementing`` (a pull request is being made
+        or exists); other edits carry nothing the agent acts on.
+        """
         now = time.time()
         with self.tx() as conn:
-            if ev["kind"] == "issue_comment":
-                managed = conn.execute(
-                    "SELECT 1 FROM events WHERE repo = ? AND issue_number = ? AND kind = 'issue_opened'",
-                    (ev["repo"], ev["issue_number"]),
+            if ev["kind"] == "issue_edited":
+                row = conn.execute("SELECT phase FROM issues WHERE repo = ? AND issue_number = ?",
+                                   (ev["repo"], ev["issue_number"])).fetchone()
+                if row is None or row["phase"] != "implementing":
+                    return "edit_ignored"
+            if ev["kind"] == "issue_opened" and not ev.get("trusted"):
+                (recent,) = conn.execute(
+                    "SELECT COUNT(*) FROM events WHERE kind = 'issue_opened' AND trusted = 0 AND received_at > ?",
+                    (now - UNTRUSTED_ISSUE_WINDOW,),
                 ).fetchone()
-                if managed is None:
-                    return "unmanaged"
+                if recent >= UNTRUSTED_ISSUE_LIMIT:
+                    seen = conn.execute("SELECT 1 FROM events WHERE delivery_id = ? OR semantic_key = ?",
+                                        (ev["delivery_id"], ev["semantic_key"])).fetchone()
+                    return "duplicate" if seen else "rate_limited"
             try:
                 conn.execute(
                     "INSERT INTO events (delivery_id, semantic_key, repo, kind, issue_number, comment_id, actor,"
-                    " title, body, default_branch, head_sha, received_at, updated_at)"
-                    " VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)",
+                    " title, body, default_branch, head_sha, trusted, received_at, updated_at)"
+                    " VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)",
                     (ev["delivery_id"], ev["semantic_key"], ev["repo"], ev["kind"], ev["issue_number"],
                      ev.get("comment_id"), ev["actor"], ev["title"], ev["body"], ev.get("default_branch"),
-                     ev.get("head_sha"), now, now),
+                     ev.get("head_sha"), 1 if ev.get("trusted") else 0, now, now),
                 )
             except sqlite3.IntegrityError:
                 return "duplicate"
@@ -821,6 +848,65 @@ def subject_of(kind: str) -> str:
     return "pull_request" if kind == "pr_review" else "issue"
 
 
+class TrustUnavailable(Exception):
+    """A login's collaborator permission could not be determined; nothing is cached or queued."""
+
+
+class Collaborators:
+    """Trusted = repository collaborator or owner with admin/write permission, cached in ``collaborators``.
+
+    Both verdicts are reused for ``ttl`` seconds; a login GitHub does not know (404) is untrusted.
+    """
+
+    def __init__(self, store: Store, github: GitHub, *, ttl: float = PERMISSION_TTL,
+                 clock: Callable[[], float] = time.time):
+        self.store = store
+        self.github = github
+        self.ttl = ttl
+        self.clock = clock
+
+    def trusted(self, repo: str, login: str) -> bool:
+        key = (repo.casefold(), login.casefold())
+        now = self.clock()
+        rows = self.store.query("SELECT trusted, checked_at FROM collaborators WHERE repo = ? AND login = ?", key)
+        if rows and 0 <= now - rows[0]["checked_at"] < self.ttl:
+            return bool(rows[0]["trusted"])
+        path = f"/repos/{repo}/collaborators/{urllib.parse.quote(login, safe='')}/permission"
+        try:
+            status, data = self.github.request("GET", path)
+        except (TransportError, OpError) as exc:
+            raise TrustUnavailable(f"{repo} {login}: {exc}") from None
+        if status == 404:
+            verdict = False
+        elif status == 200 and isinstance(data, dict) and isinstance(data.get("permission"), str):
+            verdict = data["permission"] in TRUSTED_PERMISSIONS
+        else:
+            raise TrustUnavailable(f"{repo} {login}: permission HTTP {status}")
+        with self.store.tx() as conn:
+            conn.execute(
+                "INSERT INTO collaborators (repo, login, trusted, checked_at) VALUES (?, ?, ?, ?)"
+                " ON CONFLICT (repo, login) DO UPDATE SET trusted = excluded.trusted, checked_at = excluded.checked_at",
+                (*key, 1 if verdict else 0, now),
+            )
+        return verdict
+
+
+def mentions(body: str, bot_login: str | None) -> bool:
+    """``body`` mentions ``@<app slug>`` for the bot login ``<app slug>[bot]`` (not as part of a longer name)."""
+    if not bot_login:
+        return False
+    slug = re.escape(bot_login.removesuffix("[bot]"))
+    return re.search(rf"(?<![\w/-])@{slug}(?![\w-])", body, re.IGNORECASE) is not None
+
+
+def _labels(issue: Mapping[str, Any]) -> set[str]:
+    labels = issue.get("labels")
+    if not isinstance(labels, list):
+        return set()
+    return {label["name"].casefold() for label in labels
+            if isinstance(label, dict) and isinstance(label.get("name"), str)}
+
+
 def review_command(bot_login: str | None) -> str | None:
     """``@<app slug> review`` (casefolded) for the bot login ``<app slug>[bot]``."""
     if not bot_login:
@@ -837,12 +923,14 @@ def review_footer(bot_login: str | None) -> str:
             "an error. The pull request author or a maintainer can request it.</sub>")
 
 
-def classify_event(registry: Registry, event: str, delivery: str, payload: Any,
+def classify_event(registry: Registry, event: str, delivery: str, payload: Any, trusted: Callable[[str, str], bool],
                    bot_login: str | None = None, reviewer_login: str | None = None) -> dict[str, Any] | str:
     """Normalized event dict, or a string reason for not queueing it.
 
     Any repository delivered by the App is accepted (the signature proves the installation);
-    the registry only supplies per-repository settings.
+    the registry only supplies per-repository settings. ``trusted(repo, login)`` is consulted only
+    when a rule depends on it (it may raise ``TrustUnavailable``); the event's ``trusted`` is True
+    only when that lookup confirmed it.
     """
     if not isinstance(payload, dict):
         return "malformed"
@@ -879,7 +967,8 @@ def classify_event(registry: Registry, event: str, delivery: str, payload: Any,
             return "draft_ignored"
         return {"delivery_id": delivery, "repo": cfg.name, "issue_number": number, "actor": login, "title": title,
                 "semantic_key": f"{cfg.name}#pr:{number}:review:{head_sha}", "kind": "pr_review",
-                "comment_id": None, "body": body or "", "default_branch": default_branch, "head_sha": head_sha}
+                "comment_id": None, "body": body or "", "default_branch": default_branch, "head_sha": head_sha,
+                "trusted": False}
 
     if sender.get("type") != "User" or login.endswith("[bot]") or is_self:
         return "bot_sender"
@@ -893,26 +982,32 @@ def classify_event(registry: Registry, event: str, delivery: str, payload: Any,
     on_pr = "pull_request" in issue
     issue_author = issue.get("user")
     issue_author_login = issue_author.get("login") if isinstance(issue_author, dict) else None
-    # Review commands on a PR also come from the PR author; issue threads keep the allowed-users gate.
-    if login.casefold() not in cfg.allowed_users and not (
-            event == "issue_comment" and on_pr and isinstance(issue_author_login, str)
-            and login.casefold() == issue_author_login.casefold()):
-        return "actor_not_allowed"
+    open_discussion = OPEN_DISCUSSION_LABEL in _labels(issue)
     base = {"delivery_id": delivery, "repo": cfg.name, "issue_number": number, "actor": login, "title": title,
             "default_branch": default_branch, "head_sha": None}
 
     if event == "issues":
         if on_pr:
             return "pull_request"
-        if action != "opened":
+        if action not in ("opened", "edited"):
             return "action_ignored"
-        if not isinstance(issue_author_login, str) or issue_author_login.casefold() != login.casefold():
-            return "actor_not_allowed"
         body = issue.get("body")
         if body is not None and not isinstance(body, str):
             return "malformed"
-        return {**base, "semantic_key": f"{cfg.name}#issue:{number}:opened", "kind": "issue_opened",
-                "comment_id": None, "body": body or ""}
+        if action == "opened":
+            # Anyone may open an issue; untrusted authors are rate limited by Store.enqueue.
+            if not isinstance(issue_author_login, str) or issue_author_login.casefold() != login.casefold():
+                return "actor_not_allowed"
+            return {**base, "semantic_key": f"{cfg.name}#issue:{number}:opened", "kind": "issue_opened",
+                    "comment_id": None, "body": body or "", "trusted": trusted(cfg.name, login)}
+        changes = payload.get("changes")
+        if not isinstance(changes, dict) or not ("body" in changes or "title" in changes):
+            return "edit_ignored"
+        is_trusted = not open_discussion and trusted(cfg.name, login)
+        if not open_discussion and not is_trusted:
+            return "actor_not_allowed"
+        return {**base, "semantic_key": f"{cfg.name}#issue:{number}:edited:{delivery}", "kind": "issue_edited",
+                "comment_id": None, "body": body or "", "trusted": is_trusted}
 
     if event == "issue_comment":
         if action != "created":
@@ -931,19 +1026,33 @@ def classify_event(registry: Registry, event: str, delivery: str, payload: Any,
         if is_agent_text(body):
             return "bot_sender"
         if on_pr:
-            # The review App owns re-review requests when configured, so its command is the only trigger.
+            # The review App owns re-review requests when configured, so its command is the only trigger;
+            # the pull request author or a trusted collaborator may issue it.
             command = review_command(reviewer_login or bot_login)
             if command is None or not body.strip().casefold().startswith(command):
                 return "pull_request_comment_ignored"
+            is_author = isinstance(issue_author_login, str) and login.casefold() == issue_author_login.casefold()
+            is_trusted = not is_author and trusted(cfg.name, login)
+            if not is_author and not is_trusted:
+                return "actor_not_allowed"
             return {**base, "semantic_key": f"{cfg.name}#comment:{comment_id}", "kind": "pr_review",
-                    "comment_id": comment_id, "body": body}
+                    "comment_id": comment_id, "body": body, "trusted": is_trusted}
+        # Open-discussion issues take any human's input; elsewhere a trusted collaborator must mention the bot.
+        is_trusted = False
+        if not open_discussion:
+            if not mentions(body, bot_login):
+                return "issue_comment_ignored"
+            is_trusted = trusted(cfg.name, login)
+            if not is_trusted:
+                return "actor_not_allowed"
         return {**base, "semantic_key": f"{cfg.name}#comment:{comment_id}", "kind": "issue_comment",
-                "comment_id": comment_id, "body": body}
+                "comment_id": comment_id, "body": body, "trusted": is_trusted}
 
     return "event_ignored"
 
 
-def handle_webhook(config: Config, store: Store, headers: Mapping[str, str], body: bytes) -> Intake:
+def handle_webhook(config: Config, store: Store, collaborators: Collaborators, headers: Mapping[str, str],
+                   body: bytes) -> Intake:
     try:
         secret = read_secret_file(config.webhook_secret_file).encode()
     except (OSError, ConfigError, UnicodeDecodeError):
@@ -966,8 +1075,12 @@ def handle_webhook(config: Config, store: Store, headers: Mapping[str, str], bod
     except (OSError, ValueError, ConfigError) as exc:
         LOG.error("registry unavailable: %s", exc)
         return Intake(503, "registry_unavailable")
-    classified = classify_event(registry, event, delivery, payload, config.github_bot_login,
-                                config.github_review_bot_login)
+    try:
+        classified = classify_event(registry, event, delivery, payload, collaborators.trusted,
+                                    config.github_bot_login, config.github_review_bot_login)
+    except TrustUnavailable as exc:
+        LOG.error("delivery %s: collaborator permission unavailable: %s", delivery, exc)
+        return Intake(503, "permission_unavailable")
     if isinstance(classified, str):
         LOG.info("delivery %s not queued: %s", delivery, classified)
         return Intake(400 if classified == "malformed" else 202, classified)
@@ -1074,7 +1187,7 @@ def build_message(ev: sqlite3.Row, mode: str, branch: str | None, default_branch
         "",
         _fence(nonce, "PR_TITLE" if is_pr else "ISSUE_TITLE", ev["title"]),
     ]
-    if ev["kind"] == "issue_opened":
+    if ev["kind"] in ("issue_opened", "issue_edited"):
         label = "ISSUE_BODY"
     elif ev["comment_id"] is None:
         label = "PR_BODY"
@@ -1510,7 +1623,7 @@ class Bridge:
     def _mode_hint(ev: sqlite3.Row, phase: str) -> str:
         if ev["kind"] == "pr_review":
             return "review"
-        if ev["kind"] == "issue_comment" and phase == "implementing":
+        if ev["kind"] in ("issue_comment", "issue_edited") and phase == "implementing":
             return "followup"
         return "triage"
 
@@ -2224,7 +2337,25 @@ class Bridge:
     def op_github_issue(self, req: dict[str, Any]) -> dict[str, Any]:
         ev = self._event(req)
         issue, comments = self._issue_snapshot(ev["repo"], ev["issue_number"])
-        return {"issue": issue, "comments": comments}
+        pr_number = self.store.issue(ev["repo"], ev["issue_number"])["pr_number"]
+        pull_request = None
+        if pr_number is not None:
+            pr = self._get_pr(ev["repo"], pr_number)
+            head = pr.get("head") if isinstance(pr.get("head"), dict) else {}
+            base = pr.get("base") if isinstance(pr.get("base"), dict) else {}
+            pull_request = {
+                "number": pr.get("number"),
+                "html_url": pr.get("html_url"),
+                "state": pr.get("state"),
+                "merged": bool(pr.get("merged")),
+                "draft": bool(pr.get("draft")),
+                "title": pr.get("title"),
+                "body": (pr.get("body") or "")[:20000],
+                "head_ref": head.get("ref"),
+                "head_sha": head.get("sha"),
+                "base_ref": base.get("ref"),
+            }
+        return {"issue": issue, "comments": comments, "pull_request": pull_request}
 
     def op_github_comment(self, req: dict[str, Any]) -> dict[str, Any]:
         ev = self._event(req)
@@ -2712,6 +2843,7 @@ class Handler(http.server.BaseHTTPRequestHandler):
     config: Config
     store: Store
     bridge: Bridge
+    collaborators: Collaborators
 
     def _reply(self, status: int, payload: Mapping[str, Any]) -> None:
         data = json.dumps(payload).encode()
@@ -2766,7 +2898,7 @@ class Handler(http.server.BaseHTTPRequestHandler):
             return
         try:
             if self.path == WEBHOOK_PATH:
-                result = handle_webhook(self.config, self.store, self.headers, body)
+                result = handle_webhook(self.config, self.store, self.collaborators, self.headers, body)
                 self._reply(result.status, {"status": result.outcome})
                 return
             try:
@@ -2796,8 +2928,10 @@ class Handler(http.server.BaseHTTPRequestHandler):
         LOG.debug("%s %s", self.address_string(), format % args)
 
 
-def make_server(config: Config, store: Store, bridge: Bridge, host: str = "0.0.0.0") -> http.server.ThreadingHTTPServer:
-    handler = type("BoundHandler", (Handler,), {"config": config, "store": store, "bridge": bridge})
+def make_server(config: Config, store: Store, bridge: Bridge, collaborators: Collaborators,
+                host: str = "0.0.0.0") -> http.server.ThreadingHTTPServer:
+    handler = type("BoundHandler", (Handler,),
+                   {"config": config, "store": store, "bridge": bridge, "collaborators": collaborators})
     server = http.server.ThreadingHTTPServer((host, config.port), handler)
     server.daemon_threads = True
     return server
@@ -2816,6 +2950,11 @@ def make_bridge(config: Config, store: Store) -> Bridge:
     )
 
 
+def make_collaborators(config: Config, store: Store) -> Collaborators:
+    """Intake trust decisions use the issue App's installation token."""
+    return Collaborators(store, GitHub(config.github_api_url, config.github_token_dir, config.http_timeout))
+
+
 def main() -> int:
     logging.basicConfig(level=logging.INFO, format="%(asctime)s %(levelname)s %(name)s %(message)s")
     try:
@@ -2829,7 +2968,7 @@ def main() -> int:
     dispatcher = Dispatcher(config, store, bridge)
     stop = threading.Event()
     worker = threading.Thread(target=dispatcher.run, args=(stop,), name="dispatcher", daemon=True)
-    server = make_server(config, store, bridge)
+    server = make_server(config, store, bridge, make_collaborators(config, store))
 
     def shutdown(signum: int, _frame: Any) -> None:
         LOG.info("signal %d received; shutting down", signum)
