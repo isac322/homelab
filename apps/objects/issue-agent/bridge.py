@@ -465,6 +465,7 @@ SCHEMA = ";\n".join([
 # Issue session: none -> pending -> ready (pending may fall back to none)
 # Issue phase: none -> triaged -> implementing; pull requests: none -> reviewing
 # Turn: sending -> sent -> lost (session died mid-turn) -> sending under a fresh localId
+#       sent with an invalid result -> sent under <localId>-fix (one correction request) -> attention if still invalid
 
 
 def _columns(conn: sqlite3.Connection, table: str) -> list[str]:
@@ -1104,10 +1105,14 @@ def local_id_for(delivery_id: str, mode: str) -> str:
     return f"issue-agent-{delivery_id}-{mode}"
 
 
+CORRECTION_SUFFIX = "-fix"
+
+
 def resend_local_id(delivery_id: str, mode: str, current: str) -> str:
     """localId for re-sending a step whose session died: ``<base>-r<n>``, so no result or history of an
-    earlier send can be mistaken for the re-sent one."""
+    earlier send can be mistaken for the re-sent one. A correction localId re-sends as the step it corrected."""
     base = local_id_for(delivery_id, mode)
+    current = current.removesuffix(CORRECTION_SUFFIX)
     n = int(current[len(base) + 2:]) if current.startswith(base + "-r") else 0
     return f"{base}-r{n + 1}"
 
@@ -1149,7 +1154,7 @@ _REVIEW_SCHEMA = """\
  "head_sha":"40-hex PR head the review is about" (required iff reviewed),
  "event":"APPROVE|REQUEST_CHANGES|COMMENT" (required iff reviewed),
  "body":"English markdown <=60000 (review body per isac-pr-review comment-template; on re-review first section lists prior findings Closed/Open)",
- "comments":[{"path":"str","line":int>=1,"side":"RIGHT|LEFT","start_line":int|null,"body":"<=20000"}] (max 50, new inline findings),
+ "comments":[{"path":"str","line":int>=1,"side":"RIGHT|LEFT","start_line":null | int < line,"body":"<=20000"}] (max 50, new inline findings; start_line null for a single-line comment, first line of the range for a multi-line one),
  "thread_replies":[{"comment_id":int (databaseId of any comment in an existing review thread),"body":"<=20000","resolve":bool}] (max 100),
  "summary":"<=2000",
  "blockers":[strings]}"""
@@ -1202,6 +1207,18 @@ def build_message(ev: sqlite3.Row, mode: str, branch: str | None, default_branch
     if context is not None:
         lines.append(_fence(nonce, "CONTEXT_JSON", json.dumps(context, ensure_ascii=False, indent=1)))
     return "\n".join(lines)
+
+
+def build_correction(ev: sqlite3.Row, mode: str, error: str, nonce: str) -> str:
+    """Ask the agent to restate a rejected result; the work itself stands."""
+    return "\n".join([
+        f"[issue-agent step {ev['delivery_id']} mode {mode} correction]",
+        f"The automation rejected your result line for this step: {error}.",
+        "Do not redo or change the work and do not write to GitHub. Reply with the same result, corrected so it",
+        "matches the schema, as exactly one final line: the tag, the new nonce, then the result JSON:",
+        f"  {RESULT_TAG} {nonce} {{...}}",
+        RESULT_SCHEMAS[mode].replace("<n>", str(int(ev["issue_number"]))),
+    ])
 
 
 def message_role(message: Mapping[str, Any]) -> str | None:
@@ -1399,6 +1416,8 @@ def _review(v: dict[str, Any]) -> dict[str, Any]:
         _fields(c, ("path", "line", "side", "start_line", "body"), "comment")
         line, start = _positive_int(c["line"]), c["start_line"]
         _require(line is not None, "comment line must be an int >= 1")
+        if start == line:
+            start = None  # a one-line range is a single-line comment
         _require(start is None or (_positive_int(start) is not None and start < line),
                  "comment start_line must be null or an int below line")
         findings.append({"path": _text(c["path"], 1000, "comment path"), "line": line,
@@ -2160,7 +2179,7 @@ class Bridge:
             if raw is not None:
                 result = validate_result(mode, raw, int(ev["issue_number"]))
                 if isinstance(result, str):
-                    return self._attention(f"invalid agent result: {result}")
+                    return self._request_correction(ev, mode, sid, local_id, result)
                 if mode == "triage" and self.store.issue(ev["repo"], ev["issue_number"])["phase"] != "implementing":
                     self.store.update_issue(ev["repo"], ev["issue_number"], phase="triaged")
                 return {"state": "done", "session_id": sid, "mode": mode, "result": result}
@@ -2176,6 +2195,34 @@ class Bridge:
             if idle >= IDLE_WITHOUT_RESULT_LIMIT:
                 return self._attention("agent is idle but produced no result line for this step")
             return {"state": "running", "session_id": sid, "pending_requests": 0}
+
+    def _request_correction(self, ev: sqlite3.Row, mode: str, session_id: str, local_id: str,
+                            error: str) -> dict[str, Any]:
+        """Send the validation error back once under ``<localId>-fix`` and poll that turn; attention otherwise."""
+        if local_id.endswith(CORRECTION_SUFFIX):
+            return self._attention(f"invalid agent result after a correction request: {error}")
+        fix_id = local_id + CORRECTION_SUFFIX
+        found = self._delivery(session_id, fix_id)  # a crash after an earlier send must not send it twice
+        if found == "indeterminate":
+            return self._attention(f"invalid agent result: {error}; correction delivery indeterminate")
+        if found == "absent":
+            path = f"/api/sessions/{urllib.parse.quote(session_id, safe='')}/messages"
+            try:
+                status, data = self.hapi.request("POST", path, body={
+                    "text": build_correction(ev, mode, error, fix_id), "localId": fix_id, "deliveryMode": "queue"})
+            except TransportError as exc:
+                if exc.not_sent:
+                    raise OpError(f"correction not sent: {exc}", retryable=True) from None
+                status, data = 0, None
+            if not (status == 200 and isinstance(data, dict) and data.get("ok") is True):
+                if 400 <= status < 500:
+                    return self._attention(f"invalid agent result: {error}; correction rejected: HTTP {status}")
+                if self._delivery(session_id, fix_id) != "present":
+                    raise OpError(f"correction delivery unconfirmed (HTTP {status})", retryable=True)
+        LOG.info("%s#%s event %s: asked the agent to correct its %s result: %s",
+                 ev["repo"], ev["issue_number"], ev["delivery_id"], mode, error)
+        self.store.put_turn(ev["delivery_id"], mode, fix_id, session_id, "sent")
+        return {"state": "running", "session_id": session_id, "pending_requests": 0}
 
     @staticmethod
     def _attention(detail: str) -> dict[str, Any]:

@@ -23,7 +23,7 @@ description: Use in the issue agent's `review` mode (a non-draft PR opened/reope
 | 리뷰한 head SHA (PRR-06, PRR-24) | `ReviewResult.head_sha` (실제 checkout한 PR head, 40-hex) |
 | 판정별 리뷰 이벤트 (PRR-25) | `ReviewResult.event`: `GREEN` → `APPROVE`, `BLOCKING` → `REQUEST_CHANGES`, 판정 아닌 보고 → `COMMENT` |
 | 리뷰 코멘트 본문 (PRR-26, `references/comment-template.md`) | `ReviewResult.body` (영어). 재리뷰면 첫 섹션이 이전 finding의 Closed/Open (PRR-29, `references/defaults.md` 게시). 재리뷰 footer는 bridge가 게시할 때 덧붙이므로 body 끝에 직접 쓰지 않는다 |
-| 새 finding의 인라인 위치 (PRR-21) | `ReviewResult.comments[]`: PR diff 안의 줄에 고정한 `path`, `line`, `side`(추가·문맥 줄은 `RIGHT`), 여러 줄이면 `start_line`, `body` |
+| 새 finding의 인라인 위치 (PRR-21) | `ReviewResult.comments[]`: PR diff 안의 줄에 고정한 `path`, `line`, `side`(추가·문맥 줄은 `RIGHT`), `start_line`(한 줄이면 `null`, 여러 줄이면 `line`보다 작은 첫 줄), `body` |
 | 기존 리뷰 스레드 (PRR-29) | `ReviewResult.thread_replies[]`: 이 봇이 열었거나 봇에게 물은 스레드마다 `comment_id`, 현재 상태(fixed / still open / 이유)를 담은 `body`, 새 head에서 수정이 확인된 finding만 `resolve: true` |
 | PR 제목 수정 (PRR-03, `references/defaults.md`), PR 수정·push | 리뷰어는 편집하지 않는다. 제안할 제목·수정은 `ReviewResult.body`에 적는다 |
 | close·label·코멘트 조치 (`references/stale-pr-audit.md`) | `ReviewResult.body`의 권고 |

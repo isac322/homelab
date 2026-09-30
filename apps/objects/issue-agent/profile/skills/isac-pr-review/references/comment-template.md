@@ -64,7 +64,7 @@ GitHub에 올리는 본문은 영어다. 문체, 길이, 공개 위생은 `isac-
 
 ## 인라인 finding과 스레드 답글
 
-- 새 finding 중 PR diff 안의 줄에 고정할 수 있는 것은 `ReviewResult.comments[]`에 `path`, `line`, `side`(추가·문맥 줄은 `RIGHT`), 여러 줄이면 `start_line`, `body`로 담는다. 본문의 `## Blocking`/`## Non-blocking` 목록에도 같은 finding을 남긴다. diff 밖이면 본문에만 둔다.
+- 새 finding 중 PR diff 안의 줄에 고정할 수 있는 것은 `ReviewResult.comments[]`에 `path`, `line`, `side`(추가·문맥 줄은 `RIGHT`), `start_line`, `body`로 담는다. 한 줄 코멘트는 `start_line: null`이고, 여러 줄 코멘트는 `start_line`이 범위의 첫 줄이며 `line`보다 작다. 본문의 `## Blocking`/`## Non-blocking` 목록에도 같은 finding을 남긴다. diff 밖이면 본문에만 둔다.
 - 재리뷰에서 이 봇이 열었거나 봇에게 물은 기존 스레드마다 `ReviewResult.thread_replies[]`에 `comment_id`와 현재 상태를 담는다. 예: `Fixed at <new-head-sha>: <file:line evidence>.` / `Still open at <new-head-sha>: <why>.` 수정이 새 head에서 확인된 것만 `resolve: true`다.
 
 ## 닫기 권고 (외부·오래된 PR)

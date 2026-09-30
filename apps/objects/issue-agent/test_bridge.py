@@ -1429,13 +1429,36 @@ class TurnTests(BridgeTestCase):
         self.assertEqual((done["state"], done["mode"]), ("done", "implement"))
         self.assertEqual(done["result"]["issue_comment"], "nothing needed")
 
-    def test_invalid_result_for_the_turns_mode_is_attention(self) -> None:
+    def test_invalid_result_is_sent_back_once_for_correction(self) -> None:
         self.send()
         self.fake.invoke(self.sid, self.lid)
         self.say(self.result_line(status="ready", head_sha=SHA_A, pr={"title": "x", "body": "Fixes #70"}))
+        self.assertEqual(self.op("session_turn")["state"], "running")
+        fix_lid = f"{self.lid}{bridge.CORRECTION_SUFFIX}"
+        correction = self.fake.message_posts[-1]
+        self.assertEqual((correction["localId"], correction["deliveryMode"]), (fix_lid, "queue"))
+        self.assertIn("Fixes #7", correction["text"])
+        self.assertIn(f"{bridge.RESULT_TAG} {fix_lid}", correction["text"])
+        self.assertEqual(self.op("session_turn")["state"], "queued")  # no second correction while it waits
+        self.assertEqual(len(self.fake.message_posts), 2)
+        self.fake.invoke(self.sid, fix_lid)
+        self.say(self.result_line(fix_lid, status="ready", head_sha=SHA_A, pr={"title": "x", "body": "Fixes #7"}))
+        done = self.op("session_turn")
+        self.assertEqual((done["state"], done["result"]["head_sha"]), ("done", SHA_A))
+        self.assertEqual(bridge.resend_local_id("d1", "implement", fix_lid), f"{self.lid}-r1")
+
+    def test_result_still_invalid_after_correction_is_attention(self) -> None:
+        self.send()
+        self.fake.invoke(self.sid, self.lid)
+        self.say(self.result_line(status="bogus"))
+        self.assertEqual(self.op("session_turn")["state"], "running")
+        fix_lid = f"{self.lid}{bridge.CORRECTION_SUFFIX}"
+        self.fake.invoke(self.sid, fix_lid)
+        self.say(self.result_line(fix_lid, status="bogus"))
         turn = self.op("session_turn")
         self.assertEqual(turn["state"], "attention")
-        self.assertIn("Fixes #7", turn["detail"])
+        self.assertIn("after a correction request", turn["detail"])
+        self.assertEqual(len(self.fake.message_posts), 2)
 
     def test_turns_are_keyed_by_delivery_and_mode(self) -> None:
         self.send("triage")
@@ -1650,7 +1673,9 @@ class ResultValidationTests(unittest.TestCase):
         self.assertInvalid("review", variant(REVIEW_OK, body=""), "body is empty")
         finding = REVIEW_OK["comments"][0]
         self.assertInvalid("review", variant(REVIEW_OK, comments=[finding] * 51), "at most 50")
-        self.assertInvalid("review", variant(REVIEW_OK, comments=[{**finding, "start_line": 3}]), "start_line")
+        self.assertInvalid("review", variant(REVIEW_OK, comments=[{**finding, "start_line": 4}]), "start_line")
+        one_line = bridge.validate_result("review", variant(REVIEW_OK, comments=[{**finding, "start_line": 3}]), 7)
+        self.assertIsNone(one_line["comments"][0]["start_line"])
         self.assertInvalid("review", variant(REVIEW_OK, comments=[{**finding, "side": "BOTH"}]), "side")
         reply = {"comment_id": 5, "body": "done", "resolve": "yes"}
         self.assertInvalid("review", variant(REVIEW_OK, thread_replies=[reply]), "resolve")
