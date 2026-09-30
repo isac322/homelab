@@ -3,6 +3,7 @@
   self,
   topology,
   nvmeTcpDkms,
+  vgemDkms,
 }:
 let
   # macOS can reject LAN connections from Nix OpenSSH while allowing /usr/bin/ssh.
@@ -31,6 +32,7 @@ let
       nix
       openssh
       openssl
+      patch
       python3
       sops
       opentofu
@@ -68,10 +70,17 @@ in
     pkgs.callPackage ./pkgs/nvme-tcp-dkms.nix { inherit decl; }
   )
 ) nvmeTcpDkms.hosts)
+// (pkgs.lib.mapAttrs' (
+  name: decl:
+  pkgs.lib.nameValuePair "vgem-dkms-${name}" (pkgs.callPackage ./pkgs/vgem-dkms.nix { inherit decl; })
+) vgemDkms.hosts)
 // {
   nvme-tcp-dkms =
     mkApp "nvme-tcp-dkms" "Select or install one node's pinned NVMe/TCP DKMS package"
       ./scripts/nvme-tcp-dkms
+      "";
+  vgem-dkms =
+    mkApp "vgem-dkms" "Select or install one node's pinned vgem DKMS package" ./scripts/vgem-dkms
       "";
   bootstrap-host =
     hostApp "bootstrap-host" "Install host prerequisites and establish noninteractive sudo"

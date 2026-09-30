@@ -1,0 +1,463 @@
+#!/usr/bin/env bash
+# issue-agent-runner-home-migrate: one-time, operator-invoked move of the runner
+# home PVC from the issue-agent namespace to the issue-agent-runner namespace.
+#
+# The runner pod's dockerd sidecar exits before its startup probe can pass
+# until checkouts/.issue-agent-home-ready exists on the home claim, so the
+# runner and publisher containers never start (and never register with the hub)
+# before this tool marks the new home ready. The marker is written only by
+# `migrate`, after the old runner is verified gone and a full copy of the old
+# home (checkouts, worktrees, native CODEX_HOME/HAPI_HOME sessions, gh/git
+# state) is verified entry-by-entry with SHA-256 against the source. A brand-new
+# installation migrates the (empty) retained issue-agent claim the same way.
+#
+# Never destructive for the old data: the source claim is mounted read-only,
+# never deleted, and its PV is switched to Retain. The only thing ever removed is
+# an unfinished copy on the new, not-yet-ready claim, and only with
+# --wipe-incomplete-destination. File contents never reach the terminal; the
+# stream goes pod -> kubectl -> pod, and only path/metadata manifests (0600)
+# are kept locally.
+set -euo pipefail
+umask 077
+
+CONTEXT=homelab-backbone
+OLD_NS=issue-agent
+NEW_NS=issue-agent-runner
+PVC=issue-agent-runner-home
+RUNNER_APP=issue-agent-runner
+# Relative to the home root; the dockerd sidecar sees it at
+# /home/agent/checkouts/.issue-agent-home-ready.
+MARKER=checkouts/.issue-agent-home-ready
+SRC_POD=issue-agent-home-migrate-src
+DST_POD=issue-agent-home-migrate-dst
+WIPE=0
+
+usage() {
+  cat <<'EOF'
+Usage:
+  issue-agent-runner-home-migrate status     [--context NAME]
+  issue-agent-runner-home-migrate migrate    [--context NAME] [--wipe-incomplete-destination]
+  issue-agent-runner-home-migrate cleanup    [--context NAME]
+
+status      Read-only: old runner, both home claims, old PV reclaim policy, new pod state.
+migrate     Requires the old runner Deployment in issue-agent to be gone (or at 0
+            replicas) with no pod mounting issue-agent/issue-agent-runner-home.
+            Sets the old PV to Retain, streams the old home into
+            issue-agent-runner/issue-agent-runner-home through two scratch pods,
+            compares SHA-256 manifests of both trees, writes the ready marker and
+            recreates runner pods that never started. The destination must be
+            empty (an empty checkouts/ left by the kubelet counts as empty);
+            --wipe-incomplete-destination clears a previous unfinished copy there
+            (never the source, and never once the marker exists).
+            Manifests: <repo>/.host-state/issue-agent/home-migration/<UTC>/ (gitignored).
+cleanup     Deletes this tool's scratch pods after an interrupted run.
+
+The kubectl context defaults to homelab-backbone; the current context is never used.
+EOF
+}
+
+die() {
+  printf 'issue-agent-runner-home-migrate: %s\n' "$*" >&2
+  exit 1
+}
+log() { printf 'issue-agent-runner-home-migrate: %s\n' "$*" >&2; }
+
+((BASH_VERSINFO[0] > 4 || (BASH_VERSINFO[0] == 4 && BASH_VERSINFO[1] >= 4))) || die "bash >= 4.4 required"
+
+k() {
+  local ns="$1"
+  shift
+  kubectl --context "$CONTEXT" --namespace "$ns" "$@"
+}
+
+sha256() {
+  if command -v sha256sum >/dev/null; then sha256sum "$@"; else shasum -a 256 "$@"; fi
+}
+
+# Per-entry manifest of a tree: path, type, mode, owner and, for regular files,
+# size, mtime and SHA-256; symlink targets; device numbers. The tree root, the
+# top-level lost+found and the ready marker are excluded. The checkouts/
+# directory's own mode and owner are left out: the kubelet may create it as root
+# for the dockerd subPath mount and dockerd-start normalizes it; its contents are
+# compared in full. Sockets are runtime artifacts tar cannot copy; they are
+# counted on stderr and left out.
+read -r -d '' MANIFEST_PY <<'PY' || true
+import hashlib, json, os, stat, sys
+root = os.fsencode(sys.argv[1])
+skip = {b"lost+found", b"checkouts/.issue-agent-home-ready", b"checkouts/.issue-agent-home-ready.tmp"}
+files, size, sockets, entries = 0, 0, 0, 0
+out = sys.stdout
+def fail(err):
+    raise err
+for dirpath, dirnames, filenames in os.walk(root, onerror=fail):
+    rel_dir = os.path.relpath(dirpath, root)
+    def rel_of(name):
+        return os.path.normpath(os.path.join(rel_dir, name))
+    dirnames[:] = [d for d in dirnames if rel_of(d) not in skip]
+    filenames = [f for f in filenames if rel_of(f) not in skip]
+    for name in dirnames + filenames:
+        path = os.path.join(dirpath, name)
+        rel = rel_of(name)
+        st = os.lstat(path)
+        m = st.st_mode
+        head = [os.fsdecode(rel), None, "%04o" % stat.S_IMODE(m), st.st_uid, st.st_gid]
+        if rel == b"checkouts" and stat.S_ISDIR(m):
+            head[2:] = ["-", "-", "-"]
+        if stat.S_ISREG(m):
+            h = hashlib.sha256()
+            with open(path, "rb") as f:
+                for chunk in iter(lambda: f.read(1 << 20), b""):
+                    h.update(chunk)
+            head[1] = "f"
+            head += [st.st_size, int(st.st_mtime), h.hexdigest()]
+            files += 1
+            size += st.st_size
+        elif stat.S_ISDIR(m):
+            head[1] = "d"
+        elif stat.S_ISLNK(m):
+            head[1] = "l"
+            head.append(os.fsdecode(os.readlink(path)))
+        elif stat.S_ISSOCK(m):
+            sockets += 1
+            continue
+        else:
+            head[1] = "c" if stat.S_ISCHR(m) else "b" if stat.S_ISBLK(m) else "p"
+            head.append(st.st_rdev)
+        # Streamed unsorted (the pod never holds the whole tree); the caller sorts.
+        out.write(json.dumps(head, ensure_ascii=True) + "\n")
+        entries += 1
+out.flush()
+sys.stderr.write("manifest %s: %d entries, %d files, %d bytes, %d sockets skipped\n"
+                 % (sys.argv[1], entries, files, size, sockets))
+PY
+
+# ---------------------------------------------------------------------------
+# Cluster checks
+# ---------------------------------------------------------------------------
+
+old_runner_pods() {
+  # Any pod in the old namespace that is the runner or mounts the old claim.
+  k "$OLD_NS" get pods -o jsonpath='{range .items[*]}{.metadata.name}{" "}{.metadata.labels.app}{" "}{range .spec.volumes[*]}{.persistentVolumeClaim.claimName}{" "}{end}{"\n"}{end}' \
+    | awk -v app="$RUNNER_APP" -v pvc="$PVC" -v self="$SRC_POD" '
+        $1 == self { next }
+        { for (i = 2; i <= NF; i++) if ($i == app || $i == pvc) { print $1; next } }'
+}
+
+assert_old_runner_stopped() {
+  local replicas pods
+  if replicas="$(k "$OLD_NS" get deployment "$RUNNER_APP" -o jsonpath='{.spec.replicas}' 2>/dev/null)"; then
+    [[ "$replicas" == 0 ]] || die "old Deployment $OLD_NS/$RUNNER_APP still exists with replicas=${replicas:-?}; sync the issue-agent Argo app so it is pruned first"
+  fi
+  pods="$(old_runner_pods)" || die "cannot list pods in $OLD_NS"
+  [[ -z "$pods" ]] || die "old runner still has pods using $OLD_NS/$PVC: $(tr '\n' ' ' <<<"$pods")"
+}
+
+assert_bound() {
+  local phase
+  phase="$(k "$1" get pvc "$PVC" -o jsonpath='{.status.phase}' 2>/dev/null)" || die "PVC $1/$PVC not found"
+  [[ "$phase" == Bound ]] || die "PVC $1/$PVC is $phase, not Bound"
+}
+
+assert_no_scratch_pods() {
+  local ns pod
+  for ns in "$OLD_NS" "$NEW_NS"; do
+    for pod in "$SRC_POD" "$DST_POD"; do
+      ! k "$ns" get pod "$pod" >/dev/null 2>&1 || die "scratch pod $ns/$pod exists (another run, or an interrupted one: run cleanup)"
+    done
+  done
+}
+
+protect_old_pv() {
+  local pv policy
+  pv="$(k "$OLD_NS" get pvc "$PVC" -o jsonpath='{.spec.volumeName}')"
+  [[ -n "$pv" ]] || die "cannot resolve the PV of $OLD_NS/$PVC"
+  policy="$(kubectl --context "$CONTEXT" get pv "$pv" -o jsonpath='{.spec.persistentVolumeReclaimPolicy}')"
+  if [[ "$policy" != Retain ]]; then
+    kubectl --context "$CONTEXT" patch pv "$pv" --type merge \
+      -p '{"spec":{"persistentVolumeReclaimPolicy":"Retain"}}' >/dev/null
+    log "PV $pv (old home) reclaim policy $policy -> Retain"
+  else
+    log "PV $pv (old home) already Retain"
+  fi
+}
+
+runner_image() {
+  local image
+  image="$(k "$NEW_NS" get deployment "$RUNNER_APP" \
+    -o jsonpath='{.spec.template.spec.containers[?(@.name=="runner")].image}')" \
+    || die "Deployment $NEW_NS/$RUNNER_APP not found; sync the issue-agent-runner Argo app first"
+  [[ -n "$image" ]] || die "cannot read the runner image from $NEW_NS/$RUNNER_APP"
+  printf '%s' "$image"
+}
+
+# The runner Deployment's node set (the runner image is arm64-only).
+runner_node_set() {
+  k "$NEW_NS" get deployment "$RUNNER_APP" \
+    -o jsonpath='{.spec.template.spec.affinity.nodeAffinity.requiredDuringSchedulingIgnoredDuringExecution.nodeSelectorTerms[0].matchExpressions[?(@.key=="kubernetes.io/hostname")].values[*]}'
+}
+
+# Hostnames for the pod over the new claim: the node already holding it for a
+# waiting runner pod (RWO allows same-node sharing), else the node set.
+runner_hosts() {
+  local node
+  node="$(k "$NEW_NS" get pods -l "app=$RUNNER_APP" -o jsonpath='{.items[*].spec.nodeName}')"
+  if [[ -n "$node" ]]; then
+    [[ "$node" != *" "* ]] || die "more than one $RUNNER_APP pod in $NEW_NS: $node"
+    kubectl --context "$CONTEXT" get node "$node" -o jsonpath='{.metadata.labels.kubernetes\.io/hostname}'
+  else
+    runner_node_set
+  fi
+}
+
+# Restricted-profile scratch pod over one claim, removed on exit. Budget: the
+# user-approved Tier 4 (cpu request 1, no CPU limit, memory 2Gi/8Gi) per pod,
+# the same as the dockerd sidecar. $4 = "true" mounts the claim read-only.
+scratch_pod() {
+  local ns="$1" name="$2" hosts="$3" readonly="$4" image="$5" mount="$6" fsgroup host list=""
+  for host in $hosts; do list+="${list:+, }\"$host\""; done
+  [[ -n "$list" ]] || die "no candidate node for $ns/$name"
+  fsgroup=""
+  [[ "$readonly" == true ]] || fsgroup=$'\n    fsGroup: 1000\n    fsGroupChangePolicy: OnRootMismatch'
+  k "$ns" create -f - >/dev/null <<EOF
+apiVersion: v1
+kind: Pod
+metadata:
+  name: $name
+  labels:
+    app.kubernetes.io/name: issue-agent-home-migrate
+spec:
+  restartPolicy: Never
+  activeDeadlineSeconds: 86400
+  automountServiceAccountToken: false
+  enableServiceLinks: false
+  terminationGracePeriodSeconds: 5
+  securityContext:
+    runAsNonRoot: true
+    runAsUser: 1000
+    runAsGroup: 1000${fsgroup}
+    seccompProfile:
+      type: RuntimeDefault
+  affinity:
+    nodeAffinity:
+      requiredDuringSchedulingIgnoredDuringExecution:
+        nodeSelectorTerms:
+          - matchExpressions:
+              - key: kubernetes.io/hostname
+                operator: In
+                values: [$list]
+  containers:
+    - name: copy
+      image: $image
+      command: ["sleep", "infinity"]
+      resources:
+        requests:
+          cpu: "1"
+          memory: 2Gi
+        limits:
+          memory: 8Gi
+      securityContext:
+        allowPrivilegeEscalation: false
+        readOnlyRootFilesystem: true
+        capabilities:
+          drop: ["ALL"]
+      volumeMounts:
+        - name: home
+          mountPath: $mount
+          readOnly: $readonly
+  volumes:
+    - name: home
+      persistentVolumeClaim:
+        claimName: $PVC
+        readOnly: $readonly
+EOF
+}
+
+# Waits (bounded) until each scratch pod is really gone, so a later run's
+# scratch-pod lock check never trips over a terminating pod. Only the two
+# (namespace, name) pairs this tool creates are targeted, and each must carry
+# this tool's label, so a same-named foreign pod is preserved. Returns
+# non-zero, naming the pods, if any deletion did not finish.
+cleanup_scratch() {
+  local ns pod rc=0
+  while read -r ns pod; do
+    if ! k "$ns" delete pod \
+      --field-selector "metadata.name=$pod" \
+      --selector app.kubernetes.io/name=issue-agent-home-migrate \
+      --ignore-not-found --wait=true --timeout=120s >/dev/null; then
+      log "scratch pod $ns/$pod was not deleted within 120s; rerun: issue-agent-runner-home-migrate cleanup"
+      rc=1
+    fi
+  done <<EOF
+$OLD_NS $SRC_POD
+$NEW_NS $DST_POD
+EOF
+  return "$rc"
+}
+
+wait_ready() {
+  k "$1" wait --for=condition=Ready "pod/$2" --timeout=15m >/dev/null \
+    || die "scratch pod $1/$2 did not become Ready (see: kubectl --context $CONTEXT -n $1 describe pod $2)"
+}
+
+dst() { k "$NEW_NS" exec "$DST_POD" -- "$@"; }
+
+destination_state() {
+  # prints: ready | empty | partial. An empty checkouts/ (the kubelet creates
+  # it for the dockerd subPath mount of a waiting runner pod) counts as empty.
+  dst sh -c "
+    if [ -e /dst/$MARKER ]; then echo ready
+    elif [ -n \"\$(find /dst -mindepth 1 -maxdepth 1 ! -name lost+found ! -name checkouts -print -quit)\" ]; then echo partial
+    elif [ -d /dst/checkouts ] && [ -n \"\$(find /dst/checkouts -mindepth 1 -maxdepth 1 -print -quit)\" ]; then echo partial
+    elif [ -e /dst/checkouts ] && [ ! -d /dst/checkouts ]; then echo partial
+    else echo empty; fi"
+}
+
+write_marker() {
+  # $1 = marker body (no secrets: mode, source, manifest digest, counts, time).
+  k "$NEW_NS" exec -i "$DST_POD" -- sh -c \
+    "umask 022; mkdir -p /dst/checkouts && cat >/dst/$MARKER.tmp && sync /dst/$MARKER.tmp && mv /dst/$MARKER.tmp /dst/$MARKER && sync /dst/checkouts" <<<"$1"
+}
+
+restart_waiting_runner() {
+  local pods
+  # Only pods whose runner container has never started: the dockerd sidecar
+  # refused to start without the marker, so no runner or publisher process ran
+  # in them. Recreating them skips the sidecar's crash back-off.
+  pods="$(k "$NEW_NS" get pods -l "app=$RUNNER_APP" \
+    -o jsonpath='{range .items[*]}{.metadata.name}{" "}{.status.containerStatuses[?(@.name=="runner")].started}{" "}{.status.containerStatuses[?(@.name=="runner")].restartCount}{"\n"}{end}' \
+    | awk '$2 != "true" && ($3 == "" || $3 == "0") { print $1 }' | tr '\n' ' ')"
+  if [[ -n "${pods// /}" ]]; then
+    # shellcheck disable=SC2086
+    k "$NEW_NS" delete pod $pods --wait=false >/dev/null
+    log "recreated waiting runner pod(s): $pods"
+  fi
+}
+
+# ---------------------------------------------------------------------------
+# Commands
+# ---------------------------------------------------------------------------
+
+cmd_status() {
+  local replicas pv gate
+  if replicas="$(k "$OLD_NS" get deployment "$RUNNER_APP" -o jsonpath='{.spec.replicas}' 2>/dev/null)"; then
+    printf 'old runner Deployment %s/%s: replicas=%s\n' "$OLD_NS" "$RUNNER_APP" "$replicas"
+  else
+    printf 'old runner Deployment %s/%s: absent\n' "$OLD_NS" "$RUNNER_APP"
+  fi
+  printf 'old runner pods: %s\n' "$(old_runner_pods | tr '\n' ' ')"
+  if pv="$(k "$OLD_NS" get pvc "$PVC" -o jsonpath='{.status.phase} {.spec.volumeName}' 2>/dev/null)"; then
+    printf 'old home %s/%s: %s reclaim=%s\n' "$OLD_NS" "$PVC" "$pv" \
+      "$(kubectl --context "$CONTEXT" get pv "${pv#* }" -o jsonpath='{.spec.persistentVolumeReclaimPolicy}' 2>/dev/null)"
+  else
+    printf 'old home %s/%s: absent\n' "$OLD_NS" "$PVC"
+  fi
+  printf 'new home %s/%s: %s\n' "$NEW_NS" "$PVC" \
+    "$(k "$NEW_NS" get pvc "$PVC" -o jsonpath='{.status.phase} {.spec.volumeName}' 2>/dev/null || echo absent)"
+  gate="$(k "$NEW_NS" get pods -l "app=$RUNNER_APP" -o jsonpath='{range .items[*]}{.metadata.name}{" dockerd.started="}{.status.initContainerStatuses[?(@.name=="dockerd")].started}{" dockerd.restarts="}{.status.initContainerStatuses[?(@.name=="dockerd")].restartCount}{" runner.started="}{.status.containerStatuses[?(@.name=="runner")].started}{"\n"}{end}' 2>/dev/null || true)"
+  printf 'new runner pods:\n%s\n' "${gate:-  (none)}"
+}
+
+cmd_migrate() {
+  local hosts image stamp out src_sha dst_sha entries
+  assert_bound "$OLD_NS"
+  assert_bound "$NEW_NS"
+  assert_old_runner_stopped
+  assert_no_scratch_pods
+  image="$(runner_image)"
+  hosts="$(runner_hosts)"
+  local repo_root
+  repo_root="$(cd "$(dirname "${BASH_SOURCE[0]}")/../../../.." && pwd)"
+  stamp="$(date -u +%Y%m%dT%H%M%SZ)"
+  out="$repo_root/.host-state/issue-agent/home-migration/$stamp"
+  [[ ! -e "$out" ]] || die "$out already exists"
+
+  protect_old_pv
+  trap cleanup_scratch EXIT
+  trap 'exit 130' INT TERM
+  scratch_pod "$OLD_NS" "$SRC_POD" "$(runner_node_set)" true "$image" /src
+  scratch_pod "$NEW_NS" "$DST_POD" "$hosts" false "$image" /dst
+  wait_ready "$OLD_NS" "$SRC_POD"
+  wait_ready "$NEW_NS" "$DST_POD"
+
+  case "$(destination_state)" in
+    ready) die "$NEW_NS/$PVC is already marked ready; nothing to migrate" ;;
+    empty) ;;
+    partial)
+      ((WIPE)) || die "$NEW_NS/$PVC holds an unfinished copy; rerun with --wipe-incomplete-destination"
+      log "clearing the unfinished copy on $NEW_NS/$PVC (source untouched)"
+      # Keep checkouts/ itself (the kubelet may own it); read-only trees
+      # (e.g. the Go module cache) need u+w before removal.
+      dst sh -c 'find /dst -mindepth 1 -path /dst/lost+found -prune -o -type d ! -perm -u+w -exec chmod u+w -- {} + &&
+        find /dst -mindepth 1 -maxdepth 1 ! -name lost+found ! -name checkouts -exec rm -rf -- {} + &&
+        if [ -d /dst/checkouts ]; then find /dst/checkouts -mindepth 1 -maxdepth 1 -exec rm -rf -- {} +; else rm -f /dst/checkouts; fi' ;;
+    *) die "cannot inspect $NEW_NS/$PVC" ;;
+  esac
+
+  assert_old_runner_stopped
+  log "copying $OLD_NS/$PVC -> $NEW_NS/$PVC"
+  # Archive the top-level entries, never the source root itself: the root of a
+  # provisioned volume may be root-owned, and extracting a `.` entry would try
+  # to chmod/chown the destination root (EPERM as UID 1000). The root is also
+  # excluded from the manifest. NUL-separated names keep newlines, Unicode and
+  # leading dashes intact; an empty source yields an empty archive (rc 0).
+  # Drop an empty kubelet-created checkouts/ so tar recreates it as UID 1000.
+  dst rmdir /dst/checkouts 2>/dev/null || true
+  # GNU tar applies --exclude only to names read after it: keep it before -T.
+  # shellcheck disable=SC2016
+  k "$OLD_NS" exec "$SRC_POD" -- bash -c 'set -euo pipefail; cd /src
+    find . -mindepth 1 -maxdepth 1 ! -name lost+found -print0 \
+      | tar --null --exclude=./checkouts/.issue-agent-home-ready \
+          --exclude=./checkouts/.issue-agent-home-ready.tmp -T - --numeric-owner --one-file-system -cpf -' \
+    | k "$NEW_NS" exec -i "$DST_POD" -- tar -C /dst --numeric-owner --no-overwrite-dir -xpf - \
+    || die "copy failed; the source is unchanged. Rerun migrate with --wipe-incomplete-destination"
+
+  mkdir -p "$out"
+  log "hashing both trees"
+  k "$OLD_NS" exec "$SRC_POD" -- python3 -B -c "$MANIFEST_PY" /src | LC_ALL=C sort >"$out/source.manifest" \
+    || die "source manifest failed"
+  k "$NEW_NS" exec "$DST_POD" -- python3 -B -c "$MANIFEST_PY" /dst | LC_ALL=C sort >"$out/destination.manifest" \
+    || die "destination manifest failed"
+  src_sha="$(sha256 "$out/source.manifest" | cut -d' ' -f1)"
+  dst_sha="$(sha256 "$out/destination.manifest" | cut -d' ' -f1)"
+  if [[ "$src_sha" != "$dst_sha" ]]; then
+    log "manifest mismatch (paths/metadata only; full lists in $out):"
+    diff "$out/source.manifest" "$out/destination.manifest" | grep '^[<>]' | cut -c1-200 | head -n 40 >&2 || true
+    die "verification failed; the marker was NOT written and the source is unchanged"
+  fi
+  entries="$(wc -l <"$out/source.manifest" | tr -d ' ')"
+  log "verified: $entries entries, manifest sha256 $src_sha"
+
+  assert_old_runner_stopped
+  write_marker "mode=migrated
+source=$OLD_NS/$PVC
+manifest_sha256=$src_sha
+entries=$entries
+at=$stamp"
+  printf 'mode=migrated\nmanifest_sha256=%s\nentries=%s\n' "$src_sha" "$entries" >"$out/RESULT"
+  log "marked $NEW_NS/$PVC ready; manifests: $out"
+  trap - EXIT
+  cleanup_scratch || die "marker written, but scratch pods remain; run cleanup before anything else"
+  restart_waiting_runner
+  log "done. $OLD_NS/$PVC is retained (PV Retain, Argo Prune=false); delete it only by hand after the new runner is verified"
+}
+
+[[ $# -ge 1 ]] || { usage >&2; exit 2; }
+cmd="$1"
+shift
+while [[ $# -gt 0 ]]; do
+  case "$1" in
+    --context) [[ $# -ge 2 ]] || die "--context needs a value"; CONTEXT="$2"; shift 2 ;;
+    --wipe-incomplete-destination) [[ "$cmd" == migrate ]] || die "$1 is only valid for migrate"; WIPE=1; shift ;;
+    -h | --help) usage; exit 0 ;;
+    *) die "unknown argument: $1" ;;
+  esac
+done
+command -v kubectl >/dev/null || die "kubectl not found"
+
+case "$cmd" in
+  status) cmd_status ;;
+  migrate) cmd_migrate ;;
+  cleanup) cleanup_scratch || die "some scratch pods are still present"; log "scratch pods deleted (if any)" ;;
+  -h | --help | help) usage ;;
+  *) usage >&2; exit 2 ;;
+esac

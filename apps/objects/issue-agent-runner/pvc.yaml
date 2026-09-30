@@ -1,0 +1,32 @@
+# Runner home: native CODEX_HOME/HAPI_HOME, checkouts, worktrees and sessions.
+# Created empty; the dockerd sidecar refuses to start (so the runner and
+# publisher never start) until checkouts/.issue-agent-home-ready exists, written
+# only by operations/issue-agent-runner-home-migrate `migrate`.
+# Prune=false/Delete=false: a rollback or Application deletion never deletes it.
+apiVersion: v1
+kind: PersistentVolumeClaim
+metadata:
+  name: issue-agent-runner-home
+  annotations:
+    argocd.argoproj.io/sync-options: Prune=false,Delete=false
+spec:
+  accessModes:
+    - ReadWriteOnce
+  storageClassName: ssd-ha-xfs
+  resources:
+    requests:
+      storage: 20Gi
+---
+# /var/lib/docker of the runner pod's dockerd sidecar (images, build cache,
+# containerd content store). Discardable cache: no retention annotations.
+apiVersion: v1
+kind: PersistentVolumeClaim
+metadata:
+  name: issue-agent-runner-docker
+spec:
+  accessModes:
+    - ReadWriteOnce
+  storageClassName: ssd-ha-xfs
+  resources:
+    requests:
+      storage: 50Gi

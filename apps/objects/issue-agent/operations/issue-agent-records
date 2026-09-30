@@ -6,7 +6,8 @@
 #            bridge pod, which already mounts the HAPI access token; the token and the
 #            short-lived JWT stay in that process and are never written or printed.
 #            Only GET requests are issued after the token exchange.
-#   codex    Native Codex rollout transcripts (CODEX_HOME/sessions, archived_sessions).
+#   codex    Native Codex rollout transcripts (CODEX_HOME/sessions, archived_sessions) read
+#            from the runner pod, which lives in its own namespace (--runner-namespace).
 #            Only files named rollout-*-<uuid>.jsonl under those two roots are readable;
 #            config.toml, auth.json, history, sqlite state, and worktrees are refused.
 #   bridge   Bridge event/issue/turn rows (SQLite, opened read-only).
@@ -21,6 +22,7 @@ umask 077
 
 CONTEXT=homelab-backbone
 NAMESPACE=issue-agent
+RUNNER_NAMESPACE=issue-agent-runner
 OUT=""
 N8N_LIMIT=100
 N8N_WORKFLOW=""
@@ -39,7 +41,10 @@ Read-only export of Issue Agent records. No authentication material is returned.
 
 Options:
   --context NAME     kubectl context (default: homelab-backbone; the current context is never used)
-  --namespace NAME   namespace (default: issue-agent)
+  --namespace NAME   hub, bridge, and n8n namespace (default: issue-agent)
+  --runner-namespace NAME
+                     runner namespace for native Codex transcripts (codex-* and issue)
+                     (default: issue-agent-runner)
   --out PATH         write to PATH (0600 file; 0700 directory for `issue`) instead of stdout;
                      PATH must not exist
 
@@ -66,14 +71,19 @@ die() {
 }
 warn() { printf 'issue-agent-records: warning: %s\n' "$*" >&2; }
 
-k() { kubectl --context "$CONTEXT" --namespace "$NAMESPACE" "$@"; }
+# k NAMESPACE ARGS...: every kubectl call names its namespace explicitly.
+k() {
+  local ns="$1"
+  shift
+  kubectl --context "$CONTEXT" --namespace "$ns" "$@"
+}
 
 pod_for() {
-  local pods count
-  pods="$(k get pods -l "app=$1" --field-selector=status.phase=Running \
-    -o jsonpath='{range .items[*]}{.metadata.name}{"\n"}{end}')" || die "cannot list pods for app=$1"
+  local ns="$1" app="$2" pods count
+  pods="$(k "$ns" get pods -l "app=$app" --field-selector=status.phase=Running \
+    -o jsonpath='{range .items[*]}{.metadata.name}{"\n"}{end}')" || die "cannot list pods for app=$app in namespace $ns"
   count="$(grep -c . <<<"$pods" || true)"
-  [[ "$count" -eq 1 ]] || die "expected exactly one Running pod for app=$1, found ${count}"
+  [[ "$count" -eq 1 ]] || die "expected exactly one Running pod for app=$app in namespace $ns, found ${count}"
   printf '%s' "$pods"
 }
 
@@ -430,23 +440,23 @@ JS
 
 run_hub() {
   local pod
-  pod="$(pod_for issue-agent-bridge)" || return 1
-  k exec "$pod" -c bridge -- python -B -c "$HUB_PY" "$1"
+  pod="$(pod_for "$NAMESPACE" issue-agent-bridge)" || return 1
+  k "$NAMESPACE" exec "$pod" -c bridge -- python -B -c "$HUB_PY" "$1"
 }
 run_codex() {
   local pod
-  pod="$(pod_for issue-agent-runner)" || return 1
-  k exec "$pod" -c runner -- python3 -B -c "$CODEX_PY" "$1"
+  pod="$(pod_for "$RUNNER_NAMESPACE" issue-agent-runner)" || return 1
+  k "$RUNNER_NAMESPACE" exec "$pod" -c runner -- python3 -B -c "$CODEX_PY" "$1"
 }
 run_bridge() {
   local pod
-  pod="$(pod_for issue-agent-bridge)" || return 1
-  k exec "$pod" -c bridge -- python -B -c "$BRIDGE_PY" "$1"
+  pod="$(pod_for "$NAMESPACE" issue-agent-bridge)" || return 1
+  k "$NAMESPACE" exec "$pod" -c bridge -- python -B -c "$BRIDGE_PY" "$1"
 }
 run_n8n() {
   local pod
-  pod="$(pod_for issue-agent-n8n)" || return 1
-  k exec "$pod" -c n8n -- node -e "$N8N_JS" "$1"
+  pod="$(pod_for "$NAMESPACE" issue-agent-n8n)" || return 1
+  k "$NAMESPACE" exec "$pod" -c n8n -- node -e "$N8N_JS" "$1"
 }
 
 # Writes stdin of a producer to --out (new 0600 file) or stdout.
@@ -543,6 +553,8 @@ main() {
       --context=*) CONTEXT="${1#*=}"; shift ;;
       --namespace) NAMESPACE="${2:?--namespace requires a value}"; shift 2 ;;
       --namespace=*) NAMESPACE="${1#*=}"; shift ;;
+      --runner-namespace) RUNNER_NAMESPACE="${2:?--runner-namespace requires a value}"; shift 2 ;;
+      --runner-namespace=*) RUNNER_NAMESPACE="${1#*=}"; shift ;;
       --out) OUT="${2:?--out requires a value}"; shift 2 ;;
       --out=*) OUT="${1#*=}"; shift ;;
       --workflow) N8N_WORKFLOW="${2:?--workflow requires a value}"; shift 2 ;;
@@ -554,7 +566,8 @@ main() {
     esac
   done
   [[ ${#args[@]} -gt 0 ]] || { usage >&2; exit 2; }
-  [[ -n "$CONTEXT" && -n "$NAMESPACE" ]] || die "context and namespace must be non-empty"
+  [[ -n "$CONTEXT" && -n "$NAMESPACE" && -n "$RUNNER_NAMESPACE" ]] ||
+    die "context, namespace, and runner namespace must be non-empty"
   command -v kubectl >/dev/null || die "kubectl not found"
 
   local cmd="${args[0]}"

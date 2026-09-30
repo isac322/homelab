@@ -24,6 +24,61 @@ spec:
         fsGroupChangePolicy: OnRootMismatch
         seccompProfile:
           type: RuntimeDefault
+      initContainers:
+        # Pod-local Docker daemon. Runs as root and privileged; nothing else in
+        # the pod may, so its securityContext fully overrides the pod defaults.
+        # Reaching its startup probe is what releases the runner container.
+        # Image: Dockerfile.dockerd. The explicit command keeps a wrong image
+        # from falling back to the upstream entrypoint's TCP listener.
+        - name: dockerd
+          restartPolicy: Always
+          image: ghcr.io/isac322/issue-agent-dockerd:29.4.0-20260930@sha256:6b8013967fca108043a983153336d1793c2d2e0e7bbacdcfcb33ea7951cd7e6b
+          command:
+            - /opt/issue-agent/bin/dockerd-start
+          env:
+            - name: ISSUE_AGENT_DOCKER_SOCKDIR
+              value: /run/issue-agent-docker
+            - name: ISSUE_AGENT_CHECKOUTS
+              value: /home/agent/checkouts
+          startupProbe:
+            exec:
+              command:
+                - /opt/issue-agent/bin/dockerd-probe
+            periodSeconds: 5
+            timeoutSeconds: 10
+            failureThreshold: 60
+          livenessProbe:
+            exec:
+              command:
+                - /opt/issue-agent/bin/dockerd-probe
+            periodSeconds: 30
+            timeoutSeconds: 10
+            failureThreshold: 6
+          resources:
+            requests:
+              cpu: "1"
+              memory: 2Gi
+            limits:
+              memory: 8Gi
+          securityContext:
+            runAsNonRoot: false
+            runAsUser: 0
+            runAsGroup: 0
+            privileged: true
+            seccompProfile:
+              type: Unconfined
+          volumeMounts:
+            - name: docker-sock
+              mountPath: /run/issue-agent-docker
+            - name: docker-data
+              mountPath: /var/lib/docker
+            - name: home
+              mountPath: /home/agent/checkouts
+              subPath: checkouts
+            - name: tmp
+              mountPath: /tmp
+            - name: dri
+              mountPath: /dev/dri
       affinity:
         nodeAffinity:
           requiredDuringSchedulingIgnoredDuringExecution:
@@ -36,7 +91,7 @@ spec:
                       - macmini
       containers:
         - name: runner
-          image: ghcr.io/isac322/issue-agent-runner:0.30.7-codex0.159.2-20260930-r4@sha256:91622c700858985a4be61028664dabb82476dbab8cfbbb3d22b6de4fe5d145a3
+          image: ghcr.io/isac322/issue-agent-runner:0.30.7-codex0.159.2-20260930-docker@sha256:90252e35f63751efef1dea0c5626c6aa547ccd7f040bd9a9193c8cd9888becc9
           env:
             - name: HOME
               value: /home/agent
@@ -66,6 +121,8 @@ spec:
               value: "4"
             - name: GOMAXPROCS
               value: "4"
+            - name: DOCKER_HOST
+              value: unix:///run/issue-agent-docker/docker.sock
             - name: CLI_API_TOKEN
               valueFrom:
                 secretKeyRef:
@@ -112,10 +169,17 @@ spec:
               readOnly: true
             - name: tmp
               mountPath: /tmp
+            - name: docker-sock
+              mountPath: /run/issue-agent-docker
+            # Visible so Krema's harness detects the /dev/dri nodes it passes via
+            # `docker run --device`; the daemon resolves them in its own mount.
+            - name: dri
+              mountPath: /dev/dri
+              readOnly: true
         # The only container holding the contents:write token. Called by the
         # bridge only; the runner container cannot read either of its secrets.
         - name: publisher
-          image: ghcr.io/isac322/issue-agent-runner:0.30.7-codex0.159.2-20260930-r4@sha256:91622c700858985a4be61028664dabb82476dbab8cfbbb3d22b6de4fe5d145a3
+          image: ghcr.io/isac322/issue-agent-runner:0.30.7-codex0.159.2-20260930-docker@sha256:90252e35f63751efef1dea0c5626c6aa547ccd7f040bd9a9193c8cd9888becc9
           command:
             - /usr/bin/tini
             - --
@@ -200,3 +264,15 @@ spec:
         - name: publisher-state
           emptyDir:
             sizeLimit: 4Gi
+        # Unix socket only (dockerd --group=1000 → 0660 root:1000); no TCP listener.
+        - name: docker-sock
+          emptyDir: {}
+        # Image content too: Docker 29's containerd image store keeps it under
+        # /var/lib/docker/containerd/daemon, inside this volume.
+        - name: docker-data
+          persistentVolumeClaim:
+            claimName: issue-agent-runner-docker
+        - name: dri
+          hostPath:
+            path: /dev/dri
+            type: Directory

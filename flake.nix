@@ -25,6 +25,7 @@
       lib = nixpkgs.lib;
       topology = import ./nix/lib/topology.nix { inherit lib; };
       nvmeTcpDkms = import ./nix/lib/nvme-tcp-dkms.nix { inherit lib topology; };
+      vgemDkms = import ./nix/lib/vgem-dkms.nix { inherit lib topology; };
       linuxHosts = lib.filterAttrs (_: host: lib.hasSuffix "-linux" host.system) topology.deployableNodes;
       darwinHosts = lib.filterAttrs (
         _: host: lib.hasSuffix "-darwin" host.system
@@ -51,6 +52,7 @@
             ./nix/modules/linux/wireguard.nix
             ./nix/modules/linux/k3s-host.nix
             ./nix/modules/linux/nvme-tcp-dkms.nix
+            ./nix/modules/linux/vgem-dkms.nix
           ]
           ++ lib.optional (builtins.pathExists hostModule) hostModule;
           specialArgs = {
@@ -76,7 +78,7 @@
         };
     in
     {
-      inherit topology nvmeTcpDkms;
+      inherit topology nvmeTcpDkms vgemDkms;
       systemConfigs =
         (lib.mapAttrs (mkLinuxHost false) linuxHosts)
         // (lib.mapAttrs' (
@@ -94,6 +96,7 @@
             self
             topology
             nvmeTcpDkms
+            vgemDkms
             ;
         }
       );
@@ -102,11 +105,17 @@
         let
           packages = self.packages.${system};
         in
-        lib.mapAttrs (_: package: {
-          type = "app";
-          program = "${package}/bin/${package.meta.mainProgram}";
-          meta.description = package.meta.description or "Homelab administration command";
-        }) (lib.filterAttrs (name: _: !lib.hasPrefix "nvme-tcp-dkms-" name) packages)
+        lib.mapAttrs
+          (_: package: {
+            type = "app";
+            program = "${package}/bin/${package.meta.mainProgram}";
+            meta.description = package.meta.description or "Homelab administration command";
+          })
+          (
+            lib.filterAttrs (
+              name: _: !lib.hasPrefix "nvme-tcp-dkms-" name && !lib.hasPrefix "vgem-dkms-" name
+            ) packages
+          )
       );
       checks = forAllSystems (
         system:
@@ -427,6 +436,7 @@
         // darwinChecks
         # Every declared node's DKMS package must still assemble from its pinned sources.
         // lib.filterAttrs (name: _: lib.hasPrefix "nvme-tcp-dkms-" name) self.packages.${system}
+        // lib.filterAttrs (name: _: lib.hasPrefix "vgem-dkms-" name) self.packages.${system}
         // {
           lifecycle-fixtures = lifecycleFixtures;
           topology =
@@ -460,6 +470,8 @@
                   ${./nix/scripts/provision-host} \
                   ${./nix/scripts/render-macbook-wireguard} \
                   ${./nix/scripts/nvme-tcp-dkms} \
+                  ${./nix/scripts/vgem-dkms} \
+                  ${./nix/pkgs/vgem-abi-check} \
                   ${./nix/pkgs/nvme-tcp-abi-check} \
                   ${./nix/scripts/rollout-peers} \
                   ${./nix/scripts/sync-wireguard-runtime} \

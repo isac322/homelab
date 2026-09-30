@@ -65,6 +65,31 @@ nix run .#nvme-tcp-dkms -- install rpi5  # Nix로 deb/pkg.tar.zst를 빌드해 a
 
 `rock5bp`의 vendor 6.1.84 `nvmet-tcp`에 남아 있는 allocation failure crash(upstream `5572a55a6f830ee3f3a994b6b962a5c327d28cb3`, nvmet-tcp: fix kernel crash if commands allocation fails)는 transport 소스(6.1.186)에 이미 포함되어 있으므로 별도 patch를 적용하지 않는다. 이미 설치된 module은 새 패키지를 `install`하고 다시 load하기 전까지 취약 상태 그대로다.
 
+### vgem DKMS
+
+Issue Agent Runner Pod의 Docker 작업(예: Krema E2E harness의 KWin)은 실제 GPU 대신 vgem(virtual GEM) render device를 쓴다. vendor 커널에 vgem이 없는 `macmini`와 `rock5bp`에는 Nix가 node별로 만든 `vgem-dkms` 패키지를 설치한다. 선언은 `nix/lib/vgem-dkms.json`에 있다.
+
+| Node | 선언한 커널 | headers 패키지 | vgem 소스 |
+|---|---|---|---|
+| `macmini` | `7.1.13-3-2-ARCH` | `linux-asahi-headers` | Linux 7.1.13 + platform-device patch |
+| `rock5bp` | `6.1.84-999-rk2410` | `linux-headers-6.1.84-999-rk2410` | Linux 6.1.188, 원래 platform device로 등록 |
+
+패키지는 선언한 upstream release의 `drivers/gpu/drm/vgem` 소스(`vgem_drv.c`, `vgem_drv.h`, `vgem_fence.c`)만 담는다. node의 DKMS는 설치된 vendor headers에 대해 네트워크 없이 빌드하고, 빌드 직후 `vgem-abi-check`가 다음 조건 중 하나라도 어긋나면 빌드를 실패시킨다. 커널이 선언한 stable series(`7.1.x`, `6.1.x`)에 속해야 하고, `CONFIG_DRM`이 켜져 있어야 하며, 커널이 이미 `CONFIG_DRM_VGEM`을 제공하면 안 된다(모듈 중복 방지). 모듈이 import하는 모든 심볼은 커널 `Module.symvers`에 export되어 있어야 하고, `CONFIG_MODVERSIONS` 커널이면 CRC도 같아야 한다. `CONFIG_DRM`이 없는 커널은 `BUILD_EXCLUSIVE_CONFIG`로 제외한다.
+
+Debian과 Arch 패키지는 모두 `pahole`을 의존성으로 선언한다. BTF module 생성이 켜져 있고 `vmlinux`가 있는 headers에서는 Kbuild가 DKMS module의 BTF 정보를 만들 때 이 도구를 실행한다.
+
+Linux 6.17부터 upstream vgem은 device를 faux bus에 등록한다. 현재 KWin 6.7이 쓰는 libdrm device 탐색은 platform device의 software render node만 찾으므로, 6.17 이상 소스에는 `nix/pkgs/vgem-platform-device.patch`로 platform device 등록을 되돌린다. tarball이 선언(`platformPatch`)과 다른 형태이거나 patch 뒤에 faux 참조가 남으면 빌드가 실패한다. Runner의 dockerd startup probe는 `/sys/class/drm/card*` 중 하나가 `/sys/devices/platform/vgem*`으로 해석되고 해당 `/dev/dri/cardN` character device가 있어야 통과한다. vgem이 없는 node에서는 Runner Pod가 시작하지 않는다.
+
+```bash
+nix run .#vgem-dkms -- select macmini   # node에서 같은 series의 최신 release를 scratch 빌드하고 선언을 갱신(설치 없음), 결과를 commit
+nix run .#vgem-dkms -- install macmini  # Nix로 pkg.tar.zst를 빌드해 pacman으로 설치하고 headers가 있는 모든 커널에 DKMS 빌드
+nix run .#vgem-dkms -- install rock5bp  # 같은 방식으로 deb를 apt로 설치
+```
+
+선언된 host의 Nix generation은 `/etc/modules-load.d/vgem.conf`로 부팅 때 vgem을 load한다. 패키지는 그 host activation보다 먼저 설치해야 한다. 실행 중인 커널이 선언 series가 아니거나, 선언한 패키지 버전이 설치되지 않았거나, `CONFIG_DRM`이 있는 headers 설치 커널 중 하나라도 DKMS module이 없으면 pre-activation assertion이 다음 generation을 막는다. `reconcile-distro-packages`는 `macmini`에 패키지를 설치하고, `preserveNasState=true`인 `rock5bp`에서는 설치하지 않으므로 `install`을 명시적으로 실행한다. 설치한 모듈은 재부팅하거나 `sudo modprobe vgem`을 실행해야 load된다.
+
+이 변경 작업에서는 production node에 `select`, `install`, host activation, `modprobe`, 재부팅을 실행하지 않았다. 두 node의 설치와 재부팅, `/sys/module/vgem`과 platform card 확인은 운영자 승인 뒤에 수동으로 진행하는 rollout 단계다. 그 전까지 Runner Pod는 dockerd startup probe에서 멈춘다.
+
 ## Linux migration
 
 일반 activation은 다음 다섯 단계다. K3s version과 rolling upgrade는 기존 Rancher `system-upgrade-controller`, `server-plan`, `agent-plan`, `backbone-k3s-upgrade` Application이 계속 소유한다. Host migration 중에는 Plan version을 변경하거나 별도 rollout을 시작하지 않는다.
@@ -200,33 +225,35 @@ K3s version과 순차 rollout은 기존 Rancher `system-upgrade-controller`가 �
 
 ### Issue agent (n8n + HAPI)
 
-`apps/objects/issue-agent/`는 GitHub App `bulgasaribot`이 설치된 저장소의 이슈·PR 자동화를 `issue-agent` namespace에 배포한다. 현재 운영 대상은 `isac322/cc-lb`다. 설계와 책임 경계는 `docs/issue-agent-platform.md`를 따른다. Argo CD 등록 파일은 `argocd/apps/issue-agent.yaml`과 `argocd/appprojects/issue-agent.yaml`이다. 자동 merge는 하지 않는다.
+`apps/objects/issue-agent/`는 GitHub App `bulgasaribot`이 설치된 저장소의 이슈·PR 자동화 중 hub·n8n·bridge를 `issue-agent` namespace에, `apps/objects/issue-agent-runner/`는 Runner Pod를 `issue-agent-runner` namespace에 배포한다. Runner 이미지는 계속 `apps/objects/issue-agent/`에서 빌드한다. 현재 운영 대상은 `isac322/cc-lb`다. 설계와 책임 경계는 `docs/issue-agent-platform.md`를 따른다. Argo CD 등록 파일은 `argocd/apps/issue-agent.yaml`, `argocd/apps/issue-agent-runner.yaml`, `argocd/appprojects/issue-agent.yaml`이다. 자동 merge는 하지 않는다.
 
 - 구성: 각 Deployment는 단일 replica이며 `Recreate`로 교체한다.
   - `issue-agent-bridge`: GitHub webhook 검증·중복 방지·상태 SQLite와 n8n용 `/ops` API를 담당한다. GitHub 이슈·PR 쓰기는 모두 bridge op로만 일어난다.
   - `issue-agent-n8n`: 워크플로 `IssueAgentMain01`이 triage·구현·후속 댓글·PR 리뷰 단계와 모든 GitHub 반영(라벨·댓글·push·PR·리뷰)을 소유한다. 오류 워크플로는 `IssueAgentError01`이다.
   - `issue-agent-hub`: HAPI Hub로, 세션·메시지 SQLite와 웹 UI를 제공한다.
-  - `issue-agent-runner`: HAPI Runner로, Codex를 실행하며 네이티브 `CODEX_HOME`, checkout, 주제별 worktree를 home PVC에 보존한다. 같은 Pod의 `publisher` 사이드카(Service `issue-agent-publisher`, 포트 8090)가 checkout clone과 branch push만 담당한다.
+  - `issue-agent-runner`(`issue-agent-runner` namespace): HAPI Runner로, Codex를 실행하며 네이티브 `CODEX_HOME`, checkout, 주제별 worktree를 home PVC에 보존한다. 같은 Pod의 `publisher` 사이드카(Service `issue-agent-publisher.issue-agent-runner`, 포트 8090)가 checkout clone과 branch push만 담당하고, native sidecar `dockerd`가 Pod 전용 Docker daemon을 제공한다. Runner Pod는 replica 1과 `Recreate`를 유지하며 replica를 늘리지 않는다.
 
-  Hub, n8n, runner home, bridge 상태는 각각 `ssd-ha-xfs` PVC에 저장한다. 모든 Pod는 non-root이며 Kubernetes API 토큰을 마운트하지 않는다.
+  Hub, n8n, runner home(20Gi), bridge 상태는 각각 `ssd-ha-xfs` PVC에 저장하고, Docker 이미지와 build cache는 `issue-agent-runner-docker`(50Gi) PVC에 둔다. `issue-agent` namespace는 Pod Security `restricted`를 enforce하며 hub·n8n·bridge는 non-root다. `issue-agent-runner` namespace만 `privileged`를 enforce하고 audit·warn은 `restricted`로 둔다. 그 안에서 root·privileged로 실행하는 컨테이너는 `dockerd`뿐이고 runner와 publisher는 UID 1000 non-root다. 어느 Pod도 Kubernetes API 토큰을 마운트하지 않는다.
 - 흐름: 에이전트(Codex)는 GitHub에 아무것도 쓰지 않는다. 턴 끝에 `ISSUE_AGENT_RESULT <nonce> {json}` 한 줄로 구조화된 결과를 내고, bridge가 모드별 스키마로 검증한 뒤 n8n이 bridge op로 GitHub에 반영한다. 세션은 주제마다 하나다(이슈 `issue-<n>`, PR `review-pr-<n>`, HAPI branch는 `hapi-<worktree>`). bridge dispatcher는 저장소와 무관하게 전체에서 이벤트를 최대 10개(`MAX_ACTIVE_EVENTS`)까지 동시에 n8n에 넘기되, 같은 이슈·PR의 이벤트는 세션과 worktree를 공유하므로 한 번에 하나씩 들어온 순서대로 처리한다. 이벤트가 `finish`로 끝나면 bridge가 그 세션을 HAPI에서 archive해 Codex 프로세스를 멈추고, 같은 주제의 다음 이벤트가 같은 세션을 resume한다. 그래서 Runner에는 일하는 세션과 `needs_attention`으로 멈춘 세션만 떠 있다.
   - triage: 누구나 연 `issues.opened`(저장소 collaborator·owner가 아닌 사용자의 새 이슈는 전체 저장소 합산 1시간(rolling)에 10개까지, 넘으면 `rate_limited`), 또는 구현 단계가 아닌 이슈의 새 댓글. 에이전트가 `gh`로 이슈와 댓글을 직접 읽고(관련 이슈·PR은 `gh search`로 검색) `isac-issue-triage`로 분석해 TriageResult를 낸다. n8n이 카탈로그 라벨을 적용하고 분석 댓글을 게시한다. `next_action`이 `implement`면 같은 실행·같은 세션에서 구현으로 넘어가고, `await_info`/`await_decision`이면 질문 댓글에서 멈춘다.
   - implement: `isac-issue-to-pr`로 `hapi-issue-<n>` branch에 로컬 커밋만 하고 ImplementResult(`head_sha`, PR 제목·본문)를 낸다. n8n이 `git.push`(publisher 경유, force 없음)로 push하고 `github.pr_upsert`로 일반(비 Draft) PR을 열거나 제목·본문을 갱신한 뒤 이슈에 PR 링크를 남긴다. `no_change`는 이슈 댓글, `needs_info`는 질문 댓글과 `triage:needs-info` 라벨로 끝난다.
   - 후속: 구현 단계 이슈의 새 댓글과 제목·본문 수정(`issues.edited`)은 `followup` 모드로 같은 세션에 전달되며(`receiving-code-review` 포함) 결과 처리는 implement와 같다. 에이전트는 `gh`로 이슈 제목·본문과 모든 댓글을 직접 읽고, 기록된 `pr_number`가 있으면 그 PR의 상태도 `gh`로 읽어 비교한 뒤 달라졌으면 커밋과 PR 제목·본문을 고친다. PR이 merge·close됐으면 기본 브랜치를 branch에 merge한 뒤 새 PR을 연다.
   - PR 리뷰: 설치된 저장소의 Draft가 아닌 모든 PR이 `pull_request` `opened`/`reopened`/`ready_for_review`로 자동 리뷰된다(작성자·sender 무관, dependabot·외부 기여자·bot PR 포함). 재요청은 PR 작성자 또는 저장소 collaborator·owner가 `User` sender로 남긴 `@haechibot review`(본문 시작, 앞 공백·대소문자 무시) PR 댓글뿐이다. 리뷰 세션은 구현 세션과 분리되어 있고(`review-pr-<n>`), PR head를 `git fetch origin pull/<n>/head`로 checkout해 base diff를 본다. 에이전트는 `gh`와 `gh api graphql`로 PR 제목·본문·파일·리뷰·댓글·리뷰 스레드와 연결 이슈(다른 저장소 포함)를 직접 읽는다. 에이전트가 `isac-pr-review`로 ReviewResult를 내면 n8n의 `github.review`가 리뷰 App(`haechibot[bot]`)으로 기존 스레드 답글·resolve를 먼저 게시하고 리뷰 하나를 제출한 뒤, 리뷰한 head에 commit status `issue-agent/review`를 남긴다(APPROVE → `success`, REQUEST_CHANGES·COMMENT → `failure`). 작성 App과 리뷰 App이 다르므로 bulgasaribot이 연 PR에도 실제 APPROVE/REQUEST_CHANGES가 달린다. 리뷰 본문과 리뷰 이벤트의 attention 댓글은 bridge가 단일 footer 블록(재리뷰 방법과 요청 자격 안내)을 덧붙여 게시하며 에이전트는 footer를 쓰지 않는다. PR 리뷰 이벤트의 attention 댓글과 `agent:needs-attention` 라벨도 리뷰 App이 게시한다. PR head가 결과의 `head_sha`와 다르면 `stale_head`로 멈춘다.
-- 이미지: HAPI Hub와 Runner는 공개 이미지 `ghcr.io/isac322/issue-agent-hapi`, `ghcr.io/isac322/issue-agent-runner`를 digest로 고정하며 pull Secret이 필요 없다. publisher는 Runner 이미지를 그대로 쓴다. 이미지에는 레포에 있는 지침(`profile/AGENTS.md`)·스킬(`profile/skills/` → `/etc/codex/skills`)·스크립트만 들어가고 자격증명은 넣지 않는다. n8n은 공식 이미지를 digest로 고정한다.
+- 이미지: HAPI Hub와 Runner는 공개 이미지 `ghcr.io/isac322/issue-agent-hapi`, `ghcr.io/isac322/issue-agent-runner`를 digest로 고정하며 pull Secret이 필요 없다. publisher는 Runner 이미지를 그대로 쓴다. 이미지에는 레포에 있는 지침(`profile/AGENTS.md`)·스킬(`profile/skills/` → `/etc/codex/skills`)·스크립트만 들어가고 자격증명은 넣지 않는다. n8n은 공식 이미지를 digest로 고정한다. dockerd 이미지(`Dockerfile.dockerd`)는 digest로 고정한 `docker:29.4.0-dind` 위에 버전 고정한 `nftables`와 `util-linux-misc`(`unshare --cgroup`)를 빌드 때 설치하며, 실행 중에는 패키지를 설치하지 않는다. Runner 이미지의 Docker CLI·buildx·compose도 digest로 고정한 `docker:29.4.0-cli`에서 복사한다.
 - Codex 도구: Runner 이미지에 context-mode와 CodeGraph를 `runner/tools/package-lock.json`(npm integrity 고정)으로 설치한다. MCP 서버 두 개는 Codex 시스템 설정(`runner/codex/config.toml` → `/etc/codex/config.toml`)에, hook은 `runner/codex/requirements.toml` → `/etc/codex/requirements.toml`의 managed hook으로 둔다. managed hook은 정책상 신뢰되므로 무인 Runner에서도 `/hooks` 승인 없이 실행되고 사용자 설정으로 끌 수 없다. context-mode hook은 큰 출력과 `curl`/`wget` 같은 raw fetch를 `ctx_*` 도구로 돌리고(MCP 서버가 살아 있을 때), SessionStart hook `codegraph-index`는 세션 worktree에 CodeGraph 색인을 만들거나 동기화한다. `.codegraph/`는 전역 git exclude(`runner/gitignore`)로 커밋되지 않는다.
 - 빌드 캐시: Runner 이미지에 sccache를 체크섬 고정으로 설치한다. Rust는 `RUSTC_WRAPPER=sccache`로, C/C++는 `PATH`에서 `/usr/bin`보다 앞선 `cc`·`gcc`·`c++`·`g++` wrapper(`runner/sccache-cc`)로 sccache를 거친다. CMake는 `CMAKE_C_COMPILER_LAUNCHER`·`CMAKE_CXX_COMPILER_LAUNCHER`도 sccache로 둔다. Rust `cc` crate나 CMake launcher처럼 sccache가 이미 감싼 호출에서는 wrapper가 부모 프로세스를 보고 실제 컴파일러를 바로 실행해 이중으로 감싸지 않는다. 캐시(`SCCACHE_DIR=/home/agent/.cache/sccache`, 최대 `5G`)는 기존 home PVC에 있어 worktree·세션·Pod 재시작을 넘어 공유된다. 의존성 crate와 C/C++ 오브젝트는 캐시되지만, incremental로 빌드되는 워크스페이스 자기 crate와 링크는 캐시되지 않는다.
-- Provider: `external-secret-provider.yaml`이 기존 CLIProxyAPI SSM 항목에서 Runner용 `issue-agent-provider` Secret(`OPENAI_API_KEY`, Codex `config.toml`)을 만든다. n8n은 모델을 호출하지 않는다. 값은 파일 마운트로만 전달하므로 변경 후 Runner Pod를 재시작한다.
+- Docker: runner 컨테이너는 `DOCKER_HOST=unix:///run/issue-agent-docker/docker.sock`으로 같은 Pod의 `dockerd`를 쓴다. daemon은 TCP 없이 Unix socket만 열고, socket은 `--group=1000`으로 root:1000 0660이라 UID 1000 runner가 non-root로 쓴다. daemon이 마운트하는 것은 checkout(`/home/agent/checkouts`, home PVC의 `checkouts` subPath), runner와 공유하는 `/tmp` emptyDir, socket 디렉터리, Docker 데이터 PVC, `/dev/dri`뿐이며 home root(`CODEX_HOME`·HAPI 상태)와 Secret은 마운트하지 않는다. checkout과 `/tmp`는 runner와 daemon에서 경로가 같으므로 이 두 경로 아래만 bind mount와 build context로 쓸 수 있다. 다만 privileged daemon의 socket에 명령을 보낼 수 있는 runner 프로세스는 사실상 node root 권한을 가지므로, node의 다른 Pod와 Secret에 대한 격리는 보장되지 않는다. `dockerd-start`는 자기 cgroup의 유한한 `memory.max`와 쓰기 가능한 cgroup v2를 확인하고, host cgroup namespace를 공유하면 `unshare --cgroup --mount --propagation private`로 재실행해 cgroup2를 remount한다. 격리된 보기를 만들 수 없으면 daemon을 띄우지 않으며, 컨테이너는 자기 scope 아래(`/issue-agent-docker`)에 생겨 Pod 메모리 제한을 넘지 못한다. startup probe는 `docker info` 응답과 vgem platform card를 모두 요구하며, 이를 통과해야 runner와 publisher가 시작한다. Runner Pod는 vgem을 설치할 `macmini`·`rock5bp`에만 스케줄된다([vgem DKMS](#vgem-dkms)). Krema처럼 KWin·CMake가 필요한 저장소는 harness가 자기 컨테이너 안에서 이를 쓰므로 Runner 이미지에는 넣지 않는다.
+- Provider: `apps/objects/issue-agent-runner/external-secret-provider.yaml`이 기존 CLIProxyAPI SSM 항목에서 Runner용 `issue-agent-provider` Secret(`OPENAI_API_KEY`, Codex `config.toml`)을 만든다. n8n은 모델을 호출하지 않는다. 값은 파일 마운트로만 전달하므로 변경 후 Runner Pod를 재시작한다.
 - 저장소: `repo-registry.json`은 `defaults`(agent `codex`, model `gpt-6.1-sol`, permission `yolo`)와 저장소별 override만 가진다. model은 새 세션을 spawn할 때만 적용되고, 이미 만들어진 세션은 resume할 때 원래 모델을 유지한다. 사용자 목록은 없고, 신뢰 사용자는 collaborator 권한 API가 `admin`/`write`를 돌려주는 저장소 collaborator·owner다(SQLite 600초 캐시, 조회 실패면 HTTP 503 `permission_unavailable`). App 서명이 설치를 증명하므로 설치된 모든 저장소의 이벤트를 받는다. 기본 브랜치는 webhook payload에서 읽고, checkout(`/home/agent/checkouts/<owner>/<name>`)은 첫 세션 생성 때 publisher가 clone한다. 대상 저장소를 늘리려면 App 설치 범위를 바꾼다.
 - GitHub 인증: 작성용 App `bulgasaribot`(App ID `5063990`, installation `164533066`, bot `bulgasaribot[bot]`, user ID `333478113`)과 리뷰 전용 App `haechibot`(App ID `5118831`, installation `166063086`, bot `haechibot[bot]`, user ID `335401592`)을 쓴다. 두 App 모두 `isac322/cc-lb`, `isac322/flareway`, `isac322/krema`에 설치돼 있다. 리뷰 App은 webhook이 없고 이벤트는 bulgasaribot webhook으로만 받는다.
   - 개인키는 Terraform Cloud 민감 변수 `github_app_private_key_ironeater`/`github_app_private_key_ironeater_reviewer`와 SSM `/homelab/cluster/backbone/github-app/{ironeater,ironeater-reviewer}/private-key`가 소유한다. 이 식별자들은 git-crypt로 잠긴 Terraform apply가 필요해서 App 이름을 바꿔도 예전 `ironeater*` 이름을 유지한다.
-  - ESO가 설치 토큰 네 개를 15분마다 갱신한다. 저장소 제한은 없고 App 설치 범위를 따른다.
-    - `issue-agent-github-read`: Runner 에이전트 컨테이너용 읽기 전용(contents/issues/pull_requests read). Git과 `gh`는 디렉터리로 마운트한 `hosts.yml`을 읽는다.
-    - `issue-agent-github-push`: contents write. publisher 컨테이너에만 마운트한다.
+  - ESO가 설치 토큰 네 개를 15분마다 갱신한다. 저장소 제한은 없고 App 설치 범위를 따른다. read·push 토큰은 `issue-agent-runner`에서 발급하므로, 이 namespace에도 같은 SSM 항목에서 만든 bulgasaribot App 개인키 Secret `issue-agent-github-app`이 있다.
+    - `issue-agent-github-read`(`issue-agent-runner` namespace): Runner 에이전트 컨테이너용 읽기 전용(contents/issues/pull_requests read). Git과 `gh`는 디렉터리로 마운트한 `hosts.yml`을 읽는다.
+    - `issue-agent-github-push`(`issue-agent-runner` namespace): contents write. publisher 컨테이너에만 마운트한다.
     - `issue-agent-github-token`: bridge용 issues/pull_requests/contents write. GraphQL `resolveReviewThread`가 GitHub App에 contents write를 요구해서 넣었다. bridge는 push하지 않는다.
     - `issue-agent-github-review`: 리뷰 App 토큰(pull_requests/statuses/contents write, issues read). bridge에만 마운트하며 리뷰 제출·스레드 답글·resolve·commit status에만 쓴다.
   - bridge는 `issue-agent-publisher` Secret의 bearer 토큰으로 publisher를 호출한다. 이 Secret과 push 토큰은 에이전트 컨테이너에 마운트하지 않는다.
+  - `issue-agent`가 원본인 `issue-agent-hapi-auth`(`CLI_API_TOKEN`)와 `issue-agent-publisher`(`token`)는 `issue-agent-runner`의 ESO `SecretStore` `issue-agent`가 1시간마다 복제한다. 복제용 ServiceAccount는 `issue-agent`에서 이 두 Secret 이름에 대한 `get`만 가진다.
   - `GH_TOKEN`·`GITHUB_TOKEN` 환경변수나 `subPath` 마운트를 추가하지 않는다. Git 작성자와 bridge의 `GITHUB_BOT_LOGIN`은 `bulgasaribot[bot]`, 리뷰용 `GITHUB_REVIEW_BOT_LOGIN`은 `haechibot[bot]`으로 설정하며 재리뷰 명령 `@haechibot review`도 이 값에서 온다.
 - 인터넷 공개 경로: `https://issue-agent-webhook.bhyoo.com/webhooks/github`만 Cloudflare tunnel로 노출한다. App webhook의 서명 secret은 `issue-agent-webhook` Secret의 `secret` 키와 일치해야 한다. n8n 내부 webhook과 bridge의 `/ops`는 클러스터 내부 전용이며, 서로 다른 bearer 토큰(`issue-agent-bridge-ops`)으로 인증한다.
 - 운영자 접근: WireGuard 연결 후 내부 `bhyoo-gateway`로 접속한다. 두 UI 모두 인증을 유지한다.
@@ -239,7 +266,8 @@ K3s version과 순차 rollout은 기존 Rancher `system-upgrade-controller`가 �
 kubectl --context homelab-backbone -n issue-agent get secret issue-agent-n8n-owner -o jsonpath='{.data.password}' | base64 -d
 kubectl --context homelab-backbone -n issue-agent logs deployment/issue-agent-bridge
 kubectl --context homelab-backbone -n issue-agent logs deployment/issue-agent-n8n
-kubectl --context homelab-backbone -n issue-agent logs deployment/issue-agent-runner -c publisher
+kubectl --context homelab-backbone -n issue-agent-runner logs deployment/issue-agent-runner -c publisher
+kubectl --context homelab-backbone -n issue-agent-runner logs deployment/issue-agent-runner -c dockerd
 ```
 
 #### 라벨
@@ -310,6 +338,8 @@ n8n 실행 기록은 성공·실패 모두 저장하며 자동 정리하지 않�
 이슈 댓글은 이슈에 `agent:open-discussion` 라벨이 있으면 누구의 것이든 멘션 없이 처리한다. 라벨이 없으면 `@bulgasaribot` 멘션이 있는 collaborator·owner 댓글만 처리한다(멘션 없음 `issue_comment_ignored`, 비신뢰 멘션 `actor_not_allowed`). 이 라벨은 저장소마다 maintainer가 만든다. 배포 전 bridge 회귀 검증은 `python3 -B -m unittest apps/objects/issue-agent/test_bridge.py`로 실행한다.
 
 기록 조회·내보내기는 [`issue-agent-records`](apps/objects/issue-agent/operations/issue-agent-records), 온라인 SQLite 백업은 [`issue-agent-backup`](apps/objects/issue-agent/operations/issue-agent-backup)을 사용한다. 사용법·복원 전제조건은 [운영 절차](apps/objects/issue-agent/operations/README.md)에 있다. 네이티브 기록은 보관된 세션도 조회할 수 있다. 원본 DB 백업은 인증 자료가 포함될 수 있는 비공개 운영자 자료이며 외부 조회용 export와 구분한다.
+
+두 스크립트는 hub·bridge·n8n을 `--namespace`(기본 `issue-agent`)에서, Runner를 `--runner-namespace`(기본 `issue-agent-runner`)에서 읽는다. [`issue-agent-runner-home-migrate`](apps/objects/issue-agent/operations/issue-agent-runner-home-migrate)는 namespace 전환 때 기존 `issue-agent/issue-agent-runner-home`을 새 `issue-agent-runner/issue-agent-runner-home`으로 한 번 복사·검증하고 ready marker를 쓴다. marker가 없으면 Runner Pod는 시작하지 않는다. 기존 claim은 PV `Retain`과 Argo CD `Prune=false,Delete=false`로 남기며 자동 삭제하지 않는다. 전환 중에는 Runner와 publisher가 멈추므로 무중단 전환이 아니다. Runner 안의 [`issue-agent-docker-smoke`](apps/objects/issue-agent/operations/issue-agent-docker-smoke)는 Pod 전용 Docker daemon의 build와 bind mount를 확인한다. 부작용과 실행 순서는 [운영 절차](apps/objects/issue-agent/operations/README.md)에 있다.
 
 기존 Archon은 새 시스템 webhook 전환 검증 후 완전히 제거했다. 전용 코드·Kubernetes/ArgoCD 정의 19개, `archon` namespace와 두 PVC(20Gi+1Gi), rock5bp의 backing zvol, `archon.bhyoo.com`·`archon-webhook.bhyoo.com` DNS가 제거됐다. 재사용하는 GitHub App과 인증 경로는 `ironeater`로 이름을 바꿨다. GitHub의 기존 이슈·PR은 삭제하지 않았다.
 

@@ -1,0 +1,55 @@
+#!/usr/bin/env bash
+# Exercise the runner's Unix-socket Docker daemon and shared bind-mount paths.
+# Run inside the runner. An optional Krema checkout exercises the real E2E harness.
+set -euo pipefail
+umask 077
+
+usage() {
+  printf 'Usage: issue-agent-docker-smoke [--krema-worktree ABSOLUTE_PATH]\n' >&2
+  exit 2
+}
+krema=''
+if [[ $# -gt 0 ]]; then
+  [[ $# -eq 2 && $1 == --krema-worktree ]] || usage
+  krema=$2
+  [[ $krema == /* && -f $krema/tests/appium/run-e2e.sh ]] || usage
+fi
+[[ ${DOCKER_HOST:-} == unix://* ]] || { echo 'DOCKER_HOST must select the dedicated Unix socket' >&2; exit 1; }
+[[ $(id -u) == 1000 ]] || { echo 'Run as the non-root runner user (UID 1000)' >&2; exit 1; }
+root=${ISSUE_AGENT_CHECKOUTS:?ISSUE_AGENT_CHECKOUTS must name the daemon-shared checkout directory}
+[[ $root == /* && -d $root ]] || usage
+
+docker info --format 'Docker {{.ServerVersion}}, cgroup driver {{.CgroupDriver}}'
+context=$(mktemp -d "$root/.docker-smoke.XXXXXX")
+artifacts=$(mktemp -d "${TMPDIR:-/tmp}/issue-agent-docker-smoke.XXXXXX")
+image="issue-agent-docker-smoke:smoke-$(basename "$context")"
+cleanup() {
+  docker image rm "$image" >/dev/null 2>&1 || true
+  rm -rf -- "$context"
+}
+trap cleanup EXIT
+
+fixture=busybox:1.37.0@sha256:bdf57e528e45e4433820e045b29b4597825a1c9e38353532d90a01445013f82e
+printf 'Docker smoke input: %s\n' "$(basename "$context")" >"$context/input"
+printf 'FROM %s\nCOPY --chown=1000:1000 input /built-input\n' "$fixture" >"$context/Dockerfile"
+docker build --tag "$image" "$context"
+# Both bind paths must exist in the daemon's namespace, with the same contents
+# and writable permissions the actual runner sees. Compare the built image's
+# input too, so a successful CLI connection alone cannot satisfy the smoke.
+docker run --rm --user 1000:1000 \
+  --mount "type=bind,src=$context,dst=/source,readonly" \
+  --mount "type=bind,src=$artifacts,dst=/artifacts" \
+  "$image" sh -eu -c '
+    cmp /built-input /source/input
+    sha256sum /source/input | cut -d " " -f1 > /artifacts/input.sha256
+  '
+expected=$(sha256sum "$context/input")
+[[ $(<"$artifacts/input.sha256") == "${expected%% *}" ]] || { echo 'Artifact bind-mount round trip failed' >&2; exit 1; }
+printf 'Image build and non-root bind-mount round trip passed. Artifacts: %s\n' "$artifacts"
+
+if [[ -n $krema ]]; then
+  # No fixed wait or AT-SPI-only substitute: the preview suite requires actual
+  # capture and live thumbnail rendering in its vgem/llvmpipe KWin session.
+  cd "$krema"
+  KREMA_E2E_ARTIFACTS="$artifacts/krema" sh tests/appium/run-e2e.sh test_smoke.py test_03_preview.py
+fi

@@ -418,6 +418,14 @@ REMOTE_PACKAGE_RECONCILE
       "$root/nix/scripts/nvme-tcp-dkms" install "$host"
     fi
   fi
+  # The vgem DKMS package is built by Nix per node, not fetched from a repository.
+  if jq -e --arg host "$host" 'has($host)' "$root/nix/lib/vgem-dkms.json" >/dev/null; then
+    if [ "$preserve" = true ]; then
+      echo "$host preserves NAS state; install its vgem DKMS package with 'vgem-dkms install $host'" >&2
+    else
+      "$root/nix/scripts/vgem-dkms" install "$host"
+    fi
+  fi
 }
 prepare_native_runtime_handoff() {
   local host=$1 role command

@@ -1,0 +1,21 @@
+# syntax=docker/dockerfile:1
+# Pod-local Docker daemon for the issue-agent runner pod (native sidecar).
+# Build context: apps/objects/issue-agent (see .dockerignore). linux/arm64 only.
+# No credentials are baked in and the sidecar mounts none.
+
+# docker:29.4.0-dind (linux/arm64); matches the runner image's docker:29.4.0-cli.
+FROM docker:29.4.0-dind@sha256:553d694bc3ae2a92b67b73072e3923a8d2256e609b568c60d08e4544e8f39ff3
+
+# --firewall-backend=nftables runs the `nft` tool; the dind image ships only
+# iptables. util-linux provides `unshare --cgroup` (BusyBox lacks the flag) so
+# dockerd-start can scope itself under its own cgroup when the container
+# shares the node's cgroup namespace. Both pins are Alpine 3.23 packages.
+RUN apk add --no-cache nftables=1.1.5-r2 util-linux-misc=2.41.6-r1 \
+    && nft --version && unshare --version
+
+RUN install -d -m 0755 /opt/issue-agent/bin
+COPY --chmod=0755 runner/dockerd-start.sh /opt/issue-agent/bin/dockerd-start
+COPY --chmod=0755 runner/dockerd-probe.sh /opt/issue-agent/bin/dockerd-probe
+
+ENTRYPOINT ["/opt/issue-agent/bin/dockerd-start"]
+CMD []

@@ -2,3 +2,6 @@ terraform.tfstate filter=git-crypt diff=git-crypt
 terraform.tfvars filter=git-crypt diff=git-crypt
 admin_user_info.yaml filter=git-crypt diff=git-crypt
 .gitattributes !filter !diff
+
+# Unified diff context requires spaces on blank lines and before source tabs.
+*.patch whitespace=-blank-at-eol,-space-before-tab

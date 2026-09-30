@@ -1,0 +1,18 @@
+{
+  "macmini": {
+    "kernelRelease": "7.1.13-3-2-ARCH",
+    "headersPackage": "linux-asahi-headers",
+    "source": {
+      "version": "7.1.13",
+      "hash": "sha256-YU2V+v3LXM4rZiDn7cavu2Br/9RlVAVYaBXYRoeEGtc="
+    }
+  },
+  "rock5bp": {
+    "kernelRelease": "6.1.84-999-rk2410",
+    "headersPackage": "linux-headers-6.1.84-999-rk2410",
+    "source": {
+      "version": "6.1.188",
+      "hash": "sha256-7U0KyxMHwjUjDInvwJTiEOYpBZP5Sn5hfyixABEBozo="
+    }
+  }
+}
