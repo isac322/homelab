@@ -19,9 +19,15 @@ CHECKOUTS="${ISSUE_AGENT_CHECKOUTS:-/home/agent/checkouts}"
 [ -s "$CHECKOUTS/.issue-agent-home-ready" ] ||
   fail 'runner home is not ready; complete issue-agent-runner-home-migrate first'
 
-# The nftables firewall backend runs `nft` ("Failed to find nft tool" aborts
-# daemon startup); Dockerfile.dockerd installs it.
-command -v nft >/dev/null 2>&1 || fail 'nft is missing; --firewall-backend=nftables requires it'
+# The iptables firewall backend must drive nf_tables through iptables-nft; the
+# legacy (x_tables) backend is never an acceptable fallback.
+for tool in iptables ip6tables; do
+  version="$("$tool" --version 2>/dev/null)" || fail "$tool is missing or not executable"
+  case "$version" in
+    *'(nf_tables)'*) ;;
+    *) fail "$tool is not the nf_tables variant (got '${version:-empty}'); refusing legacy iptables" ;;
+  esac
+done
 
 # cgroup containment: nested containers must live under this container's own
 # cgroup so the pod-level memory limit bounds every Docker workload.
@@ -66,13 +72,6 @@ rmdir /sys/fs/cgroup/.issue-agent-write-test
 /opt/issue-agent/bin/native-dri-prepare ||
   fail 'cannot project the native DRM pair onto /dev/dri'
 
-# With --firewall-backend=nftables dockerd never enables IPv4 forwarding
-# itself and fails on bridge creation otherwise. The sysctl is per-network
-# namespace, so this affects only the pod.
-[ "$(cat /proc/sys/net/ipv4/ip_forward 2>/dev/null || echo 0)" = "1" ] ||
-  sysctl -w net.ipv4.ip_forward=1 >/dev/null 2>&1 ||
-  fail 'cannot enable net.ipv4.ip_forward inside the pod network namespace'
-
 # Precreate the checkouts dir inside the shared home PVC. Kubelet auto-creates
 # a missing subPath directory but as root:root; chown here (non-recursive) so
 # the runner (uid/gid 1000) keeps writing it.
@@ -86,20 +85,22 @@ mkdir -p "$SOCKDIR"
 rm -f "$SOCK" # stale socket inode from a previous daemon run
 
 # Keep Docker's DinD mount setup and PID-1 reaping, but bypass the stock
-# dockerd-entrypoint: it probes iptables and may load legacy modules even with
-# the nftables backend. Explicit arguments also avoid its default TCP listeners.
+# dockerd-entrypoint: it probes iptables and may switch to legacy iptables or
+# load legacy modules. Explicit arguments also avoid its default TCP listeners.
 #
-# --firewall-backend=nftables: Docker never touches the iptables backend in
-#   this mode; do NOT pass --iptables=false — upstream docs state that flag
-#   disables firewall rule creation for BOTH backends and breaks NAT.
-# --ip6tables=false: pods are IPv4-only; skip the ip6 docker-bridges table.
+# --firewall-backend=iptables: Docker's long-supported default driver, run via
+#   iptables-nft (checked above). It enables IPv4 forwarding and manages the
+#   default bridge's filter/NAT rules itself, confined to the pod network
+#   namespace. Do NOT pass --iptables=false; that disables rule creation and
+#   breaks NAT.
+# --ip6tables=false: pods are IPv4-only; skip IPv6 bridge rules.
 # --cgroup-parent=/issue-agent-docker: with the cgroupfs driver and the
 #   private cgroup namespace above, child cgroups land under the container's
 #   own cgroup root, inside the pod memory limit.
 exec /usr/local/bin/dind docker-init -- dockerd \
   --host="unix://$SOCK" \
   --group=1000 \
-  --firewall-backend=nftables \
+  --firewall-backend=iptables \
   --ip6tables=false \
   --exec-opt native.cgroupdriver=cgroupfs \
   --cgroup-parent=/issue-agent-docker

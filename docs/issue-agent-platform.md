@@ -142,11 +142,11 @@ Runner Pod는 저장소 테스트가 Docker 이미지를 build하고 컨테이�
 - Pod 구성: runner, publisher, native sidecar `dockerd`가 한 Pod에 있다. Deployment는 replica 1과 `Recreate`를 유지하며 replica를 늘리지 않는다. publisher Service는 `issue-agent-publisher.issue-agent-runner`이고, runner는 `issue-agent`의 Hub에 접속한다.
 - 권한: `dockerd`만 root·privileged(seccomp `Unconfined`)로 실행한다. runner와 publisher는 UID 1000이며 모든 capability를 제거하고 권한 상승을 막는다. daemon은 TCP listener 없이 Unix socket만 열고, socket은 root:1000 0660이다.
 - 마운트: daemon은 home PVC의 `checkouts` subPath(`/home/agent/checkouts`), runner와 공유하는 `/tmp` emptyDir, socket 디렉터리, Docker 데이터 PVC(`/var/lib/docker`), native DRM 장치 두 개만 마운트한다. home root(`CODEX_HOME`, `HAPI_HOME`)와 Secret은 마운트하지 않는다. checkout과 `/tmp`는 runner와 daemon에서 경로가 같으므로, 이 두 경로 아래 파일만 bind mount와 build context로 쓸 수 있다.
-- cgroup: `dockerd-start`는 컨테이너 cgroup을 경계로 둔다. `/proc/self/cgroup`이 `0::/`인 private cgroup namespace면 바로 쓰고, host cgroup namespace를 공유해 scope가 node 경로(`/kubepods…/cri-containerd-…scope`)로 보이면 그 scope의 유한한 `memory.max`를 먼저 확인한 뒤 `unshare --cgroup --mount --propagation private`로 재실행하고 `/sys/fs/cgroup`에 cgroup2를 remount한다. 그래도 격리된 보기를 만들 수 없으면 daemon을 띄우지 않는다. 컨테이너는 cgroupfs driver와 `--cgroup-parent=/issue-agent-docker`로 자기 scope 아래에 생기므로 Pod 메모리 제한을 넘지 못한다. `unshare`는 BusyBox에 없어 이미지에 `util-linux-misc`를 넣는다. dockerd는 `/usr/local/bin/dind docker-init` 경유로 띄워 DinD의 mount 준비와 PID 1 zombie 수거를 쓰고, stock `dockerd-entrypoint`는 거치지 않는다. 방화벽은 nftables backend를 쓰고 IPv6 규칙은 만들지 않는다.
+- cgroup: `dockerd-start`는 컨테이너 cgroup을 경계로 둔다. `/proc/self/cgroup`이 `0::/`인 private cgroup namespace면 바로 쓰고, host cgroup namespace를 공유해 scope가 node 경로(`/kubepods…/cri-containerd-…scope`)로 보이면 그 scope의 유한한 `memory.max`를 먼저 확인한 뒤 `unshare --cgroup --mount --propagation private`로 재실행하고 `/sys/fs/cgroup`에 cgroup2를 remount한다. 그래도 격리된 보기를 만들 수 없으면 daemon을 띄우지 않는다. 컨테이너는 cgroupfs driver와 `--cgroup-parent=/issue-agent-docker`로 자기 scope 아래에 생기므로 Pod 메모리 제한을 넘지 못한다. `unshare`는 BusyBox에 없어 이미지에 `util-linux-misc`를 넣는다. dockerd는 `/usr/local/bin/dind docker-init` 경유로 띄워 DinD의 mount 준비와 PID 1 zombie 수거를 쓰고, legacy iptables로 바꿀 수 있는 stock `dockerd-entrypoint`는 거치지 않는다.
 - DRM 장치: Pod는 host의 `/dev/dri/card0`·`/dev/dri/renderD128`만 `CharDevice` hostPath 두 개로 받는다(`macmini`는 `asahi`, `rock5bp`는 `rockchip-drm`). `rock5bp`의 RKNPU `card1`·`renderD129` 같은 다른 DRM node는 Pod에 넣지 않는다. runner는 두 장치를 `/dev/dri` 아래에 read-only로 마운트한다. privileged 컨테이너의 runtime은 volume mount 뒤에 host device 전체로 `/dev`를 채우므로 `/dev/dri`를 직접 가리면 다시 채워진다. 그래서 dockerd는 raw emptyDir `/run/issue-agent-dri`(`/dev` 밖)에 두 장치를 submount로 받고, `dockerd-start`가 cgroup 절차 뒤 `native-dri-prepare`를 실행한다. 이 helper는 raw 디렉터리에 `card0`·`renderD128` character device만 있는지 확인하고, `/dev` propagation을 private으로 바꾼 뒤 자기 mount namespace의 `/dev/dri`에 `--rbind`로 투영한다. host 경로와 device node는 만들거나 지우거나 바꾸지 않으며, 예상과 다른 상태면 daemon을 띄우지 않는다. 렌더링은 지금처럼 Mesa CPU rasterizer(llvmpipe)가 맡으므로 host 커널 module, 배포판 패키지, Nix 변경이 필요 없다.
 - 시작 순서: `dockerd-start`는 home의 `checkouts/.issue-agent-home-ready`가 없으면 바로 종료한다. startup probe는 `docker info` 응답과, `/dev/dri/card0`·`/dev/dri/renderD128`이 kernel의 같은 이름 node와 device 번호가 일치하고 `asahi` 또는 `rockchip-drm` driver인 한 DRM 장치에 속하는지를 모두 요구한다. 하나라도 빠지면 runner와 publisher는 시작하지 않고 Hub에 등록하지도 않는다. runner bootstrap도 `docker info`가 실패하면 종료한다. Runner는 이 장치가 있는 `macmini`·`rock5bp`에만 스케줄된다.
-- 배포 blocker: Docker 29.4의 nftables firewall backend는 kernel FIB expression을 쓴다. `rock5bp`의 현재 vendor 커널 `6.1.84-999-rk2410` config는 `CONFIG_NFT_FIB=m`, `CONFIG_NFT_FIB_IPV6=m`이지만 `# CONFIG_NFT_FIB_IPV4 is not set`이라 `nft_fib_ipv4`·`nft_fib_inet` module이 없다. 그래서 DRM 변경과 무관하게, 변경하지 않은 dockerd도 이 커널에서는 시작에 실패한다. 아직 해결하지 않았으며 별도 승인 없이 module 빌드·설치, 커널 교체, 방화벽 설정 변경을 하지 않는다.
-- 이미지: dockerd 이미지(`Dockerfile.dockerd`)는 digest로 고정한 `docker:29.4.0-dind` 위에 버전 고정한 `nftables`와 `util-linux-misc`를 빌드 때 설치하며 실행 중에는 패키지를 설치하지 않는다. Runner 이미지의 Docker CLI·buildx·compose는 digest로 고정한 `docker:29.4.0-cli`에서 복사한다. Krema처럼 KWin·CMake가 필요한 저장소는 harness가 자기 컨테이너 안에서 이를 쓰므로 Runner 이미지에는 넣지 않는다.
+- 방화벽: dockerd는 `--firewall-backend=iptables`와 `--ip6tables=false`로 실행한다. `dockerd-start`는 daemon을 띄우기 전에 `iptables`·`ip6tables`가 iptables-nft(`nf_tables`)인지 확인하고, legacy면 시작하지 않는다. default bridge와 NAT는 켜 둔 채 Docker가 filter·NAT 규칙과 IPv4 forwarding을 직접 관리한다. 그래서 `--iptables=false`나 `--network=host`를 쓰지 않고, nft CLI나 forwarding sysctl 설정도 따로 두지 않는다. 이 규칙과 forwarding은 Pod network namespace 안에만 생기며 host 방화벽은 건드리지 않는다. 이전에는 nftables backend를 썼는데, Docker 29.4의 이 backend는 kernel FIB expression을 쓴다. `rock5bp`의 vendor 커널 `6.1.84-999-rk2410`은 `# CONFIG_NFT_FIB_IPV4 is not set`이라 `nft_fib_ipv4`·`nft_fib_inet` module이 없고, 이 backend로는 dockerd가 시작에 실패했다. iptables backend는 이 expression을 쓰지 않으므로 커널을 바꾸지 않고 이 실패를 피한다.
+- 이미지: dockerd 이미지(`Dockerfile.dockerd`)는 digest로 고정한 `docker:29.4.0-dind` 위에 버전 고정한 `util-linux-misc`만 빌드 때 설치하고, 실행 중에는 패키지를 설치하지 않는다. base 이미지에 있는 `iptables`·`ip6tables` v1.8.11이 `nf_tables` backend인지는 빌드 때 확인하고 `dockerd-start`가 실행 때 다시 확인한다. Runner 이미지의 Docker CLI·buildx·compose는 digest로 고정한 `docker:29.4.0-cli`에서 복사한다. Krema처럼 KWin·CMake가 필요한 저장소는 harness가 자기 컨테이너 안에서 이를 쓰므로 Runner 이미지에는 넣지 않는다.
 - 저장소와 자원: Docker 데이터 PVC는 50Gi, Runner home PVC는 기존과 같은 20Gi다. dockerd 자원은 아래 `승인된 초기 자원 예외`에 있다.
 
 ## 데이터 보존
@@ -314,19 +314,29 @@ Runner Pod의 native sidecar `dockerd`는 위 표의 dockerd 행 값을 쓴다. 
 - [x] production `issue-agent/issue-agent-runner-home`의 read-only 소유권 검사는 260,493개 파일이 모두 1000:1000이고 오류가 없었다.
 - [x] 이번 검증에서 만든 일회용 VM, 그 안의 K3s·Docker·PVC 데이터, 생성한 SSH 키를 정리했다. 기존 VM과 운영 cluster는 건드리지 않았고 로그만 저장소 밖에 보존했다.
 
-- [x] 최종 native DRM daemon·Runner 이미지를 실제 ARM64 node의 격리된 Docker QA에서 실행했다. `native-dri-prepare`와 exec probe가 통과했고, daemon·UID 1000 Runner·중첩 Krema 컨테이너에는 `card0`·`renderD128`만 보였다. Runner의 DRM 디렉터리는 쓰기 불가였고, `card1`·`renderD129`는 가려졌다. 장치 누락·잘못된 device number에 probe가 실패하고, raw 장치 누락·추가 항목에 projection helper가 실패하는 음성 대조군도 통과했다.
+- [x] 첫 native DRM daemon·Runner 이미지를 실제 ARM64 node의 격리된 Docker QA에서 실행했다. `native-dri-prepare`와 exec probe가 통과했고, daemon·UID 1000 Runner·중첩 Krema 컨테이너에는 `card0`·`renderD128`만 보였다. Runner의 DRM 디렉터리는 쓰기 불가였고, `card1`·`renderD129`는 가려졌다. 장치 누락·잘못된 device number에 probe가 실패하고, raw 장치 누락·추가 항목에 projection helper가 실패하는 음성 대조군도 통과했다.
 - [x] 같은 QA에서 Docker `29.4.0` 이미지 build와 non-root artifact SHA-256 왕복이 성공했다. 변경 없는 Krema `52f2d41a38d880b584b7e5bf7dd79adb81a29a56`의 smoke·preview 17개가 87.149초에 모두 통과했고 errors·failures·skips는 0이었다. KWin `6.7.5`는 OpenGL/llvmpipe로 렌더링했고 실제 `/dev/dri/renderD128` FD를 열었다. vgem은 로드되지 않았다. 중첩 테스트의 제한은 CPU 2·메모리 4Gi·swap 0이었다.
-- [x] 두 최종 이미지를 GHCR에 게시한 뒤 인증 없는 요청으로 index digest와 linux/arm64 manifest를 확인했고 Deployment를 같은 digest로 고정했다.
+- [x] 당시 두 이미지를 GHCR에 게시한 뒤 인증 없는 요청으로 index digest와 linux/arm64 manifest를 확인했다. 이후 dockerd 이미지만 아래 iptables backend 이미지로 교체했고 Runner 이미지는 그대로다.
 
-위 native DRM QA는 커널의 IPv4 NFT FIB 부재를 분리하기 위해 임시 daemon의 bridge·firewall을 끄고 테스트 자식을 그 daemon 컨테이너의 network namespace에서 실행했다. 운영 node의 host network를 쓰지 않았으며, production `dockerd-start`의 nftables 설정은 바꾸지 않았다. 따라서 그래픽 경로 검증은 성공했지만 production daemon의 시작 성공을 의미하지 않는다. `macmini`의 native DRM graphics 실행과 새 이미지의 운영 K3s rollout은 아직 검증하지 않았다.
+위 첫 native DRM QA는 그래픽 경로만 본 검증이다. 당시 설정된 nftables entrypoint의 IPv4 FIB 실패와 그래픽 경로를 분리하려고, 임시 daemon의 bridge·firewall을 끄고 테스트 자식을 그 daemon 컨테이너의 network namespace에서 실행했다. 운영 node의 host network는 쓰지 않았다. 실제 entrypoint를 대체했으므로 이 QA만으로는 설정된 daemon의 시작을 보여 주지 못했고, 이 부분은 아래 iptables backend 검증에서 따로 확인했다.
 
 이 QA의 컨테이너, 원격 checkout·Docker 데이터·artifact 복사본, 새로 전송한 native DRM 이미지와 SDK 복사본은 정리했다. 실행 로그·JUnit·renderer 근거는 저장소 밖에 보존했다. 운영 Runner는 원래 Pod UID·node·image·container 시작 시각·Ready 상태가 그대로였고 재시작 횟수도 0이었다.
+
+iptables backend로 바꾼 dockerd 이미지 `ghcr.io/isac322/issue-agent-dockerd:29.4.0-20261001-native-drm-iptables-nft`(`sha256:331f0a70085fa8f20a11463235ac6cbaa9863ffd1d4fbb895fa127068da6ab79`)는 같은 방식의 격리된 Docker QA에서 이미지 ENTRYPOINT `dockerd-start`를 그대로 실행해 검증했다. `--iptables=false`나 `--network=host`는 쓰지 않았다.
+
+- [x] daemon은 Docker `29.4.0`, `FirewallBackend.Driver=iptables`, cgroupfs driver, cgroup v2로 시작했고 daemon 메모리 제한은 유한했다. 이미지의 `iptables`·`ip6tables`는 v1.8.11 `(nf_tables)`, `util-linux`는 2.41.6이며 nft CLI는 없다.
+- [x] default bridge 컨테이너에서 외부 HTTPS와 DNS가 동작했고, localhost published port와 user-defined bridge의 service 이름 DNS도 동작했다.
+- [x] UID 1000 Runner에서 Docker 이미지 build와 artifact bind mount 왕복이 성공했다.
+- [x] 변경 없는 Krema `52f2d41a38d880b584b7e5bf7dd79adb81a29a56`의 smoke·preview 17개가 83.697초에 모두 통과했고 errors·failures·skips는 0이었다. 중첩 테스트는 `/dev/dri/card0`·`/dev/dri/renderD128`만 받았고 vgem은 없었다. `LIBGL_ALWAYS_SOFTWARE=1`에서 KWin `6.7.5`는 OpenGL/llvmpipe로 렌더링했고 `renderD128` FD를 열었다. 중첩 테스트의 제한은 CPU 2·메모리 4Gi·swap 0이었다.
+- [x] daemon 시작부터 종료까지 host의 방화벽 policy·rule·순서가 그대로였다. 비교에서 시각 주석과 traffic counter는 제외했다.
+
+`macmini`의 native DRM graphics 실행과 새 이미지의 운영 K3s rollout은 아직 검증하지 않았다.
 
 ### Docker 배포 후 확인 게이트
 
 배포 뒤에만 확인할 수 있으며 아직 검증하지 않았다.
 
-- [ ] `rock5bp` 커널의 `CONFIG_NFT_FIB_IPV4` 부재로 인한 dockerd 시작 실패(위 배포 blocker)를 승인된 방법으로 해소한다.
+- [ ] 운영 node의 새 Runner Pod에서 dockerd가 `--firewall-backend=iptables`(iptables-nft)로 시작하고, 중첩 컨테이너가 default bridge로 외부와 통신한다. 실제 entrypoint는 격리된 Docker QA에서만 확인했다.
 - [ ] 운영 node의 새 Runner Pod에서 `native-dri-prepare`와 dockerd startup probe가 통과하고, dockerd와 runner의 `/dev/dri`에 `card0`·`renderD128`만 있다.
 - [ ] production node의 privileged dockerd가 `dockerd-start`의 cgroup 절차(자기 scope `memory.max` 확인, private cgroup namespace 재진입, writable cgroup)를 통과하고 중첩 컨테이너가 Pod 메모리 제한 안에 있다. QA K3s 검증과 다른 점(실제 노드 cgroup 배치)만 확인 대상이다.
 - [ ] `issue-agent-runner`의 `SecretStore` `issue-agent`와 두 mirror ExternalSecret이 Ready다.

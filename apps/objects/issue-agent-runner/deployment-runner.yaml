@@ -32,7 +32,7 @@ spec:
         # from falling back to the upstream entrypoint's TCP listener.
         - name: dockerd
           restartPolicy: Always
-          image: ghcr.io/isac322/issue-agent-dockerd:29.4.0-20261001-native-drm@sha256:bdc9d5a69c3aee6c15f9f27ba7807e54d6de41ff1b35b57c7005692e619ab2cc
+          image: ghcr.io/isac322/issue-agent-dockerd:29.4.0-20261001-native-drm-iptables-nft@sha256:331f0a70085fa8f20a11463235ac6cbaa9863ffd1d4fbb895fa127068da6ab79
           command:
             - /opt/issue-agent/bin/dockerd-start
           env:
