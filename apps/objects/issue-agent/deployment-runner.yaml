@@ -36,7 +36,7 @@ spec:
                       - macmini
       containers:
         - name: runner
-          image: ghcr.io/isac322/issue-agent-runner:0.30.7-codex0.159.2-20260930-r4@sha256:91622c700858985a4be61028664dabb82476dbab8cfbbb3d22b6de4fe5d145a3
+          image: ghcr.io/isac322/issue-agent-runner:0.30.7-codex0.159.2-20260930-r5@sha256:9e8a63c72ec56ad0f33addb0812bd75fbef84dbe6e3547f712e8f8bd81d9a638
           env:
             - name: HOME
               value: /home/agent
@@ -115,7 +115,7 @@ spec:
         # The only container holding the contents:write token. Called by the
         # bridge only; the runner container cannot read either of its secrets.
         - name: publisher
-          image: ghcr.io/isac322/issue-agent-runner:0.30.7-codex0.159.2-20260930-r4@sha256:91622c700858985a4be61028664dabb82476dbab8cfbbb3d22b6de4fe5d145a3
+          image: ghcr.io/isac322/issue-agent-runner:0.30.7-codex0.159.2-20260930-r5@sha256:9e8a63c72ec56ad0f33addb0812bd75fbef84dbe6e3547f712e8f8bd81d9a638
           command:
             - /usr/bin/tini
             - --

@@ -989,9 +989,12 @@ def classify_event(registry: Registry, event: str, delivery: str, payload: Any, 
         if body is not None and not isinstance(body, str):
             return "malformed"
         if action == "opened":
-            # Anyone may open an issue; untrusted authors are rate limited by Store.enqueue.
+            # Anyone may open an issue; untrusted authors are rate limited by Store.enqueue. The repository
+            # owner files issues as work notes for their own tooling, so theirs start only on a mention.
             if not isinstance(issue_author_login, str) or issue_author_login.casefold() != login.casefold():
                 return "actor_not_allowed"
+            if login.casefold() == cfg.name.split("/", 1)[0].casefold():
+                return "owner_issue_ignored"
             return {**base, "semantic_key": f"{cfg.name}#issue:{number}:opened", "kind": "issue_opened",
                     "comment_id": None, "body": body or "", "trusted": trusted(cfg.name, login)}
         changes = payload.get("changes")

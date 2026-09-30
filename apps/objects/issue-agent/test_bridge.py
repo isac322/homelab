@@ -85,7 +85,7 @@ class Fake:
         self.status_posts: list[tuple[str, dict[str, Any]]] = []
         self.status_fail = False
         # collaborator permission: login (casefolded) -> permission, anyone else "read"
-        self.permissions: dict[str, str] = {"isac322": "admin"}
+        self.permissions: dict[str, str] = {"isac322": "admin", "maintainer": "write"}
         self.unknown_logins: set[str] = set()  # the permission lookup answers 404
         self.permission_fail = False  # the permission lookup answers 502
         self.permission_calls = 0
@@ -469,7 +469,7 @@ def repository(repo: str) -> dict:
     return {"full_name": repo, "default_branch": "master"}
 
 
-def issue_payload(number: int = 7, *, login: str = "isac322", repo: str = REPO, sender_type: str = "User") -> dict:
+def issue_payload(number: int = 7, *, login: str = "maintainer", repo: str = REPO, sender_type: str = "User") -> dict:
     return {
         "action": "opened",
         "repository": repository(repo),
@@ -689,6 +689,23 @@ class IntakeTests(BridgeTestCase):
         self.assertEqual(self.dispatcher.tick(), "dispatched")
         begun = self.op("begin", "c1", attempt=1)
         self.assertEqual((begun["status"], begun["mode_hint"], begun["subject"]), ("started", "triage", "issue"))
+
+    def test_the_owners_own_issues_wait_for_a_mention(self) -> None:
+        # The repository owner (isac322 for isac322/*) opens issues as notes for their own tooling.
+        self.assertEqual(self.deliver(issue_payload(7, login="isac322"), delivery="d1").outcome,
+                         "owner_issue_ignored")
+        self.assertEqual(self.deliver(issue_payload(8, login="ISAC322"), delivery="d2").outcome,
+                         "owner_issue_ignored")
+        self.assertEqual(self.events(), [])
+        self.assertEqual(self.deliver(edit_payload(7, login="isac322"), event="issues", delivery="e1").outcome,
+                         "edit_ignored")
+        self.assertEqual(self.deliver(comment_payload(7, 1, body="later note"), event="issue_comment",
+                                      delivery="c1").outcome, "issue_comment_ignored")
+        self.assertEqual(self.deliver(comment_payload(7, 2, body="@bulgasaribot please take this"),
+                                      event="issue_comment", delivery="c2").outcome, "queued")
+        self.assertEqual(self.dispatcher.tick(), "dispatched")
+        begun = self.op("begin", "c2", attempt=1)
+        self.assertEqual((begun["status"], begun["mode_hint"]), ("started", "triage"))
 
     def test_issue_comments_need_a_trusted_mention_unless_the_issue_is_open_for_discussion(self) -> None:
         cases = [
