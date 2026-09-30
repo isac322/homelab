@@ -81,12 +81,22 @@ node:
           memory: 40Mi
 
 agent:
-  # Must match PillarStore rock5bp-fast (apps/objects/pillar-csi/store.yaml).
-  # The pool itself is host-native (preserveNasState); see README.
+  # Must match the PillarStores in apps/objects/pillar-csi/store.yaml.
+  # The pools themselves are host-native (preserveNasState); see README.
   backends:
     - zfs:
         volumeType: zvol
         pool: fast
+        parentDataset: k8s
+    # hot-data/k8s and nas/k8s are where democratic-csi and openebs
+    # zfs-localpv keep their zvols, so pillar can import them in place.
+    - zfs:
+        volumeType: zvol
+        pool: hot-data
+        parentDataset: k8s
+    - zfs:
+        volumeType: zvol
+        pool: nas
         parentDataset: k8s
   resources:
     requests:
