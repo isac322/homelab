@@ -1,0 +1,10 @@
+#!/bin/sh
+# Front for cc, gcc, c++ and g++ (linked under these names, early in PATH) that
+# sends every C/C++ compile through sccache. When sccache itself runs this name
+# (the Rust cc crate and CMake's launcher already wrap the compiler with
+# sccache), go straight to the real compiler so nothing is wrapped twice.
+real=/usr/bin/${0##*/}
+parent=
+read -r parent < "/proc/$PPID/comm" 2>/dev/null
+[ "$parent" = sccache ] && exec "$real" "$@"
+exec /usr/local/bin/sccache "$real" "$@"

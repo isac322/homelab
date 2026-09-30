@@ -30,7 +30,7 @@ SHELL ["/bin/bash", "-o", "pipefail", "-c"]
 
 RUN apt-get update \
     && apt-get install -y --no-install-recommends \
-        build-essential ca-certificates curl git less openssh-client pkg-config procps python3 tini \
+        build-essential ca-certificates cmake curl git less openssh-client pkg-config procps python3 tini \
     && rm -rf /var/lib/apt/lists/*
 
 RUN curl -fsSLo /tmp/hapi.tar.gz "https://github.com/tiann/hapi/releases/download/v${HAPI_VERSION}/hapi-linux-arm64.tar.gz" \
@@ -100,7 +100,10 @@ RUN usermod --login agent --home /home/agent node \
 
 # BuildKit's COPY --chmod also sets that mode on auto-created parent
 # directories; create them 0755 first so uid 1000 can traverse them.
-RUN install -d -m 0755 /etc/issue-agent /opt/issue-agent/bin /opt/issue-agent/profile /etc/codex/skills /etc/codex/hooks
+RUN install -d -m 0755 /etc/issue-agent /opt/issue-agent/bin /opt/issue-agent/profile /opt/issue-agent/sccache-bin /etc/codex/skills /etc/codex/hooks
+# cc/gcc/c++/g++ in front of /usr/bin (see PATH) send C/C++ compiles through sccache.
+COPY --chmod=0755 runner/sccache-cc /opt/issue-agent/sccache-bin/cc
+RUN for name in gcc c++ g++; do ln -s cc "/opt/issue-agent/sccache-bin/$name"; done
 COPY --chmod=0644 runner/gitconfig /etc/issue-agent/gitconfig
 COPY --chmod=0644 runner/gitignore /etc/issue-agent/gitignore
 # Codex system layer: MCP servers (config.toml) and managed, pre-trusted hooks
@@ -132,7 +135,9 @@ ENV HOME=/home/agent \
     RUSTC_WRAPPER=/usr/local/bin/sccache \
     SCCACHE_DIR=/home/agent/.cache/sccache \
     SCCACHE_CACHE_SIZE=5G \
-    PATH=/home/agent/.cargo/bin:/usr/local/cargo/bin:/usr/local/sbin:/usr/local/bin:/usr/sbin:/usr/bin:/sbin:/bin \
+    CMAKE_C_COMPILER_LAUNCHER=/usr/local/bin/sccache \
+    CMAKE_CXX_COMPILER_LAUNCHER=/usr/local/bin/sccache \
+    PATH=/home/agent/.cargo/bin:/usr/local/cargo/bin:/opt/issue-agent/sccache-bin:/usr/local/sbin:/usr/local/bin:/usr/sbin:/usr/bin:/sbin:/bin \
     HAPI_RUNNER_SUPERVISED=1 \
     HAPI_DISABLE_VERSION_HANDOFF=1
 
