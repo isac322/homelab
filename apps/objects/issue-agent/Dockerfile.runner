@@ -22,6 +22,9 @@ ARG GH_SHA256=b57e8063f18862647c9d22727c32e9da1b963f8bf9db648fe123a6975695640f
 # rustup 1.29.1 (versioned archive). Toolchains install lazily into the home PVC.
 ARG RUSTUP_VERSION=1.29.1
 ARG RUSTUP_SHA256=15f6e4ce9f583b929c996c91562bad6d4454f3281de858b02cdfdef615fac433
+# sccache 0.18.0 (static musl build); checksum = release .sha256 = asset digest.
+ARG SCCACHE_VERSION=0.18.0
+ARG SCCACHE_SHA256=2b3284d5da3b46a47dc4229e75bb7b88ac4aa99c8d754fb7d2f84997e5a4354a
 
 SHELL ["/bin/bash", "-o", "pipefail", "-c"]
 
@@ -81,6 +84,15 @@ RUN curl -fsSLo /tmp/rustup-init "https://static.rust-lang.org/rustup/archive/${
     && RUSTUP_HOME=/tmp/rustup-build CARGO_HOME=/usr/local/cargo /tmp/rustup-init -y --no-modify-path --profile minimal --default-toolchain none \
     && rm -rf /tmp/rustup-init /tmp/rustup-build
 
+# rustc goes through sccache (RUSTC_WRAPPER below); its cache lives on the home
+# PVC so every worktree and session shares compiled dependencies.
+RUN curl -fsSLo /tmp/sccache.tgz "https://github.com/mozilla/sccache/releases/download/v${SCCACHE_VERSION}/sccache-v${SCCACHE_VERSION}-aarch64-unknown-linux-musl.tar.gz" \
+    && echo "${SCCACHE_SHA256}  /tmp/sccache.tgz" | sha256sum -c - \
+    && tar -xzf /tmp/sccache.tgz --strip-components=1 --no-same-owner -C /usr/local/bin "sccache-v${SCCACHE_VERSION}-aarch64-unknown-linux-musl/sccache" \
+    && chmod 0755 /usr/local/bin/sccache \
+    && rm /tmp/sccache.tgz \
+    && sccache --version
+
 # The base image's `node` account (uid/gid 1000) becomes `agent`.
 RUN usermod --login agent --home /home/agent node \
     && groupmod --new-name agent node \
@@ -117,6 +129,9 @@ ENV HOME=/home/agent \
     GH_NO_UPDATE_NOTIFIER=1 \
     RUSTUP_HOME=/home/agent/.rustup \
     CARGO_HOME=/home/agent/.cargo \
+    RUSTC_WRAPPER=/usr/local/bin/sccache \
+    SCCACHE_DIR=/home/agent/.cache/sccache \
+    SCCACHE_CACHE_SIZE=5G \
     PATH=/home/agent/.cargo/bin:/usr/local/cargo/bin:/usr/local/sbin:/usr/local/bin:/usr/sbin:/usr/bin:/sbin:/bin \
     HAPI_RUNNER_SUPERVISED=1 \
     HAPI_DISABLE_VERSION_HANDOFF=1

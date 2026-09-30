@@ -8,9 +8,10 @@ Responsibilities (business branching lives in the n8n workflow):
   (repository collaborators, cached), and durably records accepted
   ``issues.opened``, ``issues.edited``, ``issue_comment.created`` and pull
   request review requests before answering 2xx.
-* A single dispatcher hands at most one event at a time to the private n8n
-  webhook. n8n acknowledges ownership with the ``begin`` op and ends it with
-  ``finish`` or ``fail``.
+* A single dispatcher hands events to the private n8n webhook, at most
+  ``MAX_ACTIVE_EVENTS`` at a time and one per subject (issue or pull request).
+  n8n acknowledges ownership with the ``begin`` op and ends it with ``finish``
+  or ``fail``.
 * ``POST /ops`` is the private, bearer-authenticated adapter n8n uses for every
   side effect: HAPI session lifecycle, message delivery and per-mode turn
   correlation, and every GitHub write. The coding agent reads GitHub itself
@@ -124,6 +125,7 @@ mutation($threadId: ID!) {
 }"""
 
 MAX_DISPATCH_ATTEMPTS = 8
+MAX_ACTIVE_EVENTS = 10  # events in n8n at once, across every repository
 DISPATCH_BACKOFF = 60.0
 STALE_SECONDS = 6 * 3600.0
 SPAWN_SETTLE_SECONDS = 300.0
@@ -1570,18 +1572,14 @@ class Bridge:
         with self.store.tx() as conn:
             row = conn.execute("SELECT * FROM events WHERE seq = ?", (ev["seq"],)).fetchone()
             stages = json.loads(row["stages"])
-            other = conn.execute(
-                "SELECT 1 FROM events WHERE state IN ('dispatching', 'dispatched') AND seq != ? LIMIT 1",
-                (row["seq"],),
-            ).fetchone()
             if row["state"] in TERMINAL_STATES:
                 status = "terminal"
             elif "started" in stages:
                 # Another execution owns this event; a crashed owner is resolved by the
                 # stale sweep or an explicit retry_event, never by a parallel takeover.
                 status = "duplicate"
-            elif row["state"] not in ("dispatching", "dispatched") or other is not None:
-                # Only the event holding the global dispatch slot may start (concurrency 1).
+            elif row["state"] not in ("dispatching", "dispatched"):
+                # Only an event holding a dispatch slot may start; the dispatcher enforces the cap.
                 status = "not_dispatched"
             else:
                 now = time.time()
@@ -2532,7 +2530,7 @@ class Bridge:
 
 
 # --------------------------------------------------------------------------
-# Dispatcher: one event in n8n at a time
+# Dispatcher: up to MAX_ACTIVE_EVENTS events in n8n, one per subject
 # --------------------------------------------------------------------------
 
 
@@ -2545,17 +2543,23 @@ class Dispatcher:
     def run(self, stop: threading.Event) -> None:
         while not stop.is_set():
             try:
-                self.tick()
+                # A tick hands over at most one event; keep going while slots fill. A failed POST
+                # ("retry") ends the round so an unreachable n8n is not hit once per queued event.
+                for _ in range(MAX_ACTIVE_EVENTS + 1):
+                    if self.tick() != "dispatched":
+                        break
             except Exception:  # keep the dispatcher alive; state stays in SQLite
                 LOG.exception("dispatcher iteration failed")
             stop.wait(self.config.poll_interval)
 
     def tick(self, now: float | None = None) -> str:
-        """Hand at most one event to n8n. The global slot is reserved durably before the POST.
+        """Hand at most one event to n8n. Its slot is reserved durably before the POST.
 
-        States holding the slot: ``dispatching`` (POST sent or pending, outcome unknown until
-        ``begin``) and ``dispatched`` (an execution called ``begin``). An unconfirmed POST keeps
-        the slot and is retried for the same event only; ``begin`` makes duplicates exit.
+        States holding a slot: ``dispatching`` (POST sent or pending, outcome unknown until
+        ``begin``) and ``dispatched`` (an execution called ``begin``). At most ``MAX_ACTIVE_EVENTS``
+        slots are held, and never two for the same subject, since events on one issue or pull request
+        share its session and worktree. An unconfirmed POST keeps its slot and is retried for the
+        same event only; ``begin`` makes duplicates exit.
         """
         now = time.time() if now is None else now
         for ev in self.store.query(
@@ -2570,24 +2574,28 @@ class Dispatcher:
         ):
             self.bridge.mark_attention(ev, "workflow made no progress for this event (stale dispatch)")
         with self.store.tx() as conn:
-            holder = conn.execute(
-                "SELECT * FROM events WHERE state IN ('dispatching', 'dispatched') ORDER BY seq LIMIT 1"
+            active = conn.execute(
+                "SELECT COUNT(*) FROM events WHERE state IN ('dispatching', 'dispatched')"
+            ).fetchone()[0]
+            ev = conn.execute(
+                "SELECT * FROM events WHERE state = 'dispatching' AND next_attempt_at <= ? ORDER BY seq LIMIT 1",
+                (now,),
             ).fetchone()
-            if holder is not None:
-                if holder["state"] == "dispatched" or holder["next_attempt_at"] > now:
+            if ev is None:
+                if active >= MAX_ACTIVE_EVENTS:
                     return "busy"
-                ev = holder
-            else:
                 ev = conn.execute(
                     "SELECT e.* FROM events e JOIN issues i ON i.repo = e.repo AND i.issue_number = e.issue_number"
                     " WHERE e.state = 'accepted' AND i.blocked = 0 AND e.next_attempt_at <= ?"
                     " AND NOT EXISTS (SELECT 1 FROM events p WHERE p.repo = e.repo"
                     "   AND p.issue_number = e.issue_number AND p.seq < e.seq AND p.state = 'accepted')"
+                    " AND NOT EXISTS (SELECT 1 FROM events a WHERE a.repo = e.repo"
+                    "   AND a.issue_number = e.issue_number AND a.state IN ('dispatching', 'dispatched'))"
                     " ORDER BY e.seq LIMIT 1",
                     (now,),
                 ).fetchone()
                 if ev is None:
-                    return "idle"
+                    return "busy" if active else "idle"
             attempt = ev["attempts"] + 1
             conn.execute(
                 "UPDATE events SET state = 'dispatching', attempts = ?, updated_at = ? WHERE seq = ?",

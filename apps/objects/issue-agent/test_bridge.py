@@ -852,37 +852,54 @@ class IntakeTests(BridgeTestCase):
 
 
 class DispatchTests(BridgeTestCase):
-    def test_one_event_at_a_time_globally_with_bearer_token(self) -> None:
-        self.deliver(issue_payload(1), delivery="d1")
-        self.deliver(issue_payload(2), delivery="d2")
-        self.assertEqual(self.dispatcher.tick(), "dispatched")
+    def test_events_run_concurrently_up_to_the_cap_with_bearer_token(self) -> None:
+        for n in range(1, bridge.MAX_ACTIVE_EVENTS + 2):
+            self.deliver(issue_payload(n), delivery=f"d{n}")
+        for _ in range(bridge.MAX_ACTIVE_EVENTS):
+            self.assertEqual(self.dispatcher.tick(), "dispatched")
         self.assertEqual(self.dispatcher.tick(), "busy")
         auth, payload = self.fake.dispatched[0]
         self.assertEqual(auth, f"Bearer {N8N_TOKEN}")
         self.assertEqual(payload, {"delivery_id": "d1", "attempt": 1, "repo": REPO, "issue_number": 1,
                                    "kind": "issue_opened"})
+        for n in (1, 2):
+            self.assertEqual(self.op("begin", f"d{n}", attempt=1)["status"], "started")
+        self.assertTrue(self.op("finish", "d1", outcome="triaged")["ok"])
+        self.assertEqual(self.dispatcher.tick(), "dispatched")
+        last = bridge.MAX_ACTIVE_EVENTS + 1
+        self.assertEqual(self.fake.dispatched[-1][1]["delivery_id"], f"d{last}")
+        self.assertEqual(self.op("begin", f"d{last}", attempt=1)["status"], "started")
+
+    def test_events_on_one_subject_run_one_at_a_time_while_others_proceed(self) -> None:
+        self.deliver(issue_payload(7), delivery="d1")
+        self.deliver(comment_payload(7), event="issue_comment", delivery="c1")
+        self.deliver(issue_payload(8), delivery="d2")
+        self.assertEqual(self.dispatcher.tick(), "dispatched")
+        self.assertEqual(self.dispatcher.tick(), "dispatched")
+        self.assertEqual(self.dispatcher.tick(), "busy")
+        self.assertEqual([p["delivery_id"] for _, p in self.fake.dispatched], ["d1", "d2"])
+        self.assertEqual(self.op("begin", "c1", attempt=1)["status"], "not_dispatched")
         self.assertEqual(self.op("begin", "d1", attempt=1)["status"], "started")
         self.assertTrue(self.op("finish", "d1", outcome="triaged")["ok"])
         self.assertEqual(self.dispatcher.tick(), "dispatched")
-        self.assertEqual(self.fake.dispatched[1][1]["delivery_id"], "d2")
+        self.assertEqual(self.fake.dispatched[-1][1]["delivery_id"], "c1")
 
-    def test_lost_n8n_response_keeps_global_slot_and_late_begins_cannot_run_two_events(self) -> None:
+    def test_lost_n8n_response_keeps_its_slot_without_blocking_other_subjects(self) -> None:
         self.deliver(issue_payload(1), delivery="d1")
         self.deliver(issue_payload(2), delivery="d2")
         self.fake.n8n_hang = True
         now = time.time()
         self.assertEqual(self.dispatcher.tick(now), "retry")
-        self.assertEqual(self.dispatcher.tick(now + 1), "busy")
         self.fake.n8n_hang = False
+        self.assertEqual(self.dispatcher.tick(now + 1), "dispatched")  # d2 is not held up by d1
+        self.assertEqual(self.dispatcher.tick(now + 1), "busy")  # d1 waits for its backoff
         self.assertEqual(self.dispatcher.tick(now + bridge.DISPATCH_BACKOFF + 1), "dispatched")
-        self.assertEqual([p["delivery_id"] for _, p in self.fake.dispatched], ["d1", "d1"])
-        self.assertEqual(self.op("begin", "d2", attempt=1)["status"], "not_dispatched")
+        self.assertEqual([p["delivery_id"] for _, p in self.fake.dispatched], ["d1", "d2", "d1"])
         self.assertEqual(self.op("begin", "d1", attempt=1)["status"], "started")  # delayed first execution
         self.assertEqual(self.op("begin", "d1", attempt=2, execution_id="ex-late")["status"], "duplicate")
         self.assertEqual(self.store.event("d1")["execution_id"], "ex-d1")
         self.assertEqual(self.dispatcher.tick(now + 10**4), "busy")
-        self.assertEqual(self.op("begin", "d2", attempt=1)["status"], "not_dispatched")
-        self.assertEqual(self.events(), [("d1", "dispatched"), ("d2", "accepted")])
+        self.assertEqual(self.events(), [("d1", "dispatched"), ("d2", "dispatched")])
 
     def test_n8n_refusals_back_off_then_park_with_operator_comment_and_label(self) -> None:
         self.fake.n8n_status = 500

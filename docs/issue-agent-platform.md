@@ -42,7 +42,8 @@ n8n은 단순히 에이전트를 한 번 호출하는 장식이 아니라 실제
 2. 공통 스킬(`profile/skills/` → Codex ADMIN scope `/etc/codex/skills`, PVC에 두지 않음): 모드별 주 스킬은 `triage`=`isac-issue-triage`, `implement`=`isac-issue-to-pr`, `followup`=`isac-issue-to-pr`+`receiving-code-review`, `review`=`isac-pr-review`다. 보조 스킬은 `isac-github-publishing`, `isac-decision-brief`, `isac-multi-agent-consensus`, `isac-live-qa`, `issue-validation`, `five-whys-root-cause-analysis`, `comment-writer`, `humanizer`, `writing-clearly-and-concisely`, `destructive-operations`, `public-api`, `pull-request-merge`, `pull-request-review-handling`이다.
 3. 저장소 지침: 각 저장소의 `AGENTS.md` 등 기여 규칙을 worktree에서 읽는다. 빌드·테스트·스타일만 정하며 공통 지침의 제한을 넓히지 못한다.
 4. Codex 도구: 모든 세션에 context-mode(`ctx_*`)와 CodeGraph(`codegraph_*`) MCP 서버가 붙는다(`/etc/codex/config.toml`). 사용 강제는 `/etc/codex/requirements.toml`의 managed hook으로 한다. context-mode hook 6개(SessionStart, PreToolUse, PostToolUse, PreCompact, UserPromptSubmit, Stop)가 raw fetch를 막고 큰 출력을 sandbox로 유도하며, SessionStart의 `codegraph-index`가 worktree 색인을 준비한다. 공통 지침은 코드 탐색에 CodeGraph를, 20줄 넘는 출력에 context-mode를 기본으로 쓰게 한다.
-5. 접근 제한: 에이전트 컨테이너에는 읽기 전용 설치 토큰만 마운트한다. 쓰기 토큰(bridge의 issues/pull_requests/contents write, publisher의 contents write)과 publisher bearer 토큰은 에이전트 컨테이너에서 읽을 수 없다. 지침 문구를 강제적인 보안 격리로 설명하지 않는다.
+5. Rust 빌드 캐시: Runner는 `RUSTC_WRAPPER=sccache`로 rustc 결과를 home PVC의 `SCCACHE_DIR`(최대 5G)에 캐시해 worktree와 세션이 컴파일된 의존성을 공유한다.
+6. 접근 제한: 에이전트 컨테이너에는 읽기 전용 설치 토큰만 마운트한다. 쓰기 토큰(bridge의 issues/pull_requests/contents write, publisher의 contents write)과 publisher bearer 토큰은 에이전트 컨테이너에서 읽을 수 없다. 지침 문구를 강제적인 보안 격리로 설명하지 않는다.
 
 스킬은 원본을 자동화용으로 기계적으로만 고쳤다. 각 `SKILL.md` 머리의 adaptation 절이 바꾼 점을 적는다. 공통 규칙은 다음과 같다.
 
@@ -98,6 +99,8 @@ Codex의 공통 지침은 전용 `CODEX_HOME/AGENTS.md`에서 읽고 프로젝�
 ### 모드와 결과 계약
 
 세션은 주제마다 하나이고 HAPI branch는 `hapi-<worktree>`다. 턴은 `(delivery_id, mode)`로 식별하며 HAPI 메시지 `localId`는 `issue-agent-<delivery_id>-<mode>`다. 한 delivery에서 triage 뒤 implement를 이어 실행할 수 있다. 메시지에는 대상 이슈·PR 번호와 트리거 정보만 싣는다. 이슈·댓글·PR·리뷰·스레드 같은 GitHub 내용은 에이전트가 읽기 전용 토큰으로 `gh`(REST·`gh api graphql`)를 직접 실행해 읽는다.
+
+동시 실행: bridge dispatcher는 저장소와 무관하게 전체에서 최대 `MAX_ACTIVE_EVENTS`(10)개 이벤트에 슬롯(`dispatching`/`dispatched`)을 주고 n8n에 넘긴다. 같은 주제(이슈·PR 번호)의 이벤트는 세션·worktree를 공유하므로 앞선 이벤트가 끝날 때까지 기다린다. 응답이 불확실한 n8n POST는 그 이벤트의 슬롯만 유지한 채 같은 이벤트로만 재시도하고, 다른 주제는 막지 않는다. `begin`은 슬롯을 가진 이벤트만 시작시킨다. 세션 생성·재개는 bridge의 `session_lock`으로, 같은 저장소 checkout clone과 push는 publisher의 저장소별 잠금으로 직렬화된다. 모든 세션은 Runner Pod 하나의 메모리 한도를 함께 쓴다.
 
 이벤트가 `finish`로 끝나면 bridge가 그 주제의 HAPI 세션을 `archive`해 Codex 프로세스와 MCP 서버를 멈춘다. 같은 주제의 다음 이벤트는 `ensure_session`의 resume 경로로 같은 세션 ID·같은 Codex 대화를 다시 띄운다(운영 HAPI 0.30.7에서 archive → resume이 1.2초에 같은 ID로 돌아오는 것을 확인). archive 실패는 이벤트 완료를 막지 않고 로그만 남긴다. 멈추지 않으면 끝난 세션이 Runner 재시작 전까지 세션마다 수백 MB를 계속 차지한다. `needs_attention`으로 멈춘 이벤트의 세션은 운영자 확인을 위해 archive하지 않는다.
 
