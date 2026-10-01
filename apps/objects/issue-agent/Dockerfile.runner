@@ -4,6 +4,11 @@
 # No repository checkout, credential, or provider config is baked in; the
 # publisher sidecar clones repositories at runtime into the home PVC.
 
+# docker:29.4.0-cli (linux/arm64): Docker CLI plus the buildx/compose plugins.
+# Docker 29's `docker build` requires buildx; the daemon is the pod's dockerd
+# sidecar (docker:29.4.0-dind), reached through DOCKER_HOST.
+FROM docker:29.4.0-cli@sha256:9d3f67fe1f4cf51c084744dec419b466b7075f5b365ef4b9b791187d9c2d4127 AS docker-cli
+
 # node:24.21.0-trixie-slim (linux/arm64). Node runs Codex's npm launcher.
 FROM node:24.21.0-trixie-slim@sha256:7da5980a342ed134ad56bb16c918f94548cd15cf3b961aa231c286598accb536
 
@@ -97,6 +102,9 @@ RUN curl -fsSLo /tmp/sccache.tgz "https://github.com/mozilla/sccache/releases/do
     && rm /tmp/sccache.tgz \
     && sccache --version
 
+COPY --from=docker-cli /usr/local/bin/docker /usr/local/bin/docker
+COPY --from=docker-cli /usr/local/libexec/docker/cli-plugins/docker-buildx /usr/local/libexec/docker/cli-plugins/docker-compose /usr/local/libexec/docker/cli-plugins/
+RUN docker --version && docker buildx version && docker compose version
 # Go toolchain. GOPATH (module cache, `go install` tools) and GOCACHE default to
 # $HOME, i.e. the home PVC, so every worktree shares them across restarts.
 RUN curl -fsSLo /tmp/go.tgz "https://go.dev/dl/go${GO_VERSION}.linux-arm64.tar.gz" \
@@ -125,6 +133,7 @@ COPY --chmod=0755 runner/codex/hooks/ /etc/codex/hooks/
 COPY --chmod=0755 runner/bootstrap.sh /opt/issue-agent/bin/runner-bootstrap
 COPY --chmod=0755 runner/healthcheck.sh /opt/issue-agent/bin/runner-healthcheck
 COPY --chmod=0755 runner/publisher.py /opt/issue-agent/bin/publisher
+COPY --chmod=0755 operations/issue-agent-docker-smoke /opt/issue-agent/bin/docker-smoke
 # Global instructions are copied into CODEX_HOME by the bootstrap. Skills use
 # Codex's ADMIN scope (/etc/codex/skills), so they never live on the PVC.
 COPY --chmod=0644 profile/AGENTS.md /opt/issue-agent/profile/AGENTS.md

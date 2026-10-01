@@ -14,7 +14,8 @@
 #                logs, binary data; WITHOUT `config` (encryption key copy)
 #   bridge.tar   state.sqlite3 snapshot
 #   runner.tar   CODEX_HOME (rollouts, history, sqlite state snapshots) and HAPI_HOME
-#                (runner identity) WITHOUT config.toml, auth.json, shell_snapshots
+#                (runner identity; read from the runner namespace, --runner-namespace)
+#                WITHOUT config.toml, auth.json, shell_snapshots
 #                (captured environment), app-server/runtime control and ownership state,
 #                codex-runtimes (live endpoint tokens), regenerated tool bundles; plus
 #                checkouts-manifest.txt (worktree branch/HEAD/dirty/unpushed state;
@@ -40,14 +41,15 @@ umask 077
 
 CONTEXT=homelab-backbone
 NAMESPACE=issue-agent
+RUNNER_NAMESPACE=issue-agent-runner
 OUT=""
 COMPONENTS="bridge,n8n,hub,runner"
 
 usage() {
   cat <<'EOF'
 Usage:
-  issue-agent-backup create [--context NAME] [--namespace NAME] [--out DIR]
-                            [--components bridge,n8n,hub,runner]
+  issue-agent-backup create [--context NAME] [--namespace NAME] [--runner-namespace NAME]
+                            [--out DIR] [--components bridge,n8n,hub,runner]
   issue-agent-backup verify DIR
 
 create  Streams consistent snapshots into a new 0700 directory (files 0600).
@@ -59,6 +61,8 @@ verify  Checks SHA256SUMS, unpacks each archive into a private temporary directo
         sqlite3 or python3). Makes no cluster calls.
 
 The kubectl context defaults to homelab-backbone; the current context is never used.
+bridge, n8n, and hub are read from --namespace (default: issue-agent); runner is read
+from --runner-namespace (default: issue-agent-runner).
 EOF
 }
 
@@ -70,14 +74,19 @@ log() { printf 'issue-agent-backup: %s\n' "$*" >&2; }
 
 ((BASH_VERSINFO[0] > 4 || (BASH_VERSINFO[0] == 4 && BASH_VERSINFO[1] >= 4))) || die "bash >= 4.4 required"
 
-k() { kubectl --context "$CONTEXT" --namespace "$NAMESPACE" "$@"; }
+# k NAMESPACE ARGS...: every kubectl call names its namespace explicitly.
+k() {
+  local ns="$1"
+  shift
+  kubectl --context "$CONTEXT" --namespace "$ns" "$@"
+}
 
 pod_for() {
-  local pods count
-  pods="$(k get pods -l "app=$1" --field-selector=status.phase=Running \
-    -o jsonpath='{range .items[*]}{.metadata.name}{"\n"}{end}')" || die "cannot list pods for app=$1"
+  local ns="$1" app="$2" pods count
+  pods="$(k "$ns" get pods -l "app=$app" --field-selector=status.phase=Running \
+    -o jsonpath='{range .items[*]}{.metadata.name}{"\n"}{end}')" || die "cannot list pods for app=$app in namespace $ns"
   count="$(grep -c . <<<"$pods" || true)"
-  [[ "$count" -eq 1 ]] || die "expected exactly one Running pod for app=$1, found ${count}"
+  [[ "$count" -eq 1 ]] || die "expected exactly one Running pod for app=$app in namespace $ns, found ${count}"
   printf '%s' "$pods"
 }
 
@@ -337,26 +346,27 @@ finally:
 PY
 
 capture() {
-  local component="$1" file="$DIR/$1.tar" pod rc=0
+  local component="$1" file="$DIR/$1.tar" ns="$NAMESPACE" container="$1" pod rc=0
   shift
+  [[ "$component" != runner ]] || ns="$RUNNER_NAMESPACE"
+  pod="$(pod_for "$ns" "issue-agent-$component")"
   case "$component" in
-    hub) pod="$(pod_for issue-agent-hub)"; k exec "$pod" -c hub -- sh -c "$HUB_SH" >"$file" || rc=$? ;;
-    n8n) pod="$(pod_for issue-agent-n8n)"; k exec "$pod" -c n8n -- node -e "$N8N_JS" >"$file" || rc=$? ;;
+    hub) k "$ns" exec "$pod" -c hub -- sh -c "$HUB_SH" >"$file" || rc=$? ;;
+    n8n) k "$ns" exec "$pod" -c n8n -- node -e "$N8N_JS" >"$file" || rc=$? ;;
     bridge)
-      pod="$(pod_for issue-agent-bridge)"
-      k exec "$pod" -c bridge -- python -B -c "$PY_TAR" \
+      k "$ns" exec "$pod" -c bridge -- python -B -c "$PY_TAR" \
         '{"base":"/var/lib/issue-agent-bridge","include":["."],"exclude":[],"checkouts":null}' >"$file" || rc=$? ;;
     runner)
-      pod="$(pod_for issue-agent-runner)"
-      k exec "$pod" -c runner -- python3 -B -c "$PY_TAR" \
+      k "$ns" exec "$pod" -c runner -- python3 -B -c "$PY_TAR" \
         '{"base":"/home/agent","include":[".codex",".hapi"],"exclude":[".codex/config.toml",".codex/auth.json",".codex/AGENTS.md",".codex/tmp",".codex/.tmp",".codex/shell_snapshots",".codex/app-server-control",".codex/hapi-runtime-owners",".codex/thread-writer-locks",".codex/skills/.system",".hapi/codex-runtimes",".hapi/runtime",".hapi/locks"],"checkouts":"/home/agent/checkouts"}' \
         >"$file" || rc=$? ;;
   esac
   [[ "$rc" -eq 0 ]] || die "$component capture failed (exit $rc); partial file left at $file"
   tar -tf "$file" >/dev/null || die "$component archive is not a readable tar: $file"
   chmod 600 "$file"
-  printf '%s\tpod=%s\timage=%s\tbytes=%s\n' "$component" "$pod" \
-    "$(k get pod "$pod" -o jsonpath='{.status.containerStatuses[0].imageID}')" \
+  # Select the captured container by name: the runner pod also runs publisher and dockerd.
+  printf '%s\tnamespace=%s\tpod=%s\timage=%s\tbytes=%s\n' "$component" "$ns" "$pod" \
+    "$(k "$ns" get pod "$pod" -o jsonpath="{.status.containerStatuses[?(@.name==\"$container\")].imageID}")" \
     "$(wc -c <"$file" | tr -d ' ')" >>"$DIR/MANIFEST"
   log "$component: $(wc -c <"$file" | tr -d ' ') bytes"
 }
@@ -367,13 +377,21 @@ cmd_create() {
   DIR="${OUT:-$repo_root/.host-state/issue-agent/backups/$(date -u +%Y%m%dT%H%M%SZ)}"
   [[ ! -e "$DIR" && ! -L "$DIR" ]] || die "$DIR already exists"
   command -v kubectl >/dev/null || die "kubectl not found"
-  k get namespace "$NAMESPACE" -o name >/dev/null || die "namespace $NAMESPACE not reachable in context $CONTEXT"
+  local c ns
+  local -A seen=()
+  for c in ${COMPONENTS//,/ }; do
+    ns="$NAMESPACE"
+    [[ "$c" != runner ]] || ns="$RUNNER_NAMESPACE"
+    [[ -z "${seen[$ns]:-}" ]] || continue
+    seen[$ns]=1
+    k "$ns" get namespace "$ns" -o name >/dev/null || die "namespace $ns not reachable in context $CONTEXT"
+  done
   mkdir -p "$DIR"
   chmod 700 "$DIR"
-  printf 'created\t%s\ncontext\t%s\nnamespace\t%s\n' "$(date -u +%Y-%m-%dT%H:%M:%SZ)" "$CONTEXT" "$NAMESPACE" >"$DIR/MANIFEST"
+  printf 'created\t%s\ncontext\t%s\nnamespace\t%s\nrunner_namespace\t%s\n' \
+    "$(date -u +%Y-%m-%dT%H:%M:%SZ)" "$CONTEXT" "$NAMESPACE" "$RUNNER_NAMESPACE" >"$DIR/MANIFEST"
   log "writing PRIVATE operator backup (byte-faithful DB snapshots; auth/config files excluded) to $DIR"
 
-  local c
   for c in bridge n8n hub runner; do # reference order; see header
     if [[ ",$COMPONENTS," == *",$c,"* ]]; then
       capture "$c"
@@ -443,13 +461,15 @@ main() {
     case "$1" in
       --context) CONTEXT="${2:?--context requires a value}"; shift 2 ;;
       --namespace) NAMESPACE="${2:?--namespace requires a value}"; shift 2 ;;
+      --runner-namespace) RUNNER_NAMESPACE="${2:?--runner-namespace requires a value}"; shift 2 ;;
       --out) OUT="${2:?--out requires a value}"; shift 2 ;;
       --components) COMPONENTS="${2:?--components requires a value}"; shift 2 ;;
       -h | --help) usage; exit 0 ;;
       *) die "unknown option $1" ;;
     esac
   done
-  [[ -n "$CONTEXT" && -n "$NAMESPACE" ]] || die "context and namespace must be non-empty"
+  [[ -n "$CONTEXT" && -n "$NAMESPACE" && -n "$RUNNER_NAMESPACE" ]] ||
+    die "context, namespace, and runner namespace must be non-empty"
   local c
   for c in ${COMPONENTS//,/ }; do
     [[ "$c" =~ ^(bridge|n8n|hub|runner)$ ]] || die "unknown component $c"

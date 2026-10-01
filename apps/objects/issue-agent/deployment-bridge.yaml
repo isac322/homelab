@@ -61,7 +61,7 @@ spec:
             - name: HAPI_ACCESS_TOKEN_FILE
               value: /run/issue-agent/hapi/CLI_API_TOKEN
             - name: PUBLISHER_URL
-              value: http://issue-agent-publisher.issue-agent.svc.cluster.local:8090
+              value: http://issue-agent-publisher.issue-agent-runner.svc.cluster.local:8090
             - name: PUBLISHER_TOKEN_FILE
               value: /run/issue-agent/publisher/token
             - name: N8N_PUBLIC_URL

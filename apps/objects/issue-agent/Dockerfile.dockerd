@@ -1,0 +1,25 @@
+# syntax=docker/dockerfile:1
+# Pod-local Docker daemon for the issue-agent runner pod (native sidecar).
+# Build context: apps/objects/issue-agent (see .dockerignore). linux/arm64 only.
+# No credentials are baked in and the sidecar mounts none.
+
+# docker:29.4.0-dind (linux/arm64); matches the runner image's docker:29.4.0-cli.
+FROM docker:29.4.0-dind@sha256:553d694bc3ae2a92b67b73072e3923a8d2256e609b568c60d08e4544e8f39ff3
+
+# The dind image already ships iptables/ip6tables v1.8.11 on the nf_tables
+# backend; fail the build if they ever resolve to legacy. util-linux provides
+# `unshare --cgroup` (BusyBox lacks the flag) so dockerd-start can scope itself
+# under its own cgroup when the container shares the node's cgroup namespace.
+# The pin is an Alpine 3.23 package.
+RUN apk add --no-cache util-linux-misc=2.41.6-r1 \
+    && unshare --version \
+    && iptables --version | grep -F '(nf_tables)' \
+    && ip6tables --version | grep -F '(nf_tables)'
+
+RUN install -d -m 0755 /opt/issue-agent/bin
+COPY --chmod=0755 runner/dockerd-start.sh /opt/issue-agent/bin/dockerd-start
+COPY --chmod=0755 runner/dockerd-probe.sh /opt/issue-agent/bin/dockerd-probe
+COPY --chmod=0755 runner/native-dri-prepare.sh /opt/issue-agent/bin/native-dri-prepare
+
+ENTRYPOINT ["/opt/issue-agent/bin/dockerd-start"]
+CMD []

@@ -22,10 +22,18 @@ spec:
     requests:
       storage: 5Gi
 ---
+# Retained migration source only. The runner moved to the issue-agent-runner
+# namespace (apps/objects/issue-agent-runner) and nothing here mounts this
+# claim. operations/issue-agent-runner-home-migrate copies it into
+# issue-agent-runner/issue-agent-runner-home and sets its PV to Retain.
+# Prune=false/Delete=false keep the claim and its data even after this
+# declaration is removed from Git or the Application is deleted.
 apiVersion: v1
 kind: PersistentVolumeClaim
 metadata:
   name: issue-agent-runner-home
+  annotations:
+    argocd.argoproj.io/sync-options: Prune=false,Delete=false
 spec:
   accessModes:
     - ReadWriteOnce

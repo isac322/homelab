@@ -24,6 +24,67 @@ spec:
         fsGroupChangePolicy: OnRootMismatch
         seccompProfile:
           type: RuntimeDefault
+      initContainers:
+        # Pod-local Docker daemon. Runs as root and privileged; nothing else in
+        # the pod may, so its securityContext fully overrides the pod defaults.
+        # Reaching its startup probe is what releases the runner container.
+        # Image: Dockerfile.dockerd. The explicit command keeps a wrong image
+        # from falling back to the upstream entrypoint's TCP listener.
+        - name: dockerd
+          restartPolicy: Always
+          image: ghcr.io/isac322/issue-agent-dockerd:29.4.0-20261001-native-drm-iptables-nft@sha256:331f0a70085fa8f20a11463235ac6cbaa9863ffd1d4fbb895fa127068da6ab79
+          command:
+            - /opt/issue-agent/bin/dockerd-start
+          env:
+            - name: ISSUE_AGENT_DOCKER_SOCKDIR
+              value: /run/issue-agent-docker
+            - name: ISSUE_AGENT_CHECKOUTS
+              value: /home/agent/checkouts
+          startupProbe:
+            exec:
+              command:
+                - /opt/issue-agent/bin/dockerd-probe
+            periodSeconds: 5
+            timeoutSeconds: 10
+            failureThreshold: 60
+          livenessProbe:
+            exec:
+              command:
+                - /opt/issue-agent/bin/dockerd-probe
+            periodSeconds: 30
+            timeoutSeconds: 10
+            failureThreshold: 6
+          resources:
+            requests:
+              cpu: "1"
+              memory: 2Gi
+            limits:
+              memory: 8Gi
+          securityContext:
+            runAsNonRoot: false
+            runAsUser: 0
+            runAsGroup: 0
+            privileged: true
+            seccompProfile:
+              type: Unconfined
+          volumeMounts:
+            - name: docker-sock
+              mountPath: /run/issue-agent-docker
+            - name: docker-data
+              mountPath: /var/lib/docker
+            - name: home
+              mountPath: /home/agent/checkouts
+              subPath: checkouts
+            - name: tmp
+              mountPath: /tmp
+            # Raw curated DRM pair outside /dev; native-dri-prepare projects it
+            # onto /dev/dri in the daemon's own mount namespace.
+            - name: dri
+              mountPath: /run/issue-agent-dri
+            - name: dri-card0
+              mountPath: /run/issue-agent-dri/card0
+            - name: dri-render128
+              mountPath: /run/issue-agent-dri/renderD128
       affinity:
         nodeAffinity:
           requiredDuringSchedulingIgnoredDuringExecution:
@@ -36,7 +97,7 @@ spec:
                       - macmini
       containers:
         - name: runner
-          image: ghcr.io/isac322/issue-agent-runner:0.30.7-codex0.159.2-20261001-r4@sha256:901e1cf3e939f27b47919d0012615aa188ecf250e4ebed70ea50a824d1ef9c1b
+          image: ghcr.io/isac322/issue-agent-runner:0.30.7-codex0.159.2-20261002-docker-native-drm@sha256:317dec5af4e942ba924198108f83b110de23d781b6e4e351229271c02a6eb913
           env:
             - name: HOME
               value: /home/agent
@@ -66,6 +127,8 @@ spec:
               value: "4"
             - name: GOMAXPROCS
               value: "4"
+            - name: DOCKER_HOST
+              value: unix:///run/issue-agent-docker/docker.sock
             - name: CLI_API_TOKEN
               valueFrom:
                 secretKeyRef:
@@ -112,6 +175,21 @@ spec:
               readOnly: true
             - name: tmp
               mountPath: /tmp
+            - name: docker-sock
+              mountPath: /run/issue-agent-docker
+            # Visible so Krema's harness detects the /dev/dri nodes it passes via
+            # `docker run --device`; the daemon resolves them in its own mount.
+            # The native sidecar creates the two submount targets before its
+            # startup probe releases this container.
+            - name: dri
+              mountPath: /dev/dri
+              readOnly: true
+            - name: dri-card0
+              mountPath: /dev/dri/card0
+              readOnly: true
+            - name: dri-render128
+              mountPath: /dev/dri/renderD128
+              readOnly: true
         # The only container holding the contents:write token. Called by the
         # bridge only; the runner container cannot read either of its secrets.
         - name: publisher
@@ -202,3 +280,29 @@ spec:
         - name: publisher-state
           emptyDir:
             sizeLimit: 4Gi
+        # Unix socket only (dockerd --group=1000 → 0660 root:1000); no TCP listener.
+        - name: docker-sock
+          emptyDir: {}
+        # Image content too: Docker 29's containerd image store keeps it under
+        # /var/lib/docker/containerd/daemon, inside this volume.
+        - name: docker-data
+          persistentVolumeClaim:
+            claimName: issue-agent-runner-docker
+        # Curated /dev/dri contents: exactly the two CharDevice mounts below.
+        # The runner mounts it at /dev/dri; the privileged dockerd container
+        # mounts it outside /dev (its runtime would repopulate /dev/dri with
+        # every host DRM node) and native-dri-prepare projects it privately.
+        - name: dri
+          emptyDir: {}
+        # Native DRM pair only (asahi on macmini, rockchip-drm on rock5bp),
+        # mounted per node rather than the whole /dev/dri so other DRM nodes
+        # such as rock5bp's RKNPU card1/renderD129 stay out of the pod.
+        # dockerd-probe verifies both belong to the same supported device.
+        - name: dri-card0
+          hostPath:
+            path: /dev/dri/card0
+            type: CharDevice
+        - name: dri-render128
+          hostPath:
+            path: /dev/dri/renderD128
+            type: CharDevice

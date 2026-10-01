@@ -9,7 +9,7 @@ fail() {
 }
 
 for name in HOME HAPI_HOME CODEX_HOME HAPI_API_URL CLI_API_TOKEN GH_CONFIG_DIR GIT_CONFIG_SYSTEM \
-  ISSUE_AGENT_CHECKOUTS ISSUE_AGENT_PROVIDER_DIR \
+  ISSUE_AGENT_CHECKOUTS ISSUE_AGENT_PROVIDER_DIR DOCKER_HOST \
   GIT_AUTHOR_NAME GIT_AUTHOR_EMAIL GIT_COMMITTER_NAME GIT_COMMITTER_EMAIL; do
   [[ -n "${!name:-}" ]] || fail "$name is required"
 done
@@ -19,6 +19,9 @@ fi
 provider_config="$ISSUE_AGENT_PROVIDER_DIR/config.toml"
 [[ -f "$provider_config" ]] || fail "$provider_config is missing"
 gh auth token --hostname github.com >/dev/null || fail 'no GitHub token available in GH_CONFIG_DIR'
+# The dockerd sidecar's startup probe gates this container, so an unreachable
+# daemon here is a real fault, not a startup race.
+timeout 30 docker info >/dev/null || fail "Docker daemon at $DOCKER_HOST is not reachable"
 
 mkdir -p "$HAPI_HOME" "$CODEX_HOME" "$ISSUE_AGENT_CHECKOUTS"
 

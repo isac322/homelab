@@ -5,12 +5,11 @@ resources:
   - namespace.yaml
   - pvc.yaml
   - external-secret-auth.yaml
-  - external-secret-provider.yaml
   - external-secret-github.yaml
   - external-secret-publisher.yaml
+  - secret-mirror-rbac.yaml
   - deployment-hub.yaml
   - deployment-n8n.yaml
-  - deployment-runner.yaml
   - deployment-bridge.yaml
   - service.yaml
   - httproute-hub.yaml

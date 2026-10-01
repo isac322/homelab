@@ -9,6 +9,8 @@ spec:
   destinations:
     - namespace: issue-agent
       name: backbone
+    - namespace: issue-agent-runner
+      name: backbone
   clusterResourceWhitelist:
     - group: ''
       kind: Namespace

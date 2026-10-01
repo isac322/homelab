@@ -33,15 +33,3 @@ spec:
     - name: webhook
       port: 8080
       targetPort: webhook
----
-apiVersion: v1
-kind: Service
-metadata:
-  name: issue-agent-publisher
-spec:
-  selector:
-    app: issue-agent-runner
-  ports:
-    - name: publisher
-      port: 8090
-      targetPort: publisher
