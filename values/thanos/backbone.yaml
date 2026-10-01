@@ -79,7 +79,7 @@ storegateway:
     size: 8Gi
 
 compactor:
-  enabled: true
+  enabled: false
   resources:
     requests:
       cpu: 120m
