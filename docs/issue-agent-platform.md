@@ -374,6 +374,10 @@ iptables backend로 바꾼 dockerd 이미지 `ghcr.io/isac322/issue-agent-docker
 - [x] 변경 없는 Krema `52f2d41a38d880b584b7e5bf7dd79adb81a29a56`의 smoke·preview 17개가 83.697초에 모두 통과했고 errors·failures·skips는 0이었다. 중첩 테스트는 `/dev/dri/card0`·`/dev/dri/renderD128`만 받았고 vgem은 없었다. `LIBGL_ALWAYS_SOFTWARE=1`에서 KWin `6.7.5`는 OpenGL/llvmpipe로 렌더링했고 `renderD128` FD를 열었다. 중첩 테스트의 제한은 CPU 2·메모리 4Gi·swap 0이었다.
 - [x] daemon 시작부터 종료까지 host의 방화벽 policy·rule·순서가 그대로였다. 비교에서 시각 주석과 traffic counter는 제외했다.
 
+최신 master 병합 뒤 Runner 이미지를 `ghcr.io/isac322/issue-agent-runner:0.30.7-codex0.159.2-20261002-docker-native-drm@sha256:317dec5af4e942ba924198108f83b110de23d781b6e4e351229271c02a6eb913`로 다시 빌드·게시했다. master의 `r4` 이미지에는 Docker CLI가 없어 그대로 사용하지 않는다. 최종 이미지에서 Docker `29.4.0`, Buildx `0.33.0`, Compose `5.1.1`, Go `1.27.1`과 Runner bootstrap·리뷰 스킬 접근을 확인했다. 익명 registry 요청도 동일한 index digest와 linux/arm64 manifest를 반환했다.
+
+Runner namespace의 읽기 토큰에는 기존 `contents`·`issues`·`pull_requests`와 함께 `checks`·`statuses`·`actions`의 `read` 권한을 유지한다. PR 리뷰의 CI 상태 조회와 repair의 Actions 로그 조회에 필요한 권한이며 쓰기 권한은 추가하지 않는다. 최종 Runner manifest의 Kustomize 렌더·Kubernetes client-side dry-run에서 이미지 pin과 여섯 읽기 권한을 확인했다. 운영 ESO reconciliation과 실제 installation token의 대상 저장소 접근은 배포 후 확인 게이트다.
+
 `macmini`의 native DRM graphics 실행과 새 이미지의 운영 K3s rollout은 아직 검증하지 않았다.
 
 ### Docker 배포 후 확인 게이트
