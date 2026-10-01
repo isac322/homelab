@@ -37,3 +37,63 @@ spec:
     allowVolumeExpansion: true
   filesystem:
     fsType: xfs
+---
+apiVersion: pillar-csi.bhyoo.com/v1alpha1
+kind: PillarStorageClass
+metadata:
+  name: ssd-ha
+spec:
+  storeRef: rock5bp-hot
+  protocolRef: nvmeof-tcp
+  storageClass:
+    name: ssd-ha
+    reclaimPolicy: Delete
+    volumeBindingMode: WaitForFirstConsumer
+    allowVolumeExpansion: true
+  filesystem:
+    fsType: xfs
+---
+apiVersion: pillar-csi.bhyoo.com/v1alpha1
+kind: PillarStorageClass
+metadata:
+  name: ssd-ha-retain
+spec:
+  storeRef: rock5bp-hot
+  protocolRef: nvmeof-tcp
+  storageClass:
+    name: ssd-ha-retain
+    reclaimPolicy: Retain
+    volumeBindingMode: WaitForFirstConsumer
+    allowVolumeExpansion: true
+  filesystem:
+    fsType: xfs
+---
+apiVersion: pillar-csi.bhyoo.com/v1alpha1
+kind: PillarStorageClass
+metadata:
+  name: hdd-ha
+spec:
+  storeRef: rock5bp-nas
+  protocolRef: nvmeof-tcp
+  storageClass:
+    name: hdd-ha
+    reclaimPolicy: Delete
+    volumeBindingMode: WaitForFirstConsumer
+    allowVolumeExpansion: true
+  filesystem:
+    fsType: xfs
+---
+apiVersion: pillar-csi.bhyoo.com/v1alpha1
+kind: PillarStorageClass
+metadata:
+  name: hdd-ha-retain
+spec:
+  storeRef: rock5bp-nas
+  protocolRef: nvmeof-tcp
+  storageClass:
+    name: hdd-ha-retain
+    reclaimPolicy: Retain
+    volumeBindingMode: WaitForFirstConsumer
+    allowVolumeExpansion: true
+  filesystem:
+    fsType: xfs

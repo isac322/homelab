@@ -26,9 +26,14 @@ let
   baseline = tarball decl.baseline.version decl.baseline.hash;
   transport = tarball decl.transport.version decl.transport.hash;
   sourceDir = "usr/src/${decl.dkmsName}-${decl.version}";
+  patchCount = builtins.length decl.patches;
   description =
     "NVMe/TCP ${decl.subdir} transport (${lib.concatStringsSep ", " decl.modules}) from Linux "
-    + "${decl.transport.version} for any ${decl.series}.x kernel with a matching NVMe ABI";
+    + "${decl.transport.version}"
+    + lib.optionalString (patchCount > 0) (
+      " with ${toString patchCount} local patch${lib.optionalString (patchCount > 1) "es"}"
+    )
+    + " for any ${decl.series}.x kernel with a matching NVMe ABI";
   kbuild =
     lib.concatMapStrings (
       module:
@@ -126,6 +131,11 @@ stdenvNoCC.mkDerivation {
         file: "linux-${decl.transport.version}/drivers/nvme/${decl.subdir}/${file}"
       ) decl.transportFiles}
     cp transport/* "$src_dir/"
+    # Local backports; the build fails if any stops applying. The tree holds
+    # drivers/nvme/<subdir>, so -p4 strips a/drivers/nvme/<subdir>/.
+    ${lib.concatMapStrings (file: ''
+      patch -p4 --forward --batch --fuzz=0 --no-backup-if-mismatch -d "$src_dir" -i ${file}
+    '') decl.patchFiles}
     cp "$kbuildPath" "$src_dir/Makefile"
     cp "$dkmsConfPath" "$src_dir/dkms.conf"
     cp "$abiCheckConfPath" "$src_dir/nvme-tcp-abi-check.conf"
@@ -135,6 +145,9 @@ stdenvNoCC.mkDerivation {
       'baseline=${decl.baseline.version}' \
       'transport=${decl.transport.version} (${lib.concatStringsSep " " decl.transportFiles})' \
       > "$src_dir/SOURCE_SELECTION"
+    ${lib.optionalString (decl.patches != [ ]) ''
+      printf '%s\n' 'patches=${lib.concatStringsSep " " decl.patches}' >> "$src_dir/SOURCE_SELECTION"
+    ''}
     find "$pkgroot" -type d -exec chmod 0755 {} +
     find "$pkgroot" -type f -exec chmod 0644 {} +
     install -m 0755 ${./nvme-tcp-abi-check} "$src_dir/nvme-tcp-abi-check"

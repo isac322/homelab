@@ -3,10 +3,14 @@ kind: PersistentVolumeClaim
 metadata:
   name: buildkit-cache
   namespace: arc-systems
+  annotations:
+    # Created by democratic-csi and imported into pillar-csi in place on
+    # 2026-10-01, so the build cache kept its contents.
+    pillar-csi.bhyoo.com/import-zvol: hot-data/k8s/pvc-d71e19f6-b527-4c17-9fa1-5172eaf62001
 spec:
   accessModes:
     - ReadWriteOnce
-  storageClassName: ssd-ha-xfs
+  storageClassName: ssd-ha
   resources:
     requests:
       # Leave scratch space above the 45GB cache target for release linking.

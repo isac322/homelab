@@ -97,7 +97,7 @@ spec:
                       - macmini
       containers:
         - name: runner
-          image: ghcr.io/isac322/issue-agent-runner:0.30.7-codex0.159.2-20261001-native-drm@sha256:81133550f5d2d058b8ce7c5ec3ef6472900773d0e721a8fa5e7ef664e6c62b6e
+          image: ghcr.io/isac322/issue-agent-runner:0.30.7-codex0.159.2-20261001-r4@sha256:901e1cf3e939f27b47919d0012615aa188ecf250e4ebed70ea50a824d1ef9c1b
           env:
             - name: HOME
               value: /home/agent
@@ -193,7 +193,7 @@ spec:
         # The only container holding the contents:write token. Called by the
         # bridge only; the runner container cannot read either of its secrets.
         - name: publisher
-          image: ghcr.io/isac322/issue-agent-runner:0.30.7-codex0.159.2-20261001-native-drm@sha256:81133550f5d2d058b8ce7c5ec3ef6472900773d0e721a8fa5e7ef664e6c62b6e
+          image: ghcr.io/isac322/issue-agent-runner:0.30.7-codex0.159.2-20261001-r4@sha256:901e1cf3e939f27b47919d0012615aa188ecf250e4ebed70ea50a824d1ef9c1b
           command:
             - /usr/bin/tini
             - --
@@ -211,6 +211,8 @@ spec:
               value: /var/lib/issue-agent-publisher
             - name: ISSUE_AGENT_CHECKOUTS
               value: /home/agent/checkouts
+            - name: CODEX_HOME
+              value: /home/agent/.codex
           ports:
             - name: publisher
               containerPort: 8090

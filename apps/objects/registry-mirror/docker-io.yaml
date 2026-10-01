@@ -19,21 +19,6 @@ data:
     proxy:
       remoteurl: https://registry-1.docker.io
 ---
-# Previous cache volume, no longer mounted. Kept only as a rollback target
-# for the pillar-csi move; delete once the new volume has proven itself.
-apiVersion: v1
-kind: PersistentVolumeClaim
-metadata:
-  name: registry-docker-io
-  namespace: arc-systems
-spec:
-  accessModes:
-    - ReadWriteOnce
-  storageClassName: ssd-ha-xfs
-  resources:
-    requests:
-      storage: 50Gi
----
 # Cache volume on pillar-csi (non-replicated SSD). A pull-through cache can
 # be refetched, so it does not need a replicated pool, and thin is fine.
 apiVersion: v1

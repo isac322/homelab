@@ -73,13 +73,20 @@ storegateway:
       memory: 1280Mi
     limits:
       memory: 4Gi
+  # data-thanos-storegateway-0 was created by democratic-csi and imported
+  # into pillar-csi in place on 2026-10-01.
   persistence:
     enabled: true
-    storageClass: ssd-ha-xfs
+    storageClass: ssd-ha
     size: 8Gi
 
 compactor:
   enabled: true
+  # Prometheus accepts out-of-order samples (tsdb.outOfOrderTimeWindow) and
+  # ships them as a second block for the same 2h range. Without vertical
+  # compaction the compactor treats that overlap as corruption and halts.
+  extraFlags:
+    - --compact.enable-vertical-compaction
   resources:
     requests:
       cpu: 120m
@@ -87,10 +94,14 @@ compactor:
     limits:
       cpu: 500m
       memory: 256Mi
+  # Created by democratic-csi and imported into pillar-csi in place on
+  # 2026-10-01.
   persistence:
     enabled: true
-    storageClass: ssd-ha-xfs
-    size: 16Gi
+    storageClass: ssd-ha
+    size: 20Gi
+    annotations:
+      pillar-csi.bhyoo.com/import-zvol: hot-data/k8s/pvc-d9bfa3b6-0d6e-4d3e-8ab6-c7b57774c55f
   retentionResolutionRaw: 30d
   retentionResolution5m: 180d
   retentionResolution1h: 0d

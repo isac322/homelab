@@ -6,10 +6,13 @@
 # transport sources with the newest release of the same stable series that
 # compiles and links against the node's real kernel (`transport`).
 #
-# `role` and `modules` are human decisions. `kernelRelease`, `headersPackage`,
-# `baseline` and `transport` are written by `nix run .#nvme-tcp-dkms -- select
-# <host>`, which test-builds the candidates on the node itself; `kernelRelease`
-# records the kernel `select` validated against and does not pin the build.
+# `role`, `modules` and `patches` are human decisions. `kernelRelease`,
+# `headersPackage`, `baseline` and `transport` are written by `nix run
+# .#nvme-tcp-dkms -- select <host>`, which test-builds the candidates on the
+# node itself; `kernelRelease` records the kernel `select` validated against
+# and does not pin the build. `patches` (optional, default none) names local
+# backports in nix/pkgs/nvme-tcp-dkms-patches/<name>.patch, applied in order
+# over the transport sources when the package is built.
 { lib, topology }:
 let
   declared = builtins.fromJSON (builtins.readFile ./nvme-tcp-dkms.json);
@@ -59,10 +62,22 @@ let
     let
       role = roles.${decl.role};
       node = topology.nodes.${name};
-      # Debian and pacman both accept this, and it changes whenever either the
+      patches = decl.patches or [ ];
+      patchFile = patch: ../pkgs/nvme-tcp-dkms-patches + "/${patch}.patch";
+      patchFiles = map patchFile patches;
+      # Debian and pacman both accept this, and it changes whenever the
       # baseline or the transport release changes. The kernel release is no
-      # longer part of it: one package build covers the whole series.
-      version = "${decl.transport.version}+${decl.baseline.version}";
+      # longer part of it: one package build covers the whole series. Local
+      # patches add a "+p<hash>" marker over their contents, so a changed
+      # patch set also changes the DKMS source tree's version.
+      patchMarker =
+        lib.optionalString (patches != [ ])
+          "+p${
+            builtins.substring 0 8 (
+              builtins.hashString "sha256" (lib.concatMapStrings builtins.readFile patchFiles)
+            )
+          }";
+      version = "${decl.transport.version}+${decl.baseline.version}${patchMarker}";
       # Distro package release; bump it when the packaging itself (dkms.conf,
       # the ABI check) changes for the same sources so nodes pick it up.
       packageVersion = "${version}-2";
@@ -95,6 +110,10 @@ let
     assert lib.assertMsg (
       sriSha256 decl.baseline.hash && sriSha256 decl.transport.hash
     ) "nvme-tcp-dkms: ${name} source hashes must be SRI sha256";
+    assert lib.assertMsg (lib.all
+      (patch: builtins.match "[A-Za-z0-9._-]+" patch != null && builtins.pathExists (patchFile patch))
+      patches
+    ) "nvme-tcp-dkms: ${name} patches must name files in nix/pkgs/nvme-tcp-dkms-patches/<name>.patch";
     decl
     // {
       inherit
@@ -103,6 +122,8 @@ let
         packageVersion
         series
         packageFormat
+        patches
+        patchFiles
         ;
       inherit (role)
         packageName

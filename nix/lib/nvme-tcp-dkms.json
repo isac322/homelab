@@ -21,6 +21,14 @@
     "modules": [
       "nvmet-tcp"
     ],
+    "patches": [
+      "nvmet-tcp-use-kvcalloc-for-commands-array",
+      "nvmet-tcp-validate-so_priority-modparam-value",
+      "nvmet-tcp-validate-idle-poll-modparam-value",
+      "nvmet-tcp-use-spin_lock_bh-for-state_lock",
+      "nvmet-tcp-avoid-circular-locking-dependency-on-install_queue",
+      "nvmet-tcp-fixup-hang-in-nvmet_tcp_listen_data_ready"
+    ],
     "kernelRelease": "6.1.84-999-rk2410",
     "headersPackage": "linux-headers-6.1.84-999-rk2410",
     "baseline": {

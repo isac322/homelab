@@ -134,13 +134,26 @@
 - 일반화: global
 - 재발 확인 기준: 결정된 수정 방향을 구현하는 실행에서 같은 변경에 대한 승인 질문이 없고, 결정 밖의 구조 변경이 생긴 경우에만 isac-decision-brief 질문이 있다.
 
+### CASE-20260930-proposal-track
+- 상태: applied
+- 출처: omp session 01a0f226 msg 77d4e89c, 515ee3ef, 0b43c2eb
+- 상황: `isac-issue-triage`에 지목된 기능 요청용 제안 트랙(TRI-54)이 생기면서, 승인된 제안을 이 스킬로 넘길 진입 경로가 필요했다. 정본 케이스는 `isac-issue-triage`의 같은 케이스 ID다.
+- 대상: 이슈→PR 진입 / 사용자 소유 공개 OSS / 제품 코드 / 중
+- 적용 조건: `isac-issue-triage`에서 사용자가 방향을 승인한 제안 이슈(`enhancement` + `triage:fix-direction-decided`)를 구현할 때.
+- 사용자 기대: 승인된 제안도 결함 수정과 같은 흐름으로 PR까지 간다.
+- 실제 행동: I2P-01 진입 조건이 우리 코드 결함만 다뤄 승인된 제안의 진입이 명시되지 않았다.
+- 원인 분류: missing / 규칙: I2P-01
+- 변경: I2P-01에 "`isac-issue-triage`에서 사용자가 승인한 제안도 대상" 문장 추가. 기존 조건과 I2P-42(부분 해결 연결)는 그대로.
+- 일반화: global
+- 재발 확인 기준: `enhancement` + `triage:fix-direction-decided` 이슈를 넘기면 트리아지를 다시 요구하지 않고 QA list 단계로 진행한다.
+
 ## 출처 색인
 
 형식: 규칙 ID → session 8자 msg id. `ask @시각`은 선택지 질문에 대한 사용자 응답이다. `U2`는 스킬 패밀리 설계 시 사용자가 확정한 결정이다.
 
 | 규칙 | 근거 |
 |---|---|
-| I2P-01 | 01a0ae59 b7148eef; 01a095f6 83bbf39a |
+| I2P-01 | 01a0ae59 b7148eef; 01a095f6 83bbf39a; 01a0f226 0b43c2eb |
 | I2P-02 | 01a0d288 ff6e52cc |
 | I2P-03 | 01a095f6 b9e1a421, f6625700 |
 | I2P-06 | 01a095f6 02194318, 928496d6, aefe9972 |
@@ -186,3 +199,4 @@
 | 2026-09-27 | I2P-62 | 폐기: 특정 설계 승인 조건으로 이슈→PR 범위 밖. 전체 goal 감사는 defaults.md 무태그 | - |
 | 2026-09-27 | I2P-02, 03, 10, 28, 49, 54, 58 | 의미 좁힘: 적용 조건 명시(첫 패스 한정, "전부 지원"·API 이식 한정, 새 방식 도입 시, 설치·실사용 검증, 배포 패키지 설치 경로 CI, 머지 지시 시, 확인된 잔여 결함 있을 때만 부분 해결) | CASE-20260924-old-new-before-pr, CASE-20260914-full-schema-parity |
 | 2026-09-27 | I2P-14 | 계획 단계에서 결정된 변경은 구현 때 재승인하지 않는다는 문장 추가 | CASE-20260927-planned-change-no-reapproval |
+| 2026-09-30 | I2P-01 | 의미 확장: `isac-issue-triage`에서 승인된 제안(`enhancement` + `triage:fix-direction-decided`)을 진입 조건에 추가 | CASE-20260930-proposal-track |

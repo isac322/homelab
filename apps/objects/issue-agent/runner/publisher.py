@@ -8,17 +8,20 @@ called only by the bridge (bearer token the agent container cannot read).
   GET  /healthz
   POST /checkout {repo}                        -> {path, created, default_branch}
   POST /push     {repo, branch, expected_sha}  -> {sha}
+  POST /cleanup  {repo, worktree, branch, codex_session_ids} -> {removed}
 
 Git never runs with an agent-controlled checkout as its working directory or
 git dir: commits are fetched *from* the checkout by path into a private bare
 mirror, and pushed from that mirror. The GitHub token is passed only through
 `git -c http.extraHeader=...` on the command line; it is never written to any
-config file and never logged.
+config file and never logged. /cleanup runs no git at all: it removes a
+worktree, its branch ref and Codex rollouts with plain file operations.
 """
 
 from __future__ import annotations
 
 import base64
+import glob
 import hmac
 import json
 import logging
@@ -26,6 +29,7 @@ import os
 import re
 import shutil
 import signal
+import stat
 import subprocess
 import sys
 import tempfile
@@ -39,6 +43,7 @@ PORT = int(os.environ.get("PUBLISHER_PORT", "8090"))
 AUTH_TOKEN_FILE = os.environ.get("PUBLISHER_TOKEN_FILE", "/run/issue-agent/publisher/token")
 PUSH_TOKEN_FILE = os.environ.get("GITHUB_PUSH_TOKEN_FILE", "/run/issue-agent/push/token")
 CHECKOUTS = os.environ.get("ISSUE_AGENT_CHECKOUTS", "/home/agent/checkouts")
+CODEX_HOME = os.environ.get("CODEX_HOME", "/home/agent/.codex")
 STATE_DIR = os.environ.get("PUBLISHER_STATE_DIR", "/var/lib/issue-agent-publisher")
 GITHUB_API = "https://api.github.com"
 MAX_BODY = 16 * 1024
@@ -48,6 +53,11 @@ GIT_TIMEOUT = 600
 REPO_RE = re.compile(r"^[A-Za-z0-9_.-]+/[A-Za-z0-9_.-]+$")
 BRANCH_RE = re.compile(r"^hapi-issue-[0-9]+$")
 SHA_RE = re.compile(r"^[0-9a-f]{40}$")
+WORKTREE_RE = re.compile(r"^(issue|review-pr)-[0-9]+(-[0-9a-f]{4})?$")
+CLEANUP_BRANCH_RE = re.compile(r"^hapi-(issue|review-pr)-[0-9]+(-[0-9a-f]{4})?$")
+CODEX_ID_RE = re.compile(r"^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$")
+MAX_CODEX_IDS = 50
+PACKED_REF_RE = re.compile(r"^[0-9a-f]{40,64} (refs/\S+)$")
 
 log = logging.getLogger("publisher")
 
@@ -254,6 +264,142 @@ def do_push(repo: str, branch: str, expected_sha: str) -> dict:
     return {"sha": sha}
 
 
+def inside(path: str, root: str) -> bool:
+    """``path`` is strictly below ``root`` (both already resolved)."""
+    return path != root and os.path.commonpath([path, root]) == root
+
+
+def confined_root(path: str) -> str:
+    """Resolved ``path``, refused unless it stays inside the checkouts root (a planted symlink cannot redirect it)."""
+    root = os.path.realpath(path)
+    if not inside(root, os.path.realpath(CHECKOUTS)):
+        raise PublisherError(HTTPStatus.CONFLICT, "unsafe_path", f"{path} resolves outside the checkouts root")
+    return root
+
+
+def worktree_admin_dir(worktree: str) -> str | None:
+    """Admin dir named by the worktree's ``.git`` file (``gitdir: <path>``), None when the file is gone."""
+    dot_git = os.path.join(worktree, ".git")
+    if not os.path.lexists(dot_git):
+        return None
+    if os.path.islink(dot_git) or not os.path.isfile(dot_git):
+        raise PublisherError(HTTPStatus.CONFLICT, "unsafe_path", f"{dot_git} is not a regular file")
+    with open(dot_git, encoding="utf-8", errors="replace") as handle:
+        text = handle.read(4096).strip()
+    if not text.startswith("gitdir:"):
+        raise PublisherError(HTTPStatus.CONFLICT, "unsafe_path", f"{dot_git} has no gitdir line")
+    return os.path.join(worktree, text.removeprefix("gitdir:").strip())
+
+
+def remove_worktree(repo: str, name: str) -> list[str]:
+    base = checkout_path(repo)
+    worktrees_dir = base + "-worktrees"
+    path = os.path.join(worktrees_dir, name)
+    if not os.path.lexists(path):
+        return []
+    worktrees_root = confined_root(worktrees_dir)
+    if os.path.islink(path) or not os.path.isdir(path) or not inside(os.path.realpath(path), worktrees_root):
+        raise PublisherError(HTTPStatus.CONFLICT, "unsafe_path", f"{path} is not a worktree directory")
+    removed = []
+    admin = worktree_admin_dir(path)
+    if admin is not None and os.path.lexists(admin):
+        admin_root = confined_root(os.path.join(base, ".git", "worktrees"))
+        real_admin = os.path.realpath(admin)
+        if os.path.islink(admin) or not os.path.isdir(real_admin) or not inside(real_admin, admin_root):
+            raise PublisherError(HTTPStatus.CONFLICT, "unsafe_path", f"{admin} is not a worktree admin directory")
+        # Admin dir first: a worktree left without it is still found and removed on retry.
+        shutil.rmtree(real_admin)
+        removed.append(real_admin)
+    real_path = os.path.realpath(path)
+    shutil.rmtree(real_path)
+    removed.append(real_path)
+    return removed
+
+
+def remove_branch(repo: str, branch: str) -> list[str]:
+    """Drop ``refs/heads/<branch>`` (loose and packed) so HAPI can reuse the unsuffixed worktree name."""
+    git_dir = os.path.join(checkout_path(repo), ".git")
+    if not os.path.lexists(git_dir):
+        return []
+    git_root = confined_root(git_dir)
+    removed = []
+    loose = os.path.join(git_root, "refs", "heads", branch)
+    if os.path.lexists(loose):
+        if os.path.islink(loose) or not os.path.isfile(loose) or not inside(os.path.realpath(loose), git_root):
+            raise PublisherError(HTTPStatus.CONFLICT, "unsafe_path", f"{loose} is not a regular file")
+        os.remove(loose)
+        removed.append(loose)
+    packed = os.path.join(git_root, "packed-refs")
+    if not os.path.lexists(packed):
+        return removed
+    if os.path.islink(packed) or not os.path.isfile(packed):
+        raise PublisherError(HTTPStatus.CONFLICT, "unsafe_path", f"{packed} is not a regular file")
+    with open(packed, encoding="utf-8", newline="") as handle:
+        lines = handle.readlines()
+    kept, dropped, peel = [], False, False
+    for line in lines:
+        if peel and line.startswith("^"):
+            continue  # peeled target of the dropped (annotated) ref
+        match = PACKED_REF_RE.match(line.rstrip("\r\n"))
+        peel = bool(match) and match.group(1) == f"refs/heads/{branch}"
+        if peel:
+            dropped = True
+        else:
+            kept.append(line)
+    if dropped:
+        mode = stat.S_IMODE(os.stat(packed).st_mode)
+        fd, tmp = tempfile.mkstemp(prefix=".packed-refs-", dir=git_root)
+        try:
+            with os.fdopen(fd, "w", encoding="utf-8", newline="") as handle:
+                handle.writelines(kept)
+            os.chmod(tmp, mode)
+            os.replace(tmp, packed)
+        except BaseException:
+            if os.path.lexists(tmp):
+                os.remove(tmp)
+            raise
+        removed.append(f"{packed}:refs/heads/{branch}")
+    return removed
+
+
+def remove_codex_records(codex_ids: list[str]) -> list[str]:
+    """Rollout files (live and archived) of the given Codex sessions, only as regular files under CODEX_HOME."""
+    if not codex_ids or not os.path.isdir(CODEX_HOME):
+        return []
+    root = os.path.realpath(CODEX_HOME)
+    removed = []
+    for codex_id in codex_ids:
+        patterns = (
+            os.path.join(CODEX_HOME, "sessions", "*", "*", "*", f"rollout-*-{codex_id}.jsonl"),
+            os.path.join(CODEX_HOME, "archived_sessions", f"rollout-*-{codex_id}.jsonl"),
+        )
+        for pattern in patterns:
+            for path in sorted(glob.glob(pattern)):
+                real = os.path.realpath(path)
+                if os.path.islink(path) or not os.path.isfile(real) or not inside(real, root):
+                    log.warning("cleanup skipped %s: not a regular file under %s", path, CODEX_HOME)
+                    continue
+                os.remove(real)
+                removed.append(real)
+    return removed
+
+
+def do_cleanup(repo: str, worktree: str | None, branch: str | None, codex_ids: list[str]) -> dict:
+    removed = []
+    try:
+        if worktree is not None:
+            removed += remove_worktree(repo, worktree)
+        if branch is not None:
+            removed += remove_branch(repo, branch)
+        removed += remove_codex_records(codex_ids)
+    except OSError as exc:
+        raise PublisherError(HTTPStatus.INTERNAL_SERVER_ERROR, "cleanup_failed",
+                             f"{exc.filename or ''}: {exc.strerror or exc}") from None
+    log.info("cleaned %s worktree=%s branch=%s codex=%d: removed %d",
+             repo, worktree, branch, len(codex_ids), len(removed))
+    return {"removed": removed}
+
+
 class Handler(BaseHTTPRequestHandler):
     server_version = "issue-agent-publisher"
     sys_version = ""
@@ -285,7 +431,10 @@ class Handler(BaseHTTPRequestHandler):
         if scheme.lower() != "bearer" or not hmac.compare_digest(supplied.strip().encode(), expected.encode()):
             raise PublisherError(HTTPStatus.UNAUTHORIZED, "unauthorized", "missing or invalid bearer token")
 
-    def body(self, fields: dict[str, re.Pattern]) -> dict[str, str]:
+    def body(self, fields: dict[str, re.Pattern], *, nullable: tuple[str, ...] = (),
+             lists: dict[str, re.Pattern] | None = None) -> dict:
+        """Validated JSON body: ``fields`` are strings (None allowed for ``nullable``), ``lists`` string arrays."""
+        lists = lists or {}
         if (self.headers.get("Content-Type") or "").split(";")[0].strip().lower() != "application/json":
             raise PublisherError(HTTPStatus.UNSUPPORTED_MEDIA_TYPE, "invalid_request", "Content-Type must be application/json")
         try:
@@ -300,15 +449,24 @@ class Handler(BaseHTTPRequestHandler):
             raise PublisherError(HTTPStatus.BAD_REQUEST, "invalid_request", "body is not valid JSON") from None
         if not isinstance(data, dict):
             raise PublisherError(HTTPStatus.BAD_REQUEST, "invalid_request", "body must be a JSON object")
-        unknown = sorted(set(data) - set(fields))
+        unknown = sorted(set(data) - set(fields) - set(lists))
         if unknown:
             raise PublisherError(HTTPStatus.BAD_REQUEST, "invalid_request", f"unknown fields: {', '.join(unknown)}")
         values = {}
         for name, pattern in fields.items():
             value = data.get(name)
+            if value is None and name in nullable:
+                values[name] = None
+                continue
             if not isinstance(value, str) or not pattern.fullmatch(value):
                 raise PublisherError(HTTPStatus.BAD_REQUEST, "invalid_request", f"invalid {name}")
             values[name] = value
+        for name, pattern in lists.items():
+            value = data.get(name, [])
+            if (not isinstance(value, list) or len(value) > MAX_CODEX_IDS
+                    or not all(isinstance(item, str) and pattern.fullmatch(item) for item in value)):
+                raise PublisherError(HTTPStatus.BAD_REQUEST, "invalid_request", f"invalid {name}")
+            values[name] = list(dict.fromkeys(value))
         repo = values.get("repo")
         if repo is not None and any(part in (".", "..") or part.endswith(".git") for part in repo.split("/")):
             raise PublisherError(HTTPStatus.BAD_REQUEST, "invalid_request", "invalid repo")
@@ -325,6 +483,12 @@ class Handler(BaseHTTPRequestHandler):
                 args = self.body({"repo": REPO_RE, "branch": BRANCH_RE, "expected_sha": SHA_RE})
                 with repo_lock(args["repo"]):
                     self.reply(HTTPStatus.OK, do_push(args["repo"], args["branch"], args["expected_sha"]))
+            elif self.path == "/cleanup":
+                args = self.body({"repo": REPO_RE, "worktree": WORKTREE_RE, "branch": CLEANUP_BRANCH_RE},
+                                 nullable=("worktree", "branch"), lists={"codex_session_ids": CODEX_ID_RE})
+                with repo_lock(args["repo"]):
+                    self.reply(HTTPStatus.OK, do_cleanup(args["repo"], args["worktree"], args["branch"],
+                                                         args["codex_session_ids"]))
             else:
                 raise PublisherError(HTTPStatus.NOT_FOUND, "not_found", self.path)
         except PublisherError as exc:

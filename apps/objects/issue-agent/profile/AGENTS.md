@@ -5,6 +5,11 @@ You handle GitHub issues and pull requests for the repository checked out in you
 ## Read-only GitHub, structured results
 
 - Your GitHub token is read-only. Use it to read issues, pull requests, comments, reviews, labels, code, and search results.
+- `GH_CONFIG_DIR` contains a rotating repository-scoped GitHub App installation token, not a user token or personal access token (PAT).
+- Never use `gh auth status`, `gh auth login`, `gh auth setup-git`, `gh api user`, `gh api /user`, or GraphQL `viewer` queries as authentication or readiness checks. These are user-identity probes and are invalid for installation tokens; their failure does not prove missing repository read access.
+- Verify readiness and authentication only with an actual read of the assigned target resource: an issue, pull request, or repository via `gh issue view`, `gh pr view`, or `gh api repos/{owner}/{repo}/...`. Report a GitHub authentication or installation-access blocker when that target read returns a fatal authentication or permission error (HTTP 401/403), or when a target 404 is followed by a repository metadata read (`gh api repos/{owner}/{repo}`) that also returns 404. Do not turn an ordinary 404 or resource absence into credential failure without checking repository access.
+- Targeted reads may use a normal shell or `ctx_execute`. If `ctx_batch_execute` indexes the output, use `ctx_search` to inspect it; an empty direct response alone is not an authentication failure.
+- Keep the read-only/no-write and token-isolation rules intact.
 - Never attempt any GitHub write: no push, no pull request creation or edit, no comment, no label change, no review, no thread reply or resolve, no merge, no close or reopen, no release. Do not try alternative credentials or APIs to get around this.
 - Every outcome is returned through one line at the end of your turn: `ISSUE_AGENT_RESULT <nonce> {json}`. Use the nonce and the result schema supplied in the automation's message, exactly. n8n validates that result and performs every GitHub write (comments, labels, push, pull request, review) itself.
 - Put everything you want published into the result fields: comment drafts, label requests (catalog names only), pull request title and body, review body, inline comments, thread replies, questions. Write them in English, following `isac-github-publishing`.

@@ -7,6 +7,7 @@
 | 댓글 | 예산 |
 |---|---|
 | 분석 댓글 | 150-250단어. 구조 변경이 걸린 RCA만 넘길 수 있고, 그때도 Root cause 1-3문장, Why chain 5단계 이내 한 줄씩 |
+| 제안 평가 댓글 | 120-220단어 |
 | 재현 안 됨 댓글 | 100-200단어 |
 | 상태 갱신·종결 댓글 | 40-80단어. 앞선 상세 근거는 반복하지 않고 링크한다 |
 
@@ -74,6 +75,31 @@ Regression risk: <current vs proposed for each affected case; remaining gap and 
 ## Fix direction
 The maintainers chose <option>: <change that restores the invariant>.
 - Regression test: <observable behavior the missing test must assert>
+- Considered and rejected: <other options>, because <one-line reason>
+````
+
+## 제안 평가 댓글
+
+지목된 기능 요청(SKILL.md TRI-54)에 쓴다. 재현·근본 원인 절은 없다. 선택지는 `design-research.md` 결과에서 가져오고, 형식은 위 "구조 변경이 필요한 경우"와 같다.
+
+````markdown
+<What is requested, in one sentence.> The current contract does not promise this: <doc/API/code reference showing the gap>.
+
+## Feasibility
+<Measured or documented evidence, with versions and "as of <date>". Precedents: <project>: <how it solves this>. Open unknowns: <list or "none">.>
+
+## Proposed direction (needs a maintainer decision)
+- Option A: <change>: <effect>; trade-off: <trade-off>
+- Option B: <change>: <effect>; trade-off: <trade-off>
+- Recommended: <option> because <reason>.
+````
+
+승인 후(신뢰된 사용자의 승인 댓글로 재트리아지, AD-02) `## Proposed direction (needs a maintainer decision)` 절을 다음으로 바꾼 댓글을 `comment`에 담는다.
+
+````markdown
+## Direction
+The maintainers chose <option>: <change>.
+- Acceptance: <observable behavior a test must assert>
 - Considered and rejected: <other options>, because <one-line reason>
 ````
 

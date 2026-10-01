@@ -6,6 +6,7 @@
     "machine_id": null
   },
   "repositories": {
-    "isac322/cc-lb": {}
+    "isac322/cc-lb": {"project_owner": "isac322"},
+    "isac322/pillar-csi": {"project_owner": "isac322"}
   }
 }

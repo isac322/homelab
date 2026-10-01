@@ -19,15 +19,19 @@ data:
     proxy:
       remoteurl: https://ghcr.io
 ---
+# Cache volume on pillar-csi. The zvol was created by democratic-csi and
+# imported in place on 2026-10-01, so the cache kept its contents.
 apiVersion: v1
 kind: PersistentVolumeClaim
 metadata:
   name: registry-ghcr-io
   namespace: arc-systems
+  annotations:
+    pillar-csi.bhyoo.com/import-zvol: hot-data/k8s/pvc-d50eedcd-2708-4ea2-88d4-e8419273342b
 spec:
   accessModes:
     - ReadWriteOnce
-  storageClassName: ssd-ha-xfs
+  storageClassName: ssd-ha
   resources:
     requests:
       storage: 50Gi

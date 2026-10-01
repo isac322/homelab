@@ -20,6 +20,7 @@ import time
 import unittest
 import urllib.parse
 from typing import Any
+from unittest.mock import patch
 
 sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
 
@@ -57,6 +58,7 @@ class Fake:
         self.message_mode = "ok"
         self.seq = 0
         self.calls: list[str] = []
+        self.delete_status = 200  # DELETE /api/sessions/<id> answers this instead of deleting when not 200
         # github
         self.gh_token = "ghs-1"
         self.comments: dict[int, list[dict[str, Any]]] = {}
@@ -65,6 +67,7 @@ class Fake:
         self.label_creates: list[dict[str, Any]] = []
         self.comment_posts = 0
         self.issue_writes_fail = False  # POST issue comments/labels answer 502
+        self.label_delete_status = 200  # DELETE issue label answers this instead of removing when not 200
         # (entered, release): the next issue-comment POST signals ``entered`` and waits for ``release``
         self.comment_gate: tuple[threading.Event, threading.Event] | None = None
         self.prs: dict[int, dict[str, Any]] = {}
@@ -73,6 +76,7 @@ class Fake:
         self.reviews: list[dict[str, Any]] = []
         self.review_posts: list[dict[str, Any]] = []
         self.reject_inline = False
+        self.reject_review_commits: set[str] = set()  # commits a force-push dropped from the pull request
         self.review_comments: list[dict[str, Any]] = []
         self.reply_posts: list[tuple[int, dict[str, Any]]] = []
         self.threads: list[dict[str, Any]] = []
@@ -84,16 +88,29 @@ class Fake:
         self.statuses: dict[str, list[dict[str, Any]]] = {}  # sha -> newest first
         self.status_posts: list[tuple[str, dict[str, Any]]] = []
         self.status_fail = False
+        self.checks: dict[str, list[dict[str, Any]]] = {}
+        self.assignees: dict[int, list[str]] = {}
+        self.assignments: list[tuple[int, list[str]]] = []
+        self.pr_state_reads: list[int] = []
+        self.state_read_head: str | None = None  # GraphQL-only head, simulating cross-API propagation
+        self.default_sha = SHA_B
+        self.issue_states: dict[int, dict[str, Any]] = {}  # GET /repos/<repo>/issues/<n>; absent -> 404
         # collaborator permission: login (casefolded) -> permission, anyone else "read"
-        self.permissions: dict[str, str] = {"isac322": "admin"}
+        self.permissions: dict[str, str] = {"isac322": "admin", "maintainer": "write"}
         self.unknown_logins: set[str] = set()  # the permission lookup answers 404
         self.permission_fail = False  # the permission lookup answers 502
         self.permission_calls = 0
+        # repository security advisories (newest last); POSTs answer ``advisory_status`` when not 201
+        self.advisories: list[dict[str, Any]] = []
+        self.advisory_posts: list[dict[str, Any]] = []
+        self.advisory_status = 201
         # publisher
         self.checkouts: list[dict[str, Any]] = []
         self.pushes: list[dict[str, Any]] = []
         self.push_error: str | None = None
         self.branch_heads: dict[str, str] = {}
+        self.cleanups: list[dict[str, Any]] = []
+        self.cleanup_error: str | None = None
         # n8n
         self.n8n_status = 200
         self.n8n_hang = False
@@ -164,8 +181,11 @@ class Fake:
     def add_pr(self, number: int, *, author: str = "isac322", sha: str = SHA_A, body: str = "Fixes #7",
                ref: str = "hapi-issue-7") -> dict[str, Any]:
         pr = {"number": number, "title": "Fix it", "body": body, "state": "open", "draft": False,
-              "user": {"login": author}, "head": {"ref": ref, "sha": sha}, "base": {"ref": "master", "sha": SHA_B},
-              "html_url": f"https://github.com/{REPO}/pull/{number}"}
+              "user": {"login": author},
+              "head": {"ref": ref, "sha": sha, "repo": {"full_name": REPO}},
+              "base": {"ref": "master", "sha": SHA_B, "repo": {"full_name": REPO}},
+              "html_url": f"https://github.com/{REPO}/pull/{number}",
+              "mergeStateStatus": "UNKNOWN", "mergeable": "UNKNOWN", "reviewDecision": None}
         self.prs[number] = pr
         return pr
 
@@ -258,6 +278,11 @@ class Fake:
                 pr["head"]["sha"] = body["expected_sha"]
             self.branch_heads[body["branch"]] = body["expected_sha"]
             return 200, {"sha": body["expected_sha"]}
+        if path == "/cleanup":
+            self.cleanups.append(body)
+            if self.cleanup_error:
+                return 409, {"error": self.cleanup_error}
+            return 200, {"removed": []}
         return 404, {"error": "no route"}
 
     def hub(self, method: str, path: str, query: dict[str, str], body: Any, auth: str) -> tuple[int, Any]:
@@ -290,6 +315,12 @@ class Fake:
         if session is None:
             return 404, {"error": "Session not found"}
         rest = parts[2:]
+        if not rest and method == "DELETE":
+            self.calls.append(f"delete {sid}")
+            if self.delete_status != 200:
+                return self.delete_status, {"error": "boom"}
+            del self.sessions[sid]
+            return 200, {"ok": True}
         if not rest:
             return 200, {"session": session}
         if rest == ["resume"]:
@@ -375,9 +406,29 @@ class Fake:
             if login in self.unknown_logins:
                 return 404, {"message": "Not Found"}
             return 200, {"permission": self.permissions.get(login, "read"), "user": {"login": rest[1]}}
+        if rest == ["security-advisories"]:
+            if method == "GET":
+                return 200, [a for a in self.advisories if a["state"] == query.get("state")]
+            self.advisory_posts.append(body)
+            if self.advisory_status != 201:
+                return self.advisory_status, {"message": "Service Unavailable"}
+            ghsa = f"GHSA-xxxx-xxxx-{len(self.advisories):04d}"
+            advisory = {**body, "ghsa_id": ghsa, "state": "draft",
+                        "html_url": f"https://github.com/{REPO}/security/advisories/{ghsa}"}
+            self.advisories.append(advisory)
+            return 201, advisory
         number = int(rest[1])
+        if rest[0] == "issues" and len(rest) == 2 and method == "GET":
+            state = self.issue_states.get(number)
+            return (200, {"number": number, **state}) if state else (404, {"message": "Not Found"})
         if len(rest) < 3:
             return 404, {"message": "no route"}
+        if rest[2] == "assignees" and method == "POST":
+            names = list(body["assignees"])
+            self.assignments.append((number, names))
+            assigned = self.assignees.setdefault(number, [])
+            assigned.extend(n for n in names if n not in assigned)
+            return 201, {"assignees": [{"login": n} for n in assigned]}
         if rest[2] == "comments" and method == "GET":
             page = int(query.get("page", 1))
             items = self.comments.get(number, [])
@@ -395,6 +446,8 @@ class Fake:
             current.extend(n for n in body["labels"] if n not in current)
             return 200, [{"name": n} for n in current]
         if rest[2] == "labels" and method == "DELETE":
+            if self.label_delete_status != 200:
+                return self.label_delete_status, {"message": "Bad credentials"}
             name = urllib.parse.unquote(rest[3])
             current = self.labels.setdefault(number, [])
             if name not in current:
@@ -428,6 +481,8 @@ class Fake:
             return 200, self.reviews
         if rest[1] == "reviews":
             self.review_posts.append(body)
+            if body.get("commit_id") in self.reject_review_commits:
+                return 422, {"message": "Unprocessable Entity"}
             if self.reject_inline and body.get("comments"):
                 return 422, {"message": "Unprocessable Entity"}
             state = {"APPROVE": "APPROVED", "REQUEST_CHANGES": "CHANGES_REQUESTED", "COMMENT": "COMMENTED"}
@@ -456,6 +511,35 @@ class Fake:
                 if t["id"] == tid:
                     t["isResolved"] = True
             return 200, {"data": {"resolveReviewThread": {"thread": {"id": tid, "isResolved": True}}}}
+        if "mergeStateStatus" in body["query"]:
+            number = body["variables"]["number"]
+            self.pr_state_reads.append(number)
+            pr = self.prs.get(number)
+            if pr is None:
+                return 200, {"data": {"repository": {"pullRequest": None}}}
+            head = self.state_read_head or pr["head"]["sha"]
+            checks = [*self.checks.get(head, []), *[
+                {"__typename": "StatusContext", "context": s["context"], "state": s["state"].upper(),
+                 "description": s.get("description"), "targetUrl": s.get("target_url")}
+                for s in self.statuses.get(head, [])
+            ]]
+            state = {
+                "number": number, "title": pr["title"], "body": pr["body"],
+                "state": pr["state"].upper(), "isDraft": pr["draft"],
+                "headRefName": pr["head"]["ref"], "headRefOid": head,
+                "baseRefName": pr["base"]["ref"], "baseRefOid": pr["base"]["sha"],
+                "mergeable": pr["mergeable"], "mergeStateStatus": pr["mergeStateStatus"],
+                "reviewDecision": pr["reviewDecision"],
+                "commits": {"nodes": [{"commit": {"oid": head, "statusCheckRollup": {
+                    "state": "FAILURE" if any(c.get("state") == "FAILURE" or c.get("conclusion") == "FAILURE"
+                                              for c in checks) else "SUCCESS",
+                    "contexts": {"nodes": checks, "pageInfo": {"hasNextPage": False, "endCursor": None}},
+                }}}]},
+            }
+            return 200, {"data": {"repository": {
+                "defaultBranchRef": {"name": "master", "target": {"oid": self.default_sha}},
+                "pullRequest": state,
+            }}}
         return 200, {"data": {"repository": {"pullRequest": {
             "reviewThreads": {"pageInfo": {"hasNextPage": False, "endCursor": None}, "nodes": self.threads},
         }}}}
@@ -469,7 +553,7 @@ def repository(repo: str) -> dict:
     return {"full_name": repo, "default_branch": "master"}
 
 
-def issue_payload(number: int = 7, *, login: str = "isac322", repo: str = REPO, sender_type: str = "User") -> dict:
+def issue_payload(number: int = 7, *, login: str = "maintainer", repo: str = REPO, sender_type: str = "User") -> dict:
     return {
         "action": "opened",
         "repository": repository(repo),
@@ -513,7 +597,8 @@ def pr_payload(number: int = 12, *, sha: str = SHA_A, author: str = "isac322", s
         "repository": repository(REPO),
         "sender": {"login": sender, "type": sender_type},
         "pull_request": {"number": number, "title": "Fix it", "body": "Fixes #7", "draft": draft,
-                         "user": {"login": author}, "head": {"ref": "hapi-issue-7", "sha": sha}},
+                         "user": {"login": author},
+                         "head": {"ref": "hapi-issue-7", "sha": sha, "repo": {"full_name": REPO}}},
     }
 
 
@@ -522,6 +607,18 @@ TRIAGE_OK: dict[str, Any] = {
     "labels": {"add": ["bug", "repro:reproduced"], "remove": []},
     "comment": "Analysis.\n\n1. Which   version do you run?", "next_action": "await_info",
     "implementation_brief": None, "questions": ["Which version do you run?"], "summary": "asked", "blockers": [],
+    "security_advisory": None,
+}
+ADVISORY: dict[str, Any] = {
+    "summary": "Webhook secret leaks through the debug endpoint",
+    "description": "Impact: anyone can read the webhook secret via /debug (bridge.py:42).",
+    "severity": "high", "cwe_ids": ["CWE-200"],
+    "vulnerabilities": [{"ecosystem": "other", "package": "homelab", "vulnerable_version_range": None,
+                         "patched_versions": None}],
+}
+TRIAGE_ADVISORY: dict[str, Any] = {
+    **TRIAGE_OK, "labels": {"add": [], "remove": []}, "comment": None, "next_action": "none", "questions": [],
+    "summary": "reported privately", "security_advisory": ADVISORY,
 }
 IMPLEMENT_OK: dict[str, Any] = {
     "status": "ready", "head_sha": SHA_A, "pr": {"title": "Fix it", "body": "Fixes #7"}, "issue_comment": None,
@@ -540,6 +637,10 @@ def variant(base: dict[str, Any], **changes: Any) -> dict[str, Any]:
 
 class BridgeTestCase(unittest.TestCase):
     def setUp(self) -> None:
+        # Reviews start as soon as they are queued unless a test exercises the settle window itself.
+        settle = patch.object(bridge, "REVIEW_SETTLE_SECONDS", 0.0)
+        settle.start()
+        self.addCleanup(settle.stop)
         self.tmp = tempfile.TemporaryDirectory()
         d = self.tmp.name
         self.fake = Fake()
@@ -690,6 +791,23 @@ class IntakeTests(BridgeTestCase):
         begun = self.op("begin", "c1", attempt=1)
         self.assertEqual((begun["status"], begun["mode_hint"], begun["subject"]), ("started", "triage", "issue"))
 
+    def test_the_owners_own_issues_wait_for_a_mention(self) -> None:
+        # The repository owner (isac322 for isac322/*) opens issues as notes for their own tooling.
+        self.assertEqual(self.deliver(issue_payload(7, login="isac322"), delivery="d1").outcome,
+                         "owner_issue_ignored")
+        self.assertEqual(self.deliver(issue_payload(8, login="ISAC322"), delivery="d2").outcome,
+                         "owner_issue_ignored")
+        self.assertEqual(self.events(), [])
+        self.assertEqual(self.deliver(edit_payload(7, login="isac322"), event="issues", delivery="e1").outcome,
+                         "edit_ignored")
+        self.assertEqual(self.deliver(comment_payload(7, 1, body="later note"), event="issue_comment",
+                                      delivery="c1").outcome, "issue_comment_ignored")
+        self.assertEqual(self.deliver(comment_payload(7, 2, body="@bulgasaribot please take this"),
+                                      event="issue_comment", delivery="c2").outcome, "queued")
+        self.assertEqual(self.dispatcher.tick(), "dispatched")
+        begun = self.op("begin", "c2", attempt=1)
+        self.assertEqual((begun["status"], begun["mode_hint"]), ("started", "triage"))
+
     def test_issue_comments_need_a_trusted_mention_unless_the_issue_is_open_for_discussion(self) -> None:
         cases = [
             (comment_payload(7, 1, body="also X"), "issue_comment_ignored"),
@@ -701,13 +819,35 @@ class IntakeTests(BridgeTestCase):
             self.assertEqual(self.deliver(payload, event="issue_comment", delivery=f"c{i}").outcome, outcome, i)
         self.assertEqual(self.store.event("c3")["trusted"], 1)
         open_labels = ("bug", bridge.OPEN_DISCUSSION_LABEL)
-        calls = self.fake.permission_calls
         plain = comment_payload(8, 5, body="here is my log", login="newcomer", labels=open_labels)
         self.assertEqual(self.deliver(plain, event="issue_comment", delivery="c5").outcome, "queued")
-        self.assertEqual(self.fake.permission_calls, calls)  # no trust lookup on an open-discussion issue
         self.assertEqual((self.store.event("c5")["kind"], self.store.event("c5")["trusted"]), ("issue_comment", 0))
+        approval = comment_payload(8, 7, body="Go with option B", login="maintainer", labels=open_labels)
+        self.assertEqual(self.deliver(approval, event="issue_comment", delivery="c7").outcome, "queued")
+        self.assertEqual(self.store.event("c7")["trusted"], 1)
         bot = comment_payload(8, 6, login="helper[bot]", sender_type="Bot", labels=open_labels)
         self.assertEqual(self.deliver(bot, event="issue_comment", delivery="c6").outcome, "bot_sender")
+
+    def test_open_discussion_comment_is_queued_untrusted_when_the_permission_lookup_fails(self) -> None:
+        self.fake.permission_fail = True
+        open_labels = ("bug", bridge.OPEN_DISCUSSION_LABEL)
+        approval = comment_payload(8, 5, body="Go with option B", login="maintainer", labels=open_labels)
+        result = self.deliver(approval, event="issue_comment", delivery="c5")
+        self.assertEqual((result.status, result.outcome), (202, "queued"))
+        self.assertEqual(self.store.event("c5")["trusted"], 0)
+        self.assertEqual(self.store.query("SELECT * FROM collaborators"), [])  # the failure is not cached
+
+    def test_begin_exposes_whether_the_actor_is_trusted(self) -> None:
+        open_labels = ("bug", bridge.OPEN_DISCUSSION_LABEL)
+        self.deliver(comment_payload(8, 5, login="newcomer", labels=open_labels), event="issue_comment", delivery="c5")
+        self.deliver(comment_payload(9, 6, login="maintainer", labels=open_labels), event="issue_comment",
+                     delivery="c6")
+        self.assertEqual(self.dispatcher.tick(), "dispatched")
+        self.assertEqual(self.dispatcher.tick(), "dispatched")
+        self.assertIs(self.op("begin", "c5", attempt=1)["event"]["trusted"], False)
+        self.assertIs(self.op("begin", "c6", attempt=1)["event"]["trusted"], True)
+        self.store.update_event("c6", trusted=None)  # recorded before the column existed
+        self.assertIs(self.op("begin", "c6", attempt=2)["event"]["trusted"], False)
 
     def test_permission_verdicts_are_cached_for_the_ttl_and_unknown_logins_are_untrusted(self) -> None:
         self.assertEqual(self.deliver(comment_payload(7, 1), event="issue_comment", delivery="c1").outcome, "queued")
@@ -793,22 +933,24 @@ class IntakeTests(BridgeTestCase):
     def test_pull_request_events_that_must_not_queue(self) -> None:
         cases = [
             (pr_payload(draft=True), "draft_ignored"),
-            (pr_payload(action="synchronize"), "action_ignored"),
+            (pr_payload(action="synchronize"), "reconcile_pending"),
         ]
         for i, (payload, outcome) in enumerate(cases):
             self.assertEqual(self.deliver(payload, event="pull_request", delivery=f"p{i}").outcome, outcome)
         self.assertEqual(self.events(), [])
 
-    def test_pr_comment_queues_review_only_for_the_review_command_by_the_author_or_a_collaborator(self) -> None:
-        ignored = comment_payload(12, 200, body="lgtm", on_pr=True)
-        self.assertEqual(self.deliver(ignored, event="issue_comment", delivery="c0").outcome,
-                         "pull_request_comment_ignored")
-        stranger = comment_payload(12, 201, body="@bulgasaribot review", on_pr=True, login="stranger")
+    def test_pr_comment_queues_review_for_a_bot_mention_by_the_author_or_a_collaborator(self) -> None:
+        for i, body in enumerate(("lgtm", "ping @bulgasaribotx", "mail isac@bulgasaribot.dev")):
+            ignored = comment_payload(12, 200 + i, body=body, on_pr=True)
+            self.assertEqual(self.deliver(ignored, event="issue_comment", delivery=f"c0{i}").outcome,
+                             "pull_request_comment_ignored")
+        stranger = comment_payload(12, 204, body="@bulgasaribot review", on_pr=True, login="stranger")
         self.assertEqual(self.deliver(stranger, event="issue_comment", delivery="c1").outcome, "actor_not_allowed")
-        command = comment_payload(12, 202, body="  @BulgasariBot Review please", on_pr=True, issue_user="outside-dev")
+        command = comment_payload(12, 205, body="Fixed the tests.\n\n@BulgasariBot", on_pr=True,
+                                  issue_user="outside-dev")
         self.assertEqual(self.deliver(command, event="issue_comment", delivery="c2").outcome, "queued")
         row = self.store.event("c2")
-        self.assertEqual((row["kind"], row["semantic_key"], row["trusted"]), ("pr_review", f"{REPO}#comment:202", 1))
+        self.assertEqual((row["kind"], row["semantic_key"], row["trusted"]), ("pr_review", f"{REPO}#comment:205", 1))
 
     def test_pr_author_may_request_a_review_without_being_a_collaborator(self) -> None:
         # "outside-dev" opened the PR but has only read access: the author may still re-request a review.
@@ -823,7 +965,7 @@ class IntakeTests(BridgeTestCase):
         self.assertEqual(self.deliver(issue_comment, event="issue_comment", delivery="c2").outcome,
                          "actor_not_allowed")
 
-    def test_reviewer_app_command_queues_review_and_the_issue_apps_no_longer_does(self) -> None:
+    def test_reviewer_app_command_queues_review_and_issue_app_requests_repair(self) -> None:
         mention = comment_payload(12, 300, body="@haechibot review", on_pr=True)
         self.assertEqual(self.deliver(mention, event="issue_comment", delivery="c0").outcome,
                          "pull_request_comment_ignored")  # single App: only @bulgasaribot is a command
@@ -833,9 +975,10 @@ class IntakeTests(BridgeTestCase):
         by_stranger = comment_payload(12, 301, body="@haechibot review", on_pr=True, login="stranger")
         self.assertEqual(self.deliver(by_stranger, event="issue_comment", delivery="c2").outcome,
                          "actor_not_allowed")
+        self.fake.add_pr(12)
         issue_bot = comment_payload(12, 302, body="@bulgasaribot review", on_pr=True)
         self.assertEqual(self.deliver(issue_bot, event="issue_comment", delivery="c3").outcome,
-                         "pull_request_comment_ignored")
+                         "reconcile_pending")
         by_author = comment_payload(12, 303, body="@haechibot review", on_pr=True,
                                     login="outside-dev", issue_user="outside-dev")
         self.assertEqual(self.deliver(by_author, event="issue_comment", delivery="c4").outcome, "queued")
@@ -849,6 +992,703 @@ class IntakeTests(BridgeTestCase):
                       {"GITHUB_REVIEW_TOKEN_DIR": "/run/x", "GITHUB_REVIEW_BOT_LOGIN": "REPLACE_REVIEWER_LOGIN"}):
             with self.assertRaises(bridge.ConfigError):
                 bridge.Config.from_env({**self.env, **extra})
+
+
+class PrRepairTests(BridgeTestCase):
+    def managed_pr(self, *, merge_state: str = "BEHIND", mergeable: str = "MERGEABLE",
+                   owner: str | None = "isac322") -> dict:
+        self.write_registry({"defaults": {"agent": "codex"}, "repositories": {REPO: {"project_owner": owner}}})
+        pr = self.fake.add_pr(144, author=BOT, ref="hapi-issue-141", body="Fixes #141")
+        pr.update(mergeStateStatus=merge_state, mergeable=mergeable)
+        self.store.track_pr(REPO, 144, 141, SHA_A)
+        return pr
+
+    def repair_delivery(self) -> str:
+        rows = self.store.query("SELECT delivery_id FROM events WHERE kind = 'pr_repair' ORDER BY seq DESC")
+        self.assertEqual(len(rows), 1)
+        return rows[0]["delivery_id"]
+
+    def test_first_blocker_starts_one_issue_worktree_followup_with_all_findings(self) -> None:
+        self.managed_pr()
+        self.fake.checks[SHA_A] = [{"__typename": "CheckRun", "name": "repository-chosen-build",
+                                  "status": "COMPLETED", "conclusion": "FAILURE", "detailsUrl": "https://ci/1"}]
+        self.fake.reviews = [{"id": 1, "state": "CHANGES_REQUESTED", "commit_id": SHA_A,
+                             "user": {"login": "maintainer"}, "body": "Fix the boundary."}]
+        self.fake.threads = [{"id": "thread-1", "isResolved": False, "isOutdated": False,
+                             "path": "a.py", "line": 3, "comments": {"nodes": [
+                                 {"databaseId": 5, "body": "Boundary", "author": {"login": "maintainer"}},
+                             ]}}]
+        self.assertEqual(self.dispatcher.tick(), "dispatched")
+        delivery = self.repair_delivery()
+        begun = self.op("begin", delivery, attempt=1)
+        self.assertEqual(begun["status"], "started")
+        self.assertEqual(begun["mode_hint"], "followup")
+        self.assertEqual((begun["event"]["issue_number"], begun["event"]["pr_number"]), (141, 144))
+        findings = begun["repair"]["findings"]
+        self.assertTrue(findings["behind"])
+        self.assertEqual(findings["failed_checks"][0]["name"], "repository-chosen-build")
+        self.assertEqual(findings["change_requests"][0]["body"], "Fix the boundary.")
+        self.assertEqual(findings["review_threads"][0]["comments"][0]["body"], "Boundary")
+        session = self.op("ensure_session", delivery)
+        self.assertTrue(session["ok"])
+        self.assertEqual(self.fake.spawns[-1]["worktreeName"], "issue-141")
+        self.assertEqual(session["branch"], "hapi-issue-141")
+        self.assertEqual(self.store.pr_state(REPO, 144)["active_delivery"], delivery)
+
+    def test_repair_context_is_bounded_for_large_review_history(self) -> None:
+        self.managed_pr()
+        self.fake.checks[SHA_A] = [{"name": "build", "status": "COMPLETED", "conclusion": "FAILURE"}]
+        self.fake.reviews = [{"id": 1, "state": "CHANGES_REQUESTED", "commit_id": SHA_A,
+                              "user": {"login": "maintainer"}, "body": "Fix the boundary."}]
+        self.fake.threads = [{
+            "id": f"thread-{index}", "isResolved": False, "isOutdated": False,
+            "path": "a.py", "line": index, "comments": {"nodes": [
+                {"databaseId": index, "body": "x" * 4000, "author": {"login": "maintainer"}}
+                for _ in range(10)
+            ]},
+        } for index in range(80)]
+        self.assertEqual(self.dispatcher.tick(), "dispatched")
+        delivery = self.repair_delivery()
+        self.assertEqual(self.op("begin", delivery, attempt=1)["status"], "started")
+        self.assertTrue(self.op("ensure_session", delivery)["ok"])
+        sent = self.op("session_send", delivery, mode="followup", instructions="Repair the supported blockers.")
+        self.assertTrue(sent["ok"], sent)
+        text = self.fake.message_posts[0]["text"]
+        context = json.loads(text.split(" CONTEXT_JSON\n", 1)[1].rsplit("\n", 1)[0])
+        self.assertLessEqual(len(json.dumps(context, ensure_ascii=False).encode()), bridge.MAX_CONTEXT_BYTES)
+        self.assertEqual(context["repair"]["state"]["head_sha"], SHA_A)
+        self.assertEqual(context["repair"]["findings"]["failed_checks"][0]["name"], "build")
+        self.assertLessEqual(len(context["repair"]["findings"]["review_threads"]), 32)
+
+    def test_unblocked_issue_attention_does_not_stall_pr_repair(self) -> None:
+        self.managed_pr()
+        self.started(141, delivery="issue-141")
+        self.assertTrue(self.op("fail", "issue-141", detail="operator review needed")["ok"])
+        self.assertEqual(self.store.event("issue-141")["state"], "needs_attention")
+        self.assertTrue(self.op("unblock_issue", repo=REPO, issue_number=141)["ok"])
+        self.assertEqual(self.bridge.reconcile_pr(REPO, 144), "queued")
+        self.assertEqual(self.repair_delivery(), self.store.pr_state(REPO, 144)["active_delivery"])
+
+    def test_no_change_before_first_send_clears_repair_fingerprint(self) -> None:
+        pr = self.managed_pr()
+        self.assertEqual(self.bridge.reconcile_pr(REPO, 144), "queued")
+        delivery = self.repair_delivery()
+        self.assertEqual(self.dispatcher.tick(), "dispatched")
+        pr["draft"] = True
+        self.assertEqual(self.op("begin", delivery, attempt=1)["status"], "terminal")
+        self.assertIsNone(self.store.pr_state(REPO, 144)["attempted_key"])
+        pr["draft"] = False
+        self.assertEqual(self.bridge.reconcile_pr(REPO, 144), "queued")
+        deliveries = [row["delivery_id"] for row in self.store.query(
+            "SELECT delivery_id FROM events WHERE kind = 'pr_repair' ORDER BY seq")]
+        self.assertEqual(len(deliveries), 2)
+        self.assertNotEqual(deliveries[-1], delivery)
+
+    def test_signals_during_repair_stay_durable_and_push_refreshes_new_head(self) -> None:
+        pr = self.managed_pr()
+        self.assertEqual(self.dispatcher.tick(), "dispatched")
+        delivery = self.repair_delivery()
+        self.assertEqual(self.op("begin", delivery, attempt=1)["status"], "started")
+        self.assertTrue(self.op("ensure_session", delivery)["ok"])
+        before = self.store.pr_state(REPO, 144)["revision"]
+        signal = pr_payload(144, action="synchronize")
+        signal["pull_request"].update(head=pr["head"], body="Fixes #141")
+        self.assertEqual(self.deliver(signal, event="pull_request", delivery="new-signal").outcome,
+                         "reconcile_pending")
+        self.assertEqual(self.bridge.reconcile_pr(REPO, 144), "active")
+        self.assertEqual(self.dispatcher.tick(), "busy")
+        reopened = bridge.Store(self.config.state_path)
+        self.assertEqual(reopened.pr_state(REPO, 144)["active_delivery"], delivery)
+        self.assertEqual(reopened.pr_state(REPO, 144)["dirty"], 1)
+        self.assertGreater(reopened.pr_state(REPO, 144)["revision"], before)
+        pr.update(mergeStateStatus="UNKNOWN", mergeable="UNKNOWN")
+        pushed = self.op("git.push", delivery, head_sha=SHA_B)
+        self.assertTrue(pushed["ok"])
+        reads = len(self.fake.pr_state_reads)
+        self.assertTrue(self.op("finish", delivery, outcome="implemented")["ok"])
+        self.assertGreater(len(self.fake.pr_state_reads), reads)
+        self.assertIsNone(self.store.pr_state(REPO, 144)["active_delivery"])
+        self.assertEqual(self.store.pr_state(REPO, 144)["dirty"], 1)
+        self.assertEqual(self.fake.assignments, [])
+        self.assertEqual(len(self.store.query("SELECT 1 FROM events WHERE kind = 'pr_repair'")), 1)
+
+    def test_moving_remote_head_does_not_push_or_overwrite_it(self) -> None:
+        pr = self.managed_pr()
+        self.dispatcher.tick()
+        delivery = self.repair_delivery()
+        self.op("begin", delivery, attempt=1)
+        self.op("ensure_session", delivery)
+        pr["head"]["sha"] = SHA_B
+        pr.update(mergeStateStatus="UNKNOWN", mergeable="UNKNOWN")
+        response = self.op("git.push", delivery, head_sha="c" * 40)
+        self.assertTrue(response["ok"])
+        self.assertTrue(response["superseded"])
+        self.assertEqual(self.fake.pushes, [])
+        self.assertEqual(pr["head"]["sha"], SHA_B)
+        self.op("finish", delivery, outcome="no_change")
+        self.assertEqual(self.store.pr_state(REPO, 144)["dirty"], 1)
+
+    def test_concurrent_reconciliation_reserves_only_one_repair(self) -> None:
+        self.managed_pr()
+        barrier = threading.Barrier(3)
+        outcomes: list[str] = []
+
+        def reconcile() -> None:
+            barrier.wait()
+            outcomes.append(self.bridge.reconcile_pr(REPO, 144))
+
+        threads = [threading.Thread(target=reconcile) for _ in range(2)]
+        for thread in threads:
+            thread.start()
+        barrier.wait()
+        for thread in threads:
+            thread.join(3)
+            self.assertFalse(thread.is_alive())
+        self.assertEqual(outcomes.count("queued"), 1)
+        self.assertTrue(all(o in ("queued", "busy", "active") for o in outcomes))
+        delivery = self.repair_delivery()
+        self.assertEqual(self.store.pr_state(REPO, 144)["active_delivery"], delivery)
+
+    def test_unknown_or_cross_api_head_mismatch_neither_repairs_nor_notifies(self) -> None:
+        pr = self.managed_pr(merge_state="UNKNOWN", mergeable="UNKNOWN")
+        self.assertEqual(self.bridge.reconcile_pr(REPO, 144), "waiting")
+        pr.update(mergeStateStatus="CLEAN", mergeable="MERGEABLE")
+        self.fake.state_read_head = SHA_B
+        self.assertEqual(self.bridge.reconcile_pr(REPO, 144), "waiting")
+        self.assertEqual(self.events(), [])
+        self.assertEqual(self.fake.assignments, [])
+        self.fake.state_read_head = None
+        self.assertEqual(self.bridge.reconcile_pr(REPO, 144), "ready")
+        self.assertEqual(self.fake.assignees[144], ["isac322"])
+
+    def test_github_policy_controls_readiness_and_notifies_once_per_head_across_restart(self) -> None:
+        pr = self.managed_pr(merge_state="UNSTABLE")
+        self.fake.checks[SHA_A] = [{"name": "optional-check", "status": "COMPLETED", "conclusion": "FAILURE"}]
+        self.fake.reviews = [{"state": "CHANGES_REQUESTED", "commit_id": SHA_A,
+                             "user": {"login": "optional-reviewer"}, "body": "Optional suggestion."}]
+        self.assertEqual(self.bridge.reconcile_pr(REPO, 144), "ready")
+        comments = self.fake.comments[144]
+        self.assertEqual(len(comments), 1)
+        self.assertIn("@isac322", comments[0]["body"])
+        self.assertIn(f"pr-ready:144:{SHA_A}", comments[0]["body"])
+        self.assertEqual(self.events(), [])
+        self.store = bridge.Store(self.config.state_path)
+        self.bridge = bridge.make_bridge(self.config, self.store)
+        self.assertEqual(self.bridge.reconcile_pr(REPO, 144), "ready")
+        self.assertEqual(len(self.fake.comments[144]), 1)
+        # If the SQLite acknowledgement is lost, the GitHub marker still prevents a second mention.
+        with self.store.tx() as conn:
+            conn.execute("UPDATE prs SET notified_head = NULL WHERE repo = ? AND pr_number = 144", (REPO,))
+        self.bridge.reconcile_pr(REPO, 144)
+        self.assertEqual(len(self.fake.comments[144]), 1)
+        pr["head"]["sha"] = SHA_B
+        self.bridge.reconcile_pr(REPO, 144)
+        self.assertEqual(len(self.fake.comments[144]), 2)
+        self.assertIn(f"pr-ready:144:{SHA_B}", self.fake.comments[144][-1]["body"])
+        self.assertFalse(any(method == "PUT" and path.endswith("/merge") for _, method, path in self.fake.gh_calls))
+
+    def test_missing_owner_never_assigns_or_mentions(self) -> None:
+        self.managed_pr(merge_state="CLEAN", owner=None)
+        self.assertEqual(self.bridge.reconcile_pr(REPO, 144), "ready")
+        self.assertEqual(self.fake.assignments, [])
+        self.assertEqual(self.fake.comments, {})
+
+    def test_head_change_during_assignment_suppresses_the_mention(self) -> None:
+        pr = self.managed_pr(merge_state="CLEAN")
+        original = self.fake.github
+
+        def move_head(method: str, path: str, query: dict, body: Any) -> tuple[int, Any]:
+            result = original(method, path, query, body)
+            if method == "POST" and path.endswith("/assignees"):
+                pr["head"]["sha"] = SHA_B
+            return result
+
+        self.fake.github = move_head
+        self.bridge.reconcile_pr(REPO, 144)
+        self.assertEqual(self.fake.assignees[144], ["isac322"])
+        self.assertEqual(self.fake.comments, {})
+        self.assertIsNone(self.store.pr_state(REPO, 144)["notified_head"])
+
+    def test_fork_named_like_an_issue_branch_is_not_managed(self) -> None:
+        self.managed_pr()
+        fork = pr_payload(145, action="synchronize")
+        fork["pull_request"]["head"] = {"ref": "hapi-issue-141", "sha": SHA_B,
+                                        "repo": {"full_name": "outside/fork"}}
+        self.assertEqual(self.deliver(fork, event="pull_request", delivery="fork-signal").outcome,
+                         "reconcile_pending")
+        self.assertIsNone(self.store.pr_state(REPO, 145))
+        self.assertEqual(self.store.issue(REPO, 141)["pr_number"], 144)
+
+    def test_repeating_evidence_after_ready_transition_has_a_dispatchable_lease(self) -> None:
+        pr = self.managed_pr(merge_state="BLOCKED")
+        self.fake.checks[SHA_A] = [{"name": "optional-check", "status": "COMPLETED", "conclusion": "FAILURE"}]
+        self.dispatcher.tick()
+        first = self.repair_delivery()
+        self.op("begin", first, attempt=1)
+        self.op("finish", first, outcome="no_change")
+        self.assertEqual(self.bridge.reconcile_pr(REPO, 144), "unchanged")
+        pr["mergeStateStatus"] = "UNSTABLE"
+        self.assertEqual(self.bridge.reconcile_pr(REPO, 144), "ready")
+        pr["mergeStateStatus"] = "BLOCKED"
+        self.assertEqual(self.bridge.reconcile_pr(REPO, 144), "queued")
+        row = self.store.pr_state(REPO, 144)
+        self.assertNotEqual(row["active_delivery"], first)
+        self.assertEqual(self.store.event(row["active_delivery"])["state"], "accepted")
+        self.assertEqual(self.dispatcher.tick(), "dispatched")
+        self.assertEqual(self.op("begin", row["active_delivery"], attempt=1)["status"], "started")
+
+    def test_periodic_fallback_reviews_new_heads_without_duplicate_review_sessions(self) -> None:
+        self.use_reviewer_app()
+        pr = self.managed_pr(merge_state="UNKNOWN", mergeable="UNKNOWN")
+        self.bridge.reconcile_pr(REPO, 144)
+        self.bridge.reconcile_pr(REPO, 144)
+        reviews = self.store.query("SELECT * FROM events WHERE kind = 'pr_review'")
+        self.assertEqual([(r["issue_number"], r["head_sha"]) for r in reviews], [(144, SHA_A)])
+        self.store.update_event(reviews[0]["delivery_id"], state="completed", outcome="reviewed")
+        pr["head"]["sha"] = SHA_B
+        self.bridge.reconcile_pr(REPO, 144)
+        reviews = self.store.query("SELECT * FROM events WHERE kind = 'pr_review' ORDER BY seq")
+        self.assertEqual([r["head_sha"] for r in reviews], [SHA_A, SHA_B])
+        signal = pr_payload(144, action="synchronize", sha=SHA_B)
+        signal["pull_request"]["head"]["ref"] = "hapi-issue-141"
+        self.assertEqual(self.deliver(signal, event="pull_request", delivery="review-sync").outcome, "duplicate")
+        self.assertEqual(len(self.store.query("SELECT 1 FROM events WHERE kind = 'pr_review'")), 2)
+
+    def test_synchronize_records_new_head_for_status_signals(self) -> None:
+        self.managed_pr()
+        signal = pr_payload(144, action="synchronize", sha=SHA_B)
+        signal["pull_request"]["head"]["ref"] = "hapi-issue-141"
+        self.assertEqual(self.deliver(signal, event="pull_request", delivery="sync-head").outcome,
+                         "reconcile_pending")
+        row = self.store.pr_state(REPO, 144)
+        self.assertEqual(row["head_sha"], SHA_B)
+        revision = row["revision"]
+        status = {
+            "repository": repository(REPO),
+            "sender": {"login": BOT, "type": "Bot"},
+            "sha": SHA_B,
+            "state": "failure",
+        }
+        self.assertEqual(self.deliver(status, event="status", delivery="status-head").outcome,
+                         "reconcile_pending")
+        self.assertGreater(self.store.pr_state(REPO, 144)["revision"], revision)
+
+    def test_check_status_review_and_default_branch_push_signals_coalesce(self) -> None:
+        pr = self.managed_pr()
+        signals = [
+            ("check_run", {"action": "completed", "check_run": {
+                "head_sha": SHA_A, "pull_requests": [{"number": 144}],
+            }}),
+            ("status", {"sha": SHA_A, "state": "failure"}),
+            ("pull_request_review", {"action": "submitted", "pull_request": pr,
+                                     "review": {"state": "CHANGES_REQUESTED"}}),
+            ("push", {"ref": "refs/heads/master"}),
+        ]
+        revision = self.store.pr_state(REPO, 144)["revision"]
+        for index, (event, data) in enumerate(signals):
+            payload = {**data, "repository": repository(REPO), "sender": {"login": BOT, "type": "Bot"}}
+            self.assertEqual(self.deliver(payload, event=event, delivery=f"blocker-{index}").outcome,
+                             "reconcile_pending")
+        self.assertEqual(self.events(), [])
+        self.assertGreater(self.store.pr_state(REPO, 144)["revision"], revision)
+        self.assertEqual(self.dispatcher.tick(), "dispatched")
+        delivery = self.repair_delivery()
+        self.assertEqual(self.store.pr_state(REPO, 144)["active_delivery"], delivery)
+
+    def test_explicit_pr_repair_request_is_not_lost_when_github_is_already_ready(self) -> None:
+        self.use_reviewer_app()
+        self.managed_pr(merge_state="CLEAN")
+        comment = comment_payload(144, 901, on_pr=True, body="@bulgasaribot also fix the boundary")
+        self.assertEqual(self.deliver(comment, event="issue_comment", delivery="manual-repair").outcome,
+                         "reconcile_pending")
+        self.assertEqual(self.dispatcher.tick(), "dispatched")
+        delivery = self.repair_delivery()
+        begun = self.op("begin", delivery, attempt=1)
+        self.assertEqual(begun["status"], "started")
+        self.assertEqual(begun["stages"]["repair_input"]["manual"]["body"], comment["comment"]["body"])
+        self.assertEqual(self.fake.assignments, [])
+        self.assertEqual(self.fake.comments, {})
+
+    def test_explicit_repair_on_an_untracked_pr_recovers_the_original_issue_branch(self) -> None:
+        self.use_reviewer_app()
+        self.fake.add_pr(144, author=BOT, ref="hapi-issue-141", body="Fixes #141")
+        request = comment_payload(144, 902, on_pr=True, body="@bulgasaribot fix the failure")
+        self.assertEqual(self.deliver(request, event="issue_comment", delivery="recover-pr").outcome,
+                         "reconcile_pending")
+        self.assertEqual(self.store.pr_state(REPO, 144)["issue_number"], 141)
+        self.assertEqual(self.store.issue(REPO, 141)["branch"], "hapi-issue-141")
+        self.assertEqual(self.store.issue(REPO, 141)["pr_number"], 144)
+        self.assertEqual(json.loads(self.store.pr_state(REPO, 144)["latest_signal"])["body"],
+                         request["comment"]["body"])
+
+    def test_explicit_repair_on_an_unmanaged_pr_is_reported_without_creating_state(self) -> None:
+        self.use_reviewer_app()
+        self.fake.add_pr(144, ref="human-branch")
+        request = comment_payload(144, 903, on_pr=True, body="@bulgasaribot fix the failure")
+        self.assertEqual(self.deliver(request, event="issue_comment", delivery="unmanaged-pr").outcome,
+                         "pull_request_not_managed")
+        self.assertIsNone(self.store.pr_state(REPO, 144))
+        self.assertEqual(self.events(), [])
+
+    def test_new_head_review_signals_cannot_start_a_session_while_repair_is_active(self) -> None:
+        self.use_reviewer_app()
+        pr = self.managed_pr()
+        self.assertEqual(self.dispatcher.tick(), "dispatched")
+        delivery = self.repair_delivery()
+        self.assertEqual(self.fake.dispatched[0][1]["kind"], "pr_repair")
+        self.assertEqual(self.op("begin", delivery, attempt=1)["status"], "started")
+        self.op("ensure_session", delivery)
+        pr["head"]["sha"] = SHA_B
+        signal = pr_payload(144, action="synchronize", sha=SHA_B)
+        signal["pull_request"]["head"]["ref"] = "hapi-issue-141"
+        self.assertEqual(self.deliver(signal, event="pull_request", delivery="during-repair").outcome, "queued")
+        self.assertEqual(self.dispatcher.tick(), "busy")
+        self.assertEqual(len(self.fake.dispatched), 1)
+        self.assertEqual(len(self.fake.spawns), 1)
+        self.assertEqual(self.store.pr_state(REPO, 144)["active_delivery"], delivery)
+        self.assertEqual(self.store.pr_state(REPO, 144)["dirty"], 1)
+
+    def test_retryable_begin_reads_retry_the_same_delivery_without_starting_a_session(self) -> None:
+        self.managed_pr()
+        self.assertEqual(self.dispatcher.tick(), "dispatched")
+        delivery = self.repair_delivery()
+        failures = [
+            ("_pr_state", bridge.OpError("PR state unavailable", retryable=True)),
+            ("_pr_findings", bridge.TransportError("review read timed out", not_sent=False)),
+        ]
+        for attempt, (method, error) in enumerate(failures, 1):
+            with self.subTest(method=method, error=type(error).__name__):
+                now = time.time()
+                with patch("bridge.time.time", return_value=now), \
+                        patch.object(self.bridge, method, side_effect=error):
+                    result = self.op("begin", delivery, attempt=attempt)
+                self.assertEqual((result["ok"], result["status"]), (True, "retry"), result)
+                event = self.store.event(delivery)
+                self.assertEqual(event["state"], "accepted")
+                self.assertNotIn("started", json.loads(event["stages"]))
+                self.assertNotIn("started", result["stages"])
+                self.assertIsNone(event["execution_id"])
+                self.assertIsNone(event["heartbeat_at"])
+                self.assertGreater(event["next_attempt_at"], now)
+                self.assertEqual(self.store.pr_state(REPO, 144)["active_delivery"], delivery)
+                issue = self.store.issue(REPO, 141)
+                self.assertEqual((issue["blocked"], issue["session_state"], issue["session_id"]), (0, "none", None))
+                self.assertEqual(self.fake.spawns, [])
+                self.assertEqual(self.fake.message_posts, [])
+                self.assertEqual(self.dispatcher.tick(now=now), "idle")
+                self.assertEqual(self.dispatcher.tick(now=event["next_attempt_at"]), "dispatched")
+                self.assertEqual(self.fake.dispatched[-1][1]["delivery_id"], delivery)
+                self.assertEqual(self.fake.dispatched[-1][1]["attempt"], attempt + 1)
+        started = self.op("begin", delivery, attempt=len(failures) + 1)
+        self.assertEqual((started["ok"], started["status"]), (True, "started"), started)
+        self.assertEqual(self.store.event(delivery)["execution_id"], f"ex-{delivery}")
+        self.assertEqual(self.repair_delivery(), delivery)
+        self.assertTrue(self.op("ensure_session", delivery)["ok"])
+        self.assertEqual(self.fake.spawns[-1]["worktreeName"], "issue-141")
+
+    def test_repair_push_tracks_the_new_head_for_reconciliation(self) -> None:
+        self.managed_pr()
+        self.assertEqual(self.dispatcher.tick(), "dispatched")
+        delivery = self.repair_delivery()
+        self.assertEqual(self.op("begin", delivery, attempt=1)["status"], "started")
+        self.assertTrue(self.op("ensure_session", delivery)["ok"])
+        pushed = self.op("git.push", delivery, head_sha=SHA_B)
+        self.assertEqual((pushed["ok"], pushed["branch"], pushed["sha"]), (True, "hapi-issue-141", SHA_B), pushed)
+        self.assertEqual(self.fake.pushes, [{"repo": REPO, "branch": "hapi-issue-141", "expected_sha": SHA_B}])
+        self.assertEqual(self.fake.prs[144]["head"]["sha"], SHA_B)
+        reopened = bridge.Store(self.config.state_path)
+        row = reopened.pr_state(REPO, 144)
+        self.assertEqual((row["head_sha"], row["dirty"], row["active_delivery"]), (SHA_B, 1, delivery))
+        self.assertEqual(reopened.event(delivery)["state"], "dispatched")
+        self.assertEqual(reopened.issue(REPO, 141)["blocked"], 0)
+
+    def test_pr_upsert_succeeds_when_post_write_state_observation_fails(self) -> None:
+        self.started()
+        self.assertTrue(self.op("ensure_session")["ok"])
+        self.assertTrue(self.op("git.push", head_sha=SHA_A)["ok"])
+        with patch.object(self.bridge, "_pr_state",
+                          side_effect=bridge.OpError("computed state unavailable", retryable=True)):
+            created = self.op("github.pr_upsert", head_sha=SHA_A, title="Fix it", body="Fixes #7")
+        self.assertEqual((created["ok"], created["created"], created["ready"]), (True, True, False), created)
+        number = created["number"]
+        self.assertEqual(self.fake.prs[number]["head"]["sha"], SHA_A)
+        self.assertEqual(self.fake.pr_creates, [{"title": "Fix it", "body": "Fixes #7", "head": "hapi-issue-7",
+                                               "base": "master", "draft": False}])
+        self.assertEqual(self.store.issue(REPO, 7)["pr_number"], number)
+        row = self.store.pr_state(REPO, number)
+        self.assertEqual((row["head_sha"], row["dirty"]), (SHA_A, 1))
+        self.assertTrue(self.op("git.push", head_sha=SHA_B)["ok"])
+        with patch.object(self.bridge, "_pr_state",
+                          side_effect=bridge.TransportError("computed state timed out", not_sent=False)):
+            updated = self.op("github.pr_upsert", head_sha=SHA_B, title="Fix it v2", body="Related to #7")
+        self.assertEqual((updated["ok"], updated["created"], updated["number"], updated["ready"]),
+                         (True, False, number, False), updated)
+        self.assertEqual(self.fake.pr_patches, [{"title": "Fix it v2", "body": "Related to #7"}])
+        self.assertEqual(self.fake.prs[number]["title"], "Fix it v2")
+        self.assertEqual(len(self.fake.pr_creates), 1)
+        row = self.store.pr_state(REPO, number)
+        self.assertEqual((row["head_sha"], row["dirty"]), (SHA_B, 1))
+        self.assertEqual(self.store.issue(REPO, 7)["blocked"], 0)
+        self.assertEqual(self.fake.assignments, [])
+
+    def test_previous_head_change_request_does_not_repair_or_block_the_new_head_review(self) -> None:
+        self.use_reviewer_app()
+        pr = self.managed_pr(merge_state="BLOCKED")
+        self.fake.reviews = [{"id": 1, "state": "CHANGES_REQUESTED", "commit_id": SHA_A,
+                             "user": {"login": REVIEWER}, "body": "Fix the boundary."}]
+        self.assertEqual(self.bridge.reconcile_pr(REPO, 144), "queued")
+        old_review = self.store.query("SELECT * FROM events WHERE kind = 'pr_review'")[0]
+        self.store.update_event(old_review["delivery_id"], state="completed", outcome="reviewed")
+        self.assertEqual(self.dispatcher.tick(), "dispatched")
+        delivery = self.repair_delivery()
+        begun = self.op("begin", delivery, attempt=1)
+        self.assertEqual(begun["status"], "started")
+        self.assertEqual(begun["repair"]["findings"]["change_requests"][0]["commit_id"], SHA_A)
+        self.assertTrue(self.op("ensure_session", delivery)["ok"])
+        self.assertTrue(self.op("git.push", delivery, head_sha=SHA_B)["ok"])
+        pr["reviewDecision"] = "CHANGES_REQUESTED"
+        self.assertTrue(self.op("finish", delivery, outcome="implemented")["ok"])
+        self.assertEqual(self.bridge.reconcile_pr(REPO, 144), "waiting")
+        self.assertIsNone(self.store.pr_state(REPO, 144)["active_delivery"])
+        repairs = self.store.query("SELECT delivery_id, state FROM events WHERE kind = 'pr_repair'")
+        self.assertEqual([tuple(row) for row in repairs], [(delivery, "completed")])
+        new_review = self.store.query("SELECT * FROM events WHERE kind = 'pr_review' AND head_sha = ?", (SHA_B,))[0]
+        self.assertEqual(new_review["state"], "accepted")
+        self.assertEqual(self.dispatcher.tick(), "dispatched")
+        review_delivery = self.fake.dispatched[-1][1]["delivery_id"]
+        self.assertEqual(review_delivery, new_review["delivery_id"])
+        self.assertEqual(self.fake.dispatched[-1][1]["kind"], "pr_review")
+        self.assertEqual(self.op("begin", review_delivery, attempt=1)["status"], "started")
+        review_session = self.op("ensure_session", review_delivery)
+        self.assertTrue(review_session["ok"], review_session)
+        self.assertEqual(self.fake.spawns[-1]["worktreeName"], "review-pr-144")
+        reviewed = self.op("github.review", review_delivery,
+                           result=variant(REVIEW_OK, head_sha=SHA_B, event="APPROVE", comments=[]))
+        self.assertTrue(reviewed["ok"], reviewed)
+        self.assertEqual(self.fake.review_posts[-1]["commit_id"], SHA_B)
+        self.assertEqual(self.fake.review_posts[-1]["event"], "APPROVE")
+        self.assertTrue(self.op("finish", review_delivery, outcome="reviewed")["ok"])
+        self.assertIsNone(self.store.pr_state(REPO, 144)["active_delivery"])
+        self.assertEqual(self.repair_delivery(), delivery)
+
+    def test_repair_send_delivers_the_evidence_begin_gated_on(self) -> None:
+        self.managed_pr(merge_state="BLOCKED")
+        self.fake.checks[SHA_A] = [{"name": "begin-check", "status": "COMPLETED", "conclusion": "FAILURE"}]
+        self.assertEqual(self.dispatcher.tick(), "dispatched")
+        delivery = self.repair_delivery()
+        begun = self.op("begin", delivery, attempt=1)
+        self.assertEqual(begun["stages"]["repair_snapshot"]["state"]["head_sha"], SHA_A)
+        self.assertTrue(self.op("ensure_session", delivery)["ok"])
+        self.fake.checks[SHA_A] = [{"name": "later-check", "status": "COMPLETED", "conclusion": "FAILURE"}]
+        reads = len(self.fake.pr_state_reads)
+        sent = self.op("session_send", delivery, mode="followup", instructions="Repair the supported blockers.")
+        self.assertEqual((sent["ok"], sent["delivery"]), (True, "sent"), sent)
+        self.assertEqual(len(self.fake.pr_state_reads), reads)
+        text = self.fake.message_posts[0]["text"]
+        context = json.loads(text.split(" CONTEXT_JSON\n", 1)[1].rsplit("\n", 1)[0])
+        self.assertEqual([check["name"] for check in context["repair"]["findings"]["failed_checks"]],
+                         ["begin-check"])
+
+    def test_retry_before_the_first_send_delivers_a_fresh_repair_snapshot(self) -> None:
+        pr = self.managed_pr(merge_state="BLOCKED")
+        self.fake.checks[SHA_A] = [{"name": "old-head-check", "status": "COMPLETED", "conclusion": "FAILURE"}]
+        self.assertEqual(self.dispatcher.tick(), "dispatched")
+        delivery = self.repair_delivery()
+        self.assertEqual(self.op("begin", delivery, attempt=1)["status"], "started")
+        unsent = self.op("session_send", delivery, mode="followup", instructions="Repair the supported blockers.")
+        self.assertFalse(unsent["ok"])
+        self.assertIn("no ready session", unsent["error"])
+        recorded = json.loads(self.store.event(delivery)["stages"])["repair_snapshot"]
+        self.assertEqual(recorded["state"]["head_sha"], SHA_A)
+        self.assertIsNone(self.store.turn(delivery))
+        self.assertEqual(self.fake.message_posts, [])
+        self.assertTrue(self.op("fail", delivery, detail="Session was not ready before the initial send.")["ok"])
+        self.assertEqual(self.store.event(delivery)["state"], "needs_attention")
+        self.assertEqual(self.store.pr_state(REPO, 144)["active_delivery"], delivery)
+        pr["head"]["sha"] = SHA_B
+        self.fake.checks[SHA_B] = [{"name": "current-head-check", "status": "COMPLETED", "conclusion": "FAILURE"}]
+        self.assertTrue(self.op("retry_event", delivery)["ok"])
+        self.assertNotIn("repair_snapshot", json.loads(self.store.event(delivery)["stages"]))
+        self.assertEqual(self.dispatcher.tick(), "dispatched")
+        self.assertEqual(self.fake.dispatched[-1][1]["delivery_id"], delivery)
+        begun = self.op("begin", delivery, attempt=1)
+        self.assertEqual((begun["status"], begun["event"]["head_sha"]), ("started", SHA_B))
+        self.assertTrue(self.op("ensure_session", delivery)["ok"])
+        sent = self.op("session_send", delivery, mode="followup", instructions="Repair the supported blockers.")
+        self.assertEqual((sent["ok"], sent["delivery"]), (True, "sent"), sent)
+        self.assertEqual(len(self.fake.message_posts), 1)
+        text = self.fake.message_posts[0]["text"]
+        context = json.loads(text.split(" CONTEXT_JSON\n", 1)[1].rsplit("\n", 1)[0])
+        self.assertEqual(context["repair"]["state"]["head_sha"], SHA_B)
+        self.assertEqual([check["name"] for check in context["repair"]["findings"]["failed_checks"]],
+                         ["current-head-check"])
+        self.assertEqual(self.store.event(delivery)["head_sha"], SHA_B)
+        self.assertEqual(self.store.pr_state(REPO, 144)["active_delivery"], delivery)
+        self.assertEqual(self.repair_delivery(), delivery)
+
+    def test_parked_repair_keeps_its_lease_without_blocking_an_isolated_pr_review(self) -> None:
+        self.use_reviewer_app()
+        pr = self.managed_pr()
+        self.assertEqual(self.bridge.reconcile_pr(REPO, 144), "queued")
+        old_review = self.store.query("SELECT * FROM events WHERE kind = 'pr_review'")[0]
+        self.store.update_event(old_review["delivery_id"], state="completed", outcome="reviewed")
+        self.assertEqual(self.dispatcher.tick(), "dispatched")
+        delivery = self.repair_delivery()
+        self.assertEqual(self.op("begin", delivery, attempt=1)["status"], "started")
+        repair_session = self.op("ensure_session", delivery)
+        self.assertTrue(repair_session["ok"], repair_session)
+        self.assertTrue(self.op("fail", delivery, detail="Repair requires operator input.")["ok"])
+        self.assertEqual(self.store.event(delivery)["state"], "needs_attention")
+        self.assertEqual(self.store.issue(REPO, 141)["blocked"], 1)
+        pr["head"]["sha"] = SHA_B
+        signal = pr_payload(144, action="synchronize", sha=SHA_B)
+        signal["pull_request"]["head"]["ref"] = "hapi-issue-141"
+        self.assertEqual(self.deliver(signal, event="pull_request", delivery="review-parked-repair").outcome, "queued")
+        self.assertEqual(self.dispatcher.tick(), "dispatched")
+        self.assertEqual(self.fake.dispatched[-1][1]["kind"], "pr_review")
+        review_delivery = self.fake.dispatched[-1][1]["delivery_id"]
+        begun = self.op("begin", review_delivery, attempt=1)
+        self.assertEqual((begun["status"], begun["event"]["head_sha"]), ("started", SHA_B))
+        review_session = self.op("ensure_session", review_delivery)
+        self.assertTrue(review_session["ok"], review_session)
+        self.assertNotEqual(review_session["session_id"], repair_session["session_id"])
+        self.assertEqual([spawn["worktreeName"] for spawn in self.fake.spawns], ["issue-141", "review-pr-144"])
+        self.assertEqual(self.store.issue(REPO, 141)["blocked"], 1)
+        self.assertEqual(self.store.event(delivery)["state"], "needs_attention")
+        self.assertEqual(self.store.pr_state(REPO, 144)["active_delivery"], delivery)
+        self.assertEqual(self.repair_delivery(), delivery)
+
+    def test_manual_repair_redelivery_is_deduplicated_across_restart(self) -> None:
+        self.use_reviewer_app()
+        self.managed_pr(merge_state="CLEAN")
+        request = comment_payload(144, 901, on_pr=True, body="@bulgasaribot also fix the boundary")
+        self.assertEqual(self.deliver(request, event="issue_comment", delivery="manual-first").outcome,
+                         "reconcile_pending")
+        self.assertEqual(self.dispatcher.tick(), "dispatched")
+        first = self.repair_delivery()
+        self.assertEqual(self.op("begin", first, attempt=1)["status"], "started")
+        self.assertTrue(self.op("finish", first, outcome="no_change")["ok"])
+        self.store = bridge.Store(self.config.state_path)
+        self.bridge = bridge.make_bridge(self.config, self.store)
+        self.dispatcher = bridge.Dispatcher(self.config, self.store, self.bridge)
+        self.assertEqual(self.deliver(request, event="issue_comment", delivery="manual-redelivery").outcome,
+                         "reconcile_pending")
+        self.assertEqual(self.bridge.reconcile_pr(REPO, 144), "ready")
+        self.assertEqual(self.repair_delivery(), first)
+        self.assertIsNone(self.store.pr_state(REPO, 144)["active_delivery"])
+        later = comment_payload(144, 902, on_pr=True, body="@bulgasaribot fix the remaining boundary")
+        self.assertEqual(self.deliver(later, event="issue_comment", delivery="manual-later").outcome,
+                         "reconcile_pending")
+        self.assertEqual(self.bridge.reconcile_pr(REPO, 144), "queued")
+        repairs = self.store.query("SELECT * FROM events WHERE kind = 'pr_repair' ORDER BY seq")
+        self.assertEqual(len(repairs), 2)
+        self.assertEqual((repairs[0]["delivery_id"], repairs[0]["state"]), (first, "completed"))
+        second = repairs[1]
+        self.assertNotEqual(second["delivery_id"], first)
+        self.assertEqual(second["state"], "accepted")
+        self.assertEqual(self.store.pr_state(REPO, 144)["active_delivery"], second["delivery_id"])
+        self.assertEqual(json.loads(second["stages"])["repair_input"]["manual"]["id"], 902)
+
+    def repair_round(self, n: int, *causes: str) -> str:
+        """Finish the active repair, then report a fresh blocker for each cause ('checks', 'review')."""
+        delivery = self.store.pr_state(REPO, 144)["active_delivery"]
+        if delivery:
+            self.store.update_event(delivery, state="completed", outcome="implemented")
+            self.assertTrue(self.store.release_pr_repair(REPO, 144, delivery, success=True))
+        self.fake.checks[SHA_A] = ([{"name": f"flaky-{n}", "status": "COMPLETED", "conclusion": "FAILURE"}]
+                                   if "checks" in causes else [])
+        self.fake.reviews = ([{"id": n, "state": "CHANGES_REQUESTED", "commit_id": SHA_A,
+                               "user": {"login": REVIEWER}, "body": f"Fix boundary {n}."}]
+                             if "review" in causes else [])
+        return self.bridge.reconcile_pr(REPO, 144)
+
+    def repair_notices(self) -> list[str]:
+        return [c["body"] for c in self.fake.comments.get(144, []) if "Automatic repair stopped" in c["body"]]
+
+    def test_a_cause_surviving_consecutive_repairs_stops_them_until_a_human_signal(self) -> None:
+        # krema#63: each repair pushed a head whose flaky CI failed again, so every new fingerprint queued
+        # another repair without end.
+        self.use_reviewer_app()
+        self.managed_pr(merge_state="BLOCKED")
+        for n in range(bridge.MAX_PR_REPAIR_STREAK):
+            self.assertEqual(self.repair_round(n, "checks"), "queued")
+        self.assertEqual(self.repair_round(90, "checks"), "repair_limit")
+        self.assertEqual(self.repair_round(91, "checks", "review"), "repair_limit")
+        repairs = self.store.query("SELECT 1 FROM events WHERE kind = 'pr_repair'")
+        self.assertEqual(len(repairs), bridge.MAX_PR_REPAIR_STREAK)
+        row = self.store.pr_state(REPO, 144)
+        self.assertEqual((row["dirty"], row["active_delivery"]), (0, None))
+        notices = self.repair_notices()
+        self.assertEqual(len(notices), 1)
+        self.assertIn(f"failing checks survived {bridge.MAX_PR_REPAIR_STREAK} consecutive", notices[0])
+        self.assertIn("`@bulgasaribot`", notices[0])
+        # A human repair signal is allowed and restarts the automatic budget.
+        request = comment_payload(144, 950, on_pr=True, body="@bulgasaribot fix the flaky check")
+        self.assertEqual(self.deliver(request, event="issue_comment", delivery="manual").outcome,
+                         "reconcile_pending")
+        self.assertEqual(self.bridge.reconcile_pr(REPO, 144), "queued")
+        for n in range(bridge.MAX_PR_REPAIR_STREAK):
+            self.assertEqual(self.repair_round(92 + n, "checks"), "queued")
+        self.assertEqual(self.repair_round(99, "checks"), "repair_limit")
+        self.assertEqual(len(self.repair_notices()), 2)  # one notice per manual-signal cycle
+
+    def test_alternating_causes_reset_streaks_until_the_total_backstop(self) -> None:
+        self.use_reviewer_app()
+        self.managed_pr(merge_state="BLOCKED")
+        for n in range(bridge.MAX_PR_REPAIRS_TOTAL):
+            self.assertEqual(self.repair_round(n, "checks" if n % 2 else "review"), "queued")
+        self.assertEqual(self.repair_round(50, "checks"), "repair_limit")
+        repairs = self.store.query("SELECT 1 FROM events WHERE kind = 'pr_repair'")
+        self.assertEqual(len(repairs), bridge.MAX_PR_REPAIRS_TOTAL)
+        [notice] = self.repair_notices()
+        self.assertIn(f"queued {bridge.MAX_PR_REPAIRS_TOTAL} automatic repairs", notice)
+
+    def test_a_merge_ready_state_resets_the_repair_budget(self) -> None:
+        self.use_reviewer_app()
+        pr = self.managed_pr(merge_state="BLOCKED")
+        for n in range(bridge.MAX_PR_REPAIR_STREAK):
+            self.assertEqual(self.repair_round(n, "checks"), "queued")
+        self.repair_round(10)
+        pr.update(mergeStateStatus="CLEAN")
+        self.assertEqual(self.bridge.reconcile_pr(REPO, 144), "ready")
+        pr.update(mergeStateStatus="BLOCKED")
+        self.assertEqual(self.repair_round(11, "checks"), "queued")
+
+    def test_retries_preserve_the_snapshot_and_local_id_of_a_possibly_delivered_turn(self) -> None:
+        pr = self.managed_pr(merge_state="BLOCKED")
+        self.fake.checks[SHA_A] = [{"name": "original-check", "status": "COMPLETED", "conclusion": "FAILURE"}]
+        self.assertEqual(self.dispatcher.tick(), "dispatched")
+        delivery = self.repair_delivery()
+        self.assertEqual(self.op("begin", delivery, attempt=1)["status"], "started")
+        self.assertTrue(self.op("ensure_session", delivery)["ok"])
+        self.fake.message_mode = "fail_after_store"
+        with patch.object(self.bridge, "_delivery", return_value="indeterminate"):
+            ambiguous = self.op("session_send", delivery, mode="followup", instructions="Repair the blockers.")
+        self.assertFalse(ambiguous["ok"])
+        self.assertTrue(ambiguous["needs_operator"])
+        self.assertEqual(len(self.fake.message_posts), 1)
+        original_local_id = self.fake.message_posts[0]["localId"]
+        original_snapshot = json.loads(self.store.event(delivery)["stages"])["repair_snapshot"]
+        self.assertEqual(original_snapshot["state"]["head_sha"], SHA_A)
+        self.fake.message_mode = "ok"
+        for turn_state, head in (("sending", SHA_B), ("sent", "c" * 40)):
+            with self.subTest(turn_state=turn_state):
+                self.assertEqual(self.store.turn(delivery, "followup")["state"], turn_state)
+                self.assertTrue(self.op("fail", delivery, detail="Retry the interrupted followup.")["ok"])
+                pr["head"]["sha"] = head
+                self.fake.checks[head] = [{"name": "new-check", "status": "COMPLETED", "conclusion": "FAILURE"}]
+                self.assertTrue(self.op("retry_event", delivery)["ok"])
+                self.assertEqual(json.loads(self.store.event(delivery)["stages"])["repair_snapshot"],
+                                 original_snapshot)
+                self.assertEqual(self.dispatcher.tick(), "dispatched")
+                begun = self.op("begin", delivery, attempt=1)
+                self.assertEqual((begun["status"], begun["event"]["head_sha"]), ("started", head))
+                resent = self.op("session_send", delivery, mode="followup", instructions="Repair the blockers.")
+                self.assertEqual((resent["ok"], resent["delivery"], resent["local_id"]),
+                                 (True, "already", original_local_id), resent)
+                self.assertEqual(self.store.turn(delivery, "followup")["state"], "sent")
+                self.assertEqual(len(self.fake.message_posts), 1)
+                self.assertEqual(self.store.pr_state(REPO, 144)["active_delivery"], delivery)
 
 
 class DispatchTests(BridgeTestCase):
@@ -930,7 +1770,7 @@ class DispatchTests(BridgeTestCase):
         self.started_review(12, "p1")
         self.assertTrue(self.op("fail", "p1", detail="Wait for review turn: stale_head")["ok"])
         body = self.fake.comments[12][0]["body"]
-        self.assertTrue(body.endswith(bridge.review_footer(BOT)))
+        self.assertTrue(body.endswith(bridge.review_footer(BOT, pushes_reviewed=False)))
         self.assertIn("`@bulgasaribot review`", body)
         self.assertEqual(self.fake.labels[12], [NEEDS])
         command = comment_payload(12, 500, body="@bulgasaribot review", on_pr=True)
@@ -958,6 +1798,88 @@ class DispatchTests(BridgeTestCase):
         self.assertEqual(self.events(), [("d1", "needs_attention"), ("p1", "accepted")])
         self.assertEqual(self.store.issue(REPO, 12)["blocked"], 1)
         self.assertEqual(self.dispatcher.tick(), "idle")
+
+    def test_open_force_push_and_review_comment_within_the_settle_window_run_one_review(self) -> None:
+        # pillar-csi#155: opening the PR, a force-push 31 s later and a `review` comment 3 s after that each ran
+        # their own review; the comment's text and the pushed head must reach the one review that runs.
+        self.use_reviewer_app()
+        pr = self.fake.add_pr(12)
+        with patch.object(bridge, "REVIEW_SETTLE_SECONDS", 90.0):
+            self.assertEqual(self.deliver(pr_payload(12), event="pull_request", delivery="o1").outcome, "queued")
+            self.assertEqual(self.dispatcher.tick(), "idle")
+            pr["head"]["sha"] = SHA_B
+            push = pr_payload(12, action="synchronize", sha=SHA_B)
+            self.assertEqual(self.deliver(push, event="pull_request", delivery="s1").outcome, "queued")
+            command = comment_payload(12, 500, body="Fixed the P2.\n\n@haechibot review", on_pr=True)
+            self.assertEqual(self.deliver(command, event="issue_comment", delivery="c1").outcome, "queued")
+        self.assertEqual(self.events(), [("o1", "completed"), ("s1", "completed"), ("c1", "accepted")])
+        self.assertEqual([self.store.event(d)["outcome"] for d in ("o1", "s1")], ["coalesced", "coalesced"])
+        survivor = self.store.event("c1")
+        self.assertEqual((survivor["head_sha"], survivor["comment_id"]), (SHA_B, 500))
+        self.assertGreaterEqual(survivor["next_attempt_at"], survivor["received_at"] + 90.0)
+        self.assertEqual(self.dispatcher.tick(survivor["next_attempt_at"] - 1), "idle")
+        self.assertEqual(self.dispatcher.tick(survivor["next_attempt_at"]), "dispatched")
+        self.assertEqual([p["delivery_id"] for _, p in self.fake.dispatched], ["c1"])
+        # Requests that keep arriving cannot defer the review past the cap measured from the oldest one.
+        self.assertTrue(self.op("finish", "c1", outcome="reviewed")["ok"])
+        with patch.object(bridge, "REVIEW_SETTLE_SECONDS", 10**6):
+            for n, delivery in enumerate(("c2", "c3")):
+                again = comment_payload(12, 501 + n, body="@haechibot review", on_pr=True)
+                self.assertEqual(self.deliver(again, event="issue_comment", delivery=delivery).outcome, "queued")
+        self.assertEqual(self.store.event("c3")["next_attempt_at"],
+                         self.store.event("c2")["received_at"] + bridge.REVIEW_MAX_DELAY_SECONDS)
+
+    def test_push_cancels_the_running_review_of_the_older_head(self) -> None:
+        # pillar-csi#155: the review of the head replaced by a force-push ran for 8 more minutes and posted.
+        self.use_reviewer_app()
+        self.started_review(12, "p1")
+        self.assertEqual(self.store.event("p1")["head_sha"], SHA_A)
+        self.assertTrue(self.op("ensure_session", "p1")["ok"])
+        sid = self.store.issue(REPO, 12)["session_id"]
+        self.fake.prs[12]["head"]["sha"] = SHA_B
+        push = pr_payload(12, action="synchronize", sha=SHA_B)
+        self.assertEqual(self.deliver(push, event="pull_request", delivery="s1").outcome, "queued")
+        old = self.store.event("p1")
+        self.assertEqual((old["state"], old["outcome"]), ("completed", "cancelled"))
+        # The cancelled run publishes nothing and stops without an attention notice.
+        self.assertEqual(self.op("github.review", "p1", result=REVIEW_OK)["error"], "event_terminal")
+        self.assertEqual(self.op("fail", "p1", detail="Review submitted?: event_terminal"),
+                         {"ok": True, "already": True})
+        self.assertEqual((self.fake.review_posts, self.fake.comments.get(12, [])), ([], []))
+        self.assertEqual(self.dispatcher.tick(), "dispatched")
+        self.assertIn(f"archive {sid}", self.fake.calls)
+        self.assertEqual(self.fake.dispatched[-1][1]["delivery_id"], "s1")
+        self.assertEqual(self.op("begin", "s1", attempt=1)["status"], "started")
+        calls = len(self.fake.calls)
+        self.assertEqual(self.dispatcher.tick(), "busy")
+        self.assertNotIn(f"archive {sid}", self.fake.calls[calls:])  # the agent is stopped once, not again
+        # The released key lets the cancelled head be reviewed again if the branch returns to it.
+        self.fake.prs[12]["head"]["sha"] = SHA_A
+        back = pr_payload(12, action="synchronize", sha=SHA_A)
+        self.assertEqual(self.deliver(back, event="pull_request", delivery="s2").outcome, "queued")
+
+    def test_review_comment_during_a_running_review_queues_one_follow_up(self) -> None:
+        # The running review checked out before the comment's replies; the request runs once more, and a
+        # comment carries no head, so it never cancels the running review.
+        self.started_review(12, "p1")
+        command = comment_payload(12, 500, body="@bulgasaribot review", on_pr=True)
+        self.assertEqual(self.deliver(command, event="issue_comment", delivery="c1").outcome, "queued")
+        self.assertEqual(self.events(), [("p1", "dispatched"), ("c1", "accepted")])
+        self.assertTrue(self.op("github.review", "p1", result=REVIEW_OK)["ok"])
+        self.assertTrue(self.op("finish", "p1", outcome="reviewed")["ok"])
+        self.assertEqual(self.dispatcher.tick(), "dispatched")
+        self.assertEqual(self.op("begin", "c1", attempt=1)["status"], "started")
+    def test_queued_review_requests_coalesce_into_the_newest(self) -> None:
+        self.started_review(12, "p1")
+        for n, delivery in enumerate(("c1", "c2", "c3")):
+            command = comment_payload(12, 600 + n, body="@bulgasaribot review", on_pr=True)
+            self.assertEqual(self.deliver(command, event="issue_comment", delivery=delivery).outcome, "queued")
+        self.assertEqual(self.events(), [("p1", "dispatched"), ("c1", "completed"), ("c2", "completed"),
+                                         ("c3", "accepted")])
+        for older, newer in (("c1", "c2"), ("c2", "c3")):
+            ev = self.store.event(older)
+            self.assertEqual(ev["outcome"], "coalesced")
+            self.assertIn(newer, ev["detail"])
 
 
 class LifecycleOpsTests(BridgeTestCase):
@@ -1023,7 +1945,7 @@ class LifecycleOpsTests(BridgeTestCase):
         self.assertTrue(self.op("fail", "p1", detail="Wait for review turn: stale_head")["ok"])
         body = self.fake.comments[12][0]["body"]
         self.assertIn("retry_event", body)
-        self.assertTrue(body.endswith(bridge.review_footer(REVIEWER)))
+        self.assertTrue(body.endswith(bridge.review_footer(REVIEWER, pushes_reviewed=True)))
         self.assertIn("`@haechibot review`", body)
         self.assertEqual(self.fake.labels[12], [NEEDS])
         self.assertEqual(self.fake.comments[12][0]["user"]["login"], REVIEWER)
@@ -1108,13 +2030,50 @@ class LifecycleOpsTests(BridgeTestCase):
         self.assertEqual(self.fake.comment_posts, 1)
         self.assertEqual((self.fake.labels[7], self.store.event("d1")["attention_pending"]), ([NEEDS], 0))
 
-    def test_finish_clears_needs_attention_label(self) -> None:
+    def test_finish_removes_the_attention_label_only_when_the_bridge_added_it(self) -> None:
         self.started()
-        self.fake.labels[7] = ["bug", NEEDS]
+        self.assertTrue(self.op("fail", detail="boom")["ok"])
+        self.fake.labels[7].insert(0, "bug")
+        self.assertEqual(self.store.issue(REPO, 7)["attention_label"], 1)
+        self.assertTrue(self.op("retry_event", "d1")["ok"])
+        self.assertEqual(self.dispatcher.tick(), "dispatched")
+        self.assertEqual(self.op("begin", "d1", attempt=1)["status"], "started")
         self.assertTrue(self.op("finish", outcome="triaged")["ok"])
         self.assertEqual(self.fake.labels[7], ["bug"])
+        self.assertEqual(self.store.issue(REPO, 7)["attention_label"], 0)
+        # A label the bridge never added (here: by hand) is left alone; no DELETE is attempted.
         self.started(8, "d2")
-        self.assertTrue(self.op("finish", "d2", outcome="no_change")["ok"])  # absent label is fine
+        self.fake.labels[8] = [NEEDS]
+        self.fake.gh_calls.clear()
+        self.assertTrue(self.op("finish", "d2", outcome="no_change")["ok"])
+        self.assertEqual(self.fake.labels[8], [NEEDS])
+        self.assertFalse(any(method == "DELETE" for _, method, _ in self.fake.gh_calls))
+
+    def test_finish_completes_when_the_attention_label_removal_is_refused(self) -> None:
+        # krema#63: the label DELETE answered 401 after the review was posted; finish raised, n8n failed the
+        # run and the notice asked for a re-request that hit the same 401.
+        self.started_review(12, "p1")
+        self.assertTrue(self.op("fail", "p1", detail="Wait for review turn: stale_head")["ok"])
+        command = comment_payload(12, 500, body="@bulgasaribot review", on_pr=True)
+        self.assertEqual(self.deliver(command, event="issue_comment", delivery="c1").outcome, "queued")
+        self.assertEqual(self.dispatcher.tick(), "dispatched")
+        self.assertEqual(self.op("begin", "c1", attempt=1)["status"], "started")
+        comments = len(self.fake.comments[12])
+        self.fake.label_delete_status = 401
+        self.assertEqual(self.op("finish", "c1", outcome="reviewed"), {"ok": True, "already": False})
+        finished = self.store.event("c1")
+        self.assertEqual((finished["state"], finished["outcome"]), ("completed", "reviewed"))
+        self.assertEqual(len(self.fake.comments[12]), comments)  # no attention notice
+        self.assertEqual(self.store.issue(REPO, 12)["blocked"], 0)
+        self.assertEqual(self.fake.labels[12], [NEEDS])
+        # The flag survives the refusal, so the next finish removes the label.
+        self.fake.label_delete_status = 200
+        again = comment_payload(12, 501, body="@bulgasaribot review", on_pr=True)
+        self.assertEqual(self.deliver(again, event="issue_comment", delivery="c2").outcome, "queued")
+        self.assertEqual(self.dispatcher.tick(), "dispatched")
+        self.assertEqual(self.op("begin", "c2", attempt=1)["status"], "started")
+        self.assertTrue(self.op("finish", "c2", outcome="reviewed")["ok"])
+        self.assertEqual(self.fake.labels[12], [])
 
 
 class SessionTests(BridgeTestCase):
@@ -1211,6 +2170,123 @@ class SessionTests(BridgeTestCase):
         self.assertEqual(self.fake.auth_calls, 2)
 
 
+def closed_days_ago(days: float) -> dict[str, Any]:
+    closed_at = time.strftime("%Y-%m-%dT%H:%M:%SZ", time.gmtime(time.time() - days * 86400))
+    return {"state": "closed", "closed_at": closed_at}
+
+
+CODEX_1 = "019a0000-0000-7000-8000-000000000001"
+CODEX_2 = "019a0000-0000-7000-8000-000000000002"
+
+
+class CleanupTests(BridgeTestCase):
+    def finished_subject(self, number: int, delivery: str) -> str:
+        self.started(number, delivery)
+        sid = self.op("ensure_session", delivery)["session_id"]
+        self.assertFalse(self.op("finish", delivery, outcome="triaged")["already"])
+        return sid
+
+    def cleanup(self, **kw: Any) -> dict:
+        result = self.bridge.handle({"op": "cleanup_closed", **kw})
+        self.assertTrue(result["ok"], result)
+        return result
+
+    def test_subject_closed_past_the_cutoff_loses_its_state_and_the_next_event_starts_fresh(self) -> None:
+        first = self.finished_subject(7, "d1")
+        self.assertEqual(self.deliver(comment_payload(), event="issue_comment", delivery="c1").outcome, "queued")
+        self.assertEqual(self.dispatcher.tick(), "dispatched")
+        self.op("begin", "c1", attempt=1)
+        current = self.op("ensure_session", "c1")["session_id"]  # resumed: ``first`` becomes superseded
+        self.op("finish", "c1", outcome="triaged")
+        self.fake.sessions[first]["metadata"]["codexSessionId"] = CODEX_1
+        self.fake.sessions[current]["metadata"]["codexSessionId"] = CODEX_2.upper()
+        self.fake.issue_states[7] = closed_days_ago(31)
+        calls = len(self.fake.calls)
+
+        result = self.cleanup()
+        self.assertEqual(result["cleaned"], [{"repo": REPO, "issue_number": 7,
+                                              "closed_at": self.fake.issue_states[7]["closed_at"]}])
+        self.assertEqual((result["checked"], result["skipped_active"], result["errors"]), (1, [], []))
+        self.assertEqual(self.fake.sessions, {})
+        self.assertEqual(self.fake.calls[calls:], [f"archive {current}", f"delete {current}", f"archive {first}",
+                                                   f"delete {first}", "publisher/cleanup"])
+        self.assertEqual(self.fake.cleanups, [{"repo": REPO, "worktree": "issue-7", "branch": "hapi-issue-7",
+                                               "codex_session_ids": [CODEX_2, CODEX_1]}])
+        issue = self.store.issue(REPO, 7)
+        self.assertEqual(
+            {k: issue[k] for k in ("blocked", "session_state", "session_id", "pending_at", "worktree_path", "branch",
+                                   "superseded", "detail", "phase", "pr_number")},
+            {"blocked": 0, "session_state": "none", "session_id": None, "pending_at": None, "worktree_path": None,
+             "branch": None, "superseded": "[]", "detail": None, "phase": "none", "pr_number": None})
+        self.assertEqual(self.events(), [("d1", "completed"), ("c1", "completed")])  # history stays
+        self.assertEqual(self.cleanup()["checked"], 0)  # nothing left to clean
+
+        self.assertEqual(self.deliver(comment_payload(comment_id=101), event="issue_comment", delivery="c2").outcome,
+                         "queued")
+        self.assertEqual(self.dispatcher.tick(), "dispatched")
+        self.op("begin", "c2", attempt=1)
+        fresh = self.op("ensure_session", "c2")
+        self.assertTrue(fresh["ok"], fresh)
+        self.assertFalse(fresh["resumed"])
+        self.assertEqual((len(self.fake.spawns), self.fake.spawns[-1]["worktreeName"]), (2, "issue-7"))
+
+    def test_recent_open_and_active_subjects_are_skipped_and_dry_run_changes_nothing(self) -> None:
+        self.finished_subject(7, "d1")
+        self.finished_subject(8, "d2")
+        self.finished_subject(10, "d4")
+        self.started(9, "d3")
+        self.op("ensure_session", "d3")  # d3 stays dispatched
+        self.fake.issue_states.update({7: closed_days_ago(29), 8: {"state": "open", "closed_at": None},
+                                       9: closed_days_ago(90), 10: closed_days_ago(45)})
+        before = [dict(r) for r in self.store.query("SELECT * FROM issues ORDER BY issue_number")]
+        calls = len(self.fake.calls)
+
+        dry = self.cleanup(dry_run=True)
+        self.assertEqual([c["issue_number"] for c in dry["cleaned"]], [10])
+        self.assertEqual(dry["skipped_active"], [{"repo": REPO, "issue_number": 9}])
+        self.assertEqual((dry["checked"], dry["errors"]), (4, []))
+        self.assertEqual(self.fake.calls[calls:], [])
+        self.assertEqual(self.fake.cleanups, [])
+        self.assertEqual([dict(r) for r in self.store.query("SELECT * FROM issues ORDER BY issue_number")], before)
+
+        real = self.cleanup(older_than_days=30)
+        self.assertEqual([c["issue_number"] for c in real["cleaned"]], [10])
+        self.assertEqual([c["worktree"] for c in self.fake.cleanups], ["issue-10"])
+        for number in (7, 8, 9):
+            self.assertIsNotNone(self.store.issue(REPO, number)["session_id"])
+        self.assertEqual(self.cleanup(older_than_days=1)["cleaned"][0]["issue_number"], 7)  # cutoff is configurable
+        self.assertEqual(self.bridge.handle({"op": "cleanup_closed", "older_than_days": 0})["error"],
+                         "bad older_than_days")
+
+    def test_failures_leave_the_row_for_the_next_run(self) -> None:
+        sid = self.finished_subject(7, "d1")
+        self.finished_subject(8, "d2")
+        self.fake.issue_states[7] = closed_days_ago(40)  # 8 answers 404
+
+        self.fake.delete_status = 500
+        result = self.cleanup()
+        self.assertEqual(result["errors"], [
+            {"repo": REPO, "issue_number": 7, "error": f"hapi delete {sid}: HTTP 500 boom"},
+            {"repo": REPO, "issue_number": 8, "error": "github issue HTTP 404"},
+        ])
+        self.assertEqual((result["cleaned"], self.fake.cleanups), ([], []))
+        self.assertEqual(self.store.issue(REPO, 7)["session_id"], sid)
+
+        self.fake.delete_status = 200
+        self.fake.cleanup_error = "unsafe_path"
+        result = self.cleanup()
+        self.assertEqual(result["errors"][0], {"repo": REPO, "issue_number": 7, "error": "unsafe_path"})
+        self.assertNotIn(sid, self.fake.sessions)  # HAPI side is already gone ...
+        self.assertEqual(self.store.issue(REPO, 7)["worktree_path"],  # ... but the row keeps the worktree to retry
+                         "/home/agent/checkouts/isac322/cc-lb-worktrees/issue-7")
+
+        self.fake.cleanup_error = None
+        result = self.cleanup()
+        self.assertEqual([c["issue_number"] for c in result["cleaned"]], [7])
+        self.assertEqual(self.fake.cleanups[-1]["worktree"], "issue-7")
+        self.assertIsNone(self.store.issue(REPO, 7)["session_id"])
+
+
 class TurnTests(BridgeTestCase):
     def setUp(self) -> None:
         super().setUp()
@@ -1277,13 +2353,36 @@ class TurnTests(BridgeTestCase):
         self.assertEqual((done["state"], done["mode"]), ("done", "implement"))
         self.assertEqual(done["result"]["issue_comment"], "nothing needed")
 
-    def test_invalid_result_for_the_turns_mode_is_attention(self) -> None:
+    def test_invalid_result_is_sent_back_once_for_correction(self) -> None:
         self.send()
         self.fake.invoke(self.sid, self.lid)
         self.say(self.result_line(status="ready", head_sha=SHA_A, pr={"title": "x", "body": "Fixes #70"}))
+        self.assertEqual(self.op("session_turn")["state"], "running")
+        fix_lid = f"{self.lid}{bridge.CORRECTION_SUFFIX}"
+        correction = self.fake.message_posts[-1]
+        self.assertEqual((correction["localId"], correction["deliveryMode"]), (fix_lid, "queue"))
+        self.assertIn("Fixes #7", correction["text"])
+        self.assertIn(f"{bridge.RESULT_TAG} {fix_lid}", correction["text"])
+        self.assertEqual(self.op("session_turn")["state"], "queued")  # no second correction while it waits
+        self.assertEqual(len(self.fake.message_posts), 2)
+        self.fake.invoke(self.sid, fix_lid)
+        self.say(self.result_line(fix_lid, status="ready", head_sha=SHA_A, pr={"title": "x", "body": "Fixes #7"}))
+        done = self.op("session_turn")
+        self.assertEqual((done["state"], done["result"]["head_sha"]), ("done", SHA_A))
+        self.assertEqual(bridge.resend_local_id("d1", "implement", fix_lid), f"{self.lid}-r1")
+
+    def test_result_still_invalid_after_correction_is_attention(self) -> None:
+        self.send()
+        self.fake.invoke(self.sid, self.lid)
+        self.say(self.result_line(status="bogus"))
+        self.assertEqual(self.op("session_turn")["state"], "running")
+        fix_lid = f"{self.lid}{bridge.CORRECTION_SUFFIX}"
+        self.fake.invoke(self.sid, fix_lid)
+        self.say(self.result_line(fix_lid, status="bogus"))
         turn = self.op("session_turn")
         self.assertEqual(turn["state"], "attention")
-        self.assertIn("Fixes #7", turn["detail"])
+        self.assertIn("after a correction request", turn["detail"])
+        self.assertEqual(len(self.fake.message_posts), 2)
 
     def test_turns_are_keyed_by_delivery_and_mode(self) -> None:
         self.send("triage")
@@ -1457,6 +2556,33 @@ class ResultValidationTests(unittest.TestCase):
         self.assertInvalid("triage", variant(TRIAGE_OK, next_action="none"), "questions")
         self.assertInvalid("triage", variant(TRIAGE_OK, questions=["q"] * 6, comment="q"), "at most 5")
 
+    def test_triage_security_advisory_is_private_only(self) -> None:
+        valid = bridge.validate_result("triage", TRIAGE_ADVISORY, 7)
+        self.assertEqual(valid["security_advisory"], ADVISORY)
+        self.assertIsNone(bridge.validate_result("triage", TRIAGE_OK, 7)["security_advisory"])
+        public = [
+            (variant(TRIAGE_ADVISORY, comment="Found a hole"), "comment null"),
+            (variant(TRIAGE_ADVISORY, labels={"add": ["bug"], "remove": []}), "empty labels"),
+            (variant(TRIAGE_ADVISORY, labels={"add": [], "remove": ["bug"]}), "empty labels"),
+            (variant(TRIAGE_ADVISORY, next_action="await_info", questions=["q?"]), "next_action none"),
+            (variant(TRIAGE_ADVISORY, status="blocked"), "status triaged"),
+        ]
+        for value, fragment in public:
+            self.assertInvalid("triage", value, fragment)
+        broken = [
+            ({**ADVISORY, "severity": "urgent"}, "severity"),
+            ({**ADVISORY, "cwe_ids": ["200"]}, "CWE-<digits>"),
+            ({**ADVISORY, "vulnerabilities": []}, "1 to 10"),
+            ({**ADVISORY, "summary": "s" * 1025}, "summary exceeds"),
+        ]
+        for advisory, fragment in broken:
+            result = bridge.validate_result("triage", variant(TRIAGE_ADVISORY, security_advisory=advisory), 7)
+            self.assertIsInstance(result, str)
+            self.assertIn(fragment, result)
+            self.assertNotIn(ADVISORY["description"], result)
+            self.assertNotIn("s" * 100, result)
+        self.assertInvalid("triage", {k: v for k, v in TRIAGE_OK.items() if k != "security_advisory"}, "missing")
+
     def test_triage_questions_missing_from_comment_are_appended(self) -> None:
         verbatim = bridge.validate_result("triage", TRIAGE_OK, 7)
         self.assertEqual(verbatim["comment"], TRIAGE_OK["comment"])  # whitespace/case-insensitive match
@@ -1498,7 +2624,9 @@ class ResultValidationTests(unittest.TestCase):
         self.assertInvalid("review", variant(REVIEW_OK, body=""), "body is empty")
         finding = REVIEW_OK["comments"][0]
         self.assertInvalid("review", variant(REVIEW_OK, comments=[finding] * 51), "at most 50")
-        self.assertInvalid("review", variant(REVIEW_OK, comments=[{**finding, "start_line": 3}]), "start_line")
+        self.assertInvalid("review", variant(REVIEW_OK, comments=[{**finding, "start_line": 4}]), "start_line")
+        one_line = bridge.validate_result("review", variant(REVIEW_OK, comments=[{**finding, "start_line": 3}]), 7)
+        self.assertIsNone(one_line["comments"][0]["start_line"])
         self.assertInvalid("review", variant(REVIEW_OK, comments=[{**finding, "side": "BOTH"}]), "side")
         reply = {"comment_id": 5, "body": "done", "resolve": "yes"}
         self.assertInvalid("review", variant(REVIEW_OK, thread_replies=[reply]), "resolve")
@@ -1542,22 +2670,107 @@ class GitHubOpsTests(BridgeTestCase):
         self.assertEqual(self.op("github.search", terms="x")["error"], "unknown_op")
 
 
+class SecurityAdvisoryOpsTests(BridgeTestCase):
+    def triaged(self, result: dict[str, Any] = TRIAGE_ADVISORY) -> None:
+        self.started()
+        value = bridge.validate_result("triage", result, 7)
+        self.assertTrue(self.op("stage", stage="triage_result", value=value)["ok"])
+
+    def test_advisory_is_filed_once_as_a_private_draft(self) -> None:
+        self.triaged()
+        first = self.op("github.security_advisory")
+        self.assertEqual((first["ok"], first["already"], first["ghsa_id"]), (True, False, "GHSA-xxxx-xxxx-0000"))
+        [posted] = self.fake.advisory_posts
+        self.assertEqual({k: posted[k] for k in ("summary", "severity", "cwe_ids", "vulnerabilities")}, {
+            "summary": ADVISORY["summary"], "severity": "high", "cwe_ids": ["CWE-200"],
+            "vulnerabilities": [{"package": {"ecosystem": "other", "name": "homelab"},
+                                 "vulnerable_version_range": None, "patched_versions": None}]})
+        self.assertEqual(posted["description"], ADVISORY["description"] + "\n\n---\nFiled by the issue agent from "
+                         f"{REPO}#7 (delivery d1). The public issue was left without comment or labels.")
+        self.assertEqual(json.loads(self.store.event("d1")["stages"])["advisory"],
+                         {"ghsa_id": first["ghsa_id"], "html_url": first["html_url"]})
+        second = self.op("github.security_advisory")
+        self.assertEqual((second["already"], second["ghsa_id"]), (True, first["ghsa_id"]))
+        self.assertEqual(len(self.fake.advisory_posts), 1)
+        self.assertEqual((self.fake.comments, self.fake.labels), ({}, {}))  # nothing public
+
+    def test_a_filing_whose_stage_was_lost_is_found_by_its_marker(self) -> None:
+        self.triaged()
+        first = self.op("github.security_advisory")
+        stages = json.loads(self.store.event("d1")["stages"])
+        del stages["advisory"]
+        self.store.update_event("d1", stages=json.dumps(stages))
+        self.fake.advisories[0]["state"] = "triage"
+        again = self.op("github.security_advisory")
+        self.assertEqual((again["ok"], again["already"], again["ghsa_id"]), (True, True, first["ghsa_id"]))
+        self.assertEqual(len(self.fake.advisory_posts), 1)
+        self.assertEqual(json.loads(self.store.event("d1")["stages"])["advisory"]["ghsa_id"], first["ghsa_id"])
+
+    def test_refuses_without_a_recorded_advisory(self) -> None:
+        self.triaged(TRIAGE_OK)
+        result = self.op("github.security_advisory")
+        self.assertEqual((result["ok"], result["retryable"]), (False, False))
+        self.assertIn("no security advisory", result["error"])
+        self.assertEqual(self.fake.advisory_posts, [])
+
+    def test_github_failure_is_retryable_and_never_echoes_the_advisory(self) -> None:
+        self.triaged()
+        self.fake.advisory_status = 503
+        failed = self.op("github.security_advisory")
+        self.assertEqual((failed["ok"], failed["retryable"]), (False, True))
+        self.assertEqual(failed["error"], "github security advisory create HTTP 503: Service Unavailable")
+        self.assertNotIn(ADVISORY["summary"], json.dumps(failed))
+        self.assertNotIn("advisory", json.loads(self.store.event("d1")["stages"]))
+        self.fake.advisory_status = 201
+        self.assertEqual(self.op("github.security_advisory")["already"], False)
+
+
+
 class PullRequestOpsTests(BridgeTestCase):
-    def test_review_is_single_idempotent_and_checks_head(self) -> None:
+    def test_review_is_single_and_idempotent(self) -> None:
         self.started_review(12)
-        stale = self.op("github.review", "p1", result=variant(REVIEW_OK, head_sha=SHA_B))
-        self.assertEqual(stale["error"], "stale_head")
-        self.assertEqual(self.fake.review_posts, [])
         first = self.op("github.review", "p1", result=REVIEW_OK)
         self.assertEqual((first["created"], first["event_submitted"]), (True, "REQUEST_CHANGES"))
         post = self.fake.review_posts[0]
         self.assertEqual((post["commit_id"], post["event"]), (SHA_A, "REQUEST_CHANGES"))
         self.assertTrue(post["body"].startswith("<!-- issue-agent:p1:review -->"))
-        self.assertTrue(post["body"].endswith(bridge.review_footer(BOT)))
+        self.assertTrue(post["body"].endswith(bridge.review_footer(BOT, pushes_reviewed=False)))
         self.assertEqual(post["comments"], [{"path": "a.py", "line": 3, "side": "RIGHT", "body": "bug here"}])
         again = self.op("github.review", "p1", result=REVIEW_OK)
         self.assertEqual((again["created"], again["review_id"]), (False, first["review_id"]))
         self.assertEqual(len(self.fake.review_posts), 1)
+
+    def test_stale_review_lands_on_the_reviewed_commit_and_leaves_the_head_unstamped(self) -> None:
+        self.use_reviewer_app()
+        self.started_review(12)
+        self.fake.prs[12]["head"]["sha"] = SHA_B  # pushed while the review ran
+        result = self.op("github.review", "p1", result=REVIEW_OK)
+        self.assertTrue(result["ok"], result)
+        self.assertEqual((result["stale"], result["created"], result["commit_status"]), (True, True, None))
+        post = self.fake.review_posts[0]
+        self.assertEqual((post["commit_id"], post["event"]), (SHA_A, "REQUEST_CHANGES"))
+        self.assertIn(f"moved to `{SHA_B}`", post["body"])
+        self.assertIn(f"`{bridge.review_command(REVIEWER)}`", post["body"])
+        self.assertEqual(self.fake.status_posts, [])
+        again = self.op("github.review", "p1", result=REVIEW_OK)
+        self.assertEqual((again["created"], again["commit_status"]), (False, None))
+        self.assertEqual((len(self.fake.review_posts), self.fake.status_posts), (1, []))
+
+    def test_stale_review_of_a_force_pushed_away_commit_becomes_a_comment(self) -> None:
+        self.use_reviewer_app()
+        self.started_review(12)
+        self.fake.prs[12]["head"]["sha"] = SHA_B
+        self.fake.reject_review_commits = {SHA_A}
+        result = self.op("github.review", "p1", result=REVIEW_OK)
+        self.assertTrue(result["ok"], result)
+        self.assertEqual((result["stale"], result["created"], result["event_submitted"]), (True, True, "COMMENT"))
+        self.assertEqual((self.fake.reviews, self.fake.status_posts), ([], []))
+        body = self.fake.comments[12][0]["body"]
+        self.assertIn("**Verdict: REQUEST_CHANGES**", body)
+        self.assertIn("- `a.py` line 3 (RIGHT): bug here", body)
+        self.assertTrue(body.endswith(bridge.review_footer(REVIEWER, pushes_reviewed=True)))
+        again = self.op("github.review", "p1", result=REVIEW_OK)
+        self.assertEqual((again["created"], len(self.fake.comments[12])), (False, 1))
 
     def test_review_of_bots_own_pr_is_downgraded_to_comment_with_verdict(self) -> None:
         self.started_review(12, author=BOT)
@@ -1567,7 +2780,7 @@ class PullRequestOpsTests(BridgeTestCase):
         self.assertEqual(self.fake.review_posts[0]["event"], "COMMENT")
         self.assertIn("**Verdict: APPROVE**", body.splitlines()[1])
         self.assertIn("Needs work", body)
-        self.assertTrue(body.endswith(bridge.review_footer(BOT)))
+        self.assertTrue(body.endswith(bridge.review_footer(BOT, pushes_reviewed=False)))
         # Single App: everything goes through the issue App and no commit status is set.
         self.assertIsNone(result["commit_status"])
         self.assertEqual({actor for actor, _, _ in self.fake.gh_calls}, {BOT})
@@ -1633,7 +2846,7 @@ class PullRequestOpsTests(BridgeTestCase):
         self.assertIn("## Findings outside the diff", retry["body"])
         self.assertIn("- `a.py` line 3 (RIGHT): bug here", retry["body"])
         self.assertIn("- `b.py` line 4-9 (LEFT): first\n  second", retry["body"])
-        self.assertTrue(retry["body"].endswith(bridge.review_footer(BOT)))
+        self.assertTrue(retry["body"].endswith(bridge.review_footer(BOT, pushes_reviewed=False)))
 
     def test_thread_replies_are_idempotent_and_resolve_threads(self) -> None:
         self.started_review(12)

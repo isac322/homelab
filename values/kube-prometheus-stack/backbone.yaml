@@ -949,13 +949,13 @@ prometheus:
     ## Prometheus StorageSpec for persistent data
     ## ref: https://github.com/prometheus-operator/prometheus-operator/blob/main/Documentation/user-guides/storage.md
     ##
+    ## prometheus-shared-db-prometheus-shared-0 was created by democratic-csi
+    ## (16K volblocksize, lz4) and imported into pillar-csi in place on
+    ## 2026-10-01, so it keeps those zvol properties.
     storageSpec:
       volumeClaimTemplate:
-        metadata:
-          annotations:
-            democratic-csi.org/config: '{"zfs":{"zvolBlocksize":"16K","datasetProperties":{"compression":"lz4","dedup":"off","logbias":"throughput","sync":"standard","primarycache":"metadata","redundant_metadata":"most"}}}'
         spec:
-          storageClassName: ssd-ha-xfs
+          storageClassName: ssd-ha
           accessModes: ["ReadWriteOnce"]
           resources:
             requests:
