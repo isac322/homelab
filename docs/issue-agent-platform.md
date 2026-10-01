@@ -81,12 +81,12 @@ Codex의 공통 지침은 전용 `CODEX_HOME/AGENTS.md`에서 읽고 프로젝�
 
 ### 리뷰·repair 반복 상한
 
-krema#63에서 리뷰 ↔ repair 조정이 약 12시간 동안 반복돼 토큰 약 1.21억 개를 썼다. 아래 세 상한으로 모든 반복이 유한하게 끝난다.
+krema#63에서 리뷰 ↔ repair 조정이 약 12시간 동안 반복돼 토큰 약 1.21억 개를 썼다. 시작점은 `finish`였다. 리뷰가 이미 `APPROVED`로 게시된 뒤 `finish`가 `agent:needs-attention` 라벨 DELETE에서 HTTP 401을 받아 실패했고, n8n `Finished?`가 `fail`로 넘어가 attention 댓글이 `@haechibot review` 재요청을 안내했다. 재요청도 같은 실패로 끝났다. 아래 규칙으로 이 반복이 유한하게 끝난다.
 
 - 리뷰 요청 합치기와 취소: 아래 "리뷰 요청 합치기와 취소" 절의 규칙으로 PR마다 대기 리뷰는 최대 하나이고, 새 head가 오면 이전 head의 실행 중 리뷰는 끝까지 돌지 않는다.
-- 재리뷰 차단 해제 상한: 멈춘 리뷰의 detail이 자격증명·권한 실패(HTTP 401·403, `Bad credentials`, 권한 관련 HTTP 422)이거나, 마지막 `reviewed` 이후 `superseded`된 리뷰가 `MAX_REVIEW_SUPERSEDES`(2)개 이상이면 새 리뷰 요청은 차단을 풀지 않고 대기한다. 이때 attention 댓글과 stale 리뷰 본문은 `@haechibot review` 안내를 빼고 운영자가 원인을 고친 뒤 `retry_event`해야 한다고 쓴다.
-- 자동 repair 상한: `prs.repair_count`가 reconciliation이 자동으로 넣은 `pr_repair` 수를 센다. `MAX_PR_REPAIRS`(3)에 도달한 뒤 fingerprint가 바뀌고 수동 요청이 없으면 repair를 넣지 않고 `repair_limit`을 반환하며 dirty를 내린다. PR에는 `pr-repair-limit:<PR>:<last_manual_id>` marker 댓글을 한 번 남긴다. 사람의 `@bulgasaribot` repair 요청은 허용되며 카운터를 0으로 되돌린다. PR이 merge-ready가 되어도 0으로 되돌린다.
-
+- `finish` 순서와 라벨 제거: `finish`는 이벤트를 먼저 `completed`로 기록하고 세션 정리를 마친 뒤 라벨을 다룬다. bridge가 attention 알림에서 라벨 추가에 성공하면 `issues.attention_label`을 1로 두고, `finish`는 이 값이 1일 때만 라벨을 DELETE한다. 200·404면 0으로 내린다. 그 밖의 GitHub 오류는 경고 로그만 남기고 값을 유지해 다음 `finish`가 다시 시도한다. 라벨 제거 실패가 끝난 실행을 실패로 바꾸지 않으며, bridge가 붙이지 않은 라벨에는 DELETE를 보내지 않는다. 마이그레이션은 `needs_attention` 이벤트가 있는 대상의 값을 1로 채운다.
+- 자동 repair 상한: reconciliation은 `_pr_findings`를 원인별로 나눈다. `base`는 behind 또는 conflict, `checks`는 실패한 check, `review`는 변경 요청 리뷰다. 자동 `pr_repair`를 넣을 때마다 `prs.repair_streaks`(JSON)에서 지금 있는 원인의 연속 횟수는 1 늘리고 없는 원인은 0으로 되돌리며, 자동 repair 총수 `total`도 1 늘린다. 지금 있는 원인 중 하나라도 연속 `MAX_PR_REPAIR_STREAK`(3)회에 도달했거나 `total`이 `MAX_PR_REPAIRS_TOTAL`(10, 원인이 번갈아 나타나는 경우의 backstop)에 도달하면 repair를 넣지 않는다. 대신 원인과 횟수를 적은 `pr-repair-limit:<PR>:<last_manual_id>` marker 댓글을 한 번 남기고, dirty를 내리고 fingerprint를 기록한 뒤 `repair_limit`을 반환한다.
+- 초기화: 사람의 `@bulgasaribot` repair 요청은 상한과 무관하게 허용되며 연속 횟수와 `total`을 모두 0으로 되돌린다. PR이 merge-ready가 되어도 같다. 기존 DB에 남은 `prs.repair_count` 열은 쓰지 않는다.
 
 ### 리뷰 요청 합치기와 취소
 

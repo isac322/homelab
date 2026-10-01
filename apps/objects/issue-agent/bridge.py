@@ -173,23 +173,20 @@ IDLE_WITHOUT_RESULT_LIMIT = 3
 HISTORY_PAGE_LIMIT = 200
 MAX_HISTORY_PAGES = 25
 MAX_SUPERSEDE_HOPS = 8
-# Loop bounds: a review request lifts a parked review's block at most this many times between completed
-# reviews, and reconciliation queues at most this many automatic repairs before a human signal or 'ready'.
-MAX_REVIEW_SUPERSEDES = 2
-MAX_PR_REPAIRS = 3
 # A pull request has at most one pending review. Every request (open, push, `review` comment, reconciliation)
 # folds into it and pushes its start back to REVIEW_SETTLE_SECONDS after the newest request, but never past
 # REVIEW_MAX_DELAY_SECONDS after the oldest one, so a push and the comment that follows it run one review.
 REVIEW_SETTLE_SECONDS = 90.0
 REVIEW_MAX_DELAY_SECONDS = 300.0
-# Failures a re-run cannot fix: GitHub refused the bridge's credentials or their permissions.
-_CREDENTIAL_FAILURE_RE = re.compile(
-    r"HTTP 40[13]\b|status code 40[13]\b|Bad credentials|Resource not accessible by integration"
-    r"|HTTP 422\b.*permission", re.IGNORECASE | re.DOTALL)
-
-
-def credential_failure(detail: Any) -> bool:
-    return isinstance(detail, str) and _CREDENTIAL_FAILURE_RE.search(detail) is not None
+# Automatic PR repair bounds: reconciliation stops queueing repairs once one blocker cause (base, checks,
+# review) survived this many consecutive repairs, or after this many automatic repairs of any causes (a
+# backstop against causes alternating forever). A human repair signal or a merge-ready state resets both.
+MAX_PR_REPAIR_STREAK = 3
+MAX_PR_REPAIRS_TOTAL = 10
+# Repair cause -> wording; findings map onto them in Bridge._repair_causes. Streaks persist in prs.repair_streaks
+# as {"base": n, "checks": n, "review": n, "total": n}.
+PR_REPAIR_CAUSES = {"base": "an outdated or conflicting base", "checks": "failing checks",
+                    "review": "requested changes"}
 
 REQUIRED_ENV = (
     "BRIDGE_STATE_PATH",
@@ -480,6 +477,7 @@ CREATE TABLE IF NOT EXISTS {name} (
     phase         TEXT NOT NULL DEFAULT 'none',
     subject       TEXT NOT NULL DEFAULT 'issue',
     pr_number     INTEGER,
+    attention_label INTEGER NOT NULL DEFAULT 0,
     PRIMARY KEY (repo, issue_number)
 )"""
 # Columns added to ``issues`` after v1; ALTER TABLE ADD COLUMN keeps existing rows.
@@ -487,6 +485,7 @@ ISSUE_COLUMNS = (
     ("phase", "TEXT NOT NULL DEFAULT 'none'"),
     ("subject", "TEXT NOT NULL DEFAULT 'issue'"),
     ("pr_number", "INTEGER"),
+    ("attention_label", "INTEGER NOT NULL DEFAULT 0"),  # 1 while the bridge's needs-attention label is on GitHub
 )
 TURNS_DDL = """
 CREATE TABLE IF NOT EXISTS {name} (
@@ -520,7 +519,7 @@ CREATE TABLE IF NOT EXISTS {name} (
     attempted_key   TEXT,
     latest_signal   TEXT,
     last_manual_id  INTEGER,
-    repair_count    INTEGER NOT NULL DEFAULT 0,
+    repair_streaks  TEXT NOT NULL DEFAULT '{{}}',
     notified_head   TEXT,
     closed          INTEGER NOT NULL DEFAULT 0,
     updated_at      REAL NOT NULL,
@@ -537,8 +536,8 @@ SCHEMA = ";\n".join([
 ]) + ";\n"
 # Event: accepted -> dispatched -> completed | needs_attention. A pull request keeps at most one pending
 # ('accepted') review: a new review request folds older pending ones into itself with outcome 'coalesced',
-# completes parked ones with outcome 'superseded' (bounded by credential failures and MAX_REVIEW_SUPERSEDES),
-# and cancels a running review of an older head with outcome 'cancelled' (Store.enqueue)
+# completes parked ones with outcome 'superseded', and cancels a running review of an older head with outcome
+# 'cancelled' (Store.enqueue)
 # issues.edited is accepted only while the issue is 'implementing' (Store.enqueue answers 'edit_ignored' otherwise)
 # Issue session: none -> pending -> ready (pending may fall back to none)
 # Issue phase: none -> triaged -> implementing; pull requests: none -> reviewing
@@ -587,6 +586,11 @@ def migrate(conn: sqlite3.Connection) -> None:
                            if "events" in tables else "0")
             conn.execute("UPDATE issues SET phase = 'implementing' WHERE phase = 'none' AND subject = 'issue'"
                          f" AND ({implemented} OR (branch IS NOT NULL AND session_id IS NOT NULL))")
+        if "attention_label" not in have and "events" in tables:
+            # Subjects parked before the flag existed carry the bridge's label; their next finish removes it.
+            conn.execute("UPDATE issues SET attention_label = 1 WHERE EXISTS (SELECT 1 FROM events e"
+                         " WHERE e.repo = issues.repo AND e.issue_number = issues.issue_number"
+                         " AND e.state = 'needs_attention')")
     if "turns" in tables and "mode" not in _columns(conn, "turns"):
         # v1 turns were keyed by delivery only; they stay readable under mode 'legacy'.
         _rebuild(conn, "turns", TURNS_DDL, {"mode": "'legacy'"})
@@ -595,7 +599,7 @@ def migrate(conn: sqlite3.Connection) -> None:
     if "prs" in tables:
         have = set(_columns(conn, "prs"))
         for col, decl in (("latest_signal", "TEXT"), ("last_manual_id", "INTEGER"),
-                          ("repair_count", "INTEGER NOT NULL DEFAULT 0")):
+                          ("repair_streaks", "TEXT NOT NULL DEFAULT '{}'")):
             if col not in have:
                 conn.execute(f"ALTER TABLE prs ADD COLUMN {col} {decl}")
 # Event: accepted -> dispatched -> completed | needs_attention
@@ -844,18 +848,13 @@ class Store:
         """A new review request replaces reviews parked on the same pull request and lifts their block.
 
         Only review parks are superseded: if any other event on the subject needs attention, the block
-        belongs to that event and stays until an operator resolves it. A re-request cannot fix refused
-        credentials, and after ``MAX_REVIEW_SUPERSEDES`` re-requests without a completed review it stops
-        lifting the block; both cases wait for an operator ``retry_event``.
+        belongs to that event and stays until an operator resolves it.
         """
         parked = conn.execute(
-            "SELECT kind, detail FROM events WHERE repo = ? AND issue_number = ? AND state = 'needs_attention'",
+            "SELECT kind FROM events WHERE repo = ? AND issue_number = ? AND state = 'needs_attention'",
             (ev["repo"], ev["issue_number"]),
         ).fetchall()
         if not parked or any(row["kind"] != "pr_review" for row in parked):
-            return
-        if any(credential_failure(row["detail"]) for row in parked) \
-                or Store._review_supersedes(conn, ev["repo"], ev["issue_number"]) >= MAX_REVIEW_SUPERSEDES:
             return
         conn.execute(
             "UPDATE events SET state = 'completed', outcome = 'superseded', attention_pending = 0,"
@@ -865,21 +864,6 @@ class Store:
         )
         conn.execute("UPDATE issues SET blocked = 0, detail = NULL, updated_at = ? WHERE repo = ? AND issue_number = ?",
                      (now, ev["repo"], ev["issue_number"]))
-
-    @staticmethod
-    def _review_supersedes(conn: sqlite3.Connection, repo: str, number: int) -> int:
-        """Review events superseded on the subject since its latest successfully completed review."""
-        (count,) = conn.execute(
-            "SELECT COUNT(*) FROM events WHERE repo = ? AND issue_number = ? AND kind = 'pr_review'"
-            " AND outcome = 'superseded' AND seq > COALESCE((SELECT MAX(seq) FROM events WHERE repo = ?"
-            " AND issue_number = ? AND kind = 'pr_review' AND outcome = 'reviewed'), 0)",
-            (repo, number, repo, number),
-        ).fetchone()
-        return int(count)
-
-    def review_supersedes(self, repo: str, number: int) -> int:
-        with closing(self._connect()) as conn:
-            return self._review_supersedes(conn, repo, number)
 
     def event(self, delivery_id: str) -> sqlite3.Row | None:
         rows = self.query("SELECT * FROM events WHERE delivery_id = ?", (delivery_id,))
@@ -1929,6 +1913,8 @@ class Bridge:
         # key; ``setdefault`` makes lock lookup atomic. Entries are kept forever: deleting a key
         # while another thread holds its lock would reopen the race they close.
         self._keyed_locks: dict[Any, threading.Lock] = {}
+        # Catalog labels this process has seen exist (repo, name); only spares repeat existence reads.
+        self._known_labels: set[tuple[str, str]] = set()
         self.ops: dict[str, Callable[[dict[str, Any]], dict[str, Any]]] = {
             "begin": self.op_begin,
             "stage": self.op_stage,
@@ -2093,6 +2079,10 @@ class Bridge:
                     else:
                         self.store.update_event(ev["delivery_id"], head_sha=current["head_sha"],
                                                 default_branch=current["default_branch"])
+                        # session_send reuses this evidence; a snapshot kept from a send that may have
+                        # landed is never replaced (op_stage is first-write-wins).
+                        stages = self.op_stage({"delivery_id": ev["delivery_id"], "stage": "repair_snapshot",
+                                                "value": {"state": current, "findings": findings}})["stages"]
         ev = self.store.event(ev["delivery_id"])
         issue = self.store.issue(ev["repo"], ev["issue_number"])
         return {
@@ -2147,12 +2137,11 @@ class Bridge:
         if ev["state"] == "needs_attention":
             raise OpError("event_terminal")
         detail = req.get("detail")
-        # A successful run clears an earlier failure notice on the subject (absent label: 404).
-        self._gh("DELETE", f"/repos/{ev['repo']}/issues/{ev['issue_number']}/labels/"
-                           f"{urllib.parse.quote(NEEDS_ATTENTION, safe='')}", ok=(200, 404))
+        # The run's outcome is recorded first: nothing after this point can turn a finished run into a failure.
         self.store.update_event(ev["delivery_id"], state="completed", outcome=outcome,
                                 detail=detail[:2000] if isinstance(detail, str) else None)
         self._archive_session(ev)
+        self._clear_attention_label(ev["repo"], int(ev["issue_number"]))
         pr_number = ev["pr_number"] or self.store.issue(ev["repo"], ev["issue_number"])["pr_number"]
         if pr_number:
             if ev["kind"] == "pr_repair":
@@ -2163,6 +2152,21 @@ class Bridge:
             except (OpError, TransportError) as exc:
                 LOG.warning("post-turn PR reconciliation pending for %s#%s: %s", ev["repo"], pr_number, exc)
         return {"already": False}
+
+    def _clear_attention_label(self, repo: str, number: int) -> None:
+        """A successful run clears the failure notice the bridge put on the subject, if it put one there.
+
+        Best effort: the flag stays set when GitHub refuses the removal, so the next finish retries it."""
+        issue = self.store.issue(repo, number)
+        if issue is None or not issue["attention_label"]:
+            return
+        try:
+            self._gh("DELETE", f"/repos/{repo}/issues/{number}/labels/"
+                               f"{urllib.parse.quote(NEEDS_ATTENTION, safe='')}", ok=(200, 404))
+        except (OpError, TransportError) as exc:
+            LOG.warning("%s#%d %s not removed (next finish retries): %s", repo, number, NEEDS_ATTENTION, exc)
+            return
+        self.store.update_issue(repo, number, attention_label=0)
 
     def _archive_session(self, ev: sqlite3.Row) -> None:
         """Stop the finished subject's agent process; the next event resumes it through ``ensure_session``.
@@ -2262,12 +2266,9 @@ class Bridge:
             f"`{{\"delivery_id\": \"{ev['delivery_id']}\"}}`; the workflow resumes from its recorded stages and "
             f"`{NEEDS_ATTENTION}` is removed when the run finishes.",
         ]
-        if ev["kind"] == "pr_review":
-            blocker = self._review_rerun_blocker(ev, detail)
-            footer = review_footer(self.reviewer_login(), pushes_reviewed=self.review_github is not None) \
-                if blocker is None else ""
-            if blocker or footer:
-                lines += ["", blocker or footer]
+        footer = review_footer(self.reviewer_login(), pushes_reviewed=self.review_github is not None)
+        if ev["kind"] == "pr_review" and footer:
+            lines += ["", footer]
         return "\n".join(lines)
 
     def mark_attention(self, ev: sqlite3.Row, detail: str, node: str | None = None) -> None:
@@ -2320,6 +2321,8 @@ class Bridge:
             except (OpError, TransportError) as exc:
                 LOG.error("attention label for %s not applied (will retry): %s", delivery_id, exc)
                 done = False
+            else:
+                self.store.update_issue(ev["repo"], ev["issue_number"], attention_label=1)
             if done:
                 self.store.update_event(delivery_id, attention_pending=0)
             else:
@@ -3016,18 +3019,22 @@ class Bridge:
         return self._comment(ev["repo"], ev["issue_number"], f"{ev['delivery_id']}:{purpose}", body)
 
     def _ensure_label(self, repo: str, name: str, *, client: GitHub | None = None) -> None:
-        """Create a missing catalog label with its catalog description/color; existing labels are reused as-is."""
+        """Create a missing catalog label with its catalog description/color; existing labels are reused as-is.
+        Existence is checked once per process; ``_apply_labels`` forgets a label whose add fails, so a label
+        deleted after the check is looked up (and recreated) again on the next attempt."""
+        if (repo, name) in self._known_labels:
+            return
         status, _ = self._gh_raw("GET", f"/repos/{repo}/labels/{urllib.parse.quote(name, safe='')}",
                                  client=client)
-        if status == 200:
-            return
-        if status != 404:
+        if status == 404:
+            description, color, _group = LABEL_CATALOG[name]
+            status, _ = self._gh_raw("POST", f"/repos/{repo}/labels",
+                                     {"name": name, "color": color, "description": description}, client=client)
+            if status not in (201, 422):  # 422: created concurrently
+                raise OpError(f"github label create HTTP {status}", retryable=status >= 500 or status == 429)
+        elif status != 200:
             raise OpError(f"github label lookup HTTP {status}", retryable=status >= 500 or status == 429)
-        description, color, _group = LABEL_CATALOG[name]
-        status, _ = self._gh_raw("POST", f"/repos/{repo}/labels",
-                                 {"name": name, "color": color, "description": description}, client=client)
-        if status not in (201, 422):  # 422: created concurrently
-            raise OpError(f"github label create HTTP {status}", retryable=status >= 500 or status == 429)
+        self._known_labels.add((repo, name))
 
     def _apply_labels(self, repo: str, number: int, add: list[str], remove: list[str], *,
                       client: GitHub | None = None) -> dict[str, Any]:
@@ -3037,10 +3044,15 @@ class Bridge:
         for name in add:
             self._ensure_label(repo, name, client=client)
         if add:
-            data = self._gh("POST", base, {"labels": add}, client=client)
+            try:
+                data = self._gh("POST", base, {"labels": add}, client=client)
+            except (OpError, TransportError):
+                self._known_labels.difference_update((repo, n) for n in add)
+                raise
             current = {lbl.get("name") for lbl in data or [] if isinstance(lbl, dict)}
             missing = [n for n in add if n not in current]
             if missing:
+                self._known_labels.difference_update((repo, n) for n in missing)
                 raise OpError(f"labels not applied: {missing}", needs_operator=True)
         groups = {LABEL_CATALOG[n][2] for n in add if LABEL_CATALOG[n][2]}
         evict = [n for n, (_d, _c, g) in LABEL_CATALOG.items()
@@ -3191,19 +3203,6 @@ class Bridge:
             return
         if isinstance(head, str) and _SHA_RE.fullmatch(head):
             self.store.update_event(ev["delivery_id"], head_sha=head)
-
-    def _review_rerun_blocker(self, ev: sqlite3.Row, detail: str | None) -> str | None:
-        """Why a new review request would not restart this review, or None when it would."""
-        if credential_failure(detail):
-            return ("A new review request cannot restart this review: GitHub refused the bridge's credentials "
-                    "or their permissions. An operator must fix the cause and retry the event.")
-        count = self.store.review_supersedes(ev["repo"], ev["issue_number"])
-        if count >= MAX_REVIEW_SUPERSEDES:
-            return (f"A new review request no longer restarts this review: it was restarted {count} times "
-                    f"without completing (limit {MAX_REVIEW_SUPERSEDES}). An operator must fix the cause and "
-                    "retry the event.")
-        return None
-
     def op_github_review(self, req: dict[str, Any]) -> dict[str, Any]:
         ev = self._event(req)
         if subject_of(ev["kind"]) != "pull_request":
@@ -3266,12 +3265,10 @@ class Bridge:
             body = (f"**Verdict: {event}** — GitHub does not let the app {action} its own pull request, "
                     f"so this verdict is submitted as a comment review.\n\n{body}")
             event = "COMMENT"
-        blocker = self._review_rerun_blocker(ev, None)
-        footer = review_footer(reviewer, pushes_reviewed=self.review_github is not None) if blocker is None \
-            else f"---\n<sub>{blocker}</sub>"
+        footer = review_footer(reviewer, pushes_reviewed=self.review_github is not None)
         tail = f"\n\n{footer}" if footer else ""
         if stale:
-            command = review_command(reviewer) if blocker is None else None
+            command = review_command(reviewer)
             if self.review_github is not None:
                 again = " The push queued a review of the new head."
             else:
@@ -3359,15 +3356,11 @@ class Bridge:
         if data.get("sha") != head:
             raise OpError(f"publisher pushed {data.get('sha')!r}, expected {head}", needs_operator=True)
         pr_number = ev["pr_number"] or self.store.issue(ev["repo"], ev["issue_number"])["pr_number"]
-        state = None
         if pr_number:
+            # CI has not run on the new head yet; Upsert pull request and reconciliation read GitHub's state.
             self.store.track_pr(ev["repo"], int(pr_number), int(ev["issue_number"]), head)
             self.store.dirty_pr(ev["repo"], int(pr_number))
-            try:
-                state = self._pr_state(ev["repo"], int(pr_number))
-            except (OpError, TransportError) as exc:
-                LOG.warning("post-push PR state pending for %s#%s: %s", ev["repo"], pr_number, exc)
-        return {"branch": branch, "sha": head, "pr_state": state}
+        return {"branch": branch, "sha": head}
 
     def _pr_state(self, repo: str, number: int) -> dict[str, Any]:
         """GitHub owns merge policy; check/review evidence never replaces its computed state."""
@@ -3448,7 +3441,16 @@ class Bridge:
     def _actionable(findings: Mapping[str, Any]) -> bool:
         return any(findings.get(k) for k in ("behind", "conflicts", "failed_checks", "change_requests"))
 
-    def _notify_pr_ready(self, repo: str, number: int, expected_head: str) -> dict[str, Any]:
+    @staticmethod
+    def _repair_causes(findings: Mapping[str, Any]) -> list[str]:
+        """The ``PR_REPAIR_CAUSES`` present in ``findings``."""
+        present = {"base": findings.get("behind") or findings.get("conflicts"),
+                   "checks": findings.get("failed_checks"), "review": findings.get("change_requests")}
+        return [c for c in PR_REPAIR_CAUSES if present[c]]
+
+    def _notify_pr_ready(self, repo: str, number: int, state: Mapping[str, Any]) -> dict[str, Any]:
+        """``state`` is the caller's fresh ``_pr_state``; the mention re-reads GitHub after assigning."""
+        expected_head = state["head_sha"]
         with self._keyed_lock(("pr-ready", repo, number)):
             cfg = self.registry().get(repo)
             owner = cfg.project_owner if cfg else None
@@ -3456,8 +3458,7 @@ class Bridge:
             if not owner or row is None or row["active_delivery"] \
                     or self._subject_active(repo, int(row["issue_number"])):
                 return {"ready": False, "owner": owner, "mentioned": False, "assigned": False}
-            state = self._pr_state(repo, number)
-            if not state["ready"] or expected_head != state["head_sha"]:
+            if not state["ready"]:
                 return {"ready": False, "owner": owner, "mentioned": False, "assigned": False}
             if row["notified_head"] == expected_head:
                 return {"ready": True, "owner": owner, "mentioned": False, "assigned": True}
@@ -3607,10 +3608,10 @@ class Bridge:
                 raise OpError("managed PR no longer uses its issue worktree branch", needs_operator=True)
             manual = json.loads(row["latest_signal"]) if row["latest_signal"] else None
             if state["ready"] and not manual:
-                self._notify_pr_ready(repo, number, state["head_sha"])
+                self._notify_pr_ready(repo, number, state)
                 with self.store.tx() as conn:
                     conn.execute("UPDATE prs SET dirty = 0, head_sha = ?, latest_signal = NULL, attempted_key = NULL,"
-                                 " repair_count = 0 "
+                                 " repair_streaks = '{}' "
                                  "WHERE repo = ? AND pr_number = ? AND revision = ?",
                                  (state["head_sha"], repo, number, row["revision"]))
                 return "ready"
@@ -3625,21 +3626,36 @@ class Bridge:
             fingerprint = hashlib.sha256(json.dumps(evidence, sort_keys=True).encode()).hexdigest()
             if row["attempted_key"] == fingerprint:
                 return "unchanged"
-            if not manual and row["repair_count"] >= MAX_PR_REPAIRS:
-                # Each repair pushes a head whose new evidence would queue the next one; stop and say so once
-                # per manual-signal cycle. A human repair signal or a merge-ready state resets the count.
-                slug = (self.config.github_bot_login or "").removesuffix("[bot]")
-                again = f"Mention `@{slug}` in a comment to request another repair, or fix" if slug else "Fix"
-                self._comment(repo, number, f"pr-repair-limit:{number}:{row['last_manual_id'] or 0}",
-                              f"**Automatic repair stopped** — the issue agent queued {MAX_PR_REPAIRS} automatic "
-                              f"repairs for this pull request and GitHub still reports blockers at "
-                              f"`{state['head_sha']}`. {again} the cause manually; the limit resets when the pull "
-                              "request becomes merge-ready.")
-                with self.store.tx() as conn:
-                    conn.execute("UPDATE prs SET dirty = 0, attempted_key = ?, head_sha = ?, updated_at = ?"
-                                 " WHERE repo = ? AND pr_number = ? AND revision = ?",
-                                 (fingerprint, state["head_sha"], now, repo, number, row["revision"]))
-                return "repair_limit"
+            streaks = json.loads(row["repair_streaks"] or "{}")
+            causes = self._repair_causes(findings)
+            if manual:
+                streaks = {}  # a human repair signal starts a fresh automatic-repair budget
+            else:
+                # Each repair pushes a head whose new evidence would queue the next one. Stop when one cause
+                # survived MAX_PR_REPAIR_STREAK repairs in a row, or after MAX_PR_REPAIRS_TOTAL repairs while
+                # causes alternate; say so once per manual-signal cycle.
+                worn = [c for c in causes if streaks.get(c, 0) >= MAX_PR_REPAIR_STREAK]
+                total = streaks.get("total", 0)
+                if worn or total >= MAX_PR_REPAIRS_TOTAL:
+                    if worn:
+                        why = (f"{' and '.join(PR_REPAIR_CAUSES[c] for c in worn)} survived {MAX_PR_REPAIR_STREAK} "
+                               "consecutive automatic repairs")
+                    else:
+                        why = (f"it already queued {total} automatic repairs (limit {MAX_PR_REPAIRS_TOTAL}) and "
+                               "GitHub still reports blockers")
+                    slug = (self.config.github_bot_login or "").removesuffix("[bot]")
+                    again = f"Mention `@{slug}` in a comment to request another repair, or fix" if slug else "Fix"
+                    self._comment(repo, number, f"pr-repair-limit:{number}:{row['last_manual_id'] or 0}",
+                                  f"**Automatic repair stopped** — the issue agent stopped repairing this pull "
+                                  f"request at `{state['head_sha']}`: {why}. {again} the cause manually; the "
+                                  "limits reset when the pull request becomes merge-ready.")
+                    with self.store.tx() as conn:
+                        conn.execute("UPDATE prs SET dirty = 0, attempted_key = ?, head_sha = ?, updated_at = ?"
+                                     " WHERE repo = ? AND pr_number = ? AND revision = ?",
+                                     (fingerprint, state["head_sha"], now, repo, number, row["revision"]))
+                    return "repair_limit"
+                streaks = {**{c: streaks.get(c, 0) + 1 if c in causes else 0 for c in PR_REPAIR_CAUSES},
+                           "total": total + 1}
             with self.store.tx() as conn:
                 active = conn.execute("SELECT 1 FROM events WHERE repo = ? AND issue_number = ? "
                                       "AND state IN ('accepted', 'dispatching', 'dispatched') LIMIT 1",
@@ -3658,9 +3674,10 @@ class Bridge:
                 if not inserted.rowcount:
                     return "unchanged"
                 conn.execute("UPDATE prs SET active_delivery = ?, attempted_key = ?, dirty = 0, head_sha = ?,"
-                             " latest_signal = NULL, repair_count = CASE WHEN ? THEN 0 ELSE repair_count + 1 END,"
-                             " updated_at = ? WHERE repo = ? AND pr_number = ?",
-                             (delivery, fingerprint, state["head_sha"], manual is not None, now, repo, number))
+                             " latest_signal = NULL, repair_streaks = ?, updated_at = ?"
+                             " WHERE repo = ? AND pr_number = ?",
+                             (delivery, fingerprint, state["head_sha"], json.dumps(streaks, sort_keys=True), now,
+                              repo, number))
             return "queued"
         finally:
             lock.release()
