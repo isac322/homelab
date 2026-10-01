@@ -378,6 +378,8 @@ iptables backend로 바꾼 dockerd 이미지 `ghcr.io/isac322/issue-agent-docker
 
 Runner namespace의 읽기 토큰에는 기존 `contents`·`issues`·`pull_requests`와 함께 `checks`·`statuses`·`actions`의 `read` 권한을 유지한다. PR 리뷰의 CI 상태 조회와 repair의 Actions 로그 조회에 필요한 권한이며 쓰기 권한은 추가하지 않는다. 최종 Runner manifest의 Kustomize 렌더·Kubernetes client-side dry-run에서 이미지 pin과 여섯 읽기 권한을 확인했다. 운영 ESO reconciliation과 실제 installation token의 대상 저장소 접근은 배포 후 확인 게이트다.
 
+최종 Runner 이미지와 iptables-nft daemon을 함께 실행한 격리 QA에서도 UID 1000의 Docker build·artifact 왕복, default bridge의 DNS·외부 HTTPS, localhost published port와 service-name DNS가 통과했다. 변경 없는 Krema `52f2d41a38d880b584b7e5bf7dd79adb81a29a56`의 smoke·preview 17개가 JUnit 기준 100.110초에 모두 통과했고 errors·failures·skips는 0이었다. KWin은 OpenGL/llvmpipe로 렌더링하고 `renderD128` FD를 열었다. host의 IPv4·IPv6 방화벽은 시각 주석·traffic counter를 제외하면 동일했고 DRM 장치 metadata도 동일했다. QA container·원격 scratch·반입 이미지와 임시 실행 스크립트를 정리하고 로그·JUnit·renderer·이미지 identity 근거만 보존했다. 운영 Runner를 재시작하거나 운영 배포·home migration·이벤트 retry를 실행하지 않았다.
+
 `macmini`의 native DRM graphics 실행과 새 이미지의 운영 K3s rollout은 아직 검증하지 않았다.
 
 ### Docker 배포 후 확인 게이트
