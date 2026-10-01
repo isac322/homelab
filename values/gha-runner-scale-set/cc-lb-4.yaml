@@ -18,7 +18,8 @@ containerMode:
       requests:
         storage: 10Gi
 
-# nextest-cov p95 4.4c / 4.7Gi; e2e/clippy ~2.8c. 4c/6Gi on 8-core nodes.
+# Reserve 3.5 CPUs so batch runners fit alongside resident workloads.
+# Retain the 4-CPU burst cap and 6Gi memory budget; QoS becomes Burstable.
 # No DinD. Image builds go to buildkit.arc-systems.svc:1234.
 # actions/cache talks to the in-cluster cache server, not GitHub.
 template:
@@ -92,7 +93,7 @@ template:
             value: "4"
         resources:
           requests:
-            cpu: "4"
+            cpu: "3500m"
             memory: 6Gi
           limits:
             cpu: "4"
