@@ -1,0 +1,213 @@
+{
+  "id": "IssueAgentIntake01",
+  "name": "IssueAgentIntake01",
+  "nodes": [
+    {
+      "parameters": {
+        "httpMethod": "POST",
+        "path": "github",
+        "responseMode": "responseNode",
+        "options": {
+          "rawBody": true
+        }
+      },
+      "id": "317dff8a-5c9c-5249-a83f-bf6edfe17829",
+      "name": "GitHub delivery",
+      "type": "n8n-nodes-base.webhook",
+      "typeVersion": 2,
+      "position": [
+        0,
+        0
+      ],
+      "webhookId": "12575300-3574-5217-9ec2-2d927eaf75ee"
+    },
+    {
+      "parameters": {
+        "provider": "github",
+        "onInvalid": "route",
+        "options": {}
+      },
+      "id": "ee9063a3-3ecc-5cf0-b89a-feba1d436966",
+      "name": "Verify GitHub signature",
+      "type": "n8n-nodes-webhook-signature.verifyWebhookSignature",
+      "typeVersion": 1,
+      "position": [
+        240,
+        0
+      ],
+      "credentials": {
+        "webhookSigningSecretApi": {
+          "id": "iaWebhookSign001",
+          "name": "issue-agent-github-webhook-secret"
+        }
+      }
+    },
+    {
+      "parameters": {
+        "method": "POST",
+        "url": "={{ $env.ISSUE_AGENT_BRIDGE_URL }}/webhooks/github",
+        "authentication": "genericCredentialType",
+        "genericAuthType": "httpHeaderAuth",
+        "sendHeaders": true,
+        "specifyHeaders": "keypair",
+        "headerParameters": {
+          "parameters": [
+            {
+              "name": "Content-Type",
+              "value": "application/json"
+            },
+            {
+              "name": "X-GitHub-Event",
+              "value": "={{ $json.headers['x-github-event'] ?? '' }}"
+            },
+            {
+              "name": "X-GitHub-Delivery",
+              "value": "={{ $json.headers['x-github-delivery'] ?? '' }}"
+            }
+          ]
+        },
+        "sendBody": true,
+        "contentType": "binaryData",
+        "inputDataFieldName": "data",
+        "options": {
+          "timeout": 30000,
+          "response": {
+            "response": {
+              "fullResponse": true,
+              "neverError": true
+            }
+          }
+        }
+      },
+      "id": "0ca39290-b8da-5191-985f-4e7299cb86f8",
+      "name": "Forward to bridge",
+      "type": "n8n-nodes-base.httpRequest",
+      "typeVersion": 4.2,
+      "position": [
+        480,
+        -100
+      ],
+      "credentials": {
+        "httpHeaderAuth": {
+          "id": "iaBridgeOps00001",
+          "name": "issue-agent-bridge-ops"
+        }
+      },
+      "onError": "continueErrorOutput"
+    },
+    {
+      "parameters": {
+        "respondWith": "json",
+        "responseBody": "={{ JSON.stringify($json.body ?? {}) }}",
+        "options": {
+          "responseCode": "={{ $json.statusCode }}"
+        }
+      },
+      "id": "6670bd83-ff5a-5660-b3a0-6780c2c9a351",
+      "name": "Respond with bridge result",
+      "type": "n8n-nodes-base.respondToWebhook",
+      "typeVersion": 1.4,
+      "position": [
+        720,
+        -200
+      ]
+    },
+    {
+      "parameters": {
+        "respondWith": "json",
+        "responseBody": "{\"status\":\"bridge_unavailable\"}",
+        "options": {
+          "responseCode": 503
+        }
+      },
+      "id": "d13f01f8-2c3a-50e3-84af-79fe83fc5c65",
+      "name": "Respond bridge unavailable",
+      "type": "n8n-nodes-base.respondToWebhook",
+      "typeVersion": 1.4,
+      "position": [
+        720,
+        0
+      ]
+    },
+    {
+      "parameters": {
+        "respondWith": "json",
+        "responseBody": "{\"status\":\"bad_signature\"}",
+        "options": {
+          "responseCode": 401
+        }
+      },
+      "id": "cf286983-e6c1-58f0-af17-9187fd9ed6d3",
+      "name": "Respond bad signature",
+      "type": "n8n-nodes-base.respondToWebhook",
+      "typeVersion": 1.4,
+      "position": [
+        480,
+        140
+      ]
+    }
+  ],
+  "connections": {
+    "GitHub delivery": {
+      "main": [
+        [
+          {
+            "node": "Verify GitHub signature",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Verify GitHub signature": {
+      "main": [
+        [
+          {
+            "node": "Forward to bridge",
+            "type": "main",
+            "index": 0
+          }
+        ],
+        [
+          {
+            "node": "Respond bad signature",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Forward to bridge": {
+      "main": [
+        [
+          {
+            "node": "Respond with bridge result",
+            "type": "main",
+            "index": 0
+          }
+        ],
+        [
+          {
+            "node": "Respond bridge unavailable",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    }
+  },
+  "active": false,
+  "settings": {
+    "executionOrder": "v1",
+    "saveManualExecutions": true,
+    "saveDataErrorExecution": "all",
+    "saveDataSuccessExecution": "none",
+    "timezone": "UTC",
+    "errorWorkflow": "IssueAgentError01"
+  },
+  "pinData": {},
+  "meta": {
+    "templateCredsSetupCompleted": true
+  },
+  "tags": []
+}

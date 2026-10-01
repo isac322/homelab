@@ -38,8 +38,6 @@ spec:
               value: "8080"
             - name: BRIDGE_STATE_PATH
               value: /var/lib/issue-agent-bridge/state.sqlite3
-            - name: GITHUB_WEBHOOK_SECRET_FILE
-              value: /run/issue-agent/webhook/secret
             - name: GITHUB_TOKEN_DIR
               value: /run/issue-agent/github
             - name: GITHUB_BOT_LOGIN
@@ -51,7 +49,7 @@ spec:
             - name: REPO_REGISTRY_FILE
               value: /opt/issue-agent-bridge/repo-registry.json
             - name: N8N_WEBHOOK_URL
-              value: http://issue-agent-n8n.issue-agent.svc.cluster.local:5678/webhook/issue-agent
+              value: http://issue-agent-n8n.issue-agent.svc.cluster.local:5678/webhooks/issue-agent
             - name: N8N_WEBHOOK_TOKEN_FILE
               value: /run/issue-agent/ops/n8n-webhook-token
             - name: BRIDGE_OPS_TOKEN_FILE
@@ -103,9 +101,6 @@ spec:
               mountPath: /var/lib/issue-agent-bridge
             - name: tmp
               mountPath: /tmp
-            - name: webhook
-              mountPath: /run/issue-agent/webhook
-              readOnly: true
             - name: github
               mountPath: /run/issue-agent/github
               readOnly: true
@@ -131,10 +126,6 @@ spec:
         - name: bridge-code
           configMap:
             name: issue-agent-bridge-code
-        - name: webhook
-          secret:
-            secretName: issue-agent-webhook
-            defaultMode: 0440
         - name: github
           secret:
             secretName: issue-agent-github-token

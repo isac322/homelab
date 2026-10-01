@@ -213,8 +213,8 @@ K3s version과 순차 rollout은 기존 Rancher `system-upgrade-controller`가 �
 `apps/objects/issue-agent/`는 GitHub App `bulgasaribot`이 설치된 저장소의 이슈·PR 자동화 중 hub·n8n·bridge를 `issue-agent` namespace에, `apps/objects/issue-agent-runner/`는 Runner Pod를 `issue-agent-runner` namespace에 배포한다. Runner 이미지는 계속 `apps/objects/issue-agent/`에서 빌드한다. 현재 운영 대상은 `isac322/cc-lb`다. 설계와 책임 경계는 `docs/issue-agent-platform.md`를 따른다. Argo CD 등록 파일은 `argocd/apps/issue-agent.yaml`, `argocd/apps/issue-agent-runner.yaml`, `argocd/appprojects/issue-agent.yaml`이다. 자동 merge는 하지 않는다.
 
 - 구성: 각 Deployment는 단일 replica이며 `Recreate`로 교체한다.
-  - `issue-agent-bridge`: GitHub webhook 검증·중복 방지·상태 SQLite와 n8n용 `/ops` API를 담당한다. GitHub 이슈·PR 쓰기는 모두 bridge op로만 일어난다.
-  - `issue-agent-n8n`: 워크플로 `IssueAgentMain01`이 triage·구현·후속 댓글·PR 리뷰 단계와 모든 GitHub 반영(라벨·댓글·push·PR·리뷰)을 소유한다. 오류 워크플로는 `IssueAgentError01`이다.
+  - `issue-agent-bridge`: 서명 검증을 마친 GitHub delivery의 내부 수신(intake)·중복 방지·상태 SQLite와 n8n용 `/ops` API를 담당한다. GitHub 이슈·PR 쓰기는 모두 bridge op로만 일어난다.
+  - `issue-agent-n8n`: 수신 워크플로 `IssueAgentIntake01`이 GitHub webhook 서명을 검증해 bridge로 넘긴다. 워크플로 `IssueAgentMain01`이 triage·구현·후속 댓글·PR 리뷰 단계와 모든 GitHub 반영(라벨·댓글·push·PR·리뷰)을 소유하고, 모드별 HAPI 세션 루프는 하위 워크플로 `IssueAgentSession01`로 호출한다. 오류 워크플로는 `IssueAgentError01`이다.
   - `issue-agent-hub`: HAPI Hub로, 세션·메시지 SQLite와 웹 UI를 제공한다.
   - `issue-agent-runner`(`issue-agent-runner` namespace): HAPI Runner로, Codex를 실행하며 네이티브 `CODEX_HOME`, checkout, 주제별 worktree를 home PVC에 보존한다. 같은 Pod의 `publisher` 사이드카(Service `issue-agent-publisher.issue-agent-runner`, 포트 8090)가 checkout clone과 branch push만 담당하고, native sidecar `dockerd`가 Pod 전용 Docker daemon을 제공한다. Runner Pod는 replica 1과 `Recreate`를 유지하며 replica를 늘리지 않는다.
 
@@ -233,7 +233,7 @@ K3s version과 순차 rollout은 기존 Rancher `system-upgrade-controller`가 �
 - 빌드 캐시: Runner 이미지에 sccache를 체크섬 고정으로 설치한다. Rust는 `RUSTC_WRAPPER=sccache`로, C/C++는 `PATH`에서 `/usr/bin`보다 앞선 `cc`·`gcc`·`c++`·`g++` wrapper(`runner/sccache-cc`)로 sccache를 거친다. CMake는 `CMAKE_C_COMPILER_LAUNCHER`·`CMAKE_CXX_COMPILER_LAUNCHER`도 sccache로 둔다. Rust `cc` crate나 CMake launcher처럼 sccache가 이미 감싼 호출에서는 wrapper가 부모 프로세스를 보고 실제 컴파일러를 바로 실행해 이중으로 감싸지 않는다. 캐시(`SCCACHE_DIR=/home/agent/.cache/sccache`, 최대 `5G`)는 기존 home PVC에 있어 worktree·세션·Pod 재시작을 넘어 공유된다. 의존성 crate와 C/C++ 오브젝트는 캐시되지만, incremental로 빌드되는 워크스페이스 자기 crate와 링크는 캐시되지 않는다.
 - 툴체인: Runner 이미지에는 Rust(rustup, toolchain은 home PVC에 lazy 설치), Go(`/usr/local/go`, 체크섬 고정), gcc/g++, CMake, Python 3, Node가 있다. Go의 `GOPATH`(모듈 캐시, `go install` 도구)와 `GOCACHE`는 기본값인 `$HOME` 아래라 home PVC에 남는다. `go.mod`가 더 새 toolchain을 요구하면 `GOTOOLCHAIN=auto`로 받아 `GOPATH`에 둔다.
 - Provider: `external-secret-provider.yaml`이 기존 CLIProxyAPI SSM 항목에서 Runner용 `issue-agent-provider` Secret(`OPENAI_API_KEY`, Codex `config.toml`)을 만든다. n8n은 모델을 호출하지 않는다. 값은 파일 마운트로만 전달하므로 변경 후 Runner Pod를 재시작한다.
-- 저장소: `repo-registry.json`은 `defaults`(agent `codex`, model `gpt-6.1-sol`, permission `yolo`)와 저장소별 override만 가진다. model은 새 세션을 spawn할 때만 적용되고, 이미 만들어진 세션은 resume할 때 원래 모델을 유지한다. 사용자 목록은 없고, 신뢰 사용자는 collaborator 권한 API가 `admin`/`write`를 돌려주는 저장소 collaborator·owner다(SQLite 600초 캐시, 조회 실패면 HTTP 503 `permission_unavailable`). App 서명이 설치를 증명하므로 설치된 모든 저장소의 이벤트를 받는다. 기본 브랜치는 webhook payload에서 읽고, checkout(`/home/agent/checkouts/<owner>/<name>`)은 첫 세션 생성 때 publisher가 clone한다. 대상 저장소를 늘리려면 App 설치 범위를 바꾼다.
+- 저장소: `repo-registry.json`은 `defaults`(agent `codex`, model `gpt-6.1-sol`, permission `yolo`)와 저장소별 override만 가진다. model은 새 세션을 spawn할 때만 적용되고, 이미 만들어진 세션은 resume할 때 원래 모델을 유지한다. 사용자 목록은 없고, 신뢰 사용자는 collaborator 권한 API가 `admin`/`write`를 돌려주는 저장소 collaborator·owner다(SQLite 600초 캐시, 조회 실패면 HTTP 503 `permission_unavailable`). n8n 수신 워크플로가 검증한 App 서명이 설치를 증명하므로 설치된 모든 저장소의 이벤트를 받는다. 기본 브랜치는 webhook payload에서 읽고, checkout(`/home/agent/checkouts/<owner>/<name>`)은 첫 세션 생성 때 publisher가 clone한다. 대상 저장소를 늘리려면 App 설치 범위를 바꾼다.
 - GitHub 인증: 작성용 App `bulgasaribot`(App ID `5063990`, installation `164533066`, bot `bulgasaribot[bot]`, user ID `333478113`)과 리뷰 전용 App `haechibot`(App ID `5118831`, installation `166063086`, bot `haechibot[bot]`, user ID `335401592`)을 쓴다. 두 App 모두 `isac322/cc-lb`, `isac322/flareway`, `isac322/krema`, `isac322/pillar-csi`, `isac322/kwin-mcp`, `isac322/rkmon`에 설치돼 있다. 리뷰 App은 webhook이 없고 이벤트는 bulgasaribot webhook으로만 받는다.
   - 개인키는 Terraform Cloud 민감 변수 `github_app_private_key_ironeater`/`github_app_private_key_ironeater_reviewer`와 SSM `/homelab/cluster/backbone/github-app/{ironeater,ironeater-reviewer}/private-key`가 소유한다. 이 식별자들은 git-crypt로 잠긴 Terraform apply가 필요해서 App 이름을 바꿔도 예전 `ironeater*` 이름을 유지한다.
   - ESO가 설치 토큰 네 개를 15분마다 갱신한다. 저장소 제한은 없고 App 설치 범위를 따른다. read·push 토큰은 `issue-agent-runner`에서 발급하므로, 이 namespace에도 같은 SSM 항목에서 만든 bulgasaribot App 개인키 Secret `issue-agent-github-app`이 있다.
@@ -244,7 +244,11 @@ K3s version과 순차 rollout은 기존 Rancher `system-upgrade-controller`가 �
   - bridge는 `issue-agent-publisher` Secret의 bearer 토큰으로 publisher를 호출한다. 이 Secret과 push 토큰은 에이전트 컨테이너에 마운트하지 않는다.
   - `issue-agent`가 원본인 `issue-agent-hapi-auth`(`CLI_API_TOKEN`)와 `issue-agent-publisher`(`token`)는 `issue-agent-runner`의 ESO `SecretStore` `issue-agent`가 1시간마다 복제한다. 복제용 ServiceAccount는 `issue-agent`에서 이 두 Secret 이름에 대한 `get`만 가진다.
   - `GH_TOKEN`·`GITHUB_TOKEN` 환경변수나 `subPath` 마운트를 추가하지 않는다. Git 작성자와 bridge의 `GITHUB_BOT_LOGIN`은 `bulgasaribot[bot]`, 리뷰용 `GITHUB_REVIEW_BOT_LOGIN`은 `haechibot[bot]`으로 설정하며 재리뷰 명령 `@haechibot review`도 이 값에서 온다.
-- 인터넷 공개 경로: `https://issue-agent-webhook.bhyoo.com/webhooks/github`만 Cloudflare tunnel로 노출한다. App webhook의 서명 secret은 `issue-agent-webhook` Secret의 `secret` 키와 일치해야 한다. n8n 내부 webhook과 bridge의 `/ops`는 클러스터 내부 전용이며, 서로 다른 bearer 토큰(`issue-agent-bridge-ops`)으로 인증한다.
+- 인터넷 공개 경로: `https://issue-agent-webhook.bhyoo.com/webhooks/github`만 Cloudflare tunnel로 노출하며, 이 경로는 n8n(Service `issue-agent-n8n`, 포트 5678)으로 간다. n8n webhook 경로 접두사는 `N8N_ENDPOINT_WEBHOOK=webhooks`라 운영 URL이 `/webhooks/<path>`다.
+  - 수신 흐름: GitHub → n8n `IssueAgentIntake01`(Webhook `github`, Raw Body) → `Verify GitHub signature` 노드(`X-Hub-Signature-256` 검증) → bridge 내부 `POST /webhooks/github`. 서명이 틀리거나 없으면 n8n이 HTTP 401 `{"status":"bad_signature"}`로 답하고 bridge에는 아무것도 전달하지 않는다. 검증된 요청은 원본 바이트 그대로 `X-GitHub-Event`·`X-GitHub-Delivery`와 함께 bridge로 넘기고, bridge의 상태 코드와 JSON 본문을 GitHub에 그대로 돌려준다. bridge에 연결하지 못하면 503 `{"status":"bridge_unavailable"}`이다.
+  - 서명 secret은 `issue-agent-webhook` Secret의 `secret` 키이며 App webhook secret과 일치해야 한다. n8n이 `/run/issue-agent-n8n/webhook`에 마운트하고 bootstrap이 자격증명 `iaWebhookSign001`(`webhookSigningSecretApi`)로 갱신한다. bridge는 이 Secret을 마운트하지 않는다.
+  - bridge의 `/webhooks/github`와 `/ops`, n8n 내부 webhook(`/webhooks/issue-agent`)은 클러스터 내부 전용이다. bridge의 두 경로는 `issue-agent-bridge-ops` Secret의 `bridge-ops-token`(n8n 자격증명 `iaBridgeOps00001`)으로, n8n 내부 webhook은 같은 Secret의 `n8n-webhook-token`으로 bearer 인증한다. bridge는 토큰이 틀리거나 없으면 401 `{"status":"unauthorized"}`로 답하고 아무것도 저장하지 않는다.
+  - 서명 검증 노드는 커뮤니티 패키지 `n8n-nodes-webhook-signature@0.1.2`다. `deployment-n8n.yaml`의 `N8N_COMMUNITY_PACKAGES`가 버전과 npm integrity(`sha512-...`)로 고정하고(`N8N_COMMUNITY_PACKAGES_MANAGED_BY_ENV=true`, `N8N_UNVERIFIED_PACKAGES_ENABLED=false`), `n8n start`가 시작할 때 npm에서 설치·갱신하며 목록에 없는 패키지는 제거한다. 올리려면 새 버전의 `npm view n8n-nodes-webhook-signature@<version> dist.integrity` 값과 변경 내역(노드 이름·매개변수·자격증명 필드)을 확인한 뒤 `version`과 `checksum`을 함께 바꾸고 n8n을 재시작한다. 노드 type·version이나 매개변수가 바뀌었으면 `n8n-intake-workflow.json`도 같이 고친다.
 - 운영자 접근: WireGuard 연결 후 내부 `bhyoo-gateway`로 접속한다. 두 UI 모두 인증을 유지한다.
   - HAPI: `https://hapi.bhyoo.com`에 `issue-agent-hapi-auth` Secret의 `CLI_API_TOKEN`으로 로그인한다.
   - n8n: `https://n8n.bhyoo.com`에 `bhyoo@bhyoo.com`으로 로그인한다. 비밀번호는 `issue-agent-n8n-owner` Secret의 `password` 키에 있다. n8n에는 bcrypt 해시만 전달되며, 소유자 정보는 시작할 때마다 이 Secret으로 다시 적용된다.
@@ -299,7 +303,7 @@ merge 강제는 ruleset `issue-agent review`가 맡는다: `isac322/flareway`(`m
 
 #### n8n UI 수정
 
-n8n은 시작 전 `n8n-bootstrap.sh`로 자격증명을 고정 ID로 갱신하고, 오류 워크플로 `IssueAgentError01`, 메인 `IssueAgentMain01` 순으로 Git 원본을 동기화한다. 워크플로별 마지막 가져오기 기록은 `/home/node/.n8n/issue-agent/workflow-import-<id>.json`(`sourceSha256`, `versionId`)이다. 규칙은 다음과 같다.
+n8n은 시작 전 `n8n-bootstrap.sh`로 자격증명을 고정 ID로 갱신하고, 오류 워크플로 `IssueAgentError01`, 세션 하위 워크플로 `IssueAgentSession01`, 메인 `IssueAgentMain01`, 수신 `IssueAgentIntake01` 순으로 Git 원본을 동기화한다. 워크플로별 마지막 가져오기 기록은 `/home/node/.n8n/issue-agent/workflow-import-<id>.json`(`sourceSha256`, `versionId`)이다. 규칙은 다음과 같다.
 
 - n8n에 워크플로가 없으면 가져와 게시한다.
 - Git 원본 sha256이 기록과 같으면 아무것도 하지 않는다. UI 수정본이 그대로 실행된다.
@@ -309,7 +313,7 @@ n8n은 시작 전 `n8n-bootstrap.sh`로 자격증명을 고정 ID로 갱신하�
 UI에서 고쳤거나 `CONFLICT`가 나면 다음 순서로 조정한다.
 
 1. `issue-agent-records n8n-workflows`로 현재 워크플로와 `versionId`를 export해 Git 원본과 비교한다.
-2. UI 변경을 유지하려면 그 내용을 `n8n-workflow.json`(또는 `n8n-error-workflow.json`)에 옮긴다. `id`와 메인 워크플로의 `settings.errorWorkflow`는 그대로 둔다. 버리려면 Git 원본을 그대로 둔다.
+2. UI 변경을 유지하려면 그 내용을 해당 Git 원본(`n8n-workflow.json`, `n8n-session-workflow.json`, `n8n-intake-workflow.json`, `n8n-error-workflow.json`)에 옮긴다. `id`와 `settings.errorWorkflow`(메인·수신은 `IssueAgentError01`, 세션·오류 워크플로는 없음)는 그대로 둔다. 버리려면 Git 원본을 그대로 둔다.
 3. Git을 최종본으로 가져오려면 export한 현재 `versionId`를 `workflow-import-<id>.json`의 `versionId`에 기록하고 `sourceSha256`을 비운 뒤 n8n을 재시작한다. 다음 시작에서 Git 원본을 가져와 게시한다. `versionId`를 기록하지 않으면 Git 원본이 UI 수정본과 같아도 계속 `CONFLICT`이고, `sourceSha256`을 비우지 않으면 Git 원본이 바뀌지 않은 경우 UI 수정본이 남는다.
 
 ```bash
@@ -322,7 +326,7 @@ fs.writeFileSync(file, JSON.stringify({ ...state, sourceSha256: "", versionId: v
 kubectl --context homelab-backbone -n issue-agent rollout restart deployment/issue-agent-n8n
 ```
 
-n8n 실행 기록은 성공·실패 모두 저장하며 자동 정리하지 않는다.
+n8n 실행 기록은 성공·실패 모두 저장하며 자동 정리하지 않는다. 단, 수신 워크플로 `IssueAgentIntake01`은 delivery마다 원본 본문을 담으므로 실패 실행만 저장한다(GitHub App의 Recent Deliveries에 모든 응답이 남는다).
 
 이슈 댓글은 이슈에 `agent:open-discussion` 라벨이 있으면 누구의 것이든 멘션 없이 처리한다. 이 경로에서도 bridge가 댓글 작성자의 신뢰 여부를 계산해 넘기며(권한 조회 실패면 비신뢰로 보고 경고 로그만 남긴다), 비신뢰 사용자의 댓글은 정보로만 쓰고 승인이나 지시로 받지 않는다. 라벨이 없으면 `@bulgasaribot` 멘션이 있는 collaborator·owner 댓글만 처리한다(멘션 없음 `issue_comment_ignored`, 비신뢰 멘션 `actor_not_allowed`). 이 라벨은 저장소마다 maintainer가 만든다. 배포 전 bridge 회귀 검증은 `python3 -B -m unittest apps/objects/issue-agent/test_bridge.py`로 실행한다.
 

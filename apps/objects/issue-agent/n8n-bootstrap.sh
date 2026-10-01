@@ -3,13 +3,16 @@
 #
 # Starts n8n 2.40.x with issue-agent credentials and workflows provisioned from Git.
 #
-# Credentials: the two header-auth credentials are machine-owned (values come from
-# Kubernetes Secrets) and are upserted by fixed id on every start.
+# Credentials: the two header-auth credentials and the GitHub webhook signing secret are
+# machine-owned (values come from Kubernetes Secrets) and are upserted by fixed id on
+# every start. The signing secret's type, webhookSigningSecretApi, comes from the
+# community package pinned in N8N_COMMUNITY_PACKAGES, which `n8n start` installs.
 #
-# Workflows (error workflow first, then the main workflow that names it in
-# settings.errorWorkflow): each is imported only when its Git source changed AND the
-# stored workflow still matches what this script last imported. A workflow edited in
-# the UI is never overwritten; the conflict is logged and the edited version keeps running.
+# Workflows are synced in dependency order: the error workflow, the session sub-workflow,
+# the main workflow (names both), then the GitHub intake workflow (names the error
+# workflow). Each is imported only when its Git source changed AND the stored workflow
+# still matches what this script last imported. A workflow edited in the UI is never
+# overwritten; the conflict is logged and the edited version keeps running.
 set -eu
 umask 077
 
@@ -17,6 +20,8 @@ secrets=/run/issue-agent-n8n
 source_dir=/etc/issue-agent-n8n
 main_id="$ISSUE_AGENT_WORKFLOW_ID"
 error_id="$ISSUE_AGENT_ERROR_WORKFLOW_ID"
+session_id="$ISSUE_AGENT_SESSION_WORKFLOW_ID"
+intake_id="$ISSUE_AGENT_INTAKE_WORKFLOW_ID"
 state_dir=/home/node/.n8n/issue-agent
 work=/tmp/issue-agent-bootstrap
 rm -rf "$work"
@@ -34,6 +39,10 @@ const header = (id, name, token) => ({
 fs.writeFileSync(out, JSON.stringify([
   header("iaBridgeOps00001", "issue-agent-bridge-ops", read(`${dir}/ops/bridge-ops-token`)),
   header("iaN8nWebhook0001", "issue-agent-n8n-webhook", read(`${dir}/ops/n8n-webhook-token`)),
+  {
+    id: "iaWebhookSign001", name: "issue-agent-github-webhook-secret", type: "webhookSigningSecretApi",
+    data: { secret: read(`${dir}/webhook/secret`) },
+  },
 ]));
 ' "$secrets" "$work/credentials.json"
 n8n import:credentials --input="$work/credentials.json"
@@ -101,15 +110,17 @@ sync_workflow() {
 
   source_sha="$(node -e '
 const c = require("crypto"), fs = require("fs");
-const [file, id, errorId] = process.argv.slice(1);
+const [file, id, errorId, sessionId] = process.argv.slice(1);
 const wf = JSON.parse(fs.readFileSync(file, "utf8"));
 if (wf.id !== id) { console.error(`workflow id ${wf.id} != ${id}`); process.exit(1); }
-if (id !== errorId && (wf.settings || {}).errorWorkflow !== errorId) {
-  console.error(`workflow ${id} settings.errorWorkflow ${(wf.settings || {}).errorWorkflow} != ${errorId}`);
+// The session sub-workflow reports failures through its caller, so it names no error workflow.
+const wantError = id === errorId || id === sessionId ? undefined : errorId;
+if ((wf.settings || {}).errorWorkflow !== wantError) {
+  console.error(`workflow ${id} settings.errorWorkflow ${(wf.settings || {}).errorWorkflow} != ${wantError}`);
   process.exit(1);
 }
 process.stdout.write(c.createHash("sha256").update(fs.readFileSync(file)).digest("hex"));
-' "$source_file" "$workflow_id" "$error_id")"
+' "$source_file" "$workflow_id" "$error_id" "$session_id")"
 
   exists="$(workflow_exists "$workflow_id")"
   current_version=""
@@ -156,7 +167,9 @@ if [ -s "$state_dir/workflow-import.json" ] && [ ! -e "$state_dir/workflow-impor
 fi
 
 sync_workflow "$error_id" "$source_dir/n8n-error-workflow.json"
+sync_workflow "$session_id" "$source_dir/n8n-session-workflow.json"
 sync_workflow "$main_id" "$source_dir/n8n-workflow.json"
+sync_workflow "$intake_id" "$source_dir/n8n-intake-workflow.json"
 
 rm -rf "$work"
 trap - EXIT

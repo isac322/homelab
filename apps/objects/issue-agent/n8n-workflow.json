@@ -327,103 +327,84 @@
     },
     {
       "parameters": {
-        "method": "POST",
-        "url": "={{ $env.ISSUE_AGENT_BRIDGE_URL }}/ops",
-        "authentication": "genericCredentialType",
-        "genericAuthType": "httpHeaderAuth",
-        "sendBody": true,
-        "specifyBody": "json",
-        "jsonBody": "={{ JSON.stringify(Object.assign({ op: 'ensure_session', delivery_id: $('Begin').first().json.event.delivery_id }, {})) }}",
-        "options": {
-          "timeout": 300000,
-          "response": {
-            "response": {
-              "neverError": true
+        "source": "database",
+        "workflowId": {
+          "__rl": true,
+          "mode": "id",
+          "value": "IssueAgentSession01"
+        },
+        "workflowInputs": {
+          "mappingMode": "defineBelow",
+          "value": {
+            "delivery_id": "={{ $('Begin').first().json.event.delivery_id }}",
+            "lane": "triage",
+            "mode": "={{ $('Prepare triage step').first().json.mode }}",
+            "instructions": "={{ $('Prepare triage step').first().json.instructions }}",
+            "context": "={{ $('Prepare triage step').first().json.context }}"
+          },
+          "matchingColumns": [],
+          "schema": [
+            {
+              "id": "delivery_id",
+              "displayName": "delivery_id",
+              "required": false,
+              "defaultMatch": false,
+              "display": true,
+              "canBeUsedToMatch": true,
+              "removed": false
+            },
+            {
+              "id": "lane",
+              "displayName": "lane",
+              "required": false,
+              "defaultMatch": false,
+              "display": true,
+              "canBeUsedToMatch": true,
+              "removed": false
+            },
+            {
+              "id": "mode",
+              "displayName": "mode",
+              "required": false,
+              "defaultMatch": false,
+              "display": true,
+              "canBeUsedToMatch": true,
+              "removed": false
+            },
+            {
+              "id": "instructions",
+              "displayName": "instructions",
+              "required": false,
+              "defaultMatch": false,
+              "display": true,
+              "canBeUsedToMatch": true,
+              "removed": false
+            },
+            {
+              "id": "context",
+              "displayName": "context",
+              "required": false,
+              "defaultMatch": false,
+              "display": true,
+              "canBeUsedToMatch": true,
+              "removed": false
             }
-          }
+          ],
+          "attemptToConvertTypes": false,
+          "convertFieldsToString": false
+        },
+        "mode": "once",
+        "options": {
+          "waitForSubWorkflow": true
         }
       },
-      "id": "ecab0cba-e2c5-58ce-b1a2-c22e85d62b43",
-      "name": "Ensure session (triage)",
-      "type": "n8n-nodes-base.httpRequest",
-      "typeVersion": 4.2,
+      "id": "c8dda85d-59e2-5b72-b0c5-267576bd253b",
+      "name": "Run agent session (triage)",
+      "type": "n8n-nodes-base.executeWorkflow",
+      "typeVersion": 1.3,
       "position": [
         240,
         660
-      ],
-      "credentials": {
-        "httpHeaderAuth": {
-          "id": "iaBridgeOps00001",
-          "name": "issue-agent-bridge-ops"
-        }
-      }
-    },
-    {
-      "parameters": {
-        "rules": {
-          "values": [
-            {
-              "conditions": {
-                "options": {
-                  "caseSensitive": true,
-                  "leftValue": "",
-                  "typeValidation": "loose",
-                  "version": 2
-                },
-                "conditions": [
-                  {
-                    "id": "df4d6bdc-d7ba-5f30-ba5f-f27bcf61e25d",
-                    "leftValue": "={{ $json.ok === true ? 'ready' : ($json.retryable ? 'retry' : 'error') }}",
-                    "operator": {
-                      "type": "string",
-                      "operation": "equals"
-                    },
-                    "rightValue": "ready"
-                  }
-                ],
-                "combinator": "and"
-              },
-              "renameOutput": true,
-              "outputKey": "ready"
-            },
-            {
-              "conditions": {
-                "options": {
-                  "caseSensitive": true,
-                  "leftValue": "",
-                  "typeValidation": "loose",
-                  "version": 2
-                },
-                "conditions": [
-                  {
-                    "id": "650ec6dd-a86c-55c6-9733-960464b3d466",
-                    "leftValue": "={{ $json.ok === true ? 'ready' : ($json.retryable ? 'retry' : 'error') }}",
-                    "operator": {
-                      "type": "string",
-                      "operation": "equals"
-                    },
-                    "rightValue": "retry"
-                  }
-                ],
-                "combinator": "and"
-              },
-              "renameOutput": true,
-              "outputKey": "retry"
-            }
-          ]
-        },
-        "options": {
-          "fallbackOutput": "extra",
-          "renameFallbackOutput": "other"
-        }
-      },
-      "id": "52f58391-1bff-57bc-9a57-6d5b7dd1f758",
-      "name": "Session status (triage)",
-      "type": "n8n-nodes-base.switch",
-      "typeVersion": 3.2,
-      "position": [
-        480,
-        660
       ]
     },
     {
@@ -437,8 +418,8 @@
           },
           "conditions": [
             {
-              "id": "d92def5f-ea5b-59d8-b5ad-96271beefb33",
-              "leftValue": "={{ $runIndex < 10 }}",
+              "id": "24361226-a3ba-5871-b8e9-681a0a0b4ca1",
+              "leftValue": "={{ $json.ok === true }}",
               "operator": {
                 "type": "boolean",
                 "operation": "true",
@@ -451,434 +432,25 @@
         },
         "options": {}
       },
-      "id": "3fcb854d-2d98-5a5a-9495-3e5ab90c0d16",
-      "name": "Session retries left? (triage)",
+      "id": "cb9e8864-003e-51f5-98ab-c79998958963",
+      "name": "Session done? (triage)",
       "type": "n8n-nodes-base.if",
       "typeVersion": 2.2,
       "position": [
         480,
-        880
-      ]
-    },
-    {
-      "parameters": {
-        "amount": 120,
-        "unit": "seconds"
-      },
-      "id": "7917087d-a853-5f5b-b004-bfd3138c3b96",
-      "name": "Wait before session retry (triage)",
-      "type": "n8n-nodes-base.wait",
-      "typeVersion": 1.1,
-      "position": [
-        720,
-        880
-      ],
-      "webhookId": "68081a73-c1b5-5220-ae0f-424d74da393c"
-    },
-    {
-      "parameters": {
-        "method": "POST",
-        "url": "={{ $env.ISSUE_AGENT_BRIDGE_URL }}/ops",
-        "authentication": "genericCredentialType",
-        "genericAuthType": "httpHeaderAuth",
-        "sendBody": true,
-        "specifyBody": "json",
-        "jsonBody": "={{ JSON.stringify(Object.assign({ op: 'session_send', delivery_id: $('Begin').first().json.event.delivery_id }, { mode: $('Prepare triage step').first().json.mode, instructions: $('Prepare triage step').first().json.instructions, context: $('Prepare triage step').first().json.context })) }}",
-        "options": {
-          "timeout": 300000,
-          "response": {
-            "response": {
-              "neverError": true
-            }
-          }
-        }
-      },
-      "id": "ca8b7d5e-bdde-5ff4-9daa-ad81a575d827",
-      "name": "Send step to agent (triage)",
-      "type": "n8n-nodes-base.httpRequest",
-      "typeVersion": 4.2,
-      "position": [
-        720,
-        660
-      ],
-      "credentials": {
-        "httpHeaderAuth": {
-          "id": "iaBridgeOps00001",
-          "name": "issue-agent-bridge-ops"
-        }
-      }
-    },
-    {
-      "parameters": {
-        "rules": {
-          "values": [
-            {
-              "conditions": {
-                "options": {
-                  "caseSensitive": true,
-                  "leftValue": "",
-                  "typeValidation": "loose",
-                  "version": 2
-                },
-                "conditions": [
-                  {
-                    "id": "fb3b2096-a453-5783-89f8-1fea63704533",
-                    "leftValue": "={{ $json.ok === true ? 'sent' : ($json.retryable ? 'retry' : 'error') }}",
-                    "operator": {
-                      "type": "string",
-                      "operation": "equals"
-                    },
-                    "rightValue": "sent"
-                  }
-                ],
-                "combinator": "and"
-              },
-              "renameOutput": true,
-              "outputKey": "sent"
-            },
-            {
-              "conditions": {
-                "options": {
-                  "caseSensitive": true,
-                  "leftValue": "",
-                  "typeValidation": "loose",
-                  "version": 2
-                },
-                "conditions": [
-                  {
-                    "id": "36dc5f5d-5724-5108-a3a2-b12b9ca69653",
-                    "leftValue": "={{ $json.ok === true ? 'sent' : ($json.retryable ? 'retry' : 'error') }}",
-                    "operator": {
-                      "type": "string",
-                      "operation": "equals"
-                    },
-                    "rightValue": "retry"
-                  }
-                ],
-                "combinator": "and"
-              },
-              "renameOutput": true,
-              "outputKey": "retry"
-            }
-          ]
-        },
-        "options": {
-          "fallbackOutput": "extra",
-          "renameFallbackOutput": "other"
-        }
-      },
-      "id": "de0fb404-c8dc-597b-84d9-76646355bda2",
-      "name": "Send status (triage)",
-      "type": "n8n-nodes-base.switch",
-      "typeVersion": 3.2,
-      "position": [
-        960,
         660
       ]
     },
     {
       "parameters": {
-        "conditions": {
-          "options": {
-            "caseSensitive": true,
-            "leftValue": "",
-            "typeValidation": "loose",
-            "version": 2
-          },
-          "conditions": [
-            {
-              "id": "d92def5f-ea5b-59d8-b5ad-96271beefb33",
-              "leftValue": "={{ $runIndex < 10 }}",
-              "operator": {
-                "type": "boolean",
-                "operation": "true",
-                "singleValue": true
-              },
-              "rightValue": ""
-            }
-          ],
-          "combinator": "and"
-        },
+        "mode": "raw",
+        "jsonOutput": "={{ ($json.result || {}).status === 'triaged' ? { ok: true, result: ($json.result || {}) } : { ok: false, error: 'triage ' + String(($json.result || {}).status || 'returned no status') + ': ' + (Array.isArray(($json.result || {}).blockers) && ($json.result || {}).blockers.length ? ($json.result || {}).blockers.join('; ') : String(($json.result || {}).summary || 'no blockers given')).slice(0, 1500) } }}",
         "options": {}
-      },
-      "id": "f1b3f3df-134b-57b7-9c5a-f9ef271085f7",
-      "name": "Send retries left? (triage)",
-      "type": "n8n-nodes-base.if",
-      "typeVersion": 2.2,
-      "position": [
-        960,
-        880
-      ]
-    },
-    {
-      "parameters": {
-        "amount": 120,
-        "unit": "seconds"
-      },
-      "id": "45258450-f5f9-596d-801a-c53bd86bd76b",
-      "name": "Wait before send retry (triage)",
-      "type": "n8n-nodes-base.wait",
-      "typeVersion": 1.1,
-      "position": [
-        1200,
-        880
-      ],
-      "webhookId": "0f085ba9-94ed-542b-971e-8400cd498f46"
-    },
-    {
-      "parameters": {
-        "amount": 120,
-        "unit": "seconds"
-      },
-      "id": "d2da89a3-e084-513a-bfb9-bf5c7ad199e7",
-      "name": "Wait for agent (triage)",
-      "type": "n8n-nodes-base.wait",
-      "typeVersion": 1.1,
-      "position": [
-        1200,
-        660
-      ],
-      "webhookId": "411a177c-ddb7-5efa-892b-fd407651b6c9"
-    },
-    {
-      "parameters": {
-        "method": "POST",
-        "url": "={{ $env.ISSUE_AGENT_BRIDGE_URL }}/ops",
-        "authentication": "genericCredentialType",
-        "genericAuthType": "httpHeaderAuth",
-        "sendBody": true,
-        "specifyBody": "json",
-        "jsonBody": "={{ JSON.stringify(Object.assign({ op: 'session_turn', delivery_id: $('Begin').first().json.event.delivery_id }, { mode: $('Prepare triage step').first().json.mode })) }}",
-        "options": {
-          "timeout": 300000,
-          "response": {
-            "response": {
-              "neverError": true
-            }
-          }
-        }
-      },
-      "id": "f44ee81f-eecb-5cef-85e5-f133523bbc32",
-      "name": "Check turn (triage)",
-      "type": "n8n-nodes-base.httpRequest",
-      "typeVersion": 4.2,
-      "position": [
-        1440,
-        660
-      ],
-      "credentials": {
-        "httpHeaderAuth": {
-          "id": "iaBridgeOps00001",
-          "name": "issue-agent-bridge-ops"
-        }
-      }
-    },
-    {
-      "parameters": {
-        "rules": {
-          "values": [
-            {
-              "conditions": {
-                "options": {
-                  "caseSensitive": true,
-                  "leftValue": "",
-                  "typeValidation": "loose",
-                  "version": 2
-                },
-                "conditions": [
-                  {
-                    "id": "54bcf120-5a19-5b39-be38-031a070f9274",
-                    "leftValue": "={{ $json.ok === true ? $json.state : ($json.retryable ? 'retry' : 'error') }}",
-                    "operator": {
-                      "type": "string",
-                      "operation": "equals"
-                    },
-                    "rightValue": "done"
-                  }
-                ],
-                "combinator": "and"
-              },
-              "renameOutput": true,
-              "outputKey": "done"
-            },
-            {
-              "conditions": {
-                "options": {
-                  "caseSensitive": true,
-                  "leftValue": "",
-                  "typeValidation": "loose",
-                  "version": 2
-                },
-                "conditions": [
-                  {
-                    "id": "f4c3ea31-2140-5dbd-b7be-a7c67872cfa4",
-                    "leftValue": "={{ $json.ok === true ? $json.state : ($json.retryable ? 'retry' : 'error') }}",
-                    "operator": {
-                      "type": "string",
-                      "operation": "equals"
-                    },
-                    "rightValue": "running"
-                  }
-                ],
-                "combinator": "and"
-              },
-              "renameOutput": true,
-              "outputKey": "running"
-            },
-            {
-              "conditions": {
-                "options": {
-                  "caseSensitive": true,
-                  "leftValue": "",
-                  "typeValidation": "loose",
-                  "version": 2
-                },
-                "conditions": [
-                  {
-                    "id": "068ee757-fdd3-59b9-ba8d-eef6c74938a2",
-                    "leftValue": "={{ $json.ok === true ? $json.state : ($json.retryable ? 'retry' : 'error') }}",
-                    "operator": {
-                      "type": "string",
-                      "operation": "equals"
-                    },
-                    "rightValue": "queued"
-                  }
-                ],
-                "combinator": "and"
-              },
-              "renameOutput": true,
-              "outputKey": "queued"
-            },
-            {
-              "conditions": {
-                "options": {
-                  "caseSensitive": true,
-                  "leftValue": "",
-                  "typeValidation": "loose",
-                  "version": 2
-                },
-                "conditions": [
-                  {
-                    "id": "17623bf0-45de-5e2e-b04b-df6325203188",
-                    "leftValue": "={{ $json.ok === true ? $json.state : ($json.retryable ? 'retry' : 'error') }}",
-                    "operator": {
-                      "type": "string",
-                      "operation": "equals"
-                    },
-                    "rightValue": "retry"
-                  }
-                ],
-                "combinator": "and"
-              },
-              "renameOutput": true,
-              "outputKey": "retry"
-            },
-            {
-              "conditions": {
-                "options": {
-                  "caseSensitive": true,
-                  "leftValue": "",
-                  "typeValidation": "loose",
-                  "version": 2
-                },
-                "conditions": [
-                  {
-                    "id": "ce9eb23e-7623-5e0d-abd4-c05828ab9629",
-                    "leftValue": "={{ $json.ok === true ? $json.state : ($json.retryable ? 'retry' : 'error') }}",
-                    "operator": {
-                      "type": "string",
-                      "operation": "equals"
-                    },
-                    "rightValue": "attention"
-                  }
-                ],
-                "combinator": "and"
-              },
-              "renameOutput": true,
-              "outputKey": "attention"
-            },
-            {
-              "conditions": {
-                "options": {
-                  "caseSensitive": true,
-                  "leftValue": "",
-                  "typeValidation": "loose",
-                  "version": 2
-                },
-                "conditions": [
-                  {
-                    "id": "428819f8-8919-5cf3-97e5-f842d010f407",
-                    "leftValue": "={{ $json.ok === true ? $json.state : ($json.retryable ? 'retry' : 'error') }}",
-                    "operator": {
-                      "type": "string",
-                      "operation": "equals"
-                    },
-                    "rightValue": "lost"
-                  }
-                ],
-                "combinator": "and"
-              },
-              "renameOutput": true,
-              "outputKey": "lost"
-            }
-          ]
-        },
-        "options": {
-          "fallbackOutput": "extra",
-          "renameFallbackOutput": "other"
-        }
-      },
-      "id": "1a92d703-84dd-5c8a-83fe-ea030958664f",
-      "name": "Turn state (triage)",
-      "type": "n8n-nodes-base.switch",
-      "typeVersion": 3.2,
-      "position": [
-        1680,
-        660
-      ]
-    },
-    {
-      "parameters": {
-        "conditions": {
-          "options": {
-            "caseSensitive": true,
-            "leftValue": "",
-            "typeValidation": "loose",
-            "version": 2
-          },
-          "conditions": [
-            {
-              "id": "e1f20050-d758-5eb6-9c5f-46e9eca66b32",
-              "leftValue": "={{ $runIndex < 180 }}",
-              "operator": {
-                "type": "boolean",
-                "operation": "true",
-                "singleValue": true
-              },
-              "rightValue": ""
-            }
-          ],
-          "combinator": "and"
-        },
-        "options": {}
-      },
-      "id": "7cbc70fd-8918-55eb-b796-5e52cc6fe3e6",
-      "name": "Within time budget? (triage)",
-      "type": "n8n-nodes-base.if",
-      "typeVersion": 2.2,
-      "position": [
-        1680,
-        880
-      ]
-    },
-    {
-      "parameters": {
-        "jsCode": "\nconst r = $input.first().json.result || {};\nif (r.status === 'triaged') return [{ json: { ok: true, result: r } }];\nconst why = Array.isArray(r.blockers) && r.blockers.length ? r.blockers.join('; ') : String(r.summary || 'no blockers given');\nreturn [{ json: { ok: false, error: 'triage ' + String(r.status || 'returned no status') + ': ' + why.slice(0, 1500) } }];\n"
       },
       "id": "c8870b6e-81f6-5194-ae9b-f5511c126ea0",
       "name": "Check triage result",
-      "type": "n8n-nodes-base.code",
-      "typeVersion": 2,
+      "type": "n8n-nodes-base.set",
+      "typeVersion": 3.4,
       "position": [
         1920,
         660
@@ -1451,103 +1023,84 @@
     },
     {
       "parameters": {
-        "method": "POST",
-        "url": "={{ $env.ISSUE_AGENT_BRIDGE_URL }}/ops",
-        "authentication": "genericCredentialType",
-        "genericAuthType": "httpHeaderAuth",
-        "sendBody": true,
-        "specifyBody": "json",
-        "jsonBody": "={{ JSON.stringify(Object.assign({ op: 'ensure_session', delivery_id: $('Begin').first().json.event.delivery_id }, {})) }}",
-        "options": {
-          "timeout": 300000,
-          "response": {
-            "response": {
-              "neverError": true
+        "source": "database",
+        "workflowId": {
+          "__rl": true,
+          "mode": "id",
+          "value": "IssueAgentSession01"
+        },
+        "workflowInputs": {
+          "mappingMode": "defineBelow",
+          "value": {
+            "delivery_id": "={{ $('Begin').first().json.event.delivery_id }}",
+            "lane": "implement",
+            "mode": "={{ $('Prepare implement step').first().json.mode }}",
+            "instructions": "={{ $('Prepare implement step').first().json.instructions }}",
+            "context": "={{ $('Prepare implement step').first().json.context }}"
+          },
+          "matchingColumns": [],
+          "schema": [
+            {
+              "id": "delivery_id",
+              "displayName": "delivery_id",
+              "required": false,
+              "defaultMatch": false,
+              "display": true,
+              "canBeUsedToMatch": true,
+              "removed": false
+            },
+            {
+              "id": "lane",
+              "displayName": "lane",
+              "required": false,
+              "defaultMatch": false,
+              "display": true,
+              "canBeUsedToMatch": true,
+              "removed": false
+            },
+            {
+              "id": "mode",
+              "displayName": "mode",
+              "required": false,
+              "defaultMatch": false,
+              "display": true,
+              "canBeUsedToMatch": true,
+              "removed": false
+            },
+            {
+              "id": "instructions",
+              "displayName": "instructions",
+              "required": false,
+              "defaultMatch": false,
+              "display": true,
+              "canBeUsedToMatch": true,
+              "removed": false
+            },
+            {
+              "id": "context",
+              "displayName": "context",
+              "required": false,
+              "defaultMatch": false,
+              "display": true,
+              "canBeUsedToMatch": true,
+              "removed": false
             }
-          }
+          ],
+          "attemptToConvertTypes": false,
+          "convertFieldsToString": false
+        },
+        "mode": "once",
+        "options": {
+          "waitForSubWorkflow": true
         }
       },
-      "id": "b590ba07-0c74-526e-b55a-4fc54a7f3324",
-      "name": "Ensure session (implement)",
-      "type": "n8n-nodes-base.httpRequest",
-      "typeVersion": 4.2,
+      "id": "678bef70-6ef9-579a-899f-3cae6c1ebf4d",
+      "name": "Run agent session (implement)",
+      "type": "n8n-nodes-base.executeWorkflow",
+      "typeVersion": 1.3,
       "position": [
         240,
         1540
-      ],
-      "credentials": {
-        "httpHeaderAuth": {
-          "id": "iaBridgeOps00001",
-          "name": "issue-agent-bridge-ops"
-        }
-      }
-    },
-    {
-      "parameters": {
-        "rules": {
-          "values": [
-            {
-              "conditions": {
-                "options": {
-                  "caseSensitive": true,
-                  "leftValue": "",
-                  "typeValidation": "loose",
-                  "version": 2
-                },
-                "conditions": [
-                  {
-                    "id": "df4d6bdc-d7ba-5f30-ba5f-f27bcf61e25d",
-                    "leftValue": "={{ $json.ok === true ? 'ready' : ($json.retryable ? 'retry' : 'error') }}",
-                    "operator": {
-                      "type": "string",
-                      "operation": "equals"
-                    },
-                    "rightValue": "ready"
-                  }
-                ],
-                "combinator": "and"
-              },
-              "renameOutput": true,
-              "outputKey": "ready"
-            },
-            {
-              "conditions": {
-                "options": {
-                  "caseSensitive": true,
-                  "leftValue": "",
-                  "typeValidation": "loose",
-                  "version": 2
-                },
-                "conditions": [
-                  {
-                    "id": "650ec6dd-a86c-55c6-9733-960464b3d466",
-                    "leftValue": "={{ $json.ok === true ? 'ready' : ($json.retryable ? 'retry' : 'error') }}",
-                    "operator": {
-                      "type": "string",
-                      "operation": "equals"
-                    },
-                    "rightValue": "retry"
-                  }
-                ],
-                "combinator": "and"
-              },
-              "renameOutput": true,
-              "outputKey": "retry"
-            }
-          ]
-        },
-        "options": {
-          "fallbackOutput": "extra",
-          "renameFallbackOutput": "other"
-        }
-      },
-      "id": "2c003f71-89d3-5a65-b159-d0aff87873b4",
-      "name": "Session status (implement)",
-      "type": "n8n-nodes-base.switch",
-      "typeVersion": 3.2,
-      "position": [
-        480,
-        1540
       ]
     },
     {
@@ -1561,8 +1114,8 @@
           },
           "conditions": [
             {
-              "id": "d92def5f-ea5b-59d8-b5ad-96271beefb33",
-              "leftValue": "={{ $runIndex < 10 }}",
+              "id": "43083c05-beda-5ba3-aa2f-75177b5f807a",
+              "leftValue": "={{ $json.ok === true }}",
               "operator": {
                 "type": "boolean",
                 "operation": "true",
@@ -1575,424 +1128,13 @@
         },
         "options": {}
       },
-      "id": "8951830b-4943-5609-916d-a39ed293101a",
-      "name": "Session retries left? (implement)",
+      "id": "96e938e7-3dee-5ee3-8b19-5ebe440addb7",
+      "name": "Session done? (implement)",
       "type": "n8n-nodes-base.if",
       "typeVersion": 2.2,
       "position": [
         480,
-        1760
-      ]
-    },
-    {
-      "parameters": {
-        "amount": 120,
-        "unit": "seconds"
-      },
-      "id": "ac47d7ed-d5d3-5be7-bd71-3a7909c69b18",
-      "name": "Wait before session retry (implement)",
-      "type": "n8n-nodes-base.wait",
-      "typeVersion": 1.1,
-      "position": [
-        720,
-        1760
-      ],
-      "webhookId": "03fe4a1d-88db-5007-a1a4-c1769b8c1ea6"
-    },
-    {
-      "parameters": {
-        "method": "POST",
-        "url": "={{ $env.ISSUE_AGENT_BRIDGE_URL }}/ops",
-        "authentication": "genericCredentialType",
-        "genericAuthType": "httpHeaderAuth",
-        "sendBody": true,
-        "specifyBody": "json",
-        "jsonBody": "={{ JSON.stringify(Object.assign({ op: 'session_send', delivery_id: $('Begin').first().json.event.delivery_id }, { mode: $('Prepare implement step').first().json.mode, instructions: $('Prepare implement step').first().json.instructions, context: $('Prepare implement step').first().json.context })) }}",
-        "options": {
-          "timeout": 300000,
-          "response": {
-            "response": {
-              "neverError": true
-            }
-          }
-        }
-      },
-      "id": "2185424b-d289-57b2-acf4-b8f6a3426812",
-      "name": "Send step to agent (implement)",
-      "type": "n8n-nodes-base.httpRequest",
-      "typeVersion": 4.2,
-      "position": [
-        720,
         1540
-      ],
-      "credentials": {
-        "httpHeaderAuth": {
-          "id": "iaBridgeOps00001",
-          "name": "issue-agent-bridge-ops"
-        }
-      }
-    },
-    {
-      "parameters": {
-        "rules": {
-          "values": [
-            {
-              "conditions": {
-                "options": {
-                  "caseSensitive": true,
-                  "leftValue": "",
-                  "typeValidation": "loose",
-                  "version": 2
-                },
-                "conditions": [
-                  {
-                    "id": "fb3b2096-a453-5783-89f8-1fea63704533",
-                    "leftValue": "={{ $json.ok === true ? 'sent' : ($json.retryable ? 'retry' : 'error') }}",
-                    "operator": {
-                      "type": "string",
-                      "operation": "equals"
-                    },
-                    "rightValue": "sent"
-                  }
-                ],
-                "combinator": "and"
-              },
-              "renameOutput": true,
-              "outputKey": "sent"
-            },
-            {
-              "conditions": {
-                "options": {
-                  "caseSensitive": true,
-                  "leftValue": "",
-                  "typeValidation": "loose",
-                  "version": 2
-                },
-                "conditions": [
-                  {
-                    "id": "36dc5f5d-5724-5108-a3a2-b12b9ca69653",
-                    "leftValue": "={{ $json.ok === true ? 'sent' : ($json.retryable ? 'retry' : 'error') }}",
-                    "operator": {
-                      "type": "string",
-                      "operation": "equals"
-                    },
-                    "rightValue": "retry"
-                  }
-                ],
-                "combinator": "and"
-              },
-              "renameOutput": true,
-              "outputKey": "retry"
-            }
-          ]
-        },
-        "options": {
-          "fallbackOutput": "extra",
-          "renameFallbackOutput": "other"
-        }
-      },
-      "id": "6d1559fa-6a0e-5d62-8eac-2be423892248",
-      "name": "Send status (implement)",
-      "type": "n8n-nodes-base.switch",
-      "typeVersion": 3.2,
-      "position": [
-        960,
-        1540
-      ]
-    },
-    {
-      "parameters": {
-        "conditions": {
-          "options": {
-            "caseSensitive": true,
-            "leftValue": "",
-            "typeValidation": "loose",
-            "version": 2
-          },
-          "conditions": [
-            {
-              "id": "d92def5f-ea5b-59d8-b5ad-96271beefb33",
-              "leftValue": "={{ $runIndex < 10 }}",
-              "operator": {
-                "type": "boolean",
-                "operation": "true",
-                "singleValue": true
-              },
-              "rightValue": ""
-            }
-          ],
-          "combinator": "and"
-        },
-        "options": {}
-      },
-      "id": "a849b77b-be82-5ca3-a71e-88908bdeb5bb",
-      "name": "Send retries left? (implement)",
-      "type": "n8n-nodes-base.if",
-      "typeVersion": 2.2,
-      "position": [
-        960,
-        1760
-      ]
-    },
-    {
-      "parameters": {
-        "amount": 120,
-        "unit": "seconds"
-      },
-      "id": "39984e36-795b-5213-9dd3-9fcf432a7710",
-      "name": "Wait before send retry (implement)",
-      "type": "n8n-nodes-base.wait",
-      "typeVersion": 1.1,
-      "position": [
-        1200,
-        1760
-      ],
-      "webhookId": "1aed6cfc-e621-50c6-9765-e5b37e0d1dc8"
-    },
-    {
-      "parameters": {
-        "amount": 120,
-        "unit": "seconds"
-      },
-      "id": "cb14528c-55d2-5c43-9d69-8eae50953264",
-      "name": "Wait for agent (implement)",
-      "type": "n8n-nodes-base.wait",
-      "typeVersion": 1.1,
-      "position": [
-        1200,
-        1540
-      ],
-      "webhookId": "fc8855f7-3809-540b-9540-76f085ecabc9"
-    },
-    {
-      "parameters": {
-        "method": "POST",
-        "url": "={{ $env.ISSUE_AGENT_BRIDGE_URL }}/ops",
-        "authentication": "genericCredentialType",
-        "genericAuthType": "httpHeaderAuth",
-        "sendBody": true,
-        "specifyBody": "json",
-        "jsonBody": "={{ JSON.stringify(Object.assign({ op: 'session_turn', delivery_id: $('Begin').first().json.event.delivery_id }, { mode: $('Prepare implement step').first().json.mode })) }}",
-        "options": {
-          "timeout": 300000,
-          "response": {
-            "response": {
-              "neverError": true
-            }
-          }
-        }
-      },
-      "id": "fba0fc82-5c08-5588-9a8f-758c62841789",
-      "name": "Check turn (implement)",
-      "type": "n8n-nodes-base.httpRequest",
-      "typeVersion": 4.2,
-      "position": [
-        1440,
-        1540
-      ],
-      "credentials": {
-        "httpHeaderAuth": {
-          "id": "iaBridgeOps00001",
-          "name": "issue-agent-bridge-ops"
-        }
-      }
-    },
-    {
-      "parameters": {
-        "rules": {
-          "values": [
-            {
-              "conditions": {
-                "options": {
-                  "caseSensitive": true,
-                  "leftValue": "",
-                  "typeValidation": "loose",
-                  "version": 2
-                },
-                "conditions": [
-                  {
-                    "id": "54bcf120-5a19-5b39-be38-031a070f9274",
-                    "leftValue": "={{ $json.ok === true ? $json.state : ($json.retryable ? 'retry' : 'error') }}",
-                    "operator": {
-                      "type": "string",
-                      "operation": "equals"
-                    },
-                    "rightValue": "done"
-                  }
-                ],
-                "combinator": "and"
-              },
-              "renameOutput": true,
-              "outputKey": "done"
-            },
-            {
-              "conditions": {
-                "options": {
-                  "caseSensitive": true,
-                  "leftValue": "",
-                  "typeValidation": "loose",
-                  "version": 2
-                },
-                "conditions": [
-                  {
-                    "id": "f4c3ea31-2140-5dbd-b7be-a7c67872cfa4",
-                    "leftValue": "={{ $json.ok === true ? $json.state : ($json.retryable ? 'retry' : 'error') }}",
-                    "operator": {
-                      "type": "string",
-                      "operation": "equals"
-                    },
-                    "rightValue": "running"
-                  }
-                ],
-                "combinator": "and"
-              },
-              "renameOutput": true,
-              "outputKey": "running"
-            },
-            {
-              "conditions": {
-                "options": {
-                  "caseSensitive": true,
-                  "leftValue": "",
-                  "typeValidation": "loose",
-                  "version": 2
-                },
-                "conditions": [
-                  {
-                    "id": "068ee757-fdd3-59b9-ba8d-eef6c74938a2",
-                    "leftValue": "={{ $json.ok === true ? $json.state : ($json.retryable ? 'retry' : 'error') }}",
-                    "operator": {
-                      "type": "string",
-                      "operation": "equals"
-                    },
-                    "rightValue": "queued"
-                  }
-                ],
-                "combinator": "and"
-              },
-              "renameOutput": true,
-              "outputKey": "queued"
-            },
-            {
-              "conditions": {
-                "options": {
-                  "caseSensitive": true,
-                  "leftValue": "",
-                  "typeValidation": "loose",
-                  "version": 2
-                },
-                "conditions": [
-                  {
-                    "id": "17623bf0-45de-5e2e-b04b-df6325203188",
-                    "leftValue": "={{ $json.ok === true ? $json.state : ($json.retryable ? 'retry' : 'error') }}",
-                    "operator": {
-                      "type": "string",
-                      "operation": "equals"
-                    },
-                    "rightValue": "retry"
-                  }
-                ],
-                "combinator": "and"
-              },
-              "renameOutput": true,
-              "outputKey": "retry"
-            },
-            {
-              "conditions": {
-                "options": {
-                  "caseSensitive": true,
-                  "leftValue": "",
-                  "typeValidation": "loose",
-                  "version": 2
-                },
-                "conditions": [
-                  {
-                    "id": "ce9eb23e-7623-5e0d-abd4-c05828ab9629",
-                    "leftValue": "={{ $json.ok === true ? $json.state : ($json.retryable ? 'retry' : 'error') }}",
-                    "operator": {
-                      "type": "string",
-                      "operation": "equals"
-                    },
-                    "rightValue": "attention"
-                  }
-                ],
-                "combinator": "and"
-              },
-              "renameOutput": true,
-              "outputKey": "attention"
-            },
-            {
-              "conditions": {
-                "options": {
-                  "caseSensitive": true,
-                  "leftValue": "",
-                  "typeValidation": "loose",
-                  "version": 2
-                },
-                "conditions": [
-                  {
-                    "id": "c8a37d16-bc58-5f4c-b515-ace45be24acc",
-                    "leftValue": "={{ $json.ok === true ? $json.state : ($json.retryable ? 'retry' : 'error') }}",
-                    "operator": {
-                      "type": "string",
-                      "operation": "equals"
-                    },
-                    "rightValue": "lost"
-                  }
-                ],
-                "combinator": "and"
-              },
-              "renameOutput": true,
-              "outputKey": "lost"
-            }
-          ]
-        },
-        "options": {
-          "fallbackOutput": "extra",
-          "renameFallbackOutput": "other"
-        }
-      },
-      "id": "0624c560-c585-590f-92af-27b62893fb61",
-      "name": "Turn state (implement)",
-      "type": "n8n-nodes-base.switch",
-      "typeVersion": 3.2,
-      "position": [
-        1680,
-        1540
-      ]
-    },
-    {
-      "parameters": {
-        "conditions": {
-          "options": {
-            "caseSensitive": true,
-            "leftValue": "",
-            "typeValidation": "loose",
-            "version": 2
-          },
-          "conditions": [
-            {
-              "id": "e1f20050-d758-5eb6-9c5f-46e9eca66b32",
-              "leftValue": "={{ $runIndex < 180 }}",
-              "operator": {
-                "type": "boolean",
-                "operation": "true",
-                "singleValue": true
-              },
-              "rightValue": ""
-            }
-          ],
-          "combinator": "and"
-        },
-        "options": {}
-      },
-      "id": "8d43b098-dc41-5406-a853-84156e4ac5ae",
-      "name": "Within time budget? (implement)",
-      "type": "n8n-nodes-base.if",
-      "typeVersion": 2.2,
-      "position": [
-        1680,
-        1760
       ]
     },
     {
@@ -2614,103 +1756,84 @@
     },
     {
       "parameters": {
-        "method": "POST",
-        "url": "={{ $env.ISSUE_AGENT_BRIDGE_URL }}/ops",
-        "authentication": "genericCredentialType",
-        "genericAuthType": "httpHeaderAuth",
-        "sendBody": true,
-        "specifyBody": "json",
-        "jsonBody": "={{ JSON.stringify(Object.assign({ op: 'ensure_session', delivery_id: $('Begin').first().json.event.delivery_id }, {})) }}",
-        "options": {
-          "timeout": 300000,
-          "response": {
-            "response": {
-              "neverError": true
+        "source": "database",
+        "workflowId": {
+          "__rl": true,
+          "mode": "id",
+          "value": "IssueAgentSession01"
+        },
+        "workflowInputs": {
+          "mappingMode": "defineBelow",
+          "value": {
+            "delivery_id": "={{ $('Begin').first().json.event.delivery_id }}",
+            "lane": "review",
+            "mode": "={{ $('Prepare review step').first().json.mode }}",
+            "instructions": "={{ $('Prepare review step').first().json.instructions }}",
+            "context": "={{ $('Prepare review step').first().json.context }}"
+          },
+          "matchingColumns": [],
+          "schema": [
+            {
+              "id": "delivery_id",
+              "displayName": "delivery_id",
+              "required": false,
+              "defaultMatch": false,
+              "display": true,
+              "canBeUsedToMatch": true,
+              "removed": false
+            },
+            {
+              "id": "lane",
+              "displayName": "lane",
+              "required": false,
+              "defaultMatch": false,
+              "display": true,
+              "canBeUsedToMatch": true,
+              "removed": false
+            },
+            {
+              "id": "mode",
+              "displayName": "mode",
+              "required": false,
+              "defaultMatch": false,
+              "display": true,
+              "canBeUsedToMatch": true,
+              "removed": false
+            },
+            {
+              "id": "instructions",
+              "displayName": "instructions",
+              "required": false,
+              "defaultMatch": false,
+              "display": true,
+              "canBeUsedToMatch": true,
+              "removed": false
+            },
+            {
+              "id": "context",
+              "displayName": "context",
+              "required": false,
+              "defaultMatch": false,
+              "display": true,
+              "canBeUsedToMatch": true,
+              "removed": false
             }
-          }
+          ],
+          "attemptToConvertTypes": false,
+          "convertFieldsToString": false
+        },
+        "mode": "once",
+        "options": {
+          "waitForSubWorkflow": true
         }
       },
-      "id": "056d15c0-aba8-59af-8c5d-6deaf1930fe3",
-      "name": "Ensure session (review)",
-      "type": "n8n-nodes-base.httpRequest",
-      "typeVersion": 4.2,
+      "id": "bc89e6d6-1755-5827-8cf9-5a41cb80d2be",
+      "name": "Run agent session (review)",
+      "type": "n8n-nodes-base.executeWorkflow",
+      "typeVersion": 1.3,
       "position": [
         240,
         2640
-      ],
-      "credentials": {
-        "httpHeaderAuth": {
-          "id": "iaBridgeOps00001",
-          "name": "issue-agent-bridge-ops"
-        }
-      }
-    },
-    {
-      "parameters": {
-        "rules": {
-          "values": [
-            {
-              "conditions": {
-                "options": {
-                  "caseSensitive": true,
-                  "leftValue": "",
-                  "typeValidation": "loose",
-                  "version": 2
-                },
-                "conditions": [
-                  {
-                    "id": "df4d6bdc-d7ba-5f30-ba5f-f27bcf61e25d",
-                    "leftValue": "={{ $json.ok === true ? 'ready' : ($json.retryable ? 'retry' : 'error') }}",
-                    "operator": {
-                      "type": "string",
-                      "operation": "equals"
-                    },
-                    "rightValue": "ready"
-                  }
-                ],
-                "combinator": "and"
-              },
-              "renameOutput": true,
-              "outputKey": "ready"
-            },
-            {
-              "conditions": {
-                "options": {
-                  "caseSensitive": true,
-                  "leftValue": "",
-                  "typeValidation": "loose",
-                  "version": 2
-                },
-                "conditions": [
-                  {
-                    "id": "650ec6dd-a86c-55c6-9733-960464b3d466",
-                    "leftValue": "={{ $json.ok === true ? 'ready' : ($json.retryable ? 'retry' : 'error') }}",
-                    "operator": {
-                      "type": "string",
-                      "operation": "equals"
-                    },
-                    "rightValue": "retry"
-                  }
-                ],
-                "combinator": "and"
-              },
-              "renameOutput": true,
-              "outputKey": "retry"
-            }
-          ]
-        },
-        "options": {
-          "fallbackOutput": "extra",
-          "renameFallbackOutput": "other"
-        }
-      },
-      "id": "02f6ca90-7c5f-572c-9814-55210c9ed5ad",
-      "name": "Session status (review)",
-      "type": "n8n-nodes-base.switch",
-      "typeVersion": 3.2,
-      "position": [
-        480,
-        2640
       ]
     },
     {
@@ -2724,8 +1847,8 @@
           },
           "conditions": [
             {
-              "id": "d92def5f-ea5b-59d8-b5ad-96271beefb33",
-              "leftValue": "={{ $runIndex < 10 }}",
+              "id": "4515a16f-c504-5e13-b8b1-b30517eafadb",
+              "leftValue": "={{ $json.ok === true }}",
               "operator": {
                 "type": "boolean",
                 "operation": "true",
@@ -2738,434 +1861,25 @@
         },
         "options": {}
       },
-      "id": "f7753fd0-0ad2-585a-9159-d2dedb089a03",
-      "name": "Session retries left? (review)",
+      "id": "095aad12-b975-540d-a3f8-3eede47482d2",
+      "name": "Session done? (review)",
       "type": "n8n-nodes-base.if",
       "typeVersion": 2.2,
       "position": [
         480,
-        2860
-      ]
-    },
-    {
-      "parameters": {
-        "amount": 120,
-        "unit": "seconds"
-      },
-      "id": "aff08a65-099e-5147-8e3a-24b9ddc14ec2",
-      "name": "Wait before session retry (review)",
-      "type": "n8n-nodes-base.wait",
-      "typeVersion": 1.1,
-      "position": [
-        720,
-        2860
-      ],
-      "webhookId": "8cd4d4dc-d2c7-52f3-a385-d221134e8b56"
-    },
-    {
-      "parameters": {
-        "method": "POST",
-        "url": "={{ $env.ISSUE_AGENT_BRIDGE_URL }}/ops",
-        "authentication": "genericCredentialType",
-        "genericAuthType": "httpHeaderAuth",
-        "sendBody": true,
-        "specifyBody": "json",
-        "jsonBody": "={{ JSON.stringify(Object.assign({ op: 'session_send', delivery_id: $('Begin').first().json.event.delivery_id }, { mode: $('Prepare review step').first().json.mode, instructions: $('Prepare review step').first().json.instructions, context: $('Prepare review step').first().json.context })) }}",
-        "options": {
-          "timeout": 300000,
-          "response": {
-            "response": {
-              "neverError": true
-            }
-          }
-        }
-      },
-      "id": "83da87a9-ddcb-5f94-b9d9-9fd6cfbfe559",
-      "name": "Send step to agent (review)",
-      "type": "n8n-nodes-base.httpRequest",
-      "typeVersion": 4.2,
-      "position": [
-        720,
-        2640
-      ],
-      "credentials": {
-        "httpHeaderAuth": {
-          "id": "iaBridgeOps00001",
-          "name": "issue-agent-bridge-ops"
-        }
-      }
-    },
-    {
-      "parameters": {
-        "rules": {
-          "values": [
-            {
-              "conditions": {
-                "options": {
-                  "caseSensitive": true,
-                  "leftValue": "",
-                  "typeValidation": "loose",
-                  "version": 2
-                },
-                "conditions": [
-                  {
-                    "id": "fb3b2096-a453-5783-89f8-1fea63704533",
-                    "leftValue": "={{ $json.ok === true ? 'sent' : ($json.retryable ? 'retry' : 'error') }}",
-                    "operator": {
-                      "type": "string",
-                      "operation": "equals"
-                    },
-                    "rightValue": "sent"
-                  }
-                ],
-                "combinator": "and"
-              },
-              "renameOutput": true,
-              "outputKey": "sent"
-            },
-            {
-              "conditions": {
-                "options": {
-                  "caseSensitive": true,
-                  "leftValue": "",
-                  "typeValidation": "loose",
-                  "version": 2
-                },
-                "conditions": [
-                  {
-                    "id": "36dc5f5d-5724-5108-a3a2-b12b9ca69653",
-                    "leftValue": "={{ $json.ok === true ? 'sent' : ($json.retryable ? 'retry' : 'error') }}",
-                    "operator": {
-                      "type": "string",
-                      "operation": "equals"
-                    },
-                    "rightValue": "retry"
-                  }
-                ],
-                "combinator": "and"
-              },
-              "renameOutput": true,
-              "outputKey": "retry"
-            }
-          ]
-        },
-        "options": {
-          "fallbackOutput": "extra",
-          "renameFallbackOutput": "other"
-        }
-      },
-      "id": "77c5242d-9483-57fb-85ac-6746769d5f95",
-      "name": "Send status (review)",
-      "type": "n8n-nodes-base.switch",
-      "typeVersion": 3.2,
-      "position": [
-        960,
         2640
       ]
     },
     {
       "parameters": {
-        "conditions": {
-          "options": {
-            "caseSensitive": true,
-            "leftValue": "",
-            "typeValidation": "loose",
-            "version": 2
-          },
-          "conditions": [
-            {
-              "id": "d92def5f-ea5b-59d8-b5ad-96271beefb33",
-              "leftValue": "={{ $runIndex < 10 }}",
-              "operator": {
-                "type": "boolean",
-                "operation": "true",
-                "singleValue": true
-              },
-              "rightValue": ""
-            }
-          ],
-          "combinator": "and"
-        },
+        "mode": "raw",
+        "jsonOutput": "={{ ($json.result || {}).status === 'reviewed' ? { ok: true, result: ($json.result || {}) } : { ok: false, error: 'review ' + String(($json.result || {}).status || 'returned no status') + ': ' + (Array.isArray(($json.result || {}).blockers) && ($json.result || {}).blockers.length ? ($json.result || {}).blockers.join('; ') : String(($json.result || {}).summary || 'no blockers given')).slice(0, 1500) } }}",
         "options": {}
-      },
-      "id": "9a86f88c-10c9-5dad-90a6-76bd1958688e",
-      "name": "Send retries left? (review)",
-      "type": "n8n-nodes-base.if",
-      "typeVersion": 2.2,
-      "position": [
-        960,
-        2860
-      ]
-    },
-    {
-      "parameters": {
-        "amount": 120,
-        "unit": "seconds"
-      },
-      "id": "d737c050-599f-53da-b44f-6dcdfe0a85e2",
-      "name": "Wait before send retry (review)",
-      "type": "n8n-nodes-base.wait",
-      "typeVersion": 1.1,
-      "position": [
-        1200,
-        2860
-      ],
-      "webhookId": "2f4a4c89-d980-5c36-80ff-d4fb4de83bbc"
-    },
-    {
-      "parameters": {
-        "amount": 120,
-        "unit": "seconds"
-      },
-      "id": "645ef056-8867-53a7-aa41-657a4e05cb86",
-      "name": "Wait for agent (review)",
-      "type": "n8n-nodes-base.wait",
-      "typeVersion": 1.1,
-      "position": [
-        1200,
-        2640
-      ],
-      "webhookId": "2cebabfe-71c4-56f7-a55b-15fdad056578"
-    },
-    {
-      "parameters": {
-        "method": "POST",
-        "url": "={{ $env.ISSUE_AGENT_BRIDGE_URL }}/ops",
-        "authentication": "genericCredentialType",
-        "genericAuthType": "httpHeaderAuth",
-        "sendBody": true,
-        "specifyBody": "json",
-        "jsonBody": "={{ JSON.stringify(Object.assign({ op: 'session_turn', delivery_id: $('Begin').first().json.event.delivery_id }, { mode: $('Prepare review step').first().json.mode })) }}",
-        "options": {
-          "timeout": 300000,
-          "response": {
-            "response": {
-              "neverError": true
-            }
-          }
-        }
-      },
-      "id": "6af81c87-1b1a-5381-8859-f99328c25cd1",
-      "name": "Check turn (review)",
-      "type": "n8n-nodes-base.httpRequest",
-      "typeVersion": 4.2,
-      "position": [
-        1440,
-        2640
-      ],
-      "credentials": {
-        "httpHeaderAuth": {
-          "id": "iaBridgeOps00001",
-          "name": "issue-agent-bridge-ops"
-        }
-      }
-    },
-    {
-      "parameters": {
-        "rules": {
-          "values": [
-            {
-              "conditions": {
-                "options": {
-                  "caseSensitive": true,
-                  "leftValue": "",
-                  "typeValidation": "loose",
-                  "version": 2
-                },
-                "conditions": [
-                  {
-                    "id": "54bcf120-5a19-5b39-be38-031a070f9274",
-                    "leftValue": "={{ $json.ok === true ? $json.state : ($json.retryable ? 'retry' : 'error') }}",
-                    "operator": {
-                      "type": "string",
-                      "operation": "equals"
-                    },
-                    "rightValue": "done"
-                  }
-                ],
-                "combinator": "and"
-              },
-              "renameOutput": true,
-              "outputKey": "done"
-            },
-            {
-              "conditions": {
-                "options": {
-                  "caseSensitive": true,
-                  "leftValue": "",
-                  "typeValidation": "loose",
-                  "version": 2
-                },
-                "conditions": [
-                  {
-                    "id": "f4c3ea31-2140-5dbd-b7be-a7c67872cfa4",
-                    "leftValue": "={{ $json.ok === true ? $json.state : ($json.retryable ? 'retry' : 'error') }}",
-                    "operator": {
-                      "type": "string",
-                      "operation": "equals"
-                    },
-                    "rightValue": "running"
-                  }
-                ],
-                "combinator": "and"
-              },
-              "renameOutput": true,
-              "outputKey": "running"
-            },
-            {
-              "conditions": {
-                "options": {
-                  "caseSensitive": true,
-                  "leftValue": "",
-                  "typeValidation": "loose",
-                  "version": 2
-                },
-                "conditions": [
-                  {
-                    "id": "068ee757-fdd3-59b9-ba8d-eef6c74938a2",
-                    "leftValue": "={{ $json.ok === true ? $json.state : ($json.retryable ? 'retry' : 'error') }}",
-                    "operator": {
-                      "type": "string",
-                      "operation": "equals"
-                    },
-                    "rightValue": "queued"
-                  }
-                ],
-                "combinator": "and"
-              },
-              "renameOutput": true,
-              "outputKey": "queued"
-            },
-            {
-              "conditions": {
-                "options": {
-                  "caseSensitive": true,
-                  "leftValue": "",
-                  "typeValidation": "loose",
-                  "version": 2
-                },
-                "conditions": [
-                  {
-                    "id": "17623bf0-45de-5e2e-b04b-df6325203188",
-                    "leftValue": "={{ $json.ok === true ? $json.state : ($json.retryable ? 'retry' : 'error') }}",
-                    "operator": {
-                      "type": "string",
-                      "operation": "equals"
-                    },
-                    "rightValue": "retry"
-                  }
-                ],
-                "combinator": "and"
-              },
-              "renameOutput": true,
-              "outputKey": "retry"
-            },
-            {
-              "conditions": {
-                "options": {
-                  "caseSensitive": true,
-                  "leftValue": "",
-                  "typeValidation": "loose",
-                  "version": 2
-                },
-                "conditions": [
-                  {
-                    "id": "ce9eb23e-7623-5e0d-abd4-c05828ab9629",
-                    "leftValue": "={{ $json.ok === true ? $json.state : ($json.retryable ? 'retry' : 'error') }}",
-                    "operator": {
-                      "type": "string",
-                      "operation": "equals"
-                    },
-                    "rightValue": "attention"
-                  }
-                ],
-                "combinator": "and"
-              },
-              "renameOutput": true,
-              "outputKey": "attention"
-            },
-            {
-              "conditions": {
-                "options": {
-                  "caseSensitive": true,
-                  "leftValue": "",
-                  "typeValidation": "loose",
-                  "version": 2
-                },
-                "conditions": [
-                  {
-                    "id": "54690894-58f6-5b82-bf58-690f3fe9be07",
-                    "leftValue": "={{ $json.ok === true ? $json.state : ($json.retryable ? 'retry' : 'error') }}",
-                    "operator": {
-                      "type": "string",
-                      "operation": "equals"
-                    },
-                    "rightValue": "lost"
-                  }
-                ],
-                "combinator": "and"
-              },
-              "renameOutput": true,
-              "outputKey": "lost"
-            }
-          ]
-        },
-        "options": {
-          "fallbackOutput": "extra",
-          "renameFallbackOutput": "other"
-        }
-      },
-      "id": "73cca0ea-d42d-5fe6-a66c-960de42c61f7",
-      "name": "Turn state (review)",
-      "type": "n8n-nodes-base.switch",
-      "typeVersion": 3.2,
-      "position": [
-        1680,
-        2640
-      ]
-    },
-    {
-      "parameters": {
-        "conditions": {
-          "options": {
-            "caseSensitive": true,
-            "leftValue": "",
-            "typeValidation": "loose",
-            "version": 2
-          },
-          "conditions": [
-            {
-              "id": "e1f20050-d758-5eb6-9c5f-46e9eca66b32",
-              "leftValue": "={{ $runIndex < 180 }}",
-              "operator": {
-                "type": "boolean",
-                "operation": "true",
-                "singleValue": true
-              },
-              "rightValue": ""
-            }
-          ],
-          "combinator": "and"
-        },
-        "options": {}
-      },
-      "id": "76d91ca5-a86c-57c8-a4d1-72817db3ca2e",
-      "name": "Within time budget? (review)",
-      "type": "n8n-nodes-base.if",
-      "typeVersion": 2.2,
-      "position": [
-        1680,
-        2860
-      ]
-    },
-    {
-      "parameters": {
-        "jsCode": "\nconst r = $input.first().json.result || {};\nif (r.status === 'reviewed') return [{ json: { ok: true, result: r } }];\nconst why = Array.isArray(r.blockers) && r.blockers.length ? r.blockers.join('; ') : String(r.summary || 'no blockers given');\nreturn [{ json: { ok: false, error: 'review ' + String(r.status || 'returned no status') + ': ' + why.slice(0, 1500) } }];\n"
       },
       "id": "ae4bb1bc-8a2f-5599-a319-c6ce0badb8a8",
       "name": "Check review result",
-      "type": "n8n-nodes-base.code",
-      "typeVersion": 2,
+      "type": "n8n-nodes-base.set",
+      "typeVersion": 3.4,
       "position": [
         1920,
         2640
@@ -3347,7 +2061,7 @@
         "genericAuthType": "httpHeaderAuth",
         "sendBody": true,
         "specifyBody": "json",
-        "jsonBody": "={{ JSON.stringify(Object.assign({ op: 'fail', delivery_id: $('Begin').first().json.event.delivery_id }, { node: $prevNode.name, detail: String($prevNode.name + ': ' + ($json.error || $json.detail || ($json.state ? 'agent turn still ' + $json.state + ' when the time budget ran out' : 'unexpected result'))).slice(0, 1700) })) }}",
+        "jsonBody": "={{ JSON.stringify(Object.assign({ op: 'fail', delivery_id: $('Begin').first().json.event.delivery_id }, { node: ($prevNode.name.startsWith('Session done? (') ? $json.node : $prevNode.name), detail: String(($prevNode.name.startsWith('Session done? (') ? $json.node : $prevNode.name) + ': ' + ($json.error || $json.detail || ($json.state ? 'agent turn still ' + $json.state + ' when the time budget ran out' : 'unexpected result'))).slice(0, 1700) })) }}",
         "options": {
           "timeout": 120000,
           "response": {
@@ -3569,223 +2283,29 @@
       "main": [
         [
           {
-            "node": "Ensure session (triage)",
+            "node": "Run agent session (triage)",
             "type": "main",
             "index": 0
           }
         ]
       ]
     },
-    "Ensure session (triage)": {
+    "Run agent session (triage)": {
       "main": [
         [
           {
-            "node": "Session status (triage)",
+            "node": "Session done? (triage)",
             "type": "main",
             "index": 0
           }
         ]
       ]
     },
-    "Session status (triage)": {
-      "main": [
-        [
-          {
-            "node": "Send step to agent (triage)",
-            "type": "main",
-            "index": 0
-          }
-        ],
-        [
-          {
-            "node": "Session retries left? (triage)",
-            "type": "main",
-            "index": 0
-          }
-        ],
-        [
-          {
-            "node": "Mark needs attention",
-            "type": "main",
-            "index": 0
-          }
-        ]
-      ]
-    },
-    "Session retries left? (triage)": {
-      "main": [
-        [
-          {
-            "node": "Wait before session retry (triage)",
-            "type": "main",
-            "index": 0
-          }
-        ],
-        [
-          {
-            "node": "Mark needs attention",
-            "type": "main",
-            "index": 0
-          }
-        ]
-      ]
-    },
-    "Wait before session retry (triage)": {
-      "main": [
-        [
-          {
-            "node": "Ensure session (triage)",
-            "type": "main",
-            "index": 0
-          }
-        ]
-      ]
-    },
-    "Send step to agent (triage)": {
-      "main": [
-        [
-          {
-            "node": "Send status (triage)",
-            "type": "main",
-            "index": 0
-          }
-        ]
-      ]
-    },
-    "Send status (triage)": {
-      "main": [
-        [
-          {
-            "node": "Wait for agent (triage)",
-            "type": "main",
-            "index": 0
-          }
-        ],
-        [
-          {
-            "node": "Send retries left? (triage)",
-            "type": "main",
-            "index": 0
-          }
-        ],
-        [
-          {
-            "node": "Mark needs attention",
-            "type": "main",
-            "index": 0
-          }
-        ]
-      ]
-    },
-    "Send retries left? (triage)": {
-      "main": [
-        [
-          {
-            "node": "Wait before send retry (triage)",
-            "type": "main",
-            "index": 0
-          }
-        ],
-        [
-          {
-            "node": "Mark needs attention",
-            "type": "main",
-            "index": 0
-          }
-        ]
-      ]
-    },
-    "Wait before send retry (triage)": {
-      "main": [
-        [
-          {
-            "node": "Ensure session (triage)",
-            "type": "main",
-            "index": 0
-          }
-        ]
-      ]
-    },
-    "Wait for agent (triage)": {
-      "main": [
-        [
-          {
-            "node": "Check turn (triage)",
-            "type": "main",
-            "index": 0
-          }
-        ]
-      ]
-    },
-    "Check turn (triage)": {
-      "main": [
-        [
-          {
-            "node": "Turn state (triage)",
-            "type": "main",
-            "index": 0
-          }
-        ]
-      ]
-    },
-    "Turn state (triage)": {
+    "Session done? (triage)": {
       "main": [
         [
           {
             "node": "Check triage result",
-            "type": "main",
-            "index": 0
-          }
-        ],
-        [
-          {
-            "node": "Within time budget? (triage)",
-            "type": "main",
-            "index": 0
-          }
-        ],
-        [
-          {
-            "node": "Within time budget? (triage)",
-            "type": "main",
-            "index": 0
-          }
-        ],
-        [
-          {
-            "node": "Within time budget? (triage)",
-            "type": "main",
-            "index": 0
-          }
-        ],
-        [
-          {
-            "node": "Mark needs attention",
-            "type": "main",
-            "index": 0
-          }
-        ],
-        [
-          {
-            "node": "Send retries left? (triage)",
-            "type": "main",
-            "index": 0
-          }
-        ],
-        [
-          {
-            "node": "Mark needs attention",
-            "type": "main",
-            "index": 0
-          }
-        ]
-      ]
-    },
-    "Within time budget? (triage)": {
-      "main": [
-        [
-          {
-            "node": "Wait for agent (triage)",
             "type": "main",
             "index": 0
           }
@@ -4023,223 +2543,29 @@
       "main": [
         [
           {
-            "node": "Ensure session (implement)",
+            "node": "Run agent session (implement)",
             "type": "main",
             "index": 0
           }
         ]
       ]
     },
-    "Ensure session (implement)": {
+    "Run agent session (implement)": {
       "main": [
         [
           {
-            "node": "Session status (implement)",
+            "node": "Session done? (implement)",
             "type": "main",
             "index": 0
           }
         ]
       ]
     },
-    "Session status (implement)": {
-      "main": [
-        [
-          {
-            "node": "Send step to agent (implement)",
-            "type": "main",
-            "index": 0
-          }
-        ],
-        [
-          {
-            "node": "Session retries left? (implement)",
-            "type": "main",
-            "index": 0
-          }
-        ],
-        [
-          {
-            "node": "Mark needs attention",
-            "type": "main",
-            "index": 0
-          }
-        ]
-      ]
-    },
-    "Session retries left? (implement)": {
-      "main": [
-        [
-          {
-            "node": "Wait before session retry (implement)",
-            "type": "main",
-            "index": 0
-          }
-        ],
-        [
-          {
-            "node": "Mark needs attention",
-            "type": "main",
-            "index": 0
-          }
-        ]
-      ]
-    },
-    "Wait before session retry (implement)": {
-      "main": [
-        [
-          {
-            "node": "Ensure session (implement)",
-            "type": "main",
-            "index": 0
-          }
-        ]
-      ]
-    },
-    "Send step to agent (implement)": {
-      "main": [
-        [
-          {
-            "node": "Send status (implement)",
-            "type": "main",
-            "index": 0
-          }
-        ]
-      ]
-    },
-    "Send status (implement)": {
-      "main": [
-        [
-          {
-            "node": "Wait for agent (implement)",
-            "type": "main",
-            "index": 0
-          }
-        ],
-        [
-          {
-            "node": "Send retries left? (implement)",
-            "type": "main",
-            "index": 0
-          }
-        ],
-        [
-          {
-            "node": "Mark needs attention",
-            "type": "main",
-            "index": 0
-          }
-        ]
-      ]
-    },
-    "Send retries left? (implement)": {
-      "main": [
-        [
-          {
-            "node": "Wait before send retry (implement)",
-            "type": "main",
-            "index": 0
-          }
-        ],
-        [
-          {
-            "node": "Mark needs attention",
-            "type": "main",
-            "index": 0
-          }
-        ]
-      ]
-    },
-    "Wait before send retry (implement)": {
-      "main": [
-        [
-          {
-            "node": "Ensure session (implement)",
-            "type": "main",
-            "index": 0
-          }
-        ]
-      ]
-    },
-    "Wait for agent (implement)": {
-      "main": [
-        [
-          {
-            "node": "Check turn (implement)",
-            "type": "main",
-            "index": 0
-          }
-        ]
-      ]
-    },
-    "Check turn (implement)": {
-      "main": [
-        [
-          {
-            "node": "Turn state (implement)",
-            "type": "main",
-            "index": 0
-          }
-        ]
-      ]
-    },
-    "Turn state (implement)": {
+    "Session done? (implement)": {
       "main": [
         [
           {
             "node": "Compose implement report",
-            "type": "main",
-            "index": 0
-          }
-        ],
-        [
-          {
-            "node": "Within time budget? (implement)",
-            "type": "main",
-            "index": 0
-          }
-        ],
-        [
-          {
-            "node": "Within time budget? (implement)",
-            "type": "main",
-            "index": 0
-          }
-        ],
-        [
-          {
-            "node": "Within time budget? (implement)",
-            "type": "main",
-            "index": 0
-          }
-        ],
-        [
-          {
-            "node": "Mark needs attention",
-            "type": "main",
-            "index": 0
-          }
-        ],
-        [
-          {
-            "node": "Send retries left? (implement)",
-            "type": "main",
-            "index": 0
-          }
-        ],
-        [
-          {
-            "node": "Mark needs attention",
-            "type": "main",
-            "index": 0
-          }
-        ]
-      ]
-    },
-    "Within time budget? (implement)": {
-      "main": [
-        [
-          {
-            "node": "Wait for agent (implement)",
             "type": "main",
             "index": 0
           }
@@ -4537,223 +2863,29 @@
       "main": [
         [
           {
-            "node": "Ensure session (review)",
+            "node": "Run agent session (review)",
             "type": "main",
             "index": 0
           }
         ]
       ]
     },
-    "Ensure session (review)": {
+    "Run agent session (review)": {
       "main": [
         [
           {
-            "node": "Session status (review)",
+            "node": "Session done? (review)",
             "type": "main",
             "index": 0
           }
         ]
       ]
     },
-    "Session status (review)": {
-      "main": [
-        [
-          {
-            "node": "Send step to agent (review)",
-            "type": "main",
-            "index": 0
-          }
-        ],
-        [
-          {
-            "node": "Session retries left? (review)",
-            "type": "main",
-            "index": 0
-          }
-        ],
-        [
-          {
-            "node": "Mark needs attention",
-            "type": "main",
-            "index": 0
-          }
-        ]
-      ]
-    },
-    "Session retries left? (review)": {
-      "main": [
-        [
-          {
-            "node": "Wait before session retry (review)",
-            "type": "main",
-            "index": 0
-          }
-        ],
-        [
-          {
-            "node": "Mark needs attention",
-            "type": "main",
-            "index": 0
-          }
-        ]
-      ]
-    },
-    "Wait before session retry (review)": {
-      "main": [
-        [
-          {
-            "node": "Ensure session (review)",
-            "type": "main",
-            "index": 0
-          }
-        ]
-      ]
-    },
-    "Send step to agent (review)": {
-      "main": [
-        [
-          {
-            "node": "Send status (review)",
-            "type": "main",
-            "index": 0
-          }
-        ]
-      ]
-    },
-    "Send status (review)": {
-      "main": [
-        [
-          {
-            "node": "Wait for agent (review)",
-            "type": "main",
-            "index": 0
-          }
-        ],
-        [
-          {
-            "node": "Send retries left? (review)",
-            "type": "main",
-            "index": 0
-          }
-        ],
-        [
-          {
-            "node": "Mark needs attention",
-            "type": "main",
-            "index": 0
-          }
-        ]
-      ]
-    },
-    "Send retries left? (review)": {
-      "main": [
-        [
-          {
-            "node": "Wait before send retry (review)",
-            "type": "main",
-            "index": 0
-          }
-        ],
-        [
-          {
-            "node": "Mark needs attention",
-            "type": "main",
-            "index": 0
-          }
-        ]
-      ]
-    },
-    "Wait before send retry (review)": {
-      "main": [
-        [
-          {
-            "node": "Ensure session (review)",
-            "type": "main",
-            "index": 0
-          }
-        ]
-      ]
-    },
-    "Wait for agent (review)": {
-      "main": [
-        [
-          {
-            "node": "Check turn (review)",
-            "type": "main",
-            "index": 0
-          }
-        ]
-      ]
-    },
-    "Check turn (review)": {
-      "main": [
-        [
-          {
-            "node": "Turn state (review)",
-            "type": "main",
-            "index": 0
-          }
-        ]
-      ]
-    },
-    "Turn state (review)": {
+    "Session done? (review)": {
       "main": [
         [
           {
             "node": "Check review result",
-            "type": "main",
-            "index": 0
-          }
-        ],
-        [
-          {
-            "node": "Within time budget? (review)",
-            "type": "main",
-            "index": 0
-          }
-        ],
-        [
-          {
-            "node": "Within time budget? (review)",
-            "type": "main",
-            "index": 0
-          }
-        ],
-        [
-          {
-            "node": "Within time budget? (review)",
-            "type": "main",
-            "index": 0
-          }
-        ],
-        [
-          {
-            "node": "Mark needs attention",
-            "type": "main",
-            "index": 0
-          }
-        ],
-        [
-          {
-            "node": "Send retries left? (review)",
-            "type": "main",
-            "index": 0
-          }
-        ],
-        [
-          {
-            "node": "Mark needs attention",
-            "type": "main",
-            "index": 0
-          }
-        ]
-      ]
-    },
-    "Within time budget? (review)": {
-      "main": [
-        [
-          {
-            "node": "Wait for agent (review)",
             "type": "main",
             "index": 0
           }

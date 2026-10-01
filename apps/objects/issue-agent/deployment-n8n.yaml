@@ -43,6 +43,8 @@ spec:
               value: https://n8n.bhyoo.com/
             - name: N8N_PROXY_HOPS
               value: "1"
+            - name: N8N_ENDPOINT_WEBHOOK
+              value: webhooks
             - name: DB_TYPE
               value: sqlite
             - name: DB_SQLITE_POOL_SIZE
@@ -69,6 +71,18 @@ spec:
               value: IssueAgentMain01
             - name: ISSUE_AGENT_ERROR_WORKFLOW_ID
               value: IssueAgentError01
+            - name: ISSUE_AGENT_SESSION_WORKFLOW_ID
+              value: IssueAgentSession01
+            - name: ISSUE_AGENT_INTAKE_WORKFLOW_ID
+              value: IssueAgentIntake01
+            # Community nodes are installed from npm at startup and pinned by integrity checksum. The
+            # checksum is what allows the package while unverified packages stay disabled.
+            - name: N8N_COMMUNITY_PACKAGES_MANAGED_BY_ENV
+              value: "true"
+            - name: N8N_COMMUNITY_PACKAGES
+              value: '[{"name":"n8n-nodes-webhook-signature","version":"0.1.2","checksum":"sha512-wVw9SYyXgqvHAenBKdpO+DQvWYacSoOxYv9tSAqZVzKnwQLtED1pCDGkh0/6DeDxQG9+Y7nIhOpSLh4k65XQdA=="}]'
+            - name: N8N_UNVERIFIED_PACKAGES_ENABLED
+              value: "false"
             - name: N8N_ENFORCE_SETTINGS_FILE_PERMISSIONS
               value: "true"
             - name: N8N_ENCRYPTION_KEY_FILE
@@ -131,6 +145,9 @@ spec:
             - name: ops
               mountPath: /run/issue-agent-n8n/ops
               readOnly: true
+            - name: webhook
+              mountPath: /run/issue-agent-n8n/webhook
+              readOnly: true
       volumes:
         - name: data
           persistentVolumeClaim:
@@ -156,4 +173,8 @@ spec:
         - name: ops
           secret:
             secretName: issue-agent-bridge-ops
+            defaultMode: 0440
+        - name: webhook
+          secret:
+            secretName: issue-agent-webhook
             defaultMode: 0440

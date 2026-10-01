@@ -3,11 +3,13 @@
 
 Responsibilities (agent turns live in n8n; durable PR coordination lives here):
 
-* ``POST /webhooks/github`` verifies the signature, applies the repository
-  registry (defaults plus per-repository overrides) and the intake trust rules
-  (repository collaborators, cached), and durably records accepted
-  issue changes, pull request review requests and PR/check/review/push
-  reconciliation signals before answering 2xx.
+* ``POST /webhooks/github`` (cluster-internal) takes GitHub deliveries that the
+  n8n intake workflow already signature-checked, authenticated with the ``/ops``
+  bearer token; it applies the repository registry (defaults plus
+  per-repository overrides) and the intake trust rules (repository
+  collaborators, cached), and durably records accepted issue changes, pull
+  request review requests and PR/check/review/push reconciliation signals
+  before answering 2xx.
 * A single dispatcher hands events to the private n8n webhook, at most
   ``MAX_ACTIVE_EVENTS`` at a time and one per subject (issue or pull request).
   n8n acknowledges ownership with the ``begin`` op and ends it with ``finish``
@@ -190,7 +192,6 @@ PR_REPAIR_CAUSES = {"base": "an outdated or conflicting base", "checks": "failin
 
 REQUIRED_ENV = (
     "BRIDGE_STATE_PATH",
-    "GITHUB_WEBHOOK_SECRET_FILE",
     "GITHUB_TOKEN_DIR",
     "REPO_REGISTRY_FILE",
     "N8N_WEBHOOK_URL",
@@ -228,7 +229,6 @@ def _url(value: str, name: str) -> str:
 @dataclass(frozen=True)
 class Config:
     state_path: str
-    webhook_secret_file: str
     github_token_dir: str
     registry_file: str
     n8n_webhook_url: str
@@ -275,7 +275,6 @@ class Config:
         hapi_public = env.get("HAPI_PUBLIC_URL", "").strip()
         return cls(
             state_path=env["BRIDGE_STATE_PATH"].strip(),
-            webhook_secret_file=env["GITHUB_WEBHOOK_SECRET_FILE"].strip(),
             github_token_dir=env["GITHUB_TOKEN_DIR"].strip(),
             registry_file=env["REPO_REGISTRY_FILE"].strip(),
             n8n_webhook_url=_url(env["N8N_WEBHOOK_URL"], "N8N_WEBHOOK_URL"),
@@ -317,13 +316,6 @@ def read_github_token(token_dir: str) -> str:
     if not match:
         raise ConfigError("no oauth_token in hosts.yml")
     return match.group(1)
-
-
-def verify_signature(secret: bytes, body: bytes, header: str | None) -> bool:
-    if not header or not header.startswith("sha256="):
-        return False
-    expected = "sha256=" + hmac.new(secret, body, hashlib.sha256).hexdigest()
-    return hmac.compare_digest(expected.encode(), header.strip().encode())
 
 
 # --------------------------------------------------------------------------
@@ -1234,9 +1226,9 @@ def classify_event(registry: Registry, event: str, delivery: str, payload: Any, 
                    bot_login: str | None = None, reviewer_login: str | None = None) -> dict[str, Any] | str:
     """Normalized event dict, or a string reason for not queueing it.
 
-    Any repository delivered by the App is accepted (the signature proves the installation);
-    the registry only supplies per-repository settings. ``trusted(repo, login)`` is consulted only
-    when a rule depends on it (it may raise ``TrustUnavailable``); the event's ``trusted`` is True
+    Any repository delivered by the App is accepted (the n8n intake workflow verified the signature, which
+    proves the installation); the registry only supplies per-repository settings. ``trusted(repo, login)`` is
+    consulted only when a rule depends on it (it may raise ``TrustUnavailable``); the event's ``trusted`` is True
     only when that lookup confirmed it.
     """
     if not isinstance(payload, dict):
@@ -1399,13 +1391,15 @@ def classify_event(registry: Registry, event: str, delivery: str, payload: Any, 
 
 def handle_webhook(config: Config, store: Store, collaborators: Collaborators, headers: Mapping[str, str],
                    body: bytes) -> Intake:
+    # The n8n intake workflow verifies GitHub's signature and forwards with the /ops bearer token.
     try:
-        secret = read_secret_file(config.webhook_secret_file).encode()
+        token = read_secret_file(config.ops_token_file)
     except (OSError, ConfigError, UnicodeDecodeError):
-        LOG.error("webhook secret unavailable; rejecting delivery")
-        return Intake(503, "secret_unavailable")
-    if not verify_signature(secret, body, headers.get("X-Hub-Signature-256")):
-        return Intake(401, "bad_signature")
+        LOG.error("ops token unavailable; rejecting delivery")
+        return Intake(503, "ops_token_unavailable")
+    supplied = headers.get("Authorization") or ""
+    if not hmac.compare_digest(supplied.encode(), f"Bearer {token}".encode()):
+        return Intake(401, "unauthorized")
     event = headers.get("X-GitHub-Event", "")
     delivery = headers.get("X-GitHub-Delivery", "")
     if not event or not _DELIVERY_RE.match(delivery):

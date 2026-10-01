@@ -13,6 +13,7 @@ spec:
         - path:
             type: Exact
             value: /webhooks/github
+      # The n8n intake workflow verifies the signature and forwards to the bridge's internal intake.
       backendRefs:
-        - name: issue-agent-webhook
-          port: 8080
+        - name: issue-agent-n8n
+          port: 5678

@@ -6,8 +6,6 @@ Run: python3 -m unittest apps/objects/issue-agent/test_bridge.py
 from __future__ import annotations
 
 import dataclasses
-import hashlib
-import hmac
 import http.client
 import http.server
 import json
@@ -26,7 +24,6 @@ sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
 
 import bridge  # noqa: E402
 
-SECRET = "test-webhook-secret"
 OPS_TOKEN = "ops-token"
 N8N_TOKEN = "n8n-token"
 PUB_TOKEN = "publisher-token"
@@ -545,10 +542,6 @@ class Fake:
         }}}}
 
 
-def sign(body: bytes) -> str:
-    return "sha256=" + hmac.new(SECRET.encode(), body, hashlib.sha256).hexdigest()
-
-
 def repository(repo: str) -> dict:
     return {"full_name": repo, "default_branch": "master"}
 
@@ -646,7 +639,7 @@ class BridgeTestCase(unittest.TestCase):
         self.fake = Fake()
         self.addCleanup(self.fake.close)
         self.addCleanup(self.tmp.cleanup)
-        files = {"secret": SECRET, "ops": OPS_TOKEN, "n8n": N8N_TOKEN, "hapi": HAPI_ACCESS, "publisher": PUB_TOKEN}
+        files = {"ops": OPS_TOKEN, "n8n": N8N_TOKEN, "hapi": HAPI_ACCESS, "publisher": PUB_TOKEN}
         for name, value in files.items():
             with open(os.path.join(d, name), "w") as fh:
                 fh.write(value + "\n")
@@ -661,7 +654,6 @@ class BridgeTestCase(unittest.TestCase):
         self.write_registry(registry)
         self.env = {
             "BRIDGE_STATE_PATH": os.path.join(d, "state.sqlite3"),
-            "GITHUB_WEBHOOK_SECRET_FILE": os.path.join(d, "secret"),
             "GITHUB_TOKEN_DIR": self.gh_dir,
             "REPO_REGISTRY_FILE": self.registry_path,
             "N8N_WEBHOOK_URL": self.fake.url + "/webhook/issue-agent",
@@ -717,10 +709,12 @@ class BridgeTestCase(unittest.TestCase):
             fh.write(f'github.com:\n    users:\n        x-access-token:\n            oauth_token: "{token}"\n'
                      f'    oauth_token: "{token}"\n    git_protocol: https\n')
 
-    def deliver(self, payload: dict, *, event: str = "issues", delivery: str = "d1", signature: str | None = None):
+    def deliver(self, payload: dict, *, event: str = "issues", delivery: str = "d1",
+                authorization: str | None = f"Bearer {OPS_TOKEN}"):
         body = json.dumps(payload).encode()
-        headers = {"X-GitHub-Event": event, "X-GitHub-Delivery": delivery,
-                   "X-Hub-Signature-256": signature or sign(body)}
+        headers = {"X-GitHub-Event": event, "X-GitHub-Delivery": delivery}
+        if authorization is not None:
+            headers["Authorization"] = authorization
         return bridge.handle_webhook(self.config, self.store, self.collaborators, headers, body)
 
     def op(self, op: str, delivery: str = "d1", **kw: Any) -> dict:
@@ -746,9 +740,15 @@ class BridgeTestCase(unittest.TestCase):
 
 
 class IntakeTests(BridgeTestCase):
-    def test_bad_signature_is_rejected_and_not_persisted(self) -> None:
-        result = self.deliver(issue_payload(), signature="sha256=" + "0" * 64)
-        self.assertEqual((result.status, result.outcome), (401, "bad_signature"))
+    def test_wrong_bearer_is_rejected_and_not_persisted(self) -> None:
+        for authorization in ("Bearer wrong", OPS_TOKEN, f"Bearer {OPS_TOKEN}x"):
+            result = self.deliver(issue_payload(), authorization=authorization)
+            self.assertEqual((result.status, result.outcome), (401, "unauthorized"), authorization)
+        self.assertEqual(self.events(), [])
+
+    def test_missing_bearer_is_rejected_and_not_persisted(self) -> None:
+        result = self.deliver(issue_payload(), authorization=None)
+        self.assertEqual((result.status, result.outcome), (401, "unauthorized"))
         self.assertEqual(self.events(), [])
 
     def test_any_installed_repo_and_any_human_may_open_issues_but_bots_and_agent_comments_do_not_queue(self) -> None:

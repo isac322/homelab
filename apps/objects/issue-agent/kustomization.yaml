@@ -24,4 +24,6 @@ configMapGenerator:
     files:
       - n8n-workflow.json
       - n8n-error-workflow.json
+      - n8n-session-workflow.json
+      - n8n-intake-workflow.json
       - n8n-bootstrap.sh

@@ -28,8 +28,8 @@ v2는 코딩 에이전트의 GitHub 쓰기를 모두 없앴다. 에이전트는 
 
 | 구성 요소 | 책임 |
 |---|---|
-| n8n | GitHub 이벤트 처리 흐름, 모드별 단계(triage → implement, followup, review), 결과에 따른 분기, 모든 GitHub 반영(라벨·댓글·push·PR·리뷰)의 호출과 실패 처리. 에이전트에 보내는 메시지에는 대상 번호와 트리거 정보만 넣으며 GitHub 내용 조회는 담당하지 않는다 |
-| 연결 계층(bridge) | webhook 검증, collaborator 권한 판정(캐시)과 비신뢰 이슈 rate limit, 이벤트 영속화·중복 방지, 이슈/PR과 세션 매핑, HAPI API 인증·상태 확인, 모드별 결과 스키마 검증, GitHub 쓰기 op(issues/pull_requests/contents/repository_advisories write 토큰. contents write는 리뷰 스레드 resolve용이며 push에 쓰지 않고, repository_advisories write는 draft security advisory 생성용), publisher 호출, attention 알림. 에이전트용 GitHub 읽기 op는 두지 않는다 |
+| n8n | GitHub webhook 수신과 서명 검증(수신 워크플로 `IssueAgentIntake01`, 커뮤니티 노드 `n8n-nodes-webhook-signature`), GitHub 이벤트 처리 흐름, 모드별 단계(triage → implement, followup, review), 결과에 따른 분기, 모든 GitHub 반영(라벨·댓글·push·PR·리뷰)의 호출과 실패 처리. 에이전트에 보내는 메시지에는 대상 번호와 트리거 정보만 넣으며 GitHub 내용 조회는 담당하지 않는다 |
+| 연결 계층(bridge) | 서명 검증을 마친 delivery의 내부 수신(ops bearer 인증), collaborator 권한 판정(캐시)과 비신뢰 이슈 rate limit, 이벤트 영속화·중복 방지, 이슈/PR과 세션 매핑, HAPI API 인증·상태 확인, 모드별 결과 스키마 검증, GitHub 쓰기 op(issues/pull_requests/contents/repository_advisories write 토큰. contents write는 리뷰 스레드 resolve용이며 push에 쓰지 않고, repository_advisories write는 draft security advisory 생성용), publisher 호출, attention 알림. 에이전트용 GitHub 읽기 op는 두지 않는다 |
 | publisher(Runner Pod 사이드카) | push 토큰(`issue-agent-github-push`)의 유일한 보유자. bridge 요청으로 저장소 checkout clone과 `hapi-issue-<n>` branch의 non-force push만 수행 |
 | dockerd(Runner Pod native sidecar) | runner·publisher와 같은 Pod의 Docker daemon. Unix socket만 열고 checkout·`/tmp`·Docker 데이터·native DRM 장치 두 개만 마운트한다. startup probe가 daemon 응답과 native DRM 장치 쌍을 확인해야 runner·publisher가 시작한다 |
 | HAPI Hub | 세션 목록·메시지·승인 API, 웹 UI, 다중 구독, Hub 데이터 저장 |
@@ -112,6 +112,8 @@ pillar-csi#155에서 PR 열기 → 31초 뒤 force-push → 3초 뒤 `@haechibot
 - 키는 저장소 식별자와 이슈/PR 번호의 조합이다. 서로 다른 저장소의 동일 번호를 충돌시키지 않는다.
 - GitHub delivery 중복과 의미적으로 중복된 이슈를 구분한다. 전자는 영속 키로 처리하고 후자는 에이전트가 triage에서 읽기 전용 토큰으로 직접 검색·판단한다(`verdict: DUPLICATE`, `duplicate_of`).
 - 이벤트는 수신 확인 전에 영속화한다. 허용하지 않은 사용자·이벤트는 모델에 전달하지 않는다. 저장소는 App 서명이 설치를 증명하므로 따로 거르지 않는다.
+- 수신 경로: GitHub → `issue-agent-webhook.bhyoo.com/webhooks/github`(Cloudflare tunnel) → n8n `IssueAgentIntake01`(Raw Body Webhook → `Verify Webhook Signature`, provider `github`) → bridge 내부 `POST /webhooks/github`(`Authorization: Bearer <bridge-ops-token>`, `/ops`와 같은 토큰). 서명이 틀리거나 없으면 n8n이 401 `{"status":"bad_signature"}`로 답하고 bridge에는 전달하지 않는다. 검증된 원본 바이트와 `X-GitHub-Event`·`X-GitHub-Delivery`만 bridge로 넘기고, bridge의 상태 코드와 JSON 본문을 그대로 GitHub에 돌려준다(bridge 연결 실패는 503 `bridge_unavailable`). bridge는 HMAC을 검증하지 않고 webhook secret도 마운트하지 않으며, bearer가 틀리거나 없으면 401 `unauthorized`로 답한다.
+- 서명 검증 노드는 커뮤니티 패키지 `n8n-nodes-webhook-signature@0.1.2`를 npm integrity checksum으로 고정해 `N8N_COMMUNITY_PACKAGES`로 설치한다(`N8N_UNVERIFIED_PACKAGES_ENABLED=false`). 버전을 올릴 때는 새 버전의 `dist.integrity`와 노드·자격증명 계약 변경을 확인하고 `version`과 `checksum`을 함께 바꾼다.
 - 에이전트가 작성한 댓글이 재실행 루프를 만들지 않게 한다.
 - 세션 생성과 메시지 전송은 결과가 불확실할 때 무조건 재전송하지 않는다. HAPI의 `localId`, queued-state와 세션 메타데이터를 사용해 확인 가능한 것만 복구한다.
 - HAPI spawn 응답은 HTTP 200만으로 성공이라고 보지 않는다. `{type:'success', sessionId}`를 확인한다.
@@ -155,6 +157,8 @@ Runner 컨테이너는 시작할 때 `runner-bootstrap`이 `$HAPI_HOME/runner.st
 | `review` | `pr_review` | `review-pr-<n>` | `isac-pr-review` | ReviewResult |
 
 에이전트는 턴 끝에 `ISSUE_AGENT_RESULT <nonce> {json}` 한 줄을 낸다. `session_send`가 메시지에 nonce와 해당 모드의 정확한 스키마를 넣고, `context`(트리거 정보나 triage 결과 같은 작은 보조 데이터, 200KB 이하)는 신뢰하지 않는 데이터로 fence한다. `session_turn`이 턴 모드의 스키마로 결과를 검증한다(모든 필드 필수, 알 수 없는 키 거절). n8n은 턴마다 120초 간격으로 최대 180회(약 6시간) 확인한다.
+
+세션 루프(`ensure_session` → `session_send` → 대기 → `session_turn`, 세션·전송 재시도 10회와 시간 예산)는 하위 워크플로 `IssueAgentSession01` 한 벌에만 있다. 메인 워크플로의 triage·implement·review 경로는 `Run agent session (<lane>)`(Execute Sub-workflow, 완료까지 대기)으로 `delivery_id`·`lane`·`mode`·지시문·context를 넘기고 `Session done? (<lane>)`에서 결과를 나눈다. 실패하면 하위 워크플로가 `{ok:false, node:"<노드> (<lane>)", …}`를 돌려주고, `Mark needs attention`은 이 `node`로 예전과 같은 노드 이름·detail을 bridge `fail`에 보낸다. 하위 워크플로에는 `settings.errorWorkflow`가 없어 실행 오류는 부모의 오류 워크플로가 한 번만 알린다. n8n 2.x는 하위 워크플로를 게시된 버전으로 실행하므로 bootstrap이 메인보다 먼저 가져와 게시한다. 턴 결과 확인(`Check triage result`·`Check review result`)은 Code 노드가 아니라 Edit Fields 노드다.
 
 followup 턴은 PR을 이슈와 맞춘다. 에이전트는 `gh issue view`와 `gh api`로 이슈 제목·본문과 모든 댓글을 직접 읽는다. Begin 응답에 기록된 `pr_number`가 있으면 `gh pr view`로 그 PR의 상태(번호·URL·state·merged·draft·제목·본문·head/base)와 리뷰 댓글도 직접 읽고, 없으면 아직 PR이 없는 상태다. 에이전트는 PR이 열려 있든, merge·close됐든, 아직 만드는 중이든 이슈 제목·본문과 모든 댓글에서 현재 요구사항을 다시 정리하고 branch diff와 현재 PR 제목·본문·상태와 비교한다. 요구사항은 신뢰 사용자의 댓글·수정만 바꿀 수 있다. 비신뢰 사용자의 입력은 지시가 아니라 판단할 정보이며, 질문이나 `needs_info`로 이어질 수 있다. 다르면 `hapi-issue-<n>`에 새 커밋을 올리고 전체 현재 범위를 설명하는 `pr.title`/`pr.body`로 `ready`를 낸다. PR이 merge·close됐으면 먼저 `origin/<default>`를 branch에 merge한다(rebase·force 금지). 자동화가 그 branch로 새 PR을 연다. PR이 이미 충족하는 단순 맥락이면 `no_change`와 어떻게 반영했는지 설명하는 `issue_comment`를 낸다. 요구사항이 모호하거나 충돌하면 `needs_info`다.
 
@@ -210,7 +214,7 @@ HAPI `v0.30.7`은 agent 메시지 내부의 65,536자 초과 문자열을 저장
 ## 배포·전환 제약
 
 - 이미지는 검증한 버전과 digest로 고정한다. Hub·Runner·CLI의 프로토콜 호환성을 확인한다.
-- 사설 UI는 기존 내부 HTTPS Gateway 패턴을 재사용한다. 공개 webhook 경로만 분리한다. HAPI/n8n 인증을 생략하는 fallback을 만들지 않는다.
+- 사설 UI는 기존 내부 HTTPS Gateway 패턴을 재사용한다. 공개 webhook 경로(`/webhooks/github`, n8n 수신 워크플로로 연결)만 분리한다. HAPI/n8n 인증을 생략하는 fallback을 만들지 않는다.
 - 기존 전용 GitHub App의 설치 범위를 임의로 확장하지 않는다. 추가 운영 레포는 사용자 지정과 설치 권한 확인 후 연결한다.
 - 새 컨테이너별 tier와 자원 수치를 명시하고 14일 CPU/working-set 기록 및 클러스터 메모리 요청 비율을 확인한다. 이력이 없는 신규 서비스는 수치를 추측하지 않고 초기 측정·배포 기준을 사용자와 확정한다.
 - 전환 전 미처리 작업을 확인하고, 단일 GitHub App webhook을 새 endpoint와 secret으로 변경한 뒤 실제 전달을 검증한다. 과거 Archon 대화의 HAPI 이전이나 legacy 댓글 전달 기능은 구현하지 않는다.

@@ -1,0 +1,882 @@
+{
+  "id": "IssueAgentSession01",
+  "name": "Issue Agent session",
+  "active": false,
+  "nodes": [
+    {
+      "parameters": {
+        "inputSource": "workflowInputs",
+        "workflowInputs": {
+          "values": [
+            {
+              "name": "delivery_id",
+              "type": "any"
+            },
+            {
+              "name": "lane",
+              "type": "any"
+            },
+            {
+              "name": "mode",
+              "type": "any"
+            },
+            {
+              "name": "instructions",
+              "type": "any"
+            },
+            {
+              "name": "context",
+              "type": "any"
+            }
+          ]
+        }
+      },
+      "id": "8ab01745-55f8-5a47-bde7-31077ecd3281",
+      "name": "Session request",
+      "type": "n8n-nodes-base.executeWorkflowTrigger",
+      "typeVersion": 1.2,
+      "position": [
+        0,
+        0
+      ]
+    },
+    {
+      "parameters": {
+        "method": "POST",
+        "url": "={{ $env.ISSUE_AGENT_BRIDGE_URL }}/ops",
+        "authentication": "genericCredentialType",
+        "genericAuthType": "httpHeaderAuth",
+        "sendBody": true,
+        "specifyBody": "json",
+        "jsonBody": "={{ JSON.stringify(Object.assign({ op: 'ensure_session', delivery_id: $('Session request').first().json.delivery_id }, {})) }}",
+        "options": {
+          "timeout": 300000,
+          "response": {
+            "response": {
+              "neverError": true
+            }
+          }
+        }
+      },
+      "id": "ecab0cba-e2c5-58ce-b1a2-c22e85d62b43",
+      "name": "Ensure session",
+      "type": "n8n-nodes-base.httpRequest",
+      "typeVersion": 4.2,
+      "position": [
+        240,
+        0
+      ],
+      "credentials": {
+        "httpHeaderAuth": {
+          "id": "iaBridgeOps00001",
+          "name": "issue-agent-bridge-ops"
+        }
+      }
+    },
+    {
+      "parameters": {
+        "rules": {
+          "values": [
+            {
+              "conditions": {
+                "options": {
+                  "caseSensitive": true,
+                  "leftValue": "",
+                  "typeValidation": "loose",
+                  "version": 2
+                },
+                "conditions": [
+                  {
+                    "id": "df4d6bdc-d7ba-5f30-ba5f-f27bcf61e25d",
+                    "leftValue": "={{ $json.ok === true ? 'ready' : ($json.retryable ? 'retry' : 'error') }}",
+                    "operator": {
+                      "type": "string",
+                      "operation": "equals"
+                    },
+                    "rightValue": "ready"
+                  }
+                ],
+                "combinator": "and"
+              },
+              "renameOutput": true,
+              "outputKey": "ready"
+            },
+            {
+              "conditions": {
+                "options": {
+                  "caseSensitive": true,
+                  "leftValue": "",
+                  "typeValidation": "loose",
+                  "version": 2
+                },
+                "conditions": [
+                  {
+                    "id": "650ec6dd-a86c-55c6-9733-960464b3d466",
+                    "leftValue": "={{ $json.ok === true ? 'ready' : ($json.retryable ? 'retry' : 'error') }}",
+                    "operator": {
+                      "type": "string",
+                      "operation": "equals"
+                    },
+                    "rightValue": "retry"
+                  }
+                ],
+                "combinator": "and"
+              },
+              "renameOutput": true,
+              "outputKey": "retry"
+            }
+          ]
+        },
+        "options": {
+          "fallbackOutput": "extra",
+          "renameFallbackOutput": "other"
+        }
+      },
+      "id": "52f58391-1bff-57bc-9a57-6d5b7dd1f758",
+      "name": "Session status",
+      "type": "n8n-nodes-base.switch",
+      "typeVersion": 3.2,
+      "position": [
+        480,
+        0
+      ]
+    },
+    {
+      "parameters": {
+        "conditions": {
+          "options": {
+            "caseSensitive": true,
+            "leftValue": "",
+            "typeValidation": "loose",
+            "version": 2
+          },
+          "conditions": [
+            {
+              "id": "d92def5f-ea5b-59d8-b5ad-96271beefb33",
+              "leftValue": "={{ $runIndex < 10 }}",
+              "operator": {
+                "type": "boolean",
+                "operation": "true",
+                "singleValue": true
+              },
+              "rightValue": ""
+            }
+          ],
+          "combinator": "and"
+        },
+        "options": {}
+      },
+      "id": "3fcb854d-2d98-5a5a-9495-3e5ab90c0d16",
+      "name": "Session retries left?",
+      "type": "n8n-nodes-base.if",
+      "typeVersion": 2.2,
+      "position": [
+        480,
+        220
+      ]
+    },
+    {
+      "parameters": {
+        "amount": 120,
+        "unit": "seconds"
+      },
+      "id": "7917087d-a853-5f5b-b004-bfd3138c3b96",
+      "name": "Wait before session retry",
+      "type": "n8n-nodes-base.wait",
+      "typeVersion": 1.1,
+      "position": [
+        720,
+        220
+      ],
+      "webhookId": "68081a73-c1b5-5220-ae0f-424d74da393c"
+    },
+    {
+      "parameters": {
+        "method": "POST",
+        "url": "={{ $env.ISSUE_AGENT_BRIDGE_URL }}/ops",
+        "authentication": "genericCredentialType",
+        "genericAuthType": "httpHeaderAuth",
+        "sendBody": true,
+        "specifyBody": "json",
+        "jsonBody": "={{ JSON.stringify(Object.assign({ op: 'session_send', delivery_id: $('Session request').first().json.delivery_id }, { mode: $('Session request').first().json.mode, instructions: $('Session request').first().json.instructions, context: $('Session request').first().json.context })) }}",
+        "options": {
+          "timeout": 300000,
+          "response": {
+            "response": {
+              "neverError": true
+            }
+          }
+        }
+      },
+      "id": "ca8b7d5e-bdde-5ff4-9daa-ad81a575d827",
+      "name": "Send step to agent",
+      "type": "n8n-nodes-base.httpRequest",
+      "typeVersion": 4.2,
+      "position": [
+        720,
+        0
+      ],
+      "credentials": {
+        "httpHeaderAuth": {
+          "id": "iaBridgeOps00001",
+          "name": "issue-agent-bridge-ops"
+        }
+      }
+    },
+    {
+      "parameters": {
+        "rules": {
+          "values": [
+            {
+              "conditions": {
+                "options": {
+                  "caseSensitive": true,
+                  "leftValue": "",
+                  "typeValidation": "loose",
+                  "version": 2
+                },
+                "conditions": [
+                  {
+                    "id": "fb3b2096-a453-5783-89f8-1fea63704533",
+                    "leftValue": "={{ $json.ok === true ? 'sent' : ($json.retryable ? 'retry' : 'error') }}",
+                    "operator": {
+                      "type": "string",
+                      "operation": "equals"
+                    },
+                    "rightValue": "sent"
+                  }
+                ],
+                "combinator": "and"
+              },
+              "renameOutput": true,
+              "outputKey": "sent"
+            },
+            {
+              "conditions": {
+                "options": {
+                  "caseSensitive": true,
+                  "leftValue": "",
+                  "typeValidation": "loose",
+                  "version": 2
+                },
+                "conditions": [
+                  {
+                    "id": "36dc5f5d-5724-5108-a3a2-b12b9ca69653",
+                    "leftValue": "={{ $json.ok === true ? 'sent' : ($json.retryable ? 'retry' : 'error') }}",
+                    "operator": {
+                      "type": "string",
+                      "operation": "equals"
+                    },
+                    "rightValue": "retry"
+                  }
+                ],
+                "combinator": "and"
+              },
+              "renameOutput": true,
+              "outputKey": "retry"
+            }
+          ]
+        },
+        "options": {
+          "fallbackOutput": "extra",
+          "renameFallbackOutput": "other"
+        }
+      },
+      "id": "de0fb404-c8dc-597b-84d9-76646355bda2",
+      "name": "Send status",
+      "type": "n8n-nodes-base.switch",
+      "typeVersion": 3.2,
+      "position": [
+        960,
+        0
+      ]
+    },
+    {
+      "parameters": {
+        "conditions": {
+          "options": {
+            "caseSensitive": true,
+            "leftValue": "",
+            "typeValidation": "loose",
+            "version": 2
+          },
+          "conditions": [
+            {
+              "id": "d92def5f-ea5b-59d8-b5ad-96271beefb33",
+              "leftValue": "={{ $runIndex < 10 }}",
+              "operator": {
+                "type": "boolean",
+                "operation": "true",
+                "singleValue": true
+              },
+              "rightValue": ""
+            }
+          ],
+          "combinator": "and"
+        },
+        "options": {}
+      },
+      "id": "f1b3f3df-134b-57b7-9c5a-f9ef271085f7",
+      "name": "Send retries left?",
+      "type": "n8n-nodes-base.if",
+      "typeVersion": 2.2,
+      "position": [
+        960,
+        220
+      ]
+    },
+    {
+      "parameters": {
+        "amount": 120,
+        "unit": "seconds"
+      },
+      "id": "45258450-f5f9-596d-801a-c53bd86bd76b",
+      "name": "Wait before send retry",
+      "type": "n8n-nodes-base.wait",
+      "typeVersion": 1.1,
+      "position": [
+        1200,
+        220
+      ],
+      "webhookId": "0f085ba9-94ed-542b-971e-8400cd498f46"
+    },
+    {
+      "parameters": {
+        "amount": 120,
+        "unit": "seconds"
+      },
+      "id": "d2da89a3-e084-513a-bfb9-bf5c7ad199e7",
+      "name": "Wait for agent",
+      "type": "n8n-nodes-base.wait",
+      "typeVersion": 1.1,
+      "position": [
+        1200,
+        0
+      ],
+      "webhookId": "411a177c-ddb7-5efa-892b-fd407651b6c9"
+    },
+    {
+      "parameters": {
+        "method": "POST",
+        "url": "={{ $env.ISSUE_AGENT_BRIDGE_URL }}/ops",
+        "authentication": "genericCredentialType",
+        "genericAuthType": "httpHeaderAuth",
+        "sendBody": true,
+        "specifyBody": "json",
+        "jsonBody": "={{ JSON.stringify(Object.assign({ op: 'session_turn', delivery_id: $('Session request').first().json.delivery_id }, { mode: $('Session request').first().json.mode })) }}",
+        "options": {
+          "timeout": 300000,
+          "response": {
+            "response": {
+              "neverError": true
+            }
+          }
+        }
+      },
+      "id": "f44ee81f-eecb-5cef-85e5-f133523bbc32",
+      "name": "Check turn",
+      "type": "n8n-nodes-base.httpRequest",
+      "typeVersion": 4.2,
+      "position": [
+        1440,
+        0
+      ],
+      "credentials": {
+        "httpHeaderAuth": {
+          "id": "iaBridgeOps00001",
+          "name": "issue-agent-bridge-ops"
+        }
+      }
+    },
+    {
+      "parameters": {
+        "rules": {
+          "values": [
+            {
+              "conditions": {
+                "options": {
+                  "caseSensitive": true,
+                  "leftValue": "",
+                  "typeValidation": "loose",
+                  "version": 2
+                },
+                "conditions": [
+                  {
+                    "id": "54bcf120-5a19-5b39-be38-031a070f9274",
+                    "leftValue": "={{ $json.ok === true ? $json.state : ($json.retryable ? 'retry' : 'error') }}",
+                    "operator": {
+                      "type": "string",
+                      "operation": "equals"
+                    },
+                    "rightValue": "done"
+                  }
+                ],
+                "combinator": "and"
+              },
+              "renameOutput": true,
+              "outputKey": "done"
+            },
+            {
+              "conditions": {
+                "options": {
+                  "caseSensitive": true,
+                  "leftValue": "",
+                  "typeValidation": "loose",
+                  "version": 2
+                },
+                "conditions": [
+                  {
+                    "id": "f4c3ea31-2140-5dbd-b7be-a7c67872cfa4",
+                    "leftValue": "={{ $json.ok === true ? $json.state : ($json.retryable ? 'retry' : 'error') }}",
+                    "operator": {
+                      "type": "string",
+                      "operation": "equals"
+                    },
+                    "rightValue": "running"
+                  }
+                ],
+                "combinator": "and"
+              },
+              "renameOutput": true,
+              "outputKey": "running"
+            },
+            {
+              "conditions": {
+                "options": {
+                  "caseSensitive": true,
+                  "leftValue": "",
+                  "typeValidation": "loose",
+                  "version": 2
+                },
+                "conditions": [
+                  {
+                    "id": "068ee757-fdd3-59b9-ba8d-eef6c74938a2",
+                    "leftValue": "={{ $json.ok === true ? $json.state : ($json.retryable ? 'retry' : 'error') }}",
+                    "operator": {
+                      "type": "string",
+                      "operation": "equals"
+                    },
+                    "rightValue": "queued"
+                  }
+                ],
+                "combinator": "and"
+              },
+              "renameOutput": true,
+              "outputKey": "queued"
+            },
+            {
+              "conditions": {
+                "options": {
+                  "caseSensitive": true,
+                  "leftValue": "",
+                  "typeValidation": "loose",
+                  "version": 2
+                },
+                "conditions": [
+                  {
+                    "id": "17623bf0-45de-5e2e-b04b-df6325203188",
+                    "leftValue": "={{ $json.ok === true ? $json.state : ($json.retryable ? 'retry' : 'error') }}",
+                    "operator": {
+                      "type": "string",
+                      "operation": "equals"
+                    },
+                    "rightValue": "retry"
+                  }
+                ],
+                "combinator": "and"
+              },
+              "renameOutput": true,
+              "outputKey": "retry"
+            },
+            {
+              "conditions": {
+                "options": {
+                  "caseSensitive": true,
+                  "leftValue": "",
+                  "typeValidation": "loose",
+                  "version": 2
+                },
+                "conditions": [
+                  {
+                    "id": "ce9eb23e-7623-5e0d-abd4-c05828ab9629",
+                    "leftValue": "={{ $json.ok === true ? $json.state : ($json.retryable ? 'retry' : 'error') }}",
+                    "operator": {
+                      "type": "string",
+                      "operation": "equals"
+                    },
+                    "rightValue": "attention"
+                  }
+                ],
+                "combinator": "and"
+              },
+              "renameOutput": true,
+              "outputKey": "attention"
+            },
+            {
+              "conditions": {
+                "options": {
+                  "caseSensitive": true,
+                  "leftValue": "",
+                  "typeValidation": "loose",
+                  "version": 2
+                },
+                "conditions": [
+                  {
+                    "id": "428819f8-8919-5cf3-97e5-f842d010f407",
+                    "leftValue": "={{ $json.ok === true ? $json.state : ($json.retryable ? 'retry' : 'error') }}",
+                    "operator": {
+                      "type": "string",
+                      "operation": "equals"
+                    },
+                    "rightValue": "lost"
+                  }
+                ],
+                "combinator": "and"
+              },
+              "renameOutput": true,
+              "outputKey": "lost"
+            }
+          ]
+        },
+        "options": {
+          "fallbackOutput": "extra",
+          "renameFallbackOutput": "other"
+        }
+      },
+      "id": "1a92d703-84dd-5c8a-83fe-ea030958664f",
+      "name": "Turn state",
+      "type": "n8n-nodes-base.switch",
+      "typeVersion": 3.2,
+      "position": [
+        1680,
+        0
+      ]
+    },
+    {
+      "parameters": {
+        "conditions": {
+          "options": {
+            "caseSensitive": true,
+            "leftValue": "",
+            "typeValidation": "loose",
+            "version": 2
+          },
+          "conditions": [
+            {
+              "id": "e1f20050-d758-5eb6-9c5f-46e9eca66b32",
+              "leftValue": "={{ $runIndex < 180 }}",
+              "operator": {
+                "type": "boolean",
+                "operation": "true",
+                "singleValue": true
+              },
+              "rightValue": ""
+            }
+          ],
+          "combinator": "and"
+        },
+        "options": {}
+      },
+      "id": "7cbc70fd-8918-55eb-b796-5e52cc6fe3e6",
+      "name": "Within time budget?",
+      "type": "n8n-nodes-base.if",
+      "typeVersion": 2.2,
+      "position": [
+        1680,
+        220
+      ]
+    },
+    {
+      "parameters": {},
+      "id": "bc21882d-6e71-5cb4-b3ca-a3384c0088e6",
+      "name": "Return turn",
+      "type": "n8n-nodes-base.noOp",
+      "typeVersion": 1,
+      "position": [
+        1920,
+        0
+      ]
+    },
+    {
+      "parameters": {
+        "mode": "manual",
+        "assignments": {
+          "assignments": [
+            {
+              "id": "5bb5acb7-1fad-5c6d-bd5f-3dbefd16ac7e",
+              "name": "ok",
+              "value": false,
+              "type": "boolean"
+            },
+            {
+              "id": "f28aaf31-c1f4-52c4-b274-e3c86cbc4b64",
+              "name": "node",
+              "value": "={{ $prevNode.name + ' (' + $('Session request').first().json.lane + ')' }}",
+              "type": "string"
+            }
+          ]
+        },
+        "includeOtherFields": true,
+        "options": {}
+      },
+      "id": "2b5e1a26-36ec-544e-82a7-4e843843640a",
+      "name": "Return failure",
+      "type": "n8n-nodes-base.set",
+      "typeVersion": 3.4,
+      "position": [
+        1920,
+        440
+      ]
+    }
+  ],
+  "connections": {
+    "Session request": {
+      "main": [
+        [
+          {
+            "node": "Ensure session",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Ensure session": {
+      "main": [
+        [
+          {
+            "node": "Session status",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Session status": {
+      "main": [
+        [
+          {
+            "node": "Send step to agent",
+            "type": "main",
+            "index": 0
+          }
+        ],
+        [
+          {
+            "node": "Session retries left?",
+            "type": "main",
+            "index": 0
+          }
+        ],
+        [
+          {
+            "node": "Return failure",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Session retries left?": {
+      "main": [
+        [
+          {
+            "node": "Wait before session retry",
+            "type": "main",
+            "index": 0
+          }
+        ],
+        [
+          {
+            "node": "Return failure",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Wait before session retry": {
+      "main": [
+        [
+          {
+            "node": "Ensure session",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Send step to agent": {
+      "main": [
+        [
+          {
+            "node": "Send status",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Send status": {
+      "main": [
+        [
+          {
+            "node": "Wait for agent",
+            "type": "main",
+            "index": 0
+          }
+        ],
+        [
+          {
+            "node": "Send retries left?",
+            "type": "main",
+            "index": 0
+          }
+        ],
+        [
+          {
+            "node": "Return failure",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Send retries left?": {
+      "main": [
+        [
+          {
+            "node": "Wait before send retry",
+            "type": "main",
+            "index": 0
+          }
+        ],
+        [
+          {
+            "node": "Return failure",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Wait before send retry": {
+      "main": [
+        [
+          {
+            "node": "Ensure session",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Wait for agent": {
+      "main": [
+        [
+          {
+            "node": "Check turn",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Check turn": {
+      "main": [
+        [
+          {
+            "node": "Turn state",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Turn state": {
+      "main": [
+        [
+          {
+            "node": "Return turn",
+            "type": "main",
+            "index": 0
+          }
+        ],
+        [
+          {
+            "node": "Within time budget?",
+            "type": "main",
+            "index": 0
+          }
+        ],
+        [
+          {
+            "node": "Within time budget?",
+            "type": "main",
+            "index": 0
+          }
+        ],
+        [
+          {
+            "node": "Within time budget?",
+            "type": "main",
+            "index": 0
+          }
+        ],
+        [
+          {
+            "node": "Return failure",
+            "type": "main",
+            "index": 0
+          }
+        ],
+        [
+          {
+            "node": "Send retries left?",
+            "type": "main",
+            "index": 0
+          }
+        ],
+        [
+          {
+            "node": "Return failure",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Within time budget?": {
+      "main": [
+        [
+          {
+            "node": "Wait for agent",
+            "type": "main",
+            "index": 0
+          }
+        ],
+        [
+          {
+            "node": "Return failure",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    }
+  },
+  "settings": {
+    "executionOrder": "v1",
+    "saveManualExecutions": true,
+    "saveDataErrorExecution": "all",
+    "saveDataSuccessExecution": "all",
+    "saveExecutionProgress": true,
+    "timezone": "UTC",
+    "callerPolicy": "workflowsFromSameOwner"
+  },
+  "pinData": {},
+  "meta": {
+    "templateCredsSetupCompleted": true
+  },
+  "tags": []
+}
