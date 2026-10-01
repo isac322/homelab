@@ -79,7 +79,7 @@ storegateway:
     size: 8Gi
 
 compactor:
-  enabled: false
+  enabled: true
   resources:
     requests:
       cpu: 120m
@@ -87,10 +87,14 @@ compactor:
     limits:
       cpu: 500m
       memory: 256Mi
+  # Created by democratic-csi and imported into pillar-csi in place on
+  # 2026-10-01.
   persistence:
     enabled: true
-    storageClass: ssd-ha-xfs
+    storageClass: ssd-ha
     size: 16Gi
+    annotations:
+      pillar-csi.bhyoo.com/import-zvol: hot-data/k8s/pvc-d9bfa3b6-0d6e-4d3e-8ab6-c7b57774c55f
   retentionResolutionRaw: 30d
   retentionResolution5m: 180d
   retentionResolution1h: 0d
