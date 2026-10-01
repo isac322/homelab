@@ -21,7 +21,7 @@ v2는 코딩 에이전트의 GitHub 쓰기를 모두 없앴다. 에이전트는 
 - 누구나 이슈를 열 수 있다. 명확한 요청은 triage(재현·원인·중복 판단)를 거친 뒤 자동으로 수정·검증·PR 생성까지 수행한다. 불명확한 요청은 질문하며 자동 머지는 하지 않는다. 저장소 collaborator·owner가 아닌 사용자의 새 이슈는 전체 저장소 합산 1시간(rolling)에 10개까지만 받는다.
 - 기능 요청은 작성자 신뢰에 따라 다룬다. 신뢰 사용자(collaborator 권한 `admin`/`write`)의 명확하고 범위 안의 기능·문서 요청은 직접 지시로 보고 구현까지 간다(구조 변경이면 결정을 묻고 멈춘다). 비신뢰 사용자의 기능 요청은 바로 구현하지 않고 제안 트랙(계약 확인, 실현 가능성 조사, 방향과 기각한 대안을 담은 제안 평가 댓글)을 거쳐 결정을 묻고 멈추며, 신뢰 사용자가 댓글로 방향을 승인해야 구현한다. 비신뢰 사용자의 댓글·수정은 승인이나 요구사항 변경이 아니라 정보다.
 - 보안 취약점은 공개 위치에 남기지 않는다. 확인되거나 의심되는 취약점은 라벨·이슈 댓글·재현 페이로드 없이 비공개 draft repository security advisory로 보고한다.
-- 설치된 저장소에서 Draft가 아닌 PR을 생성·재개하거나 Ready for review로 바꾸면 이슈와 다른 `review-pr-<n>` 세션에서 리뷰한다. 리뷰 App이 설정되어 있으면 push로 head가 바뀔 때도 head별로 한 번 리뷰하고, 명시적 `@haechibot review` 요청은 같은 head를 다시 리뷰할 수 있다. ruleset·branch protection이 merge 조건을 소유하며 bridge는 필수 check 목록이나 reviewer 수를 하드코딩하지 않는다.
+- 설치된 저장소에서 Draft가 아닌 PR을 생성·재개하거나 Ready for review로 바꾸면 이슈와 다른 `review-pr-<n>` 세션에서 리뷰한다. 리뷰 App이 설정되어 있으면 push로 head가 바뀔 때도 head별로 한 번 리뷰하고, 명시적 `@haechibot review` 요청은 같은 head를 다시 리뷰할 수 있다. PR마다 대기 리뷰는 하나뿐이고 연달아 온 요청(PR 열기·push·댓글)은 그 하나로 합쳐지며, 새 head가 오면 이전 head를 리뷰하던 실행은 취소된다(아래 "리뷰 요청 합치기와 취소"). ruleset·branch protection이 merge 조건을 소유하며 bridge는 필수 check 목록이나 reviewer 수를 하드코딩하지 않는다.
 - 코딩 에이전트는 GitHub에 쓰지 않는다. 댓글·라벨·push·PR·리뷰는 모두 n8n이 에이전트 결과를 검증된 bridge op로 적용한다.
 
 ## 책임 분리
@@ -83,10 +83,20 @@ Codex의 공통 지침은 전용 `CODEX_HOME/AGENTS.md`에서 읽고 프로젝�
 
 krema#63에서 리뷰 ↔ repair 조정이 약 12시간 동안 반복돼 토큰 약 1.21억 개를 썼다. 아래 세 상한으로 모든 반복이 유한하게 끝난다.
 
-- 리뷰 중복 제거: 새 `pr_review`가 들어오면 같은 PR에서 아직 dispatch되지 않은(`accepted`) 이전 리뷰를 `coalesced`로 끝내고 detail에 새 delivery를 남긴다. PR마다 대기 리뷰는 최대 하나다. `begin` 시 리뷰 App이 현재 head에 이벤트 수신 시각 이후 제출한 리뷰가 있으면 세션 없이 `already_reviewed`로 끝낸다. 마지막 리뷰보다 나중에 온 명시적 요청은 그대로 실행한다.
+- 리뷰 요청 합치기와 취소: 아래 "리뷰 요청 합치기와 취소" 절의 규칙으로 PR마다 대기 리뷰는 최대 하나이고, 새 head가 오면 이전 head의 실행 중 리뷰는 끝까지 돌지 않는다.
 - 재리뷰 차단 해제 상한: 멈춘 리뷰의 detail이 자격증명·권한 실패(HTTP 401·403, `Bad credentials`, 권한 관련 HTTP 422)이거나, 마지막 `reviewed` 이후 `superseded`된 리뷰가 `MAX_REVIEW_SUPERSEDES`(2)개 이상이면 새 리뷰 요청은 차단을 풀지 않고 대기한다. 이때 attention 댓글과 stale 리뷰 본문은 `@haechibot review` 안내를 빼고 운영자가 원인을 고친 뒤 `retry_event`해야 한다고 쓴다.
 - 자동 repair 상한: `prs.repair_count`가 reconciliation이 자동으로 넣은 `pr_repair` 수를 센다. `MAX_PR_REPAIRS`(3)에 도달한 뒤 fingerprint가 바뀌고 수동 요청이 없으면 repair를 넣지 않고 `repair_limit`을 반환하며 dirty를 내린다. PR에는 `pr-repair-limit:<PR>:<last_manual_id>` marker 댓글을 한 번 남긴다. 사람의 `@bulgasaribot` repair 요청은 허용되며 카운터를 0으로 되돌린다. PR이 merge-ready가 되어도 0으로 되돌린다.
 
+
+### 리뷰 요청 합치기와 취소
+
+pillar-csi#155에서 PR 열기 → 31초 뒤 force-push → 3초 뒤 `@haechibot review` 댓글이 리뷰 세 번을, 이후 push → 12초 뒤 댓글이 리뷰 두 번을 실행했다. 2026-10-01 기준 리뷰 94회 중 16회가 직전 요청 2분 안의 중복이었다. 요청 하나가 리뷰 실행 하나가 되는 구조였고, push가 이미 리뷰를 시작하는데 footer는 push 뒤 댓글을 달라고 안내해 push마다 요청이 둘 생겼다. 이제 리뷰 요청은 PR별 대기 리뷰 하나에 모이는 수요로 다룬다.
+
+- 대기 리뷰 하나: 새 `pr_review`(PR 열기·재개·Ready, push, `@haechibot review` 댓글, 관리 PR 재조회)는 같은 PR의 대기(`accepted`) 리뷰를 `coalesced`로 끝내고 그 자리를 잇는다. 살아남은 행은 가장 최근 댓글 요청(본문은 프롬프트의 `COMMENT_BY_<actor>`)과 가장 최근 head를 이어받는다.
+- 정착 시간: 대기 리뷰는 마지막 요청 `REVIEW_SETTLE_SECONDS`(90초) 뒤에 시작하되, 가장 오래된 대기 요청으로부터 `REVIEW_MAX_DELAY_SECONDS`(300초)를 넘기지 않는다. push와 그 뒤 댓글, PR 열기 직후 force-push는 리뷰 하나가 된다.
+- 충족 기준: 요청은 그 뒤에 시작한 리뷰가 있어야 충족된다. 이미 시작한 리뷰는 그 뒤에 단 답글을 보지 못하므로, 실행 중에 온 댓글 요청은 한 번 더 리뷰한다. GitHub 리뷰 제출 시각으로 건너뛰는 규칙은 없다.
+- 이전 head 취소: `begin`은 리뷰가 체크아웃할 현재 PR head를 이벤트에 기록한다. head를 가진 새 요청(push 등)이 오면 다른 head를 리뷰 중인(`dispatching`/`dispatched`) 이벤트를 `cancelled`로 끝내고 semantic key를 풀어 같은 head를 다시 요청할 수 있게 한다. 취소된 실행의 다음 op는 `event_terminal`이라 아무것도 게시하지 않고, `fail`은 `already`로 조용히 끝난다. 다음 dispatcher tick이 그 세션을 archive해 에이전트를 멈춘다. 같은 PR의 다른 이벤트가 이미 dispatch 슬롯을 잡았으면 공유 세션이므로 archive하지 않는다. head가 없는 댓글 요청은 취소하지 않는다.
+- footer: 리뷰 App이 있으면 push는 자동 리뷰되므로 footer는 push 없이(답글 뒤) 다시 받고 싶을 때나 오류로 멈춘 리뷰를 재시작할 때만 댓글을 쓰라고 안내한다. 리뷰 중 push로 생긴 stale 리뷰도 새 head는 push가 이미 리뷰를 예약했다고 쓴다.
 
 ### 알려진 제한
 
@@ -116,7 +126,7 @@ krema#63에서 리뷰 ↔ repair 조정이 약 12시간 동안 반복돼 토큰 
 - `issue_comment.created`(이슈): 이슈에 `agent:open-discussion` 라벨이 있으면 누구의 댓글이든 멘션 없이 `issue_comment`다(rate limit 없음). 누구나 의견과 자료를 보태 에이전트가 이슈를 더 잘 이해하게 하는 용도다. 이 경로도 캐시된 권한 조회로 작성자의 신뢰 여부를 계산해 기록하지만 처리 여부에는 쓰지 않으며, 조회가 실패하면(`TrustUnavailable`) 경고 로그를 남기고 비신뢰로 둔다. 비신뢰 댓글은 에이전트에게 정보일 뿐 승인·지시가 아니다. 라벨이 없으면 본문에 이슈 bot 멘션(`@bulgasaribot`, 대소문자 무시, `github_bot_login`에서 `[bot]` 제외)이 있어야 한다. 멘션이 없으면 `issue_comment_ignored`, 신뢰 사용자의 멘션은 `issue_comment`, 비신뢰 사용자의 멘션은 `actor_not_allowed`다. 에이전트가 처음 보는 이슈의 댓글도 같은 규칙으로 처리한다.
 - `issue_comment.created` (PR): PR 작성자 또는 신뢰 사용자의 `@haechibot` 멘션은 재리뷰를 큐에 넣는다. 별도 리뷰 App이 있을 때 `@bulgasaribot` 멘션은 관리 PR의 원본 이슈 worktree에 수동 repair 요청을 기록한다. 그 외 댓글은 무시하며, 두 번째 App이 없으면 이슈 App 멘션으로 리뷰한다.
 - `issues.edited`: `changes`에 `body`나 `title`이 있을 때만 본다(그 외 `edit_ignored`). sender는 bot이 아닌 `User`여야 하고, 이슈에 `agent:open-discussion` 라벨이 있거나 sender가 신뢰 사용자여야 한다(아니면 `actor_not_allowed`). 종류는 `issue_edited`, semantic key는 `repo#issue:<n>:edited:<delivery>`이며 새 제목·본문을 넘긴다. 이슈가 `phase: implementing`(PR을 만드는 중이거나 이미 있음)일 때만 큐에 넣고 그 외는 `edit_ignored`다.
-- `pull_request.opened`/`reopened`/`ready_for_review`: Draft가 아닌 PR은 `pr_review`로 분류한다(`repo#pr:<n>:review:<head_sha>`). 리뷰 App이 설정된 non-Draft PR의 `synchronize`도 같은 head별 key로 리뷰하고, 관리 PR의 상태 재조회도 예약한다. dependabot·자기 App의 PR도 리뷰할 수 있다.
+- `pull_request.opened`/`reopened`/`ready_for_review`: Draft가 아닌 PR은 `pr_review`로 분류한다(`repo#pr:<n>:review:<head_sha>`). 리뷰 App이 설정된 non-Draft PR의 `synchronize`도 같은 head별 key로 리뷰하고, 관리 PR의 상태 재조회도 예약한다. 모든 리뷰 요청은 "리뷰 요청 합치기와 취소"의 대기 리뷰 하나로 합쳐진다. dependabot·자기 App의 PR도 리뷰할 수 있다.
 - bot·자기 댓글과 에이전트 marker가 있는 댓글은 `bot_sender`로 무시한다.
 - 이벤트 행에는 신뢰 여부(`trusted`)를 함께 기록한다. `begin` 응답의 `event.trusted`로 n8n에 넘기면 n8n은 triage·followup 지시문과 `context.actor_trusted`에 actor의 신뢰 여부와 신뢰 규칙(신뢰 사용자의 요청만 직접 지시·승인이며 다른 사람은 권한 API로 확인)을 넣는다. `issues.opened`의 actor는 작성자다.
 
@@ -148,12 +158,14 @@ followup 턴은 PR을 이슈와 맞춘다. 에이전트는 `gh issue view`와 `g
 
 - TriageResult: `status`(`triaged|blocked`), `verdict`, `fault_domain`, `duplicate_of`, `labels.add/remove`(카탈로그 이름), `comment`, `next_action`(`implement|await_info|await_decision|none`), `implementation_brief`(implement일 때 필수), `questions`, `summary`, `blockers`, `security_advisory`(`null` 또는 `summary`·`description`·`severity`·`cwe_ids`·`vulnerabilities`). `security_advisory`가 있으면 `status`는 `triaged`, `comment`는 `null`, 라벨 변경은 비어 있고 `next_action`은 `none`이어야 한다(검증 오류는 advisory 본문을 되풀이하지 않는다). n8n은 결과 기록 뒤 `security_advisory`가 있으면 `github.security_advisory` op로 비공개 draft advisory를 만들고 `triaged`로 끝내며(실패하면 attention), 라벨·댓글 단계는 건너뛴다. 그 밖에는 라벨 적용 → 분석 댓글 게시 후 `next_action`으로 분기한다. `implement`면 brief를 implement 턴으로 넘기고, 질문이면 `questioned`, 그 외는 `triaged`로 끝난다. `blocked`는 attention이다.
 - ImplementResult: `status`(`ready|no_change|needs_info|blocked`), `head_sha`와 `pr{title, body}`(ready일 때 필수, 본문에 `Fixes #<n>` 또는 `Related to #<n>`), `issue_comment`, `questions`, `summary`, `blockers`. 에이전트는 `hapi-issue-<n>`에 로컬 커밋만 한다. `ready`면 n8n이 `git.push`(publisher `POST /push`, sha 일치·non-force) → `github.pr_upsert`(열린 PR이 없으면 기본 브랜치 대상 일반 PR 생성, 있으면 제목·본문 PATCH) → 이슈에 PR 링크 댓글 → `implemented`. `no_change`는 이슈 댓글, `needs_info`는 질문 댓글과 `triage:needs-info` 라벨, `blocked`는 attention이다. implement/followup 전송 시 이슈 phase는 `implementing`이 된다.
-- ReviewResult: `status`(`reviewed|blocked`), `head_sha`, `event`(`APPROVE|REQUEST_CHANGES|COMMENT`), `body`, `comments`(새 inline 지적, 최대 50), `thread_replies`(기존 스레드 comment ID에 대한 답글과 `resolve`, 최대 100), `summary`, `blockers`. n8n은 context로 PR 번호와 이벤트 head(`head_sha`, 없으면 에이전트가 `gh`로 현재 head를 읽는다)만 넘긴다. 에이전트는 `gh`와 `gh api graphql`로 PR 제목·본문·파일·리뷰·댓글, 리뷰 스레드(스레드 comment `databaseId` 포함, `thread_replies`에 필요)와 연결 이슈·그 댓글을 직접 읽는다. Begin 응답의 `reviewer_login`이 남긴 이전 리뷰가 있으면 재리뷰다. `github.review`는 리뷰 App(`haechibot[bot]`) 토큰으로 동작하며, 스레드 답글 게시·resolve 후 `commit_id=head_sha`로 리뷰 하나를 제출하고 `issue-agent/review` 상태(APPROVE → success, 그 외 failure)를 남긴다. PR head가 `head_sha`와 다르면(리뷰 중 push) 리뷰는 그대로 `head_sha`에 제출하되 본문 첫머리에 stale 안내와 재리뷰 명령을 넣고 상태는 남기지 않는다. force-push로 `head_sha`가 PR에서 빠져 422가 나면 판정·지적을 marker 댓글로 남긴다. 둘 다 성공으로 끝나며 attention을 만들지 않는다. 모두 숨은 marker 또는 기존 상태 비교로 멱등이다. inline 지적이 422로 거절되면 본문의 "Findings outside the diff" 절로 옮겨 다시 제출한다. 재리뷰 본문의 첫 절은 이전 지적의 Closed/Open 상태다. bridge가 제출하는 리뷰 본문과 `pr_review` 이벤트의 attention 댓글 끝에는 항상 같은 footer 블록이 붙고 에이전트는 body에 footer를 쓰지 않는다:
+- ReviewResult: `status`(`reviewed|blocked`), `head_sha`, `event`(`APPROVE|REQUEST_CHANGES|COMMENT`), `body`, `comments`(새 inline 지적, 최대 50), `thread_replies`(기존 스레드 comment ID에 대한 답글과 `resolve`, 최대 100), `summary`, `blockers`. n8n은 context로 PR 번호와 이벤트 head(`head_sha`, 없으면 에이전트가 `gh`로 현재 head를 읽는다)만 넘긴다. 에이전트는 `gh`와 `gh api graphql`로 PR 제목·본문·파일·리뷰·댓글, 리뷰 스레드(스레드 comment `databaseId` 포함, `thread_replies`에 필요)와 연결 이슈·그 댓글을 직접 읽는다. Begin 응답의 `reviewer_login`이 남긴 이전 리뷰가 있으면 재리뷰다. `github.review`는 리뷰 App(`haechibot[bot]`) 토큰으로 동작하며, 스레드 답글 게시·resolve 후 `commit_id=head_sha`로 리뷰 하나를 제출하고 `issue-agent/review` 상태(APPROVE → success, 그 외 failure)를 남긴다. PR head가 `head_sha`와 다르면(취소 전에 제출된 리뷰 중 push) 리뷰는 그대로 `head_sha`에 제출하되 본문 첫머리에 stale 안내(리뷰 App이 있으면 push가 새 head 리뷰를 예약했다는 문장, 없으면 재리뷰 명령)를 넣고 상태는 남기지 않는다. force-push로 `head_sha`가 PR에서 빠져 422가 나면 판정·지적을 marker 댓글로 남긴다. 둘 다 성공으로 끝나며 attention을 만들지 않는다. 모두 숨은 marker 또는 기존 상태 비교로 멱등이다. inline 지적이 422로 거절되면 본문의 "Findings outside the diff" 절로 옮겨 다시 제출한다. 재리뷰 본문의 첫 절은 이전 지적의 Closed/Open 상태다. bridge가 제출하는 리뷰 본문과 `pr_review` 이벤트의 attention 댓글 끝에는 항상 같은 footer 블록이 붙고 에이전트는 body에 footer를 쓰지 않는다:
 
   ```
   ---
-  <sub>To request another review, comment `@haechibot review` on this pull request after pushing fixes or replying to the findings. The same comment restarts a review that stopped with an error. The pull request author or a maintainer can request it.</sub>
+  <sub>Every push to this pull request is reviewed automatically. To request another review without pushing, after replying to the findings, comment `@haechibot review`. The same comment restarts a review that stopped with an error. The pull request author or a maintainer can request it.</sub>
   ```
+
+  리뷰 App이 없으면 push가 리뷰를 시작하지 않으므로 footer는 push나 답글 뒤 `@<app> review` 댓글을 달라고 안내한다.
 
   footer의 bot login은 설정값(`GITHUB_REVIEW_BOT_LOGIN`의 `[bot]` 제외)이며 코드에 하드코딩하지 않는다.
 

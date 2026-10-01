@@ -177,6 +177,11 @@ MAX_SUPERSEDE_HOPS = 8
 # reviews, and reconciliation queues at most this many automatic repairs before a human signal or 'ready'.
 MAX_REVIEW_SUPERSEDES = 2
 MAX_PR_REPAIRS = 3
+# A pull request has at most one pending review. Every request (open, push, `review` comment, reconciliation)
+# folds into it and pushes its start back to REVIEW_SETTLE_SECONDS after the newest request, but never past
+# REVIEW_MAX_DELAY_SECONDS after the oldest one, so a push and the comment that follows it run one review.
+REVIEW_SETTLE_SECONDS = 90.0
+REVIEW_MAX_DELAY_SECONDS = 300.0
 # Failures a re-run cannot fix: GitHub refused the bridge's credentials or their permissions.
 _CREDENTIAL_FAILURE_RE = re.compile(
     r"HTTP 40[13]\b|status code 40[13]\b|Bad credentials|Resource not accessible by integration"
@@ -530,10 +535,10 @@ SCHEMA = ";\n".join([
     COLLABORATORS_DDL.format(name="collaborators"),
     PRS_DDL.format(name="prs"),
 ]) + ";\n"
-# Event: accepted -> dispatched -> completed | needs_attention; a new review request completes older queued
-# reviews of its pull request with outcome 'coalesced' and parked ones with outcome 'superseded' (Store.enqueue,
-# bounded by credential failures and MAX_REVIEW_SUPERSEDES); begin completes a review whose head the review
-# App already reviewed after the request with outcome 'already_reviewed'
+# Event: accepted -> dispatched -> completed | needs_attention. A pull request keeps at most one pending
+# ('accepted') review: a new review request folds older pending ones into itself with outcome 'coalesced',
+# completes parked ones with outcome 'superseded' (bounded by credential failures and MAX_REVIEW_SUPERSEDES),
+# and cancels a running review of an older head with outcome 'cancelled' (Store.enqueue)
 # issues.edited is accepted only while the issue is 'implementing' (Store.enqueue answers 'edit_ignored' otherwise)
 # Issue session: none -> pending -> ready (pending may fall back to none)
 # Issue phase: none -> triaged -> implementing; pull requests: none -> reviewing
@@ -691,16 +696,67 @@ class Store:
                 (ev["repo"], ev["issue_number"], subject_of(ev["kind"]), now),
             )
             if ev["kind"] == "pr_review":
-                # At most one queued review per pull request: older never-dispatched requests fold into this one.
-                conn.execute(
-                    "UPDATE events SET state = 'completed', outcome = 'coalesced', detail = ?, updated_at = ?"
-                    " WHERE repo = ? AND issue_number = ? AND kind = 'pr_review' AND state = 'accepted'"
-                    " AND delivery_id != ?",
-                    (f"coalesced into review request {ev['delivery_id']}", now, ev["repo"], ev["issue_number"],
-                     ev["delivery_id"]),
-                )
+                self._fold_review_requests(conn, ev, now)
+                self._cancel_outdated_review(conn, ev, now)
                 self._supersede_parked_reviews(conn, ev, now)
         return "queued"
+
+    @staticmethod
+    def _fold_review_requests(conn: sqlite3.Connection, ev: dict[str, Any], now: float) -> None:
+        """Make ``ev`` the pull request's only pending review and settle it before it may start.
+
+        Older pending requests complete as 'coalesced'. The survivor keeps the newest `review` comment (the
+        prompt shows its text) and the newest known head, and starts REVIEW_SETTLE_SECONDS after this request,
+        capped at REVIEW_MAX_DELAY_SECONDS after the oldest pending one."""
+        pending = conn.execute(
+            "SELECT * FROM events WHERE repo = ? AND issue_number = ? AND kind = 'pr_review' AND state = 'accepted'"
+            " AND delivery_id != ? ORDER BY seq DESC",
+            (ev["repo"], ev["issue_number"], ev["delivery_id"]),
+        ).fetchall()
+        oldest = min([row["received_at"] for row in pending], default=now)
+        due = min(now + REVIEW_SETTLE_SECONDS, oldest + REVIEW_MAX_DELAY_SECONDS)
+        fields: dict[str, Any] = {"next_attempt_at": due}
+        command = next((row for row in pending if row["comment_id"] is not None), None)
+        if ev.get("comment_id") is None and command is not None:
+            fields.update(comment_id=command["comment_id"], actor=command["actor"], body=command["body"],
+                          trusted=command["trusted"])
+        head = next((row["head_sha"] for row in pending if row["head_sha"]), None)
+        if ev.get("head_sha") is None and head is not None:
+            fields["head_sha"] = head
+        conn.execute(f"UPDATE events SET {', '.join(f'{k} = ?' for k in fields)} WHERE delivery_id = ?",
+                     (*fields.values(), ev["delivery_id"]))
+        conn.execute(
+            "UPDATE events SET state = 'completed', outcome = 'coalesced', detail = ?, updated_at = ?"
+            " WHERE repo = ? AND issue_number = ? AND kind = 'pr_review' AND state = 'accepted'"
+            " AND delivery_id != ?",
+            (f"coalesced into review request {ev['delivery_id']}", now, ev["repo"], ev["issue_number"],
+             ev["delivery_id"]),
+        )
+
+    @staticmethod
+    def _cancel_outdated_review(conn: sqlite3.Connection, ev: dict[str, Any], now: float) -> None:
+        """A request for a new head cancels the running review of an older head instead of letting it finish.
+
+        The cancelled event is terminal, so its workflow's next op gets ``event_terminal`` and nothing is
+        published; the dispatcher then stops its agent (``cancelled.archive`` stage). Its semantic key is
+        released so that head can be requested again. Requests without a head (comments) never cancel."""
+        head = ev.get("head_sha")
+        if not head:
+            return
+        running = conn.execute(
+            "SELECT * FROM events WHERE repo = ? AND issue_number = ? AND kind = 'pr_review'"
+            " AND state IN ('dispatching', 'dispatched') AND head_sha IS NOT NULL AND head_sha != ?",
+            (ev["repo"], ev["issue_number"], head),
+        ).fetchall()
+        for row in running:
+            stages = json.loads(row["stages"])
+            stages["cancelled"] = {"at": now, "archive": "started" in stages}
+            conn.execute(
+                "UPDATE events SET state = 'completed', outcome = 'cancelled', detail = ?, stages = ?,"
+                " semantic_key = semantic_key || ':cancelled:' || delivery_id, updated_at = ? WHERE seq = ?",
+                (f"head moved from {row['head_sha']} to {head} (review request {ev['delivery_id']})",
+                 json.dumps(stages), now, row["seq"]),
+            )
 
     @staticmethod
     def _track_pr(conn: sqlite3.Connection, repo: str, pr_number: int, issue_number: int,
@@ -1119,11 +1175,19 @@ def review_command(bot_login: str | None) -> str | None:
         return None
     return f"@{bot_login.removesuffix('[bot]')} review".casefold()
 
-def review_footer(bot_login: str | None) -> str:
-    """The ``---`` + re-request block appended to every post the review App makes (empty without a login)."""
+def review_footer(bot_login: str | None, *, pushes_reviewed: bool) -> str:
+    """The ``---`` + re-request block appended to every post the review App makes (empty without a login).
+
+    ``pushes_reviewed``: a push already queues a review (the review App is configured), so the command is only
+    for a review without a push; asking for one after every push would double the request."""
     command = review_command(bot_login)
     if command is None:
         return ""
+    if pushes_reviewed:
+        return ("---\n<sub>Every push to this pull request is reviewed automatically. To request another review "
+                "without pushing, after replying to the findings, comment `" + command + "`. The same comment "
+                "restarts a review that stopped with an error. The pull request author or a maintainer can "
+                "request it.</sub>")
     return ("---\n<sub>To request another review, comment `" + command + "` on this pull request after "
             "pushing fixes or replying to the findings. The same comment restarts a review that stopped with "
             "an error. The pull request author or a maintainer can request it.</sub>")
@@ -1992,11 +2056,7 @@ class Bridge:
                 )
                 status = "started"
         if status == "started" and ev["kind"] == "pr_review":
-            reviewed = self._reviewed_after_request(ev)
-            if reviewed is not None:
-                self.store.update_event(ev["delivery_id"], state="completed", outcome="already_reviewed",
-                                        detail=f"head {reviewed} was already reviewed after this request")
-                status = "terminal"
+            self._record_review_head(ev)
         if status == "started" and ev["kind"] == "pr_repair":
             pr_number = ev["pr_number"] or self.store.issue(ev["repo"], ev["issue_number"])["pr_number"]
             if not pr_number:
@@ -2123,8 +2183,25 @@ class Bridge:
             LOG.warning("%s#%d session %s not archived: HTTP %s %s", ev["repo"], ev["issue_number"], sid, status,
                         data.get("error") if isinstance(data, dict) else "")
 
+    def stop_cancelled_review(self, delivery_id: str) -> None:
+        """Stop the agent of a review cancelled mid-run (one attempt; the event is already terminal).
+
+        Skipped once another event on the pull request holds a dispatch slot: the session is shared, and that
+        event's agent must keep running."""
+        ev = self.store.event(delivery_id)
+        stages = json.loads(ev["stages"])
+        stages["cancelled"]["archive"] = False
+        self.store.update_event(delivery_id, stages=json.dumps(stages))
+        if self.store.query("SELECT 1 FROM events WHERE repo = ? AND issue_number = ?"
+                            " AND state IN ('dispatching', 'dispatched') LIMIT 1", (ev["repo"], ev["issue_number"])):
+            return
+        self._archive_session(ev)
+
     def op_fail(self, req: dict[str, Any]) -> dict[str, Any]:
         ev = self._event(req, live=False)
+        if ev["state"] == "completed" and ev["outcome"] == "cancelled":
+            # A newer head cancelled this review; its workflow stops on the next op and lands here.
+            return {"already": True}
         if ev["state"] == "completed":
             raise OpError("event_terminal")
         detail = req.get("detail")
@@ -2187,7 +2264,8 @@ class Bridge:
         ]
         if ev["kind"] == "pr_review":
             blocker = self._review_rerun_blocker(ev, detail)
-            footer = review_footer(self.reviewer_login()) if blocker is None else ""
+            footer = review_footer(self.reviewer_login(), pushes_reviewed=self.review_github is not None) \
+                if blocker is None else ""
             if blocker or footer:
                 lines += ["", blocker or footer]
         return "\n".join(lines)
@@ -3101,33 +3179,18 @@ class Bridge:
         """Login that submits reviews: the review App when configured, else the issue App."""
         return self.config.github_review_bot_login if self.review_github is not None else self.config.github_bot_login
 
-    def _reviewed_after_request(self, ev: sqlite3.Row) -> str | None:
-        """The current head when the reviewer already submitted a review on it after ``ev`` was received.
+    def _record_review_head(self, ev: sqlite3.Row) -> None:
+        """Record the head a starting review checks out, so a push to another head cancels it.
 
-        A request newer than the latest review on the head still runs (an explicit rerun). A failed read
-        lets the review run; it then fails or parks on its own path."""
-        reviewer = self.reviewer_login()
-        if not reviewer:
-            return None
+        Best effort: on a failed read the event keeps the head of its latest request."""
         repo, number = ev["repo"], int(ev["pr_number"] or ev["issue_number"])
-        gh = self.review_github
         try:
-            head = (self._get_pr(repo, number, client=gh).get("head") or {}).get("sha")
-            reviews = self._paged(f"/repos/{repo}/pulls/{number}/reviews", MAX_IDEMPOTENCY_PAGES, client=gh)
+            head = (self._get_pr(repo, number, client=self.review_github).get("head") or {}).get("sha")
         except (OpError, TransportError) as exc:
-            LOG.warning("existing review check for %s#%s skipped: %s", repo, number, exc)
-            return None
-        for r in reviews:
-            if ((r.get("user") or {}).get("login") or "").casefold() != reviewer.casefold() \
-                    or not head or r.get("commit_id") != head:
-                continue
-            try:
-                submitted = datetime.datetime.fromisoformat(str(r.get("submitted_at")).replace("Z", "+00:00"))
-            except ValueError:
-                continue
-            if submitted.tzinfo is not None and submitted.timestamp() > ev["received_at"]:
-                return head
-        return None
+            LOG.warning("review head of %s#%s not recorded: %s", repo, number, exc)
+            return
+        if isinstance(head, str) and _SHA_RE.fullmatch(head):
+            self.store.update_event(ev["delivery_id"], head_sha=head)
 
     def _review_rerun_blocker(self, ev: sqlite3.Row, detail: str | None) -> str | None:
         """Why a new review request would not restart this review, or None when it would."""
@@ -3204,13 +3267,17 @@ class Bridge:
                     f"so this verdict is submitted as a comment review.\n\n{body}")
             event = "COMMENT"
         blocker = self._review_rerun_blocker(ev, None)
-        footer = review_footer(reviewer) if blocker is None else f"---\n<sub>{blocker}</sub>"
+        footer = review_footer(reviewer, pushes_reviewed=self.review_github is not None) if blocker is None \
+            else f"---\n<sub>{blocker}</sub>"
         tail = f"\n\n{footer}" if footer else ""
         if stale:
             command = review_command(reviewer) if blocker is None else None
-            again = f" Comment `{command}` to review the new head." if command else ""
+            if self.review_github is not None:
+                again = " The push queued a review of the new head."
+            else:
+                again = f" Comment `{command}` to review the new head." if command else ""
             body = (f"**Stale review** — this reviews `{reviewed}`; the pull request head moved to `{head}` "
-                    f"while the review ran, so the new head is not reviewed.{again}\n\n{body}")
+                    f"while the review ran, so the new head is not reviewed here.{again}\n\n{body}")
         inline = [
             {"path": c["path"], "line": c["line"], "side": c["side"], "body": c["body"],
              **({"start_line": c["start_line"], "start_side": c["side"]} if c["start_line"] else {})}
@@ -3648,6 +3715,11 @@ class Dispatcher:
             (now,),
         ):
             self.bridge.notify_attention(ev["delivery_id"])
+        for ev in self.store.query(
+            "SELECT delivery_id FROM events WHERE outcome = 'cancelled'"
+            " AND json_extract(stages, '$.cancelled.archive') = 1 ORDER BY seq"
+        ):
+            self.bridge.stop_cancelled_review(ev["delivery_id"])
         for ev in self.store.query(
             "SELECT * FROM events WHERE state = 'dispatched' AND COALESCE(heartbeat_at, 0) < ?",
             (now - STALE_SECONDS,),

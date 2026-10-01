@@ -636,6 +636,10 @@ def variant(base: dict[str, Any], **changes: Any) -> dict[str, Any]:
 
 class BridgeTestCase(unittest.TestCase):
     def setUp(self) -> None:
+        # Reviews start as soon as they are queued unless a test exercises the settle window itself.
+        settle = patch.object(bridge, "REVIEW_SETTLE_SECONDS", 0.0)
+        settle.start()
+        self.addCleanup(settle.stop)
         self.tmp = tempfile.TemporaryDirectory()
         d = self.tmp.name
         self.fake = Fake()
@@ -1720,7 +1724,7 @@ class DispatchTests(BridgeTestCase):
         self.started_review(12, "p1")
         self.assertTrue(self.op("fail", "p1", detail="Wait for review turn: stale_head")["ok"])
         body = self.fake.comments[12][0]["body"]
-        self.assertTrue(body.endswith(bridge.review_footer(BOT)))
+        self.assertTrue(body.endswith(bridge.review_footer(BOT, pushes_reviewed=False)))
         self.assertIn("`@bulgasaribot review`", body)
         self.assertEqual(self.fake.labels[12], [NEEDS])
         command = comment_payload(12, 500, body="@bulgasaribot review", on_pr=True)
@@ -1749,23 +1753,76 @@ class DispatchTests(BridgeTestCase):
         self.assertEqual(self.store.issue(REPO, 12)["blocked"], 1)
         self.assertEqual(self.dispatcher.tick(), "idle")
 
-    def test_review_of_a_head_already_reviewed_after_the_request_is_skipped(self) -> None:
-        # krema#63: a push queued a review and a `review` comment queued another; both reviewed the same head.
+    def test_open_force_push_and_review_comment_within_the_settle_window_run_one_review(self) -> None:
+        # pillar-csi#155: opening the PR, a force-push 31 s later and a `review` comment 3 s after that each ran
+        # their own review; the comment's text and the pushed head must reach the one review that runs.
+        self.use_reviewer_app()
+        pr = self.fake.add_pr(12)
+        with patch.object(bridge, "REVIEW_SETTLE_SECONDS", 90.0):
+            self.assertEqual(self.deliver(pr_payload(12), event="pull_request", delivery="o1").outcome, "queued")
+            self.assertEqual(self.dispatcher.tick(), "idle")
+            pr["head"]["sha"] = SHA_B
+            push = pr_payload(12, action="synchronize", sha=SHA_B)
+            self.assertEqual(self.deliver(push, event="pull_request", delivery="s1").outcome, "queued")
+            command = comment_payload(12, 500, body="Fixed the P2.\n\n@haechibot review", on_pr=True)
+            self.assertEqual(self.deliver(command, event="issue_comment", delivery="c1").outcome, "queued")
+        self.assertEqual(self.events(), [("o1", "completed"), ("s1", "completed"), ("c1", "accepted")])
+        self.assertEqual([self.store.event(d)["outcome"] for d in ("o1", "s1")], ["coalesced", "coalesced"])
+        survivor = self.store.event("c1")
+        self.assertEqual((survivor["head_sha"], survivor["comment_id"]), (SHA_B, 500))
+        self.assertGreaterEqual(survivor["next_attempt_at"], survivor["received_at"] + 90.0)
+        self.assertEqual(self.dispatcher.tick(survivor["next_attempt_at"] - 1), "idle")
+        self.assertEqual(self.dispatcher.tick(survivor["next_attempt_at"]), "dispatched")
+        self.assertEqual([p["delivery_id"] for _, p in self.fake.dispatched], ["c1"])
+        # Requests that keep arriving cannot defer the review past the cap measured from the oldest one.
+        self.assertTrue(self.op("finish", "c1", outcome="reviewed")["ok"])
+        with patch.object(bridge, "REVIEW_SETTLE_SECONDS", 10**6):
+            for n, delivery in enumerate(("c2", "c3")):
+                again = comment_payload(12, 501 + n, body="@haechibot review", on_pr=True)
+                self.assertEqual(self.deliver(again, event="issue_comment", delivery=delivery).outcome, "queued")
+        self.assertEqual(self.store.event("c3")["next_attempt_at"],
+                         self.store.event("c2")["received_at"] + bridge.REVIEW_MAX_DELAY_SECONDS)
+
+    def test_push_cancels_the_running_review_of_the_older_head(self) -> None:
+        # pillar-csi#155: the review of the head replaced by a force-push ran for 8 more minutes and posted.
+        self.use_reviewer_app()
+        self.started_review(12, "p1")
+        self.assertEqual(self.store.event("p1")["head_sha"], SHA_A)
+        self.assertTrue(self.op("ensure_session", "p1")["ok"])
+        sid = self.store.issue(REPO, 12)["session_id"]
+        self.fake.prs[12]["head"]["sha"] = SHA_B
+        push = pr_payload(12, action="synchronize", sha=SHA_B)
+        self.assertEqual(self.deliver(push, event="pull_request", delivery="s1").outcome, "queued")
+        old = self.store.event("p1")
+        self.assertEqual((old["state"], old["outcome"]), ("completed", "cancelled"))
+        # The cancelled run publishes nothing and stops without an attention notice.
+        self.assertEqual(self.op("github.review", "p1", result=REVIEW_OK)["error"], "event_terminal")
+        self.assertEqual(self.op("fail", "p1", detail="Review submitted?: event_terminal"),
+                         {"ok": True, "already": True})
+        self.assertEqual((self.fake.review_posts, self.fake.comments.get(12, [])), ([], []))
+        self.assertEqual(self.dispatcher.tick(), "dispatched")
+        self.assertIn(f"archive {sid}", self.fake.calls)
+        self.assertEqual(self.fake.dispatched[-1][1]["delivery_id"], "s1")
+        self.assertEqual(self.op("begin", "s1", attempt=1)["status"], "started")
+        calls = len(self.fake.calls)
+        self.assertEqual(self.dispatcher.tick(), "busy")
+        self.assertNotIn(f"archive {sid}", self.fake.calls[calls:])  # the agent is stopped once, not again
+        # The released key lets the cancelled head be reviewed again if the branch returns to it.
+        self.fake.prs[12]["head"]["sha"] = SHA_A
+        back = pr_payload(12, action="synchronize", sha=SHA_A)
+        self.assertEqual(self.deliver(back, event="pull_request", delivery="s2").outcome, "queued")
+
+    def test_review_comment_during_a_running_review_queues_one_follow_up(self) -> None:
+        # The running review checked out before the comment's replies; the request runs once more, and a
+        # comment carries no head, so it never cancels the running review.
         self.started_review(12, "p1")
         command = comment_payload(12, 500, body="@bulgasaribot review", on_pr=True)
         self.assertEqual(self.deliver(command, event="issue_comment", delivery="c1").outcome, "queued")
+        self.assertEqual(self.events(), [("p1", "dispatched"), ("c1", "accepted")])
         self.assertTrue(self.op("github.review", "p1", result=REVIEW_OK)["ok"])
         self.assertTrue(self.op("finish", "p1", outcome="reviewed")["ok"])
         self.assertEqual(self.dispatcher.tick(), "dispatched")
-        self.assertEqual(self.op("begin", "c1", attempt=1)["status"], "terminal")
-        skipped = self.store.event("c1")
-        self.assertEqual((skipped["state"], skipped["outcome"]), ("completed", "already_reviewed"))
-        self.assertEqual(len(self.fake.review_posts), 1)
-        # A request made after that review is an explicit rerun and still runs.
-        again = comment_payload(12, 501, body="@bulgasaribot review", on_pr=True)
-        self.assertEqual(self.deliver(again, event="issue_comment", delivery="c2").outcome, "queued")
-        self.assertEqual(self.dispatcher.tick(), "dispatched")
-        self.assertEqual(self.op("begin", "c2", attempt=1)["status"], "started")
+        self.assertEqual(self.op("begin", "c1", attempt=1)["status"], "started")
 
     def test_queued_review_requests_coalesce_into_the_newest(self) -> None:
         self.started_review(12, "p1")
@@ -1884,7 +1941,7 @@ class LifecycleOpsTests(BridgeTestCase):
         self.assertTrue(self.op("fail", "p1", detail="Wait for review turn: stale_head")["ok"])
         body = self.fake.comments[12][0]["body"]
         self.assertIn("retry_event", body)
-        self.assertTrue(body.endswith(bridge.review_footer(REVIEWER)))
+        self.assertTrue(body.endswith(bridge.review_footer(REVIEWER, pushes_reviewed=True)))
         self.assertIn("`@haechibot review`", body)
         self.assertEqual(self.fake.labels[12], [NEEDS])
         self.assertEqual(self.fake.comments[12][0]["user"]["login"], REVIEWER)
@@ -2636,7 +2693,7 @@ class PullRequestOpsTests(BridgeTestCase):
         post = self.fake.review_posts[0]
         self.assertEqual((post["commit_id"], post["event"]), (SHA_A, "REQUEST_CHANGES"))
         self.assertTrue(post["body"].startswith("<!-- issue-agent:p1:review -->"))
-        self.assertTrue(post["body"].endswith(bridge.review_footer(BOT)))
+        self.assertTrue(post["body"].endswith(bridge.review_footer(BOT, pushes_reviewed=False)))
         self.assertEqual(post["comments"], [{"path": "a.py", "line": 3, "side": "RIGHT", "body": "bug here"}])
         again = self.op("github.review", "p1", result=REVIEW_OK)
         self.assertEqual((again["created"], again["review_id"]), (False, first["review_id"]))
@@ -2670,7 +2727,7 @@ class PullRequestOpsTests(BridgeTestCase):
         body = self.fake.comments[12][0]["body"]
         self.assertIn("**Verdict: REQUEST_CHANGES**", body)
         self.assertIn("- `a.py` line 3 (RIGHT): bug here", body)
-        self.assertTrue(body.endswith(bridge.review_footer(REVIEWER)))
+        self.assertTrue(body.endswith(bridge.review_footer(REVIEWER, pushes_reviewed=True)))
         again = self.op("github.review", "p1", result=REVIEW_OK)
         self.assertEqual((again["created"], len(self.fake.comments[12])), (False, 1))
 
@@ -2682,7 +2739,7 @@ class PullRequestOpsTests(BridgeTestCase):
         self.assertEqual(self.fake.review_posts[0]["event"], "COMMENT")
         self.assertIn("**Verdict: APPROVE**", body.splitlines()[1])
         self.assertIn("Needs work", body)
-        self.assertTrue(body.endswith(bridge.review_footer(BOT)))
+        self.assertTrue(body.endswith(bridge.review_footer(BOT, pushes_reviewed=False)))
         # Single App: everything goes through the issue App and no commit status is set.
         self.assertIsNone(result["commit_status"])
         self.assertEqual({actor for actor, _, _ in self.fake.gh_calls}, {BOT})
@@ -2748,7 +2805,7 @@ class PullRequestOpsTests(BridgeTestCase):
         self.assertIn("## Findings outside the diff", retry["body"])
         self.assertIn("- `a.py` line 3 (RIGHT): bug here", retry["body"])
         self.assertIn("- `b.py` line 4-9 (LEFT): first\n  second", retry["body"])
-        self.assertTrue(retry["body"].endswith(bridge.review_footer(BOT)))
+        self.assertTrue(retry["body"].endswith(bridge.review_footer(BOT, pushes_reviewed=False)))
 
     def test_thread_replies_are_idempotent_and_resolve_threads(self) -> None:
         self.started_review(12)
