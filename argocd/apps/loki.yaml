@@ -22,11 +22,9 @@ spec:
       repoURL: https://grafana-community.github.io/helm-charts
       targetRevision: 18.13.2
   syncPolicy:
-    # Auto-sync off while storage-loki-0 moves to pillar-csi. The chart always
-    # renders one replica for a filesystem-backed single binary, so loki is
-    # stopped by scaling the StatefulSet by hand, and any homelab push would
-    # otherwise sync it back.
-    automated: null
+    automated:
+      prune: true
+      selfHeal: true
     retry:
       backoff:
         duration: 5s

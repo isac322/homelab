@@ -40,7 +40,7 @@ loki:
     delete_request_store: filesystem
 
 singleBinary:
-  replicas: 0
+  replicas: 1
   affinity:
     nodeAffinity:
       preferredDuringSchedulingIgnoredDuringExecution:
@@ -71,9 +71,11 @@ singleBinary:
       memory: 224Mi
     limits:
       memory: 1Gi
+  # storage-loki-0 was created by democratic-csi and imported into
+  # pillar-csi in place on 2026-10-01.
   persistence:
     enabled: true
-    storageClass: ssd-ha-xfs
+    storageClass: ssd-ha
     accessModes:
       - ReadWriteOnce
     size: 100Gi
