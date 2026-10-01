@@ -104,6 +104,7 @@ REVIEW_EVENTS = ("APPROVE", "REQUEST_CHANGES", "COMMENT")
 MAX_CONTEXT_BYTES = 200 * 1024  # session_send context cap
 MAX_THREAD_PAGES = 4  # GraphQL reviewThreads: 50 per page
 MAX_IDEMPOTENCY_PAGES = 10  # review/comment lists scanned for hidden markers
+ADVISORY_SCAN_STATES = ("draft", "triage")  # security advisories scanned for a lost filing's marker
 PUBLISHER_CHECKOUT_TIMEOUT = 600.0
 PUBLISHER_PUSH_TIMEOUT = 300.0
 PUBLISHER_CLEANUP_TIMEOUT = 300.0
@@ -172,6 +173,18 @@ IDLE_WITHOUT_RESULT_LIMIT = 3
 HISTORY_PAGE_LIMIT = 200
 MAX_HISTORY_PAGES = 25
 MAX_SUPERSEDE_HOPS = 8
+# Loop bounds: a review request lifts a parked review's block at most this many times between completed
+# reviews, and reconciliation queues at most this many automatic repairs before a human signal or 'ready'.
+MAX_REVIEW_SUPERSEDES = 2
+MAX_PR_REPAIRS = 3
+# Failures a re-run cannot fix: GitHub refused the bridge's credentials or their permissions.
+_CREDENTIAL_FAILURE_RE = re.compile(
+    r"HTTP 40[13]\b|status code 40[13]\b|Bad credentials|Resource not accessible by integration"
+    r"|HTTP 422\b.*permission", re.IGNORECASE | re.DOTALL)
+
+
+def credential_failure(detail: Any) -> bool:
+    return isinstance(detail, str) and _CREDENTIAL_FAILURE_RE.search(detail) is not None
 
 REQUIRED_ENV = (
     "BRIDGE_STATE_PATH",
@@ -502,6 +515,7 @@ CREATE TABLE IF NOT EXISTS {name} (
     attempted_key   TEXT,
     latest_signal   TEXT,
     last_manual_id  INTEGER,
+    repair_count    INTEGER NOT NULL DEFAULT 0,
     notified_head   TEXT,
     closed          INTEGER NOT NULL DEFAULT 0,
     updated_at      REAL NOT NULL,
@@ -516,8 +530,10 @@ SCHEMA = ";\n".join([
     COLLABORATORS_DDL.format(name="collaborators"),
     PRS_DDL.format(name="prs"),
 ]) + ";\n"
-# Event: accepted -> dispatched -> completed | needs_attention; a new review request completes parked
-# reviews of its pull request with outcome 'superseded' (Store.enqueue)
+# Event: accepted -> dispatched -> completed | needs_attention; a new review request completes older queued
+# reviews of its pull request with outcome 'coalesced' and parked ones with outcome 'superseded' (Store.enqueue,
+# bounded by credential failures and MAX_REVIEW_SUPERSEDES); begin completes a review whose head the review
+# App already reviewed after the request with outcome 'already_reviewed'
 # issues.edited is accepted only while the issue is 'implementing' (Store.enqueue answers 'edit_ignored' otherwise)
 # Issue session: none -> pending -> ready (pending may fall back to none)
 # Issue phase: none -> triaged -> implementing; pull requests: none -> reviewing
@@ -573,7 +589,8 @@ def migrate(conn: sqlite3.Connection) -> None:
         _rebuild(conn, "turns", TURNS_DDL)  # widens the state CHECK for session-lost turns
     if "prs" in tables:
         have = set(_columns(conn, "prs"))
-        for col, decl in (("latest_signal", "TEXT"), ("last_manual_id", "INTEGER")):
+        for col, decl in (("latest_signal", "TEXT"), ("last_manual_id", "INTEGER"),
+                          ("repair_count", "INTEGER NOT NULL DEFAULT 0")):
             if col not in have:
                 conn.execute(f"ALTER TABLE prs ADD COLUMN {col} {decl}")
 # Event: accepted -> dispatched -> completed | needs_attention
@@ -674,6 +691,14 @@ class Store:
                 (ev["repo"], ev["issue_number"], subject_of(ev["kind"]), now),
             )
             if ev["kind"] == "pr_review":
+                # At most one queued review per pull request: older never-dispatched requests fold into this one.
+                conn.execute(
+                    "UPDATE events SET state = 'completed', outcome = 'coalesced', detail = ?, updated_at = ?"
+                    " WHERE repo = ? AND issue_number = ? AND kind = 'pr_review' AND state = 'accepted'"
+                    " AND delivery_id != ?",
+                    (f"coalesced into review request {ev['delivery_id']}", now, ev["repo"], ev["issue_number"],
+                     ev["delivery_id"]),
+                )
                 self._supersede_parked_reviews(conn, ev, now)
         return "queued"
 
@@ -763,13 +788,18 @@ class Store:
         """A new review request replaces reviews parked on the same pull request and lifts their block.
 
         Only review parks are superseded: if any other event on the subject needs attention, the block
-        belongs to that event and stays until an operator resolves it.
+        belongs to that event and stays until an operator resolves it. A re-request cannot fix refused
+        credentials, and after ``MAX_REVIEW_SUPERSEDES`` re-requests without a completed review it stops
+        lifting the block; both cases wait for an operator ``retry_event``.
         """
         parked = conn.execute(
-            "SELECT kind FROM events WHERE repo = ? AND issue_number = ? AND state = 'needs_attention'",
+            "SELECT kind, detail FROM events WHERE repo = ? AND issue_number = ? AND state = 'needs_attention'",
             (ev["repo"], ev["issue_number"]),
         ).fetchall()
         if not parked or any(row["kind"] != "pr_review" for row in parked):
+            return
+        if any(credential_failure(row["detail"]) for row in parked) \
+                or Store._review_supersedes(conn, ev["repo"], ev["issue_number"]) >= MAX_REVIEW_SUPERSEDES:
             return
         conn.execute(
             "UPDATE events SET state = 'completed', outcome = 'superseded', attention_pending = 0,"
@@ -779,6 +809,21 @@ class Store:
         )
         conn.execute("UPDATE issues SET blocked = 0, detail = NULL, updated_at = ? WHERE repo = ? AND issue_number = ?",
                      (now, ev["repo"], ev["issue_number"]))
+
+    @staticmethod
+    def _review_supersedes(conn: sqlite3.Connection, repo: str, number: int) -> int:
+        """Review events superseded on the subject since its latest successfully completed review."""
+        (count,) = conn.execute(
+            "SELECT COUNT(*) FROM events WHERE repo = ? AND issue_number = ? AND kind = 'pr_review'"
+            " AND outcome = 'superseded' AND seq > COALESCE((SELECT MAX(seq) FROM events WHERE repo = ?"
+            " AND issue_number = ? AND kind = 'pr_review' AND outcome = 'reviewed'), 0)",
+            (repo, number, repo, number),
+        ).fetchone()
+        return int(count)
+
+    def review_supersedes(self, repo: str, number: int) -> int:
+        with closing(self._connect()) as conn:
+            return self._review_supersedes(conn, repo, number)
 
     def event(self, delivery_id: str) -> sqlite3.Row | None:
         rows = self.query("SELECT * FROM events WHERE delivery_id = ?", (delivery_id,))
@@ -1284,8 +1329,15 @@ def classify_event(registry: Registry, event: str, delivery: str, payload: Any, 
             return {**base, "semantic_key": f"{cfg.name}#comment:{comment_id}", "kind": "pr_review",
                     "pr_number": number, "comment_id": comment_id, "body": body, "trusted": is_trusted}
         # Open-discussion issues take any human's input; elsewhere a trusted collaborator must mention the bot.
-        is_trusted = False
-        if not open_discussion:
+        if open_discussion:
+            # The verdict only informs the agent (approval vs. information); the comment is queued either way.
+            try:
+                is_trusted = trusted(cfg.name, login)
+            except TrustUnavailable as exc:
+                LOG.warning("delivery %s: open-discussion comment trust unavailable, treating as untrusted: %s",
+                            delivery, exc)
+                is_trusted = False
+        else:
             if not mentions(body, bot_login):
                 return "issue_comment_ignored"
             is_trusted = trusted(cfg.name, login)
@@ -1392,8 +1444,19 @@ _TRIAGE_SCHEMA = """\
  "implementation_brief": null | "string <=16000 (fix design, regression test contract, scope) - required non-null iff next_action implement",
  "questions":[strings <=500, max 5] (non-empty iff next_action await_info or await_decision; ask them in comment too - the automation appends any question missing from comment under `## Questions`),
  "summary":"string <=2000",
- "blockers":[strings]}
+ "blockers":[strings],
+ "security_advisory": null | {"summary":"<=1024",
+   "description":"English markdown <=60000 (impact, affected code paths with file:line, reproduction steps, suggested fix)",
+   "severity":"critical|high|medium|low",
+   "cwe_ids":["CWE-<digits>"] (max 10),
+   "vulnerabilities":[{"ecosystem":"rubygems|npm|pip|maven|nuget|composer|go|rust|erlang|actions|pub|other|swift",
+                       "package":"<=200 package/module name (repo name if none)",
+                       "vulnerable_version_range": null | "<=200",
+                       "patched_versions": null | "<=200"}] (1..10)}}
 status "blocked" = triage could not run (tooling/infra).
+security_advisory non-null = a confirmed or suspected vulnerability, filed as a private draft security advisory
+instead of anything public: it requires status triaged, comment null, empty labels.add/labels.remove,
+next_action none (so questions empty and implementation_brief null).
 Label catalog names: """ + ", ".join(n for n in LABEL_CATALOG if n != NEEDS_ATTENTION) + """.
 Adding a label of a group (repro:*, triage:fix-direction-decided/triage:needs-structural-change, bug/enhancement)
 replaces the other labels of that group."""
@@ -1635,10 +1698,53 @@ def _triage(v: dict[str, Any]) -> dict[str, Any]:
              "questions must be non-empty iff next_action is await_info or await_decision")
     comment = _with_questions(comment, questions)
     _require(comment is None or len(comment) <= 60000, "comment with the appended questions exceeds 60000 chars")
+    advisory = None if v["security_advisory"] is None else security_advisory(v["security_advisory"])
+    if advisory is not None:
+        # A vulnerability is reported privately only: nothing about it may reach the public issue.
+        _require(status == "triaged", "security_advisory requires status triaged")
+        _require(next_action == "none", "security_advisory requires next_action none")
+        _require(comment is None, "security_advisory requires comment null")
+        _require(not labels["add"] and not labels["remove"], "security_advisory requires empty labels.add/remove")
     return {"status": status, "verdict": verdict, "fault_domain": fault_domain, "duplicate_of": dup,
             "labels": {"add": list(labels["add"]), "remove": list(labels["remove"])}, "comment": comment,
             "next_action": next_action, "implementation_brief": brief, "questions": questions,
-            "summary": _text(v["summary"], 2000, "summary"), "blockers": _texts(v["blockers"], 2000, 20, "blockers")}
+            "summary": _text(v["summary"], 2000, "summary"), "blockers": _texts(v["blockers"], 2000, 20, "blockers"),
+            "security_advisory": advisory}
+
+
+ADVISORY_SEVERITIES = ("critical", "high", "medium", "low")
+ADVISORY_ECOSYSTEMS = ("rubygems", "npm", "pip", "maven", "nuget", "composer", "go", "rust", "erlang", "actions",
+                       "pub", "other", "swift")
+_CWE_RE = re.compile(r"\ACWE-[0-9]{1,6}\Z")
+
+
+def security_advisory(value: Any) -> dict[str, Any]:
+    """Normalized TriageResult ``security_advisory``; raises ``_Invalid`` with a message that names the
+    failed rule and never echoes the (private) advisory text."""
+    v = _fields(value, ("summary", "description", "severity", "cwe_ids", "vulnerabilities"), "security_advisory")
+    cwes = v["cwe_ids"]
+    _require(isinstance(cwes, list) and len(cwes) <= 10, "security_advisory.cwe_ids must be a list of at most 10")
+    _require(all(isinstance(c, str) and _CWE_RE.match(c) for c in cwes),
+             "security_advisory.cwe_ids items must look like CWE-<digits>")
+    vulns_in = v["vulnerabilities"]
+    _require(isinstance(vulns_in, list) and 1 <= len(vulns_in) <= 10,
+             "security_advisory.vulnerabilities must be a list of 1 to 10")
+    vulns = []
+    for item in vulns_in:
+        _fields(item, ("ecosystem", "package", "vulnerable_version_range", "patched_versions"),
+                "security_advisory vulnerability")
+        vulns.append({
+            "ecosystem": _choice(item["ecosystem"], ADVISORY_ECOSYSTEMS, "security_advisory vulnerability ecosystem"),
+            "package": _text(item["package"], 200, "security_advisory vulnerability package"),
+            "vulnerable_version_range": _text(item["vulnerable_version_range"], 200,
+                                              "security_advisory vulnerability vulnerable_version_range", nullable=True),
+            "patched_versions": _text(item["patched_versions"], 200, "security_advisory vulnerability patched_versions",
+                                      nullable=True),
+        })
+    return {"summary": _text(v["summary"], 1024, "security_advisory.summary"),
+            "description": _text(v["description"], 60000, "security_advisory.description"),
+            "severity": _choice(v["severity"], ADVISORY_SEVERITIES, "security_advisory.severity"),
+            "cwe_ids": list(cwes), "vulnerabilities": vulns}
 
 
 def _implement(v: dict[str, Any], number: int) -> dict[str, Any]:
@@ -1700,7 +1806,7 @@ def _review(v: dict[str, Any]) -> dict[str, Any]:
 
 RESULT_KEYS = {
     "triage": ("status", "verdict", "fault_domain", "duplicate_of", "labels", "comment", "next_action",
-               "implementation_brief", "questions", "summary", "blockers"),
+               "implementation_brief", "questions", "summary", "blockers", "security_advisory"),
     "implement": ("status", "head_sha", "pr", "issue_comment", "questions", "summary", "blockers"),
     "review": ("status", "head_sha", "event", "body", "comments", "thread_replies", "summary", "blockers"),
 }
@@ -1774,6 +1880,7 @@ class Bridge:
             "github.comment": self.op_github_comment,
             "github.labels": self.op_github_labels,
             "github.review": self.op_github_review,
+            "github.security_advisory": self.op_github_security_advisory,
             "github.pr_upsert": self.op_github_pr_upsert,
             "git.push": self.op_git_push,
         }
@@ -1884,6 +1991,12 @@ class Bridge:
                     (json.dumps(stages), now, execution_id, now, row["seq"]),
                 )
                 status = "started"
+        if status == "started" and ev["kind"] == "pr_review":
+            reviewed = self._reviewed_after_request(ev)
+            if reviewed is not None:
+                self.store.update_event(ev["delivery_id"], state="completed", outcome="already_reviewed",
+                                        detail=f"head {reviewed} was already reviewed after this request")
+                status = "terminal"
         if status == "started" and ev["kind"] == "pr_repair":
             pr_number = ev["pr_number"] or self.store.issue(ev["repo"], ev["issue_number"])["pr_number"]
             if not pr_number:
@@ -1935,6 +2048,7 @@ class Bridge:
                 "issue_number": ev["issue_number"],
                 "comment_id": ev["comment_id"],
                 "actor": ev["actor"],
+                "trusted": bool(ev["trusted"]),  # NULL for events recorded before the column existed
                 "title": ev["title"],
                 "body": ev["body"],
                 "head_sha": ev["head_sha"],
@@ -2071,9 +2185,11 @@ class Bridge:
             f"`{{\"delivery_id\": \"{ev['delivery_id']}\"}}`; the workflow resumes from its recorded stages and "
             f"`{NEEDS_ATTENTION}` is removed when the run finishes.",
         ]
-        footer = review_footer(self.reviewer_login())
-        if ev["kind"] == "pr_review" and footer:
-            lines += ["", footer]
+        if ev["kind"] == "pr_review":
+            blocker = self._review_rerun_blocker(ev, detail)
+            footer = review_footer(self.reviewer_login()) if blocker is None else ""
+            if blocker or footer:
+                lines += ["", blocker or footer]
         return "\n".join(lines)
 
     def mark_attention(self, ev: sqlite3.Row, detail: str, node: str | None = None) -> None:
@@ -2865,6 +2981,80 @@ class Bridge:
             raise OpError(problem)
         return self._apply_labels(ev["repo"], ev["issue_number"], add, remove)
 
+    # -- security advisories -----------------------------------------------
+
+    @staticmethod
+    def _advisory_error(action: str, status: int, data: Any) -> OpError:
+        """HTTP status and GitHub's ``message`` only: these errors may reach a public attention comment,
+        so they never carry the advisory text."""
+        message = data.get("message") if isinstance(data, dict) else None
+        detail = f": {message[:200]}" if isinstance(message, str) and message else ""
+        return OpError(f"github security advisory {action} HTTP {status}{detail}",
+                       retryable=status >= 500 or status == 429)
+
+    def _find_advisory(self, repo: str, marker: str) -> dict[str, Any] | None:
+        """The draft/triage advisory whose description carries ``marker`` (a filing whose result was lost)."""
+        for state in ADVISORY_SCAN_STATES:
+            status, data = self._gh_raw("GET", f"/repos/{repo}/security-advisories?state={state}&per_page=100")
+            if status != 200:
+                raise self._advisory_error("list", status, data)
+            if not isinstance(data, list):
+                raise OpError("github security advisory list: unexpected response", retryable=True)
+            for item in data:
+                if isinstance(item, dict) and isinstance(item.get("description"), str) \
+                        and marker in item["description"]:
+                    return item
+            if len(data) >= 100:
+                raise OpError("too many security advisories to verify idempotency", needs_operator=True)
+        return None
+
+    def op_github_security_advisory(self, req: dict[str, Any]) -> dict[str, Any]:
+        """File the recorded triage result's ``security_advisory`` as a draft repository security advisory,
+        once per event. The advisory comes from the ``triage_result`` stage, never from the request."""
+        ev = self._event(req)
+        repo, number, delivery = ev["repo"], int(ev["issue_number"]), ev["delivery_id"]
+        with self._keyed_lock(("advisory", delivery)):
+            stages = json.loads(self.store.event(delivery)["stages"])
+            if isinstance(stages.get("advisory"), dict):
+                return {**stages["advisory"], "already": True}
+            result = stages.get("triage_result")
+            raw = result.get("security_advisory") if isinstance(result, dict) else None
+            if raw is None:
+                raise OpError("the recorded triage result has no security advisory")
+            try:
+                advisory = security_advisory(raw)
+            except _Invalid as exc:
+                raise OpError(f"the recorded security advisory is invalid: {exc}") from None
+            marker = (f"Filed by the issue agent from {repo}#{number} (delivery {delivery}). "
+                      "The public issue was left without comment or labels.")
+            found = self._find_advisory(repo, marker)
+            already = found is not None  # filed by an earlier attempt whose result was lost
+            if found is None:
+                body = {
+                    "summary": advisory["summary"],
+                    "description": f"{advisory['description']}\n\n---\n{marker}",
+                    "severity": advisory["severity"],
+                    "cwe_ids": advisory["cwe_ids"],
+                    "vulnerabilities": [{"package": {"ecosystem": v["ecosystem"], "name": v["package"]},
+                                         "vulnerable_version_range": v["vulnerable_version_range"],
+                                         "patched_versions": v["patched_versions"]}
+                                        for v in advisory["vulnerabilities"]],
+                }
+                status, data = self._gh_raw("POST", f"/repos/{repo}/security-advisories", body)
+                if status != 201:
+                    raise self._advisory_error("create", status, data)
+                found = data
+            if not isinstance(found, dict) or not isinstance(found.get("ghsa_id"), str):
+                raise OpError("github security advisory: unexpected response", retryable=True)
+            value = {"ghsa_id": found["ghsa_id"], "html_url": found.get("html_url")}
+            with self.store.tx() as conn:
+                current = json.loads(conn.execute("SELECT stages FROM events WHERE seq = ?",
+                                                  (ev["seq"],)).fetchone()[0])
+                current["advisory"] = value
+                conn.execute("UPDATE events SET stages = ?, updated_at = ? WHERE seq = ?",
+                             (json.dumps(current), time.time(), ev["seq"]))
+        return {**value, "already": already}
+
     # -- pull requests -----------------------------------------------------
 
     def _threads(self, repo: str, number: int, *,
@@ -2910,6 +3100,46 @@ class Bridge:
     def reviewer_login(self) -> str | None:
         """Login that submits reviews: the review App when configured, else the issue App."""
         return self.config.github_review_bot_login if self.review_github is not None else self.config.github_bot_login
+
+    def _reviewed_after_request(self, ev: sqlite3.Row) -> str | None:
+        """The current head when the reviewer already submitted a review on it after ``ev`` was received.
+
+        A request newer than the latest review on the head still runs (an explicit rerun). A failed read
+        lets the review run; it then fails or parks on its own path."""
+        reviewer = self.reviewer_login()
+        if not reviewer:
+            return None
+        repo, number = ev["repo"], int(ev["pr_number"] or ev["issue_number"])
+        gh = self.review_github
+        try:
+            head = (self._get_pr(repo, number, client=gh).get("head") or {}).get("sha")
+            reviews = self._paged(f"/repos/{repo}/pulls/{number}/reviews", MAX_IDEMPOTENCY_PAGES, client=gh)
+        except (OpError, TransportError) as exc:
+            LOG.warning("existing review check for %s#%s skipped: %s", repo, number, exc)
+            return None
+        for r in reviews:
+            if ((r.get("user") or {}).get("login") or "").casefold() != reviewer.casefold() \
+                    or not head or r.get("commit_id") != head:
+                continue
+            try:
+                submitted = datetime.datetime.fromisoformat(str(r.get("submitted_at")).replace("Z", "+00:00"))
+            except ValueError:
+                continue
+            if submitted.tzinfo is not None and submitted.timestamp() > ev["received_at"]:
+                return head
+        return None
+
+    def _review_rerun_blocker(self, ev: sqlite3.Row, detail: str | None) -> str | None:
+        """Why a new review request would not restart this review, or None when it would."""
+        if credential_failure(detail):
+            return ("A new review request cannot restart this review: GitHub refused the bridge's credentials "
+                    "or their permissions. An operator must fix the cause and retry the event.")
+        count = self.store.review_supersedes(ev["repo"], ev["issue_number"])
+        if count >= MAX_REVIEW_SUPERSEDES:
+            return (f"A new review request no longer restarts this review: it was restarted {count} times "
+                    f"without completing (limit {MAX_REVIEW_SUPERSEDES}). An operator must fix the cause and "
+                    "retry the event.")
+        return None
 
     def op_github_review(self, req: dict[str, Any]) -> dict[str, Any]:
         ev = self._event(req)
@@ -2973,10 +3203,11 @@ class Bridge:
             body = (f"**Verdict: {event}** — GitHub does not let the app {action} its own pull request, "
                     f"so this verdict is submitted as a comment review.\n\n{body}")
             event = "COMMENT"
-        footer = review_footer(reviewer)
+        blocker = self._review_rerun_blocker(ev, None)
+        footer = review_footer(reviewer) if blocker is None else f"---\n<sub>{blocker}</sub>"
         tail = f"\n\n{footer}" if footer else ""
         if stale:
-            command = review_command(reviewer)
+            command = review_command(reviewer) if blocker is None else None
             again = f" Comment `{command}` to review the new head." if command else ""
             body = (f"**Stale review** — this reviews `{reviewed}`; the pull request head moved to `{head}` "
                     f"while the review ran, so the new head is not reviewed.{again}\n\n{body}")
@@ -3311,7 +3542,8 @@ class Bridge:
             if state["ready"] and not manual:
                 self._notify_pr_ready(repo, number, state["head_sha"])
                 with self.store.tx() as conn:
-                    conn.execute("UPDATE prs SET dirty = 0, head_sha = ?, latest_signal = NULL, attempted_key = NULL "
+                    conn.execute("UPDATE prs SET dirty = 0, head_sha = ?, latest_signal = NULL, attempted_key = NULL,"
+                                 " repair_count = 0 "
                                  "WHERE repo = ? AND pr_number = ? AND revision = ?",
                                  (state["head_sha"], repo, number, row["revision"]))
                 return "ready"
@@ -3326,6 +3558,21 @@ class Bridge:
             fingerprint = hashlib.sha256(json.dumps(evidence, sort_keys=True).encode()).hexdigest()
             if row["attempted_key"] == fingerprint:
                 return "unchanged"
+            if not manual and row["repair_count"] >= MAX_PR_REPAIRS:
+                # Each repair pushes a head whose new evidence would queue the next one; stop and say so once
+                # per manual-signal cycle. A human repair signal or a merge-ready state resets the count.
+                slug = (self.config.github_bot_login or "").removesuffix("[bot]")
+                again = f"Mention `@{slug}` in a comment to request another repair, or fix" if slug else "Fix"
+                self._comment(repo, number, f"pr-repair-limit:{number}:{row['last_manual_id'] or 0}",
+                              f"**Automatic repair stopped** — the issue agent queued {MAX_PR_REPAIRS} automatic "
+                              f"repairs for this pull request and GitHub still reports blockers at "
+                              f"`{state['head_sha']}`. {again} the cause manually; the limit resets when the pull "
+                              "request becomes merge-ready.")
+                with self.store.tx() as conn:
+                    conn.execute("UPDATE prs SET dirty = 0, attempted_key = ?, head_sha = ?, updated_at = ?"
+                                 " WHERE repo = ? AND pr_number = ? AND revision = ?",
+                                 (fingerprint, state["head_sha"], now, repo, number, row["revision"]))
+                return "repair_limit"
             with self.store.tx() as conn:
                 active = conn.execute("SELECT 1 FROM events WHERE repo = ? AND issue_number = ? "
                                       "AND state IN ('accepted', 'dispatching', 'dispatched') LIMIT 1",
@@ -3344,8 +3591,9 @@ class Bridge:
                 if not inserted.rowcount:
                     return "unchanged"
                 conn.execute("UPDATE prs SET active_delivery = ?, attempted_key = ?, dirty = 0, head_sha = ?,"
-                             " latest_signal = NULL, updated_at = ? WHERE repo = ? AND pr_number = ?",
-                             (delivery, fingerprint, state["head_sha"], now, repo, number))
+                             " latest_signal = NULL, repair_count = CASE WHEN ? THEN 0 ELSE repair_count + 1 END,"
+                             " updated_at = ? WHERE repo = ? AND pr_number = ?",
+                             (delivery, fingerprint, state["head_sha"], manual is not None, now, repo, number))
             return "queued"
         finally:
             lock.release()

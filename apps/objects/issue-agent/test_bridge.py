@@ -6,6 +6,7 @@ Run: python3 -m unittest apps/objects/issue-agent/test_bridge.py
 from __future__ import annotations
 
 import dataclasses
+import datetime
 import hashlib
 import hmac
 import http.client
@@ -99,6 +100,10 @@ class Fake:
         self.unknown_logins: set[str] = set()  # the permission lookup answers 404
         self.permission_fail = False  # the permission lookup answers 502
         self.permission_calls = 0
+        # repository security advisories (newest last); POSTs answer ``advisory_status`` when not 201
+        self.advisories: list[dict[str, Any]] = []
+        self.advisory_posts: list[dict[str, Any]] = []
+        self.advisory_status = 201
         # publisher
         self.checkouts: list[dict[str, Any]] = []
         self.pushes: list[dict[str, Any]] = []
@@ -401,6 +406,17 @@ class Fake:
             if login in self.unknown_logins:
                 return 404, {"message": "Not Found"}
             return 200, {"permission": self.permissions.get(login, "read"), "user": {"login": rest[1]}}
+        if rest == ["security-advisories"]:
+            if method == "GET":
+                return 200, [a for a in self.advisories if a["state"] == query.get("state")]
+            self.advisory_posts.append(body)
+            if self.advisory_status != 201:
+                return self.advisory_status, {"message": "Service Unavailable"}
+            ghsa = f"GHSA-xxxx-xxxx-{len(self.advisories):04d}"
+            advisory = {**body, "ghsa_id": ghsa, "state": "draft",
+                        "html_url": f"https://github.com/{REPO}/security/advisories/{ghsa}"}
+            self.advisories.append(advisory)
+            return 201, advisory
         number = int(rest[1])
         if rest[0] == "issues" and len(rest) == 2 and method == "GET":
             state = self.issue_states.get(number)
@@ -470,7 +486,8 @@ class Fake:
             state = {"APPROVE": "APPROVED", "REQUEST_CHANGES": "CHANGES_REQUESTED", "COMMENT": "COMMENTED"}
             review = {"id": self._next(), "html_url": f"https://github.com/{repo}/pull/{pr['number']}#r{self.seq}",
                       "state": state[body["event"]], "body": body["body"], "commit_id": body["commit_id"],
-                      "user": {"login": self.gh_actor}}
+                      "user": {"login": self.gh_actor},
+                      "submitted_at": datetime.datetime.now(datetime.timezone.utc).isoformat().replace("+00:00", "Z")}
             self.reviews.append(review)
             return 200, review
         if rest[1] == "comments" and len(rest) == 2:
@@ -589,6 +606,18 @@ TRIAGE_OK: dict[str, Any] = {
     "labels": {"add": ["bug", "repro:reproduced"], "remove": []},
     "comment": "Analysis.\n\n1. Which   version do you run?", "next_action": "await_info",
     "implementation_brief": None, "questions": ["Which version do you run?"], "summary": "asked", "blockers": [],
+    "security_advisory": None,
+}
+ADVISORY: dict[str, Any] = {
+    "summary": "Webhook secret leaks through the debug endpoint",
+    "description": "Impact: anyone can read the webhook secret via /debug (bridge.py:42).",
+    "severity": "high", "cwe_ids": ["CWE-200"],
+    "vulnerabilities": [{"ecosystem": "other", "package": "homelab", "vulnerable_version_range": None,
+                         "patched_versions": None}],
+}
+TRIAGE_ADVISORY: dict[str, Any] = {
+    **TRIAGE_OK, "labels": {"add": [], "remove": []}, "comment": None, "next_action": "none", "questions": [],
+    "summary": "reported privately", "security_advisory": ADVISORY,
 }
 IMPLEMENT_OK: dict[str, Any] = {
     "status": "ready", "head_sha": SHA_A, "pr": {"title": "Fix it", "body": "Fixes #7"}, "issue_comment": None,
@@ -785,13 +814,35 @@ class IntakeTests(BridgeTestCase):
             self.assertEqual(self.deliver(payload, event="issue_comment", delivery=f"c{i}").outcome, outcome, i)
         self.assertEqual(self.store.event("c3")["trusted"], 1)
         open_labels = ("bug", bridge.OPEN_DISCUSSION_LABEL)
-        calls = self.fake.permission_calls
         plain = comment_payload(8, 5, body="here is my log", login="newcomer", labels=open_labels)
         self.assertEqual(self.deliver(plain, event="issue_comment", delivery="c5").outcome, "queued")
-        self.assertEqual(self.fake.permission_calls, calls)  # no trust lookup on an open-discussion issue
         self.assertEqual((self.store.event("c5")["kind"], self.store.event("c5")["trusted"]), ("issue_comment", 0))
+        approval = comment_payload(8, 7, body="Go with option B", login="maintainer", labels=open_labels)
+        self.assertEqual(self.deliver(approval, event="issue_comment", delivery="c7").outcome, "queued")
+        self.assertEqual(self.store.event("c7")["trusted"], 1)
         bot = comment_payload(8, 6, login="helper[bot]", sender_type="Bot", labels=open_labels)
         self.assertEqual(self.deliver(bot, event="issue_comment", delivery="c6").outcome, "bot_sender")
+
+    def test_open_discussion_comment_is_queued_untrusted_when_the_permission_lookup_fails(self) -> None:
+        self.fake.permission_fail = True
+        open_labels = ("bug", bridge.OPEN_DISCUSSION_LABEL)
+        approval = comment_payload(8, 5, body="Go with option B", login="maintainer", labels=open_labels)
+        result = self.deliver(approval, event="issue_comment", delivery="c5")
+        self.assertEqual((result.status, result.outcome), (202, "queued"))
+        self.assertEqual(self.store.event("c5")["trusted"], 0)
+        self.assertEqual(self.store.query("SELECT * FROM collaborators"), [])  # the failure is not cached
+
+    def test_begin_exposes_whether_the_actor_is_trusted(self) -> None:
+        open_labels = ("bug", bridge.OPEN_DISCUSSION_LABEL)
+        self.deliver(comment_payload(8, 5, login="newcomer", labels=open_labels), event="issue_comment", delivery="c5")
+        self.deliver(comment_payload(9, 6, login="maintainer", labels=open_labels), event="issue_comment",
+                     delivery="c6")
+        self.assertEqual(self.dispatcher.tick(), "dispatched")
+        self.assertEqual(self.dispatcher.tick(), "dispatched")
+        self.assertIs(self.op("begin", "c5", attempt=1)["event"]["trusted"], False)
+        self.assertIs(self.op("begin", "c6", attempt=1)["event"]["trusted"], True)
+        self.store.update_event("c6", trusted=None)  # recorded before the column existed
+        self.assertIs(self.op("begin", "c6", attempt=2)["event"]["trusted"], False)
 
     def test_permission_verdicts_are_cached_for_the_ttl_and_unknown_logins_are_untrusted(self) -> None:
         self.assertEqual(self.deliver(comment_payload(7, 1), event="issue_comment", delivery="c1").outcome, "queued")
@@ -1519,6 +1570,40 @@ class PrRepairTests(BridgeTestCase):
         self.assertEqual(self.store.pr_state(REPO, 144)["active_delivery"], second["delivery_id"])
         self.assertEqual(json.loads(second["stages"])["repair_input"]["manual"]["id"], 902)
 
+    def test_automatic_repairs_stop_at_the_cap_until_a_human_signal(self) -> None:
+        # krema#63: each repair pushed a head whose flaky CI failed again, so every new fingerprint queued
+        # another repair without end.
+        self.use_reviewer_app()
+        self.managed_pr(merge_state="BLOCKED")
+
+        def complete_and_fail_again(n: int) -> str:
+            delivery = self.store.pr_state(REPO, 144)["active_delivery"]
+            if delivery:
+                self.store.update_event(delivery, state="completed", outcome="implemented")
+                self.assertTrue(self.store.release_pr_repair(REPO, 144, delivery, success=True))
+            self.fake.checks[SHA_A] = [{"name": f"flaky-{n}", "status": "COMPLETED", "conclusion": "FAILURE"}]
+            return self.bridge.reconcile_pr(REPO, 144)
+
+        for n in range(bridge.MAX_PR_REPAIRS):
+            self.assertEqual(complete_and_fail_again(n), "queued")
+        self.assertEqual(complete_and_fail_again(90), "repair_limit")
+        self.assertEqual(complete_and_fail_again(91), "repair_limit")
+        repairs = self.store.query("SELECT 1 FROM events WHERE kind = 'pr_repair'")
+        self.assertEqual(len(repairs), bridge.MAX_PR_REPAIRS)
+        row = self.store.pr_state(REPO, 144)
+        self.assertEqual((row["dirty"], row["active_delivery"]), (0, None))
+        notices = [c["body"] for c in self.fake.comments[144] if "Automatic repair stopped" in c["body"]]
+        self.assertEqual(len(notices), 1)
+        self.assertIn("`@bulgasaribot`", notices[0])
+        # A human repair signal is allowed and restarts the automatic budget.
+        request = comment_payload(144, 950, on_pr=True, body="@bulgasaribot fix the flaky check")
+        self.assertEqual(self.deliver(request, event="issue_comment", delivery="manual").outcome,
+                         "reconcile_pending")
+        self.assertEqual(self.bridge.reconcile_pr(REPO, 144), "queued")
+        self.assertEqual(self.store.pr_state(REPO, 144)["repair_count"], 0)
+        self.assertEqual(complete_and_fail_again(92), "queued")
+        self.assertEqual(self.store.pr_state(REPO, 144)["repair_count"], 1)
+
     def test_retries_preserve_the_snapshot_and_local_id_of_a_possibly_delivered_turn(self) -> None:
         pr = self.managed_pr(merge_state="BLOCKED")
         self.fake.checks[SHA_A] = [{"name": "original-check", "status": "COMPLETED", "conclusion": "FAILURE"}]
@@ -1661,6 +1746,77 @@ class DispatchTests(BridgeTestCase):
         self.fake.add_pr(12)
         self.assertEqual(self.deliver(pr_payload(12), event="pull_request", delivery="p1").outcome, "queued")
         self.assertEqual(self.events(), [("d1", "needs_attention"), ("p1", "accepted")])
+        self.assertEqual(self.store.issue(REPO, 12)["blocked"], 1)
+        self.assertEqual(self.dispatcher.tick(), "idle")
+
+    def test_review_of_a_head_already_reviewed_after_the_request_is_skipped(self) -> None:
+        # krema#63: a push queued a review and a `review` comment queued another; both reviewed the same head.
+        self.started_review(12, "p1")
+        command = comment_payload(12, 500, body="@bulgasaribot review", on_pr=True)
+        self.assertEqual(self.deliver(command, event="issue_comment", delivery="c1").outcome, "queued")
+        self.assertTrue(self.op("github.review", "p1", result=REVIEW_OK)["ok"])
+        self.assertTrue(self.op("finish", "p1", outcome="reviewed")["ok"])
+        self.assertEqual(self.dispatcher.tick(), "dispatched")
+        self.assertEqual(self.op("begin", "c1", attempt=1)["status"], "terminal")
+        skipped = self.store.event("c1")
+        self.assertEqual((skipped["state"], skipped["outcome"]), ("completed", "already_reviewed"))
+        self.assertEqual(len(self.fake.review_posts), 1)
+        # A request made after that review is an explicit rerun and still runs.
+        again = comment_payload(12, 501, body="@bulgasaribot review", on_pr=True)
+        self.assertEqual(self.deliver(again, event="issue_comment", delivery="c2").outcome, "queued")
+        self.assertEqual(self.dispatcher.tick(), "dispatched")
+        self.assertEqual(self.op("begin", "c2", attempt=1)["status"], "started")
+
+    def test_queued_review_requests_coalesce_into_the_newest(self) -> None:
+        self.started_review(12, "p1")
+        for n, delivery in enumerate(("c1", "c2", "c3")):
+            command = comment_payload(12, 600 + n, body="@bulgasaribot review", on_pr=True)
+            self.assertEqual(self.deliver(command, event="issue_comment", delivery=delivery).outcome, "queued")
+        self.assertEqual(self.events(), [("p1", "dispatched"), ("c1", "completed"), ("c2", "completed"),
+                                         ("c3", "accepted")])
+        for older, newer in (("c1", "c2"), ("c2", "c3")):
+            ev = self.store.event(older)
+            self.assertEqual(ev["outcome"], "coalesced")
+            self.assertIn(newer, ev["detail"])
+
+    def test_review_parked_on_refused_credentials_is_not_unblocked_by_a_review_request(self) -> None:
+        # krema#63: the read token was refused (401) on every run; each notice asked for a re-request, which
+        # lifted the block, ran into the same 401 and parked again.
+        self.started_review(12, "p1")
+        detail = "github DELETE /repos/isac322/cc-lb/issues/12/labels HTTP 401: Bad credentials"
+        self.assertTrue(self.op("fail", "p1", detail=detail)["ok"])
+        body = self.fake.comments[12][0]["body"]
+        self.assertNotIn("`@bulgasaribot review`", body)
+        self.assertNotIn("To request another review", body)
+        self.assertIn("An operator must fix the cause", body)
+        command = comment_payload(12, 500, body="@bulgasaribot review", on_pr=True)
+        self.assertEqual(self.deliver(command, event="issue_comment", delivery="c1").outcome, "queued")
+        self.assertEqual(self.events(), [("p1", "needs_attention"), ("c1", "accepted")])
+        self.assertEqual(self.store.issue(REPO, 12)["blocked"], 1)
+        self.assertEqual(self.dispatcher.tick(), "idle")
+        self.assertTrue(self.op("retry_event", "p1")["ok"])
+        self.assertEqual(self.dispatcher.tick(), "dispatched")
+        self.assertEqual(self.fake.dispatched[-1][1]["delivery_id"], "p1")
+
+    def test_review_requests_stop_lifting_a_parked_review_after_the_cap(self) -> None:
+        self.started_review(12, "p1")
+        parked = "p1"
+        for n in range(bridge.MAX_REVIEW_SUPERSEDES):
+            self.assertTrue(self.op("fail", parked, detail="Wait for review turn: stale_head")["ok"])
+            self.assertIn("`@bulgasaribot review`", self.fake.comments[12][-1]["body"])
+            parked = f"c{n}"
+            command = comment_payload(12, 700 + n, body="@bulgasaribot review", on_pr=True)
+            self.assertEqual(self.deliver(command, event="issue_comment", delivery=parked).outcome, "queued")
+            self.assertEqual(self.store.issue(REPO, 12)["blocked"], 0)
+            self.assertEqual(self.dispatcher.tick(), "dispatched")
+            self.assertEqual(self.op("begin", parked, attempt=1)["status"], "started")
+        self.assertTrue(self.op("fail", parked, detail="Wait for review turn: stale_head")["ok"])
+        notice = self.fake.comments[12][-1]["body"]
+        self.assertNotIn("`@bulgasaribot review`", notice)
+        self.assertIn(f"restarted {bridge.MAX_REVIEW_SUPERSEDES} times", notice)
+        command = comment_payload(12, 799, body="@bulgasaribot review", on_pr=True)
+        self.assertEqual(self.deliver(command, event="issue_comment", delivery="late").outcome, "queued")
+        self.assertEqual(self.store.event(parked)["state"], "needs_attention")
         self.assertEqual(self.store.issue(REPO, 12)["blocked"], 1)
         self.assertEqual(self.dispatcher.tick(), "idle")
 
@@ -2302,6 +2458,33 @@ class ResultValidationTests(unittest.TestCase):
         self.assertInvalid("triage", variant(TRIAGE_OK, next_action="none"), "questions")
         self.assertInvalid("triage", variant(TRIAGE_OK, questions=["q"] * 6, comment="q"), "at most 5")
 
+    def test_triage_security_advisory_is_private_only(self) -> None:
+        valid = bridge.validate_result("triage", TRIAGE_ADVISORY, 7)
+        self.assertEqual(valid["security_advisory"], ADVISORY)
+        self.assertIsNone(bridge.validate_result("triage", TRIAGE_OK, 7)["security_advisory"])
+        public = [
+            (variant(TRIAGE_ADVISORY, comment="Found a hole"), "comment null"),
+            (variant(TRIAGE_ADVISORY, labels={"add": ["bug"], "remove": []}), "empty labels"),
+            (variant(TRIAGE_ADVISORY, labels={"add": [], "remove": ["bug"]}), "empty labels"),
+            (variant(TRIAGE_ADVISORY, next_action="await_info", questions=["q?"]), "next_action none"),
+            (variant(TRIAGE_ADVISORY, status="blocked"), "status triaged"),
+        ]
+        for value, fragment in public:
+            self.assertInvalid("triage", value, fragment)
+        broken = [
+            ({**ADVISORY, "severity": "urgent"}, "severity"),
+            ({**ADVISORY, "cwe_ids": ["200"]}, "CWE-<digits>"),
+            ({**ADVISORY, "vulnerabilities": []}, "1 to 10"),
+            ({**ADVISORY, "summary": "s" * 1025}, "summary exceeds"),
+        ]
+        for advisory, fragment in broken:
+            result = bridge.validate_result("triage", variant(TRIAGE_ADVISORY, security_advisory=advisory), 7)
+            self.assertIsInstance(result, str)
+            self.assertIn(fragment, result)
+            self.assertNotIn(ADVISORY["description"], result)
+            self.assertNotIn("s" * 100, result)
+        self.assertInvalid("triage", {k: v for k, v in TRIAGE_OK.items() if k != "security_advisory"}, "missing")
+
     def test_triage_questions_missing_from_comment_are_appended(self) -> None:
         verbatim = bridge.validate_result("triage", TRIAGE_OK, 7)
         self.assertEqual(verbatim["comment"], TRIAGE_OK["comment"])  # whitespace/case-insensitive match
@@ -2387,6 +2570,62 @@ class GitHubOpsTests(BridgeTestCase):
     def test_search_op_is_removed(self) -> None:
         self.started()
         self.assertEqual(self.op("github.search", terms="x")["error"], "unknown_op")
+
+
+class SecurityAdvisoryOpsTests(BridgeTestCase):
+    def triaged(self, result: dict[str, Any] = TRIAGE_ADVISORY) -> None:
+        self.started()
+        value = bridge.validate_result("triage", result, 7)
+        self.assertTrue(self.op("stage", stage="triage_result", value=value)["ok"])
+
+    def test_advisory_is_filed_once_as_a_private_draft(self) -> None:
+        self.triaged()
+        first = self.op("github.security_advisory")
+        self.assertEqual((first["ok"], first["already"], first["ghsa_id"]), (True, False, "GHSA-xxxx-xxxx-0000"))
+        [posted] = self.fake.advisory_posts
+        self.assertEqual({k: posted[k] for k in ("summary", "severity", "cwe_ids", "vulnerabilities")}, {
+            "summary": ADVISORY["summary"], "severity": "high", "cwe_ids": ["CWE-200"],
+            "vulnerabilities": [{"package": {"ecosystem": "other", "name": "homelab"},
+                                 "vulnerable_version_range": None, "patched_versions": None}]})
+        self.assertEqual(posted["description"], ADVISORY["description"] + "\n\n---\nFiled by the issue agent from "
+                         f"{REPO}#7 (delivery d1). The public issue was left without comment or labels.")
+        self.assertEqual(json.loads(self.store.event("d1")["stages"])["advisory"],
+                         {"ghsa_id": first["ghsa_id"], "html_url": first["html_url"]})
+        second = self.op("github.security_advisory")
+        self.assertEqual((second["already"], second["ghsa_id"]), (True, first["ghsa_id"]))
+        self.assertEqual(len(self.fake.advisory_posts), 1)
+        self.assertEqual((self.fake.comments, self.fake.labels), ({}, {}))  # nothing public
+
+    def test_a_filing_whose_stage_was_lost_is_found_by_its_marker(self) -> None:
+        self.triaged()
+        first = self.op("github.security_advisory")
+        stages = json.loads(self.store.event("d1")["stages"])
+        del stages["advisory"]
+        self.store.update_event("d1", stages=json.dumps(stages))
+        self.fake.advisories[0]["state"] = "triage"
+        again = self.op("github.security_advisory")
+        self.assertEqual((again["ok"], again["already"], again["ghsa_id"]), (True, True, first["ghsa_id"]))
+        self.assertEqual(len(self.fake.advisory_posts), 1)
+        self.assertEqual(json.loads(self.store.event("d1")["stages"])["advisory"]["ghsa_id"], first["ghsa_id"])
+
+    def test_refuses_without_a_recorded_advisory(self) -> None:
+        self.triaged(TRIAGE_OK)
+        result = self.op("github.security_advisory")
+        self.assertEqual((result["ok"], result["retryable"]), (False, False))
+        self.assertIn("no security advisory", result["error"])
+        self.assertEqual(self.fake.advisory_posts, [])
+
+    def test_github_failure_is_retryable_and_never_echoes_the_advisory(self) -> None:
+        self.triaged()
+        self.fake.advisory_status = 503
+        failed = self.op("github.security_advisory")
+        self.assertEqual((failed["ok"], failed["retryable"]), (False, True))
+        self.assertEqual(failed["error"], "github security advisory create HTTP 503: Service Unavailable")
+        self.assertNotIn(ADVISORY["summary"], json.dumps(failed))
+        self.assertNotIn("advisory", json.loads(self.store.event("d1")["stages"]))
+        self.fake.advisory_status = 201
+        self.assertEqual(self.op("github.security_advisory")["already"], False)
+
 
 
 class PullRequestOpsTests(BridgeTestCase):

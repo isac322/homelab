@@ -19,6 +19,8 @@ v2는 코딩 에이전트의 GitHub 쓰기를 모두 없앴다. 에이전트는 
 - 커스텀 provider와 모델 설정을 독립적으로 관리한다. 자체 ARM64 이미지 빌드는 허용된다.
 - 선호가 불명확한 경우 추측하지 않고 질문한다.
 - 누구나 이슈를 열 수 있다. 명확한 요청은 triage(재현·원인·중복 판단)를 거친 뒤 자동으로 수정·검증·PR 생성까지 수행한다. 불명확한 요청은 질문하며 자동 머지는 하지 않는다. 저장소 collaborator·owner가 아닌 사용자의 새 이슈는 전체 저장소 합산 1시간(rolling)에 10개까지만 받는다.
+- 기능 요청은 작성자 신뢰에 따라 다룬다. 신뢰 사용자(collaborator 권한 `admin`/`write`)의 명확하고 범위 안의 기능·문서 요청은 직접 지시로 보고 구현까지 간다(구조 변경이면 결정을 묻고 멈춘다). 비신뢰 사용자의 기능 요청은 바로 구현하지 않고 제안 트랙(계약 확인, 실현 가능성 조사, 방향과 기각한 대안을 담은 제안 평가 댓글)을 거쳐 결정을 묻고 멈추며, 신뢰 사용자가 댓글로 방향을 승인해야 구현한다. 비신뢰 사용자의 댓글·수정은 승인이나 요구사항 변경이 아니라 정보다.
+- 보안 취약점은 공개 위치에 남기지 않는다. 확인되거나 의심되는 취약점은 라벨·이슈 댓글·재현 페이로드 없이 비공개 draft repository security advisory로 보고한다.
 - 설치된 저장소에서 Draft가 아닌 PR을 생성·재개하거나 Ready for review로 바꾸면 이슈와 다른 `review-pr-<n>` 세션에서 리뷰한다. 리뷰 App이 설정되어 있으면 push로 head가 바뀔 때도 head별로 한 번 리뷰하고, 명시적 `@haechibot review` 요청은 같은 head를 다시 리뷰할 수 있다. ruleset·branch protection이 merge 조건을 소유하며 bridge는 필수 check 목록이나 reviewer 수를 하드코딩하지 않는다.
 - 코딩 에이전트는 GitHub에 쓰지 않는다. 댓글·라벨·push·PR·리뷰는 모두 n8n이 에이전트 결과를 검증된 bridge op로 적용한다.
 
@@ -27,7 +29,7 @@ v2는 코딩 에이전트의 GitHub 쓰기를 모두 없앴다. 에이전트는 
 | 구성 요소 | 책임 |
 |---|---|
 | n8n | GitHub 이벤트 처리 흐름, 모드별 단계(triage → implement, followup, review), 결과에 따른 분기, 모든 GitHub 반영(라벨·댓글·push·PR·리뷰)의 호출과 실패 처리. 에이전트에 보내는 메시지에는 대상 번호와 트리거 정보만 넣으며 GitHub 내용 조회는 담당하지 않는다 |
-| 연결 계층(bridge) | webhook 검증, collaborator 권한 판정(캐시)과 비신뢰 이슈 rate limit, 이벤트 영속화·중복 방지, 이슈/PR과 세션 매핑, HAPI API 인증·상태 확인, 모드별 결과 스키마 검증, GitHub 쓰기 op(issues/pull_requests/contents write 토큰. contents write는 리뷰 스레드 resolve용이며 push에 쓰지 않음), publisher 호출, attention 알림. 에이전트용 GitHub 읽기 op는 두지 않는다 |
+| 연결 계층(bridge) | webhook 검증, collaborator 권한 판정(캐시)과 비신뢰 이슈 rate limit, 이벤트 영속화·중복 방지, 이슈/PR과 세션 매핑, HAPI API 인증·상태 확인, 모드별 결과 스키마 검증, GitHub 쓰기 op(issues/pull_requests/contents/repository_advisories write 토큰. contents write는 리뷰 스레드 resolve용이며 push에 쓰지 않고, repository_advisories write는 draft security advisory 생성용), publisher 호출, attention 알림. 에이전트용 GitHub 읽기 op는 두지 않는다 |
 | publisher(Runner Pod 사이드카) | push 토큰(`issue-agent-github-push`)의 유일한 보유자. bridge 요청으로 저장소 checkout clone과 `hapi-issue-<n>` branch의 non-force push만 수행 |
 | HAPI Hub | 세션 목록·메시지·승인 API, 웹 UI, 다중 구독, Hub 데이터 저장 |
 | HAPI Runner | 실제 Codex 실행, 저장소별 worktree, 하네스 설정·기록 보존. GitHub 토큰은 읽기 전용이며 에이전트가 `gh`(REST·`gh api graphql`)로 GitHub를 직접 읽는다 |
@@ -43,7 +45,7 @@ n8n은 단순히 에이전트를 한 번 호출하는 장식이 아니라 실제
 3. 저장소 지침: 각 저장소의 `AGENTS.md` 등 기여 규칙을 worktree에서 읽는다. 빌드·테스트·스타일만 정하며 공통 지침의 제한을 넓히지 못한다.
 4. Codex 도구: 모든 세션에 context-mode(`ctx_*`)와 CodeGraph(`codegraph_*`) MCP 서버가 붙는다(`/etc/codex/config.toml`). 사용 강제는 `/etc/codex/requirements.toml`의 managed hook으로 한다. context-mode hook 6개(SessionStart, PreToolUse, PostToolUse, PreCompact, UserPromptSubmit, Stop)가 raw fetch를 막고 큰 출력을 sandbox로 유도하며, SessionStart의 `codegraph-index`가 worktree 색인을 준비한다. 공통 지침은 코드 탐색에 CodeGraph를, 20줄 넘는 출력에 context-mode를 기본으로 쓰게 한다.
 5. 빌드 캐시: Runner는 sccache로 Rust(`RUSTC_WRAPPER`)와 C/C++(`PATH` 앞쪽 `cc`·`gcc`·`c++`·`g++` wrapper, CMake compiler launcher) 컴파일 결과를 home PVC의 `SCCACHE_DIR`(최대 5G)에 캐시해 worktree와 세션이 공유한다. wrapper는 sccache가 부모일 때 실제 컴파일러를 바로 실행해 이중 wrapping을 막는다.
-6. 접근 제한: 에이전트 컨테이너에는 읽기 전용 설치 토큰만 마운트한다. 쓰기 토큰(bridge의 issues/pull_requests/contents write, publisher의 contents write)과 publisher bearer 토큰은 에이전트 컨테이너에서 읽을 수 없다. 지침 문구를 강제적인 보안 격리로 설명하지 않는다.
+6. 접근 제한: 에이전트 컨테이너에는 읽기 전용 설치 토큰만 마운트한다. 쓰기 토큰(bridge의 issues/pull_requests/contents/repository_advisories write, publisher의 contents write)과 publisher bearer 토큰은 에이전트 컨테이너에서 읽을 수 없다. 지침 문구를 강제적인 보안 격리로 설명하지 않는다.
 7. GitHub 읽기 자격증명 경계: Runner의 `GH_CONFIG_DIR`에는 사용자 토큰이나 PAT가 아닌 rotating repository-scoped GitHub App installation token이 들어간다. `gh auth status`, `gh auth login`, `gh auth setup-git`, `gh api user`, `gh api /user`, GraphQL `viewer` 조회는 설치 토큰에 맞지 않는 사용자 identity probe이므로 인증·readiness 확인에 사용하지 않는다. 이 probe의 실패만으로 저장소 읽기 권한이 없다고 판단하지 않는다.
 8. 운영 불변식과 incident lesson: readiness/auth는 실제 대상 이슈·PR·저장소 읽기(`gh issue view`, `gh pr view`, `gh api repos/{owner}/{repo}/...`)로만 확인한다. 대상 읽기는 일반 셸 또는 `ctx_execute`로 실행할 수 있다. `ctx_batch_execute`가 출력을 색인하면 `ctx_search`로 확인하며, 빈 직접 응답만으로 인증 실패로 처리하지 않는다. 대상 읽기가 401/403을 반환하거나, 대상 404 뒤 저장소 메타데이터 읽기(`gh api repos/{owner}/{repo}`)도 404일 때만 GitHub 인증·설치 접근 blocker로 보고한다. 단순 404 또는 리소스 부재는 저장소 접근을 확인하기 전까지 자격증명 실패로 바꾸지 않는다. bootstrap의 `gh auth token`은 로컬 설정 파싱일 뿐 API capability/health check가 아니다.
 
@@ -54,6 +56,8 @@ n8n은 단순히 에이전트를 한 번 호출하는 장식이 아니라 실제
 - 채팅으로 묻고 기다리는 단계(`isac-decision-brief` 포함)는 결과의 `questions`와 초안 댓글에 질문을 넣고 `await_info`/`await_decision`/`needs_info`로 턴을 끝낸다.
 - 한국어 최종 보고는 짧은 영어 `summary`가 된다. GitHub에 게시될 텍스트는 `isac-github-publishing`에 따라 영어로 쓴다.
 - `pull-request-merge`는 merge를 금지하고 merge 준비 상태 보고로 바뀌었다.
+- 신뢰 규칙(triage AD-01·AD-02, implement followup): 신뢰 사용자의 명확한 기능·문서 요청만 직접 지시이고, 그 밖의 기능 요청은 제안 트랙(TRI-54)으로 결정을 묻는다. 제안·구조 변경 승인과 진행 중인 PR의 요구사항 변경은 신뢰 사용자의 댓글·수정만 할 수 있다. actor의 신뢰는 메시지의 신뢰 사실(`context.actor_trusted`)로 받고, 다른 사람은 에이전트가 `gh api repos/<owner>/<repo>/collaborators/<login>/permission`으로 확인한다.
+- 취약점(TRI-53, triage AD-04): 원본의 "공개 댓글·라벨 없이 GitHub Security Advisory로 옮기기 제안"은 TriageResult `security_advisory` 필드가 된다. 이때 `comment`는 `null`, 라벨 변경은 없고 `next_action`은 `none`이며, 재현 페이로드는 advisory 본문에만 둔다.
 
 Codex의 공통 지침은 전용 `CODEX_HOME/AGENTS.md`에서 읽고 프로젝트 지침과 결합할 수 있다. 전용 프로필은 개인 설정과 분리한다. 레포 안의 지침이 공통 지침을 덮어쓸 수 있으므로 비밀 보호나 접근 제어의 유일한 장치로 사용하지 않는다.
 
@@ -106,15 +110,15 @@ krema#63에서 리뷰 ↔ repair 조정이 약 12시간 동안 반복돼 토큰 
 
 ### 이벤트 분류(bridge `classify_event`)
 
-- 신뢰 사용자는 저장소 collaborator·owner다. bridge가 이슈 App 토큰으로 `GET /repos/{repo}/collaborators/{login}/permission`을 호출해 `permission`이 `admin` 또는 `write`면 신뢰한다(`maintain`은 `write`, `triage`는 `read`로 매핑된다). 404는 비신뢰다. 결과는 신뢰·비신뢰 모두 SQLite `collaborators` 테이블에 600초 캐시한다. 조회는 규칙이 신뢰 여부를 필요로 할 때만 한다. 네트워크 오류·토큰 없음·그 외 HTTP 상태면 캐시하지 않고 HTTP 503 `permission_unavailable`로 응답하며 이벤트를 저장하지 않는다. GitHub가 재전달한다.
+- 신뢰 사용자는 저장소 collaborator·owner다. bridge가 이슈 App 토큰으로 `GET /repos/{repo}/collaborators/{login}/permission`을 호출해 `permission`이 `admin` 또는 `write`면 신뢰한다(`maintain`은 `write`, `triage`는 `read`로 매핑된다). 404는 비신뢰다. 결과는 신뢰·비신뢰 모두 SQLite `collaborators` 테이블에 600초 캐시한다. 조회는 규칙이 신뢰 여부를 필요로 할 때만 한다. 네트워크 오류·토큰 없음·그 외 HTTP 상태면 캐시하지 않고 HTTP 503 `permission_unavailable`로 응답하며 이벤트를 저장하지 않는다. GitHub가 재전달한다. 예외로 `agent:open-discussion` 이슈의 댓글은 신뢰 여부가 처리 여부를 정하지 않으므로, 조회가 실패해도 경고 로그만 남기고 비신뢰로 기록한다.
 - `issues.opened`: 누구나(sender가 bot이 아닌 `User`이고 이슈 작성자와 같을 때) → `issue_opened`. 신뢰 사용자의 이슈는 항상 받는다. 비신뢰 사용자의 이슈는 전체 저장소 합산 최근 3600초(rolling) 안에 받은 비신뢰 `issue_opened`가 10개 미만일 때만 받고, 넘으면 `rate_limited`(202, 저장 안 함)다. 신뢰 사용자의 이슈는 한도에 세지 않는다.
 - 예외: 저장소 owner(저장소 이름의 `<owner>`와 같은 login, 예: `isac322/*`의 `isac322`)가 연 이슈는 자동 처리하지 않는다(`owner_issue_ignored`, 저장 안 함). owner는 자기 에이전트 작업용 메모로 이슈를 여는 경우가 많기 때문이다. 이런 이슈도 신뢰 사용자가 `@bulgasaribot` 멘션 댓글을 달면 그 댓글이 `issue_comment`로 들어와 triage부터 시작한다. 조직 저장소는 login이 조직 이름과 같을 수 없으므로 해당이 없다.
-- `issue_comment.created`(이슈): 이슈에 `agent:open-discussion` 라벨이 있으면 누구의 댓글이든 멘션 없이 `issue_comment`다(신뢰 조회·rate limit 없음). 누구나 의견과 자료를 보태 에이전트가 이슈를 더 잘 이해하게 하는 용도다. 라벨이 없으면 본문에 이슈 bot 멘션(`@bulgasaribot`, 대소문자 무시, `github_bot_login`에서 `[bot]` 제외)이 있어야 한다. 멘션이 없으면 `issue_comment_ignored`, 신뢰 사용자의 멘션은 `issue_comment`, 비신뢰 사용자의 멘션은 `actor_not_allowed`다. 에이전트가 처음 보는 이슈의 댓글도 같은 규칙으로 처리한다.
+- `issue_comment.created`(이슈): 이슈에 `agent:open-discussion` 라벨이 있으면 누구의 댓글이든 멘션 없이 `issue_comment`다(rate limit 없음). 누구나 의견과 자료를 보태 에이전트가 이슈를 더 잘 이해하게 하는 용도다. 이 경로도 캐시된 권한 조회로 작성자의 신뢰 여부를 계산해 기록하지만 처리 여부에는 쓰지 않으며, 조회가 실패하면(`TrustUnavailable`) 경고 로그를 남기고 비신뢰로 둔다. 비신뢰 댓글은 에이전트에게 정보일 뿐 승인·지시가 아니다. 라벨이 없으면 본문에 이슈 bot 멘션(`@bulgasaribot`, 대소문자 무시, `github_bot_login`에서 `[bot]` 제외)이 있어야 한다. 멘션이 없으면 `issue_comment_ignored`, 신뢰 사용자의 멘션은 `issue_comment`, 비신뢰 사용자의 멘션은 `actor_not_allowed`다. 에이전트가 처음 보는 이슈의 댓글도 같은 규칙으로 처리한다.
 - `issue_comment.created` (PR): PR 작성자 또는 신뢰 사용자의 `@haechibot` 멘션은 재리뷰를 큐에 넣는다. 별도 리뷰 App이 있을 때 `@bulgasaribot` 멘션은 관리 PR의 원본 이슈 worktree에 수동 repair 요청을 기록한다. 그 외 댓글은 무시하며, 두 번째 App이 없으면 이슈 App 멘션으로 리뷰한다.
 - `issues.edited`: `changes`에 `body`나 `title`이 있을 때만 본다(그 외 `edit_ignored`). sender는 bot이 아닌 `User`여야 하고, 이슈에 `agent:open-discussion` 라벨이 있거나 sender가 신뢰 사용자여야 한다(아니면 `actor_not_allowed`). 종류는 `issue_edited`, semantic key는 `repo#issue:<n>:edited:<delivery>`이며 새 제목·본문을 넘긴다. 이슈가 `phase: implementing`(PR을 만드는 중이거나 이미 있음)일 때만 큐에 넣고 그 외는 `edit_ignored`다.
 - `pull_request.opened`/`reopened`/`ready_for_review`: Draft가 아닌 PR은 `pr_review`로 분류한다(`repo#pr:<n>:review:<head_sha>`). 리뷰 App이 설정된 non-Draft PR의 `synchronize`도 같은 head별 key로 리뷰하고, 관리 PR의 상태 재조회도 예약한다. dependabot·자기 App의 PR도 리뷰할 수 있다.
 - bot·자기 댓글과 에이전트 marker가 있는 댓글은 `bot_sender`로 무시한다.
-- 이벤트 행에는 신뢰 여부(`trusted`)를 함께 기록한다.
+- 이벤트 행에는 신뢰 여부(`trusted`)를 함께 기록한다. `begin` 응답의 `event.trusted`로 n8n에 넘기면 n8n은 triage·followup 지시문과 `context.actor_trusted`에 actor의 신뢰 여부와 신뢰 규칙(신뢰 사용자의 요청만 직접 지시·승인이며 다른 사람은 권한 API로 확인)을 넣는다. `issues.opened`의 actor는 작성자다.
 
 `agent:open-discussion` 라벨은 bridge `LABEL_CATALOG`에 없다. 공개 토론을 허용할 저장소마다 maintainer가 직접 만들고 이슈에 붙인다.
 
@@ -140,9 +144,9 @@ Runner 컨테이너는 시작할 때 `runner-bootstrap`이 `$HAPI_HOME/runner.st
 
 에이전트는 턴 끝에 `ISSUE_AGENT_RESULT <nonce> {json}` 한 줄을 낸다. `session_send`가 메시지에 nonce와 해당 모드의 정확한 스키마를 넣고, `context`(트리거 정보나 triage 결과 같은 작은 보조 데이터, 200KB 이하)는 신뢰하지 않는 데이터로 fence한다. `session_turn`이 턴 모드의 스키마로 결과를 검증한다(모든 필드 필수, 알 수 없는 키 거절). n8n은 턴마다 120초 간격으로 최대 180회(약 6시간) 확인한다.
 
-followup 턴은 PR을 이슈와 맞춘다. 에이전트는 `gh issue view`와 `gh api`로 이슈 제목·본문과 모든 댓글을 직접 읽는다. Begin 응답에 기록된 `pr_number`가 있으면 `gh pr view`로 그 PR의 상태(번호·URL·state·merged·draft·제목·본문·head/base)와 리뷰 댓글도 직접 읽고, 없으면 아직 PR이 없는 상태다. 에이전트는 PR이 열려 있든, merge·close됐든, 아직 만드는 중이든 이슈 제목·본문과 모든 댓글에서 현재 요구사항을 다시 정리하고 branch diff와 현재 PR 제목·본문·상태와 비교한다. 다르면 `hapi-issue-<n>`에 새 커밋을 올리고 전체 현재 범위를 설명하는 `pr.title`/`pr.body`로 `ready`를 낸다. PR이 merge·close됐으면 먼저 `origin/<default>`를 branch에 merge한다(rebase·force 금지). 자동화가 그 branch로 새 PR을 연다. PR이 이미 충족하는 단순 맥락이면 `no_change`와 어떻게 반영했는지 설명하는 `issue_comment`를 낸다. 요구사항이 모호하거나 충돌하면 `needs_info`다.
+followup 턴은 PR을 이슈와 맞춘다. 에이전트는 `gh issue view`와 `gh api`로 이슈 제목·본문과 모든 댓글을 직접 읽는다. Begin 응답에 기록된 `pr_number`가 있으면 `gh pr view`로 그 PR의 상태(번호·URL·state·merged·draft·제목·본문·head/base)와 리뷰 댓글도 직접 읽고, 없으면 아직 PR이 없는 상태다. 에이전트는 PR이 열려 있든, merge·close됐든, 아직 만드는 중이든 이슈 제목·본문과 모든 댓글에서 현재 요구사항을 다시 정리하고 branch diff와 현재 PR 제목·본문·상태와 비교한다. 요구사항은 신뢰 사용자의 댓글·수정만 바꿀 수 있다. 비신뢰 사용자의 입력은 지시가 아니라 판단할 정보이며, 질문이나 `needs_info`로 이어질 수 있다. 다르면 `hapi-issue-<n>`에 새 커밋을 올리고 전체 현재 범위를 설명하는 `pr.title`/`pr.body`로 `ready`를 낸다. PR이 merge·close됐으면 먼저 `origin/<default>`를 branch에 merge한다(rebase·force 금지). 자동화가 그 branch로 새 PR을 연다. PR이 이미 충족하는 단순 맥락이면 `no_change`와 어떻게 반영했는지 설명하는 `issue_comment`를 낸다. 요구사항이 모호하거나 충돌하면 `needs_info`다.
 
-- TriageResult: `status`(`triaged|blocked`), `verdict`, `fault_domain`, `duplicate_of`, `labels.add/remove`(카탈로그 이름), `comment`, `next_action`(`implement|await_info|await_decision|none`), `implementation_brief`(implement일 때 필수), `questions`, `summary`, `blockers`. n8n은 결과 기록 → 라벨 적용 → 분석 댓글 게시 후 `next_action`으로 분기한다. `implement`면 brief를 implement 턴으로 넘기고, 질문이면 `questioned`, 그 외는 `triaged`로 끝난다. `blocked`는 attention이다.
+- TriageResult: `status`(`triaged|blocked`), `verdict`, `fault_domain`, `duplicate_of`, `labels.add/remove`(카탈로그 이름), `comment`, `next_action`(`implement|await_info|await_decision|none`), `implementation_brief`(implement일 때 필수), `questions`, `summary`, `blockers`, `security_advisory`(`null` 또는 `summary`·`description`·`severity`·`cwe_ids`·`vulnerabilities`). `security_advisory`가 있으면 `status`는 `triaged`, `comment`는 `null`, 라벨 변경은 비어 있고 `next_action`은 `none`이어야 한다(검증 오류는 advisory 본문을 되풀이하지 않는다). n8n은 결과 기록 뒤 `security_advisory`가 있으면 `github.security_advisory` op로 비공개 draft advisory를 만들고 `triaged`로 끝내며(실패하면 attention), 라벨·댓글 단계는 건너뛴다. 그 밖에는 라벨 적용 → 분석 댓글 게시 후 `next_action`으로 분기한다. `implement`면 brief를 implement 턴으로 넘기고, 질문이면 `questioned`, 그 외는 `triaged`로 끝난다. `blocked`는 attention이다.
 - ImplementResult: `status`(`ready|no_change|needs_info|blocked`), `head_sha`와 `pr{title, body}`(ready일 때 필수, 본문에 `Fixes #<n>` 또는 `Related to #<n>`), `issue_comment`, `questions`, `summary`, `blockers`. 에이전트는 `hapi-issue-<n>`에 로컬 커밋만 한다. `ready`면 n8n이 `git.push`(publisher `POST /push`, sha 일치·non-force) → `github.pr_upsert`(열린 PR이 없으면 기본 브랜치 대상 일반 PR 생성, 있으면 제목·본문 PATCH) → 이슈에 PR 링크 댓글 → `implemented`. `no_change`는 이슈 댓글, `needs_info`는 질문 댓글과 `triage:needs-info` 라벨, `blocked`는 attention이다. implement/followup 전송 시 이슈 phase는 `implementing`이 된다.
 - ReviewResult: `status`(`reviewed|blocked`), `head_sha`, `event`(`APPROVE|REQUEST_CHANGES|COMMENT`), `body`, `comments`(새 inline 지적, 최대 50), `thread_replies`(기존 스레드 comment ID에 대한 답글과 `resolve`, 최대 100), `summary`, `blockers`. n8n은 context로 PR 번호와 이벤트 head(`head_sha`, 없으면 에이전트가 `gh`로 현재 head를 읽는다)만 넘긴다. 에이전트는 `gh`와 `gh api graphql`로 PR 제목·본문·파일·리뷰·댓글, 리뷰 스레드(스레드 comment `databaseId` 포함, `thread_replies`에 필요)와 연결 이슈·그 댓글을 직접 읽는다. Begin 응답의 `reviewer_login`이 남긴 이전 리뷰가 있으면 재리뷰다. `github.review`는 리뷰 App(`haechibot[bot]`) 토큰으로 동작하며, 스레드 답글 게시·resolve 후 `commit_id=head_sha`로 리뷰 하나를 제출하고 `issue-agent/review` 상태(APPROVE → success, 그 외 failure)를 남긴다. PR head가 `head_sha`와 다르면(리뷰 중 push) 리뷰는 그대로 `head_sha`에 제출하되 본문 첫머리에 stale 안내와 재리뷰 명령을 넣고 상태는 남기지 않는다. force-push로 `head_sha`가 PR에서 빠져 422가 나면 판정·지적을 marker 댓글로 남긴다. 둘 다 성공으로 끝나며 attention을 만들지 않는다. 모두 숨은 marker 또는 기존 상태 비교로 멱등이다. inline 지적이 422로 거절되면 본문의 "Findings outside the diff" 절로 옮겨 다시 제출한다. 재리뷰 본문의 첫 절은 이전 지적의 Closed/Open 상태다. bridge가 제출하는 리뷰 본문과 `pr_review` 이벤트의 attention 댓글 끝에는 항상 같은 footer 블록이 붙고 에이전트는 body에 footer를 쓰지 않는다:
 
@@ -154,6 +158,8 @@ followup 턴은 PR을 이슈와 맞춘다. 에이전트는 `gh issue view`와 `g
   footer의 bot login은 설정값(`GITHUB_REVIEW_BOT_LOGIN`의 `[bot]` 제외)이며 코드에 하드코딩하지 않는다.
 
 라벨은 bridge `LABEL_CATALOG`의 이름만 허용한다(목록은 README `#### 라벨`). 저장소에 없으면 카탈로그 설명·색으로 만들고, 같은 그룹(`repro:*`, direction, kind) 라벨을 추가하면 나머지를 같은 op에서 제거한다. `agent:needs-attention`은 bridge만 다룬다.
+
+`github.security_advisory` op는 요청에 `delivery_id`만 받고 advisory 내용은 그 이벤트의 기록된 `triage_result` 단계에서 읽는다(기록에 advisory가 없으면 재시도하지 않는 오류). issue App 토큰으로 `POST /repos/{repo}/security-advisories`에 draft를 만들고, 설명 끝에 출처 이슈·delivery를 적은 marker 줄을 붙인다. 이벤트에 `advisory` 단계가 이미 있거나 draft·triage 상태 advisory 목록에서 같은 marker를 찾으면 새로 만들지 않고 그것을 돌려준다(`already: true`). 결과 `{ghsa_id, html_url}`은 `advisory` 단계에 기록한다. 오류 메시지는 HTTP 상태와 GitHub `message`만 담아 공개 attention 댓글에 advisory 내용이 새지 않게 한다(5xx·429는 재시도 가능).
 
 ### 오류 알림
 
@@ -293,6 +299,18 @@ v2는 Runner Pod에 publisher 사이드카를 추가했다. manifest의 값은 C
 - [ ] bridge의 `github.issue`·`github.pr_context` op와 그 전용 헬퍼가 제거됐고, `op_begin` 응답이 `bot_login`·`reviewer_login`을 반환한다.
 - [ ] n8n `IssueAgentMain01`에서 `Load issue`·`Issue loaded?`·`Load PR context`·`PR context loaded?` 노드가 제거됐고, `Route by mode`의 triage·followup 출력은 `Issue step`으로, review 출력은 `Prepare review step`으로 직접 연결된다. Prepare 노드는 제거된 노드를 참조하지 않는다.
 - [ ] GitHub 쓰기 경로(bridge `github.comment`·`github.labels`·`github.review`·`git.push`·`github.pr_upsert`와 attention 알림)는 바뀌지 않았다.
+
+### 기능 요청 제안 트랙·비공개 advisory 수용 기준
+
+- [ ] 신뢰 사용자가 연 명확한 기능·문서 요청은 `enhancement`/`documentation` 라벨과 `next_action: implement` + `implementation_brief`로 끝나고 같은 실행에서 구현으로 넘어간다. 구조 변경이 필요하면 `triage:needs-structural-change`와 `await_decision`으로 멈춘다.
+- [ ] 비신뢰 사용자의 기능 요청은 구현되지 않는다. 계약 확인·실현 가능성·방향과 기각한 대안을 담은 제안 평가 댓글, `enhancement` 라벨(구조 변경이면 ⑤ 추가), `await_decision`과 결정 질문으로 `questioned`가 된다. 계약이 이미 약속한 동작이 깨진 경우는 결함 트랙으로 간다.
+- [ ] 제안 이슈에 신뢰 사용자가 방향을 승인하는 댓글을 달면 다시 triage되어 `triage:fix-direction-decided`가 붙고(`triage:needs-structural-change`는 제거), `## Direction` 댓글이 게시되며 implement로 넘어간다.
+- [ ] 비신뢰 사용자의 승인 댓글은 멘션 경로에서는 `actor_not_allowed`, `agent:open-discussion` 경로에서는 정보로만 쓰여 승인 전이가 일어나지 않는다. open-discussion 댓글의 신뢰 여부가 이벤트 행과 `begin` 응답의 `event.trusted`에 기록되고, 권한 조회 실패 시 경고 로그 후 비신뢰로 처리되며 delivery는 거절되지 않는다.
+- [ ] 버그와 기능 요청이 섞인 이슈는 주장별로 판정되고, 버그만 고친 PR 본문은 `Fixes` 대신 `Related to #<n>`을 쓴다.
+- [ ] followup에서 비신뢰 사용자의 댓글·수정은 진행 중인 PR의 요구사항을 바꾸지 않는다(`no_change` 답변, 질문 또는 `needs_info`). 신뢰 사용자의 요구 변경은 반영된다.
+- [ ] 취약점이 확인되거나 의심되는 이슈는 라벨·이슈 댓글이 없고, 재현 페이로드가 이슈·`summary`·attention 댓글 등 공개 위치에 나오지 않는다. TriageResult `security_advisory`로 비공개 draft repository security advisory가 하나 만들어지고(설명 끝에 출처 marker), 이벤트는 `triaged`로 끝난다. 재시도해도 advisory가 중복 생성되지 않는다.
+- [ ] `security_advisory`가 있는데 `comment`·라벨 변경·`next_action`이 규칙과 다르면 bridge가 거절하고, 오류 메시지에 advisory 본문이 들어가지 않는다.
+- [ ] `issue-agent-github-token` 생성기와 issue App(`bulgasaribot`) 등록에 `repository_advisories: write`가 있고, 갱신된 토큰으로 advisory 생성이 성공한다.
 
 ### 현재 실행 증거
 
