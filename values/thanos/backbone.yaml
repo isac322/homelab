@@ -91,9 +91,12 @@ compactor:
     requests:
       cpu: 120m
       memory: 200Mi
+    # Temporary: the compactor halted from 2026-03 to 2026-10 and must catch
+    # up on months of blocks; at 256Mi it stalled for hours merging the March
+    # backlog. Resize from the observed peak once the backlog is cleared.
     limits:
       cpu: 500m
-      memory: 256Mi
+      memory: 2Gi
   # Created by democratic-csi and imported into pillar-csi in place on
   # 2026-10-01.
   persistence:

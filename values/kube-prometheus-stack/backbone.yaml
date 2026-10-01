@@ -500,6 +500,75 @@ grafana:
                 severity: critical
                 managed_by: gitops
               isPaused: false
+            - uid: infra-thanos-compactor-halted
+              title: Thanos compactor halted
+              condition: B
+              data:
+                - refId: A
+                  relativeTimeRange:
+                    from: 600
+                    to: 0
+                  datasourceUid: prometheus
+                  model:
+                    datasource:
+                      type: prometheus
+                      uid: prometheus
+                    editorMode: code
+                    # A halted compactor stays up but stops compacting and
+                    # downsampling until restarted; it went unnoticed from
+                    # 2026-03 to 2026-10.
+                    expr: >-
+                      max(thanos_compact_halted{
+                      cluster="backbone", job="thanos-compactor"})
+                    instant: true
+                    intervalMs: 60000
+                    legendFormat: __auto
+                    maxDataPoints: 43200
+                    range: false
+                    refId: A
+                - refId: B
+                  relativeTimeRange:
+                    from: 0
+                    to: 0
+                  datasourceUid: __expr__
+                  model:
+                    conditions:
+                      - evaluator:
+                          params:
+                            - 0
+                          type: gt
+                        operator:
+                          type: and
+                        query:
+                          params:
+                            - B
+                        reducer:
+                          params: []
+                          type: last
+                        type:
+                          type: query
+                    datasource:
+                      type: __expr__
+                      uid: __expr__
+                    expression: A
+                    intervalMs: 60000
+                    maxDataPoints: 43200
+                    refId: B
+                    type: threshold
+              noDataState: Alerting
+              execErrState: Error
+              for: 30m
+              annotations:
+                display_name: Thanos compactor 정지
+                target: thanos-compactor
+                current_value: '{{`{{ with $values.A }}{{ if gt .Value 0.0 }}정지{{ else }}정상{{ end }}{{ else }}메트릭 없음{{ end }}`}}'
+                threshold: 30분 이상 halted 상태이거나 메트릭 수집 불가
+                description: compactor 로그의 "critical error detected; halting" 원인을 확인하세요. 손상 블록이면 원본 검증 후 no-compact 표시가 필요합니다.
+                summary: Thanos compactor가 멈춰 압축과 다운샘플링이 중단되었습니다.
+              labels:
+                severity: warning
+                managed_by: gitops
+              isPaused: false
 
     templates.yaml:
       apiVersion: 1
