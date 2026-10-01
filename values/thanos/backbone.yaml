@@ -54,7 +54,7 @@ queryFrontend:
 
 storegateway:
   enabled: true
-  replicaCount: 0
+  replicaCount: 1
   extraFlags:
     - --index-cache-size=512MB
   affinity:
@@ -73,9 +73,11 @@ storegateway:
       memory: 1280Mi
     limits:
       memory: 4Gi
+  # data-thanos-storegateway-0 was created by democratic-csi and imported
+  # into pillar-csi in place on 2026-10-01.
   persistence:
     enabled: true
-    storageClass: ssd-ha-xfs
+    storageClass: ssd-ha
     size: 8Gi
 
 compactor:
