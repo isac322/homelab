@@ -54,7 +54,7 @@ queryFrontend:
 
 storegateway:
   enabled: true
-  replicaCount: 1
+  replicaCount: 0
   extraFlags:
     - --index-cache-size=512MB
   affinity:
