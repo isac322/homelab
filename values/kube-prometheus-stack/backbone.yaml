@@ -877,6 +877,7 @@ prometheus:
           sectionName: https
 
   prometheusSpec:
+    replicas: 0
     podMonitorSelectorNilUsesHelmValues: false
     serviceMonitorSelectorNilUsesHelmValues: false
     ruleSelectorNilUsesHelmValues: false
