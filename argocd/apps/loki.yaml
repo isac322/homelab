@@ -24,7 +24,9 @@ spec:
   syncPolicy:
     automated:
       prune: true
-      selfHeal: true
+      # Off while storage-loki-0 moves to pillar-csi: the chart cannot render
+      # zero replicas for a filesystem-backed single binary.
+      selfHeal: false
     retry:
       backoff:
         duration: 5s
