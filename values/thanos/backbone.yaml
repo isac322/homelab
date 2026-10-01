@@ -82,6 +82,11 @@ storegateway:
 
 compactor:
   enabled: true
+  # Prometheus accepts out-of-order samples (tsdb.outOfOrderTimeWindow) and
+  # ships them as a second block for the same 2h range. Without vertical
+  # compaction the compactor treats that overlap as corruption and halts.
+  extraFlags:
+    - --compact.enable-vertical-compaction
   resources:
     requests:
       cpu: 120m
