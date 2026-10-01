@@ -55,4 +55,12 @@ for checkout in "$ISSUE_AGENT_CHECKOUTS"/*/*; do
     fail "$checkout cannot fast-forward to $default_ref"
 done
 
+# HAPI's single-runner state and lock record the runner PID and treat a live PID as a
+# running runner. A fresh container reuses the same PID, so files left by a killed
+# container (OOM, SIGKILL) make HAPI exit 0 as if a runner were already up. Nothing
+# else can run a runner on this home (one replica, Recreate, every HAPI process lives
+# in this container), so both files are stale here. The resume and verified-exit
+# files next to them carry session recovery state and must stay.
+rm -f "$HAPI_HOME/runner.state.json" "$HAPI_HOME/runner.state.json.lock"
+
 exec /usr/local/bin/hapi runner start-sync --workspace-root "$ISSUE_AGENT_CHECKOUTS"

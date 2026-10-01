@@ -163,7 +163,7 @@ mutation($threadId: ID!) {
 }"""
 
 MAX_DISPATCH_ATTEMPTS = 8
-MAX_ACTIVE_EVENTS = 10  # events in n8n at once, across every repository
+MAX_ACTIVE_EVENTS = 5  # events in n8n at once, across every repository
 DISPATCH_BACKOFF = 60.0
 STALE_SECONDS = 6 * 3600.0
 SPAWN_SETTLE_SECONDS = 300.0
