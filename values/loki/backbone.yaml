@@ -40,7 +40,7 @@ loki:
     delete_request_store: filesystem
 
 singleBinary:
-  replicas: 1
+  replicas: 0
   affinity:
     nodeAffinity:
       preferredDuringSchedulingIgnoredDuringExecution:
