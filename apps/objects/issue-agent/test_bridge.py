@@ -2507,6 +2507,22 @@ class TurnTests(BridgeTestCase):
         self.assertEqual((sent["delivery"], sent["session_id"], sent["local_id"]), ("sent", new_sid, f"{self.lid}-r1"))
         self.assertEqual([p["localId"] for p in self.fake.message_posts], [self.lid, f"{self.lid}-r1"])
 
+    def test_retry_of_a_parked_step_resends_it_instead_of_rereading_the_result(self) -> None:
+        # Live flareway#135: the agent answered 'blocked' (go missing from PATH), the event parked, and after
+        # the runner was fixed every retry re-read that same answer under the old localId within minutes.
+        self.send()
+        self.fake.invoke(self.sid, self.lid)
+        self.fake.codex(self.sid, "message", message=self.result_line(status="blocked", blockers=["go missing"]))
+        self.assertEqual(self.op("session_turn")["state"], "done")
+        self.assertTrue(self.op("fail", detail="Route implement result: agent reported blocked")["ok"])
+        self.assertTrue(self.op("retry_event")["ok"])
+        self.assertEqual(self.dispatcher.tick(), "dispatched")
+        self.assertEqual(self.op("begin", attempt=1)["status"], "started")
+        sent = self.send()
+        self.assertEqual((sent["delivery"], sent["session_id"], sent["local_id"]), ("sent", self.sid, f"{self.lid}-r1"))
+        self.assertEqual([p["localId"] for p in self.fake.message_posts], [self.lid, f"{self.lid}-r1"])
+        self.assertEqual(self.op("session_turn")["state"], "queued")
+
     def test_session_lost_mid_turn_is_resent_under_a_fresh_local_id(self) -> None:
         self.send()
         self.fake.invoke(self.sid, self.lid)
