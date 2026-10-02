@@ -19,11 +19,11 @@ spec:
       project: system-upgrade
       sources:
         - repoURL: https://github.com/rancher/system-upgrade-controller.git
-          targetRevision: v0.20.1
+          targetRevision: v0.20.2
           path: .
           kustomize:
             images:
-              - rancher/system-upgrade-controller:v0.20.1
+              - rancher/system-upgrade-controller:v0.20.2
             patches:
               - target:
                   kind: Deployment
