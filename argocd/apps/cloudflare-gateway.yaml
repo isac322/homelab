@@ -58,7 +58,7 @@ spec:
           patch: |
             - op: replace
               path: /spec/template/spec/containers/0/env/0/value
-              value: docker.io/cloudflare/cloudflared:2026.9.1@sha256:b269e8abd07a5bf6f3f4be65d5050b2174eca89c56a0241a8ff32a16aec454e4
+              value: docker.io/cloudflare/cloudflared:2026.9.3@sha256:072c067d25ccbe61d46e18f0d0723255f2bb5304f7317caa95b27031520ff92c
   syncPolicy:
     automated:
       prune: true
