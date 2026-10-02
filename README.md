@@ -210,6 +210,15 @@ K3s version과 순차 rollout은 기존 Rancher `system-upgrade-controller`가 �
 
 외부 소유 영역의 LIO restore는 모든 zvol link를 기다린 뒤 실행하고, 저장된 storage object나 LUN이 빠지면 unit을 실패시킨다. 수동 설치 파일과 절차는 [`docs/rock5bp-lio-restore`](docs/rock5bp-lio-restore/README.md)에 있다.
 
+### Kubernetes 차트 순차 업그레이드
+
+- 한 workload의 GitOps revision을 push한 뒤 실제 목표 chart revision, 실행 중인 container image, readiness와 기능 smoke를 확인하고 다음 workload를 배포한다. `Synced/Healthy`만으로 새 Pod 생성·네트워크·데이터 경로 정상 여부를 판단하지 않는다.
+- Cilium 1.20.2의 socket-LB helper는 kernel BTF를 사용하는 enum CO-RE relocation을 도입했다. 현재 BTF 없는 vendor kernel에서는 KPR/socketLB를 유지한 채 사용할 수 없어 1.20.1로 롤백했다. kernel/BTF 전제 또는 upstream 수정이 해결되기 전 재배포하지 않는다.
+- ARC 0.15.0은 `AutoscalingRunnerSet.spec.listenerConfig`를 추가한다. controller image pin과 CRD를 먼저 올리고 새 schema의 server-side dry-run이 통과한 뒤 runner-set chart를 올린다.
+- Loki·Alloy·VersityGW 변경은 기존 PVC UID와 PV 연결을 보존한다. Loki 실제 query, Alloy 재시작 이후 로그 전달, VersityGW 소비자 IAM read 및 별도 QA prefix의 multipart/checksum·정리를 검증한다.
+- rock5bp 재부팅은 원격 NVMe-oF PVC의 I/O와 Pod 종료·재부착을 막을 수 있다. chart rollout과 NAS 호스트 maintenance를 겹치지 않으며, 경로가 복구되기 전 RWO Pod를 강제 삭제해 새 writer를 만들지 않는다.
+
+
 ### Issue agent (n8n + HAPI)
 
 `apps/objects/issue-agent/`는 GitHub App `bulgasaribot`이 설치된 저장소의 이슈·PR 자동화 중 hub·n8n·bridge를 `issue-agent` namespace에, `apps/objects/issue-agent-runner/`는 Runner Pod를 `issue-agent-runner` namespace에 배포한다. Runner 이미지는 계속 `apps/objects/issue-agent/`에서 빌드한다. 현재 운영 대상은 `isac322/cc-lb`다. 설계와 책임 경계는 `docs/issue-agent-platform.md`를 따른다. Argo CD 등록 파일은 `argocd/apps/issue-agent.yaml`, `argocd/apps/issue-agent-runner.yaml`, `argocd/appprojects/issue-agent.yaml`이다. 자동 merge는 하지 않는다.
