@@ -3,7 +3,6 @@ kind: HermesInstance
 metadata:
   name: isacmes-jay
 spec:
-  suspended: true
   security:
     networkPolicy:
       enabled: false
