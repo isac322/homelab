@@ -13,6 +13,22 @@ spec:
 apiVersion: v1
 kind: PersistentVolumeClaim
 metadata:
+  name: isacmes-jay-camofox-data
+  annotations:
+    # Created by democratic-csi and imported into pillar-csi in place on
+    # 2026-10-02, so the browser profile kept its contents.
+    pillar-csi.bhyoo.com/import-zvol: hot-data/k8s/pvc-f6d01e41-ba4e-4857-96a4-9a54ac97d8b2
+spec:
+  accessModes:
+    - ReadWriteOnce
+  storageClassName: ssd-ha
+  resources:
+    requests:
+      storage: 5Gi
+---
+apiVersion: v1
+kind: PersistentVolumeClaim
+metadata:
   name: yjyou-camofox-data
   annotations:
     # Created by democratic-csi and imported into pillar-csi in place on
