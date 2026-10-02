@@ -2336,8 +2336,11 @@ class Bridge:
             # A retry before the first send needs current evidence, not a parked snapshot.
             # Keep snapshots once a send may have landed so localId delivery remains idempotent.
             stages.pop("repair_snapshot", None)
+        # Drop the parked run's heartbeat and execution: the dispatcher keeps an existing heartbeat, so an
+        # old one would make the stale sweep park the retried event again before n8n can begin it.
         self.store.update_event(ev["delivery_id"], state="accepted", stages=json.dumps(stages), attempts=0,
-                                next_attempt_at=0, detail=None, attention_pending=0, attention_node=None)
+                                next_attempt_at=0, detail=None, attention_pending=0, attention_node=None,
+                                heartbeat_at=None, execution_id=None)
         self.store.update_issue(ev["repo"], ev["issue_number"], blocked=0, detail=None)
         return {}
 

@@ -1756,13 +1756,18 @@ class DispatchTests(BridgeTestCase):
         self.deliver(issue_payload(), delivery="d1")
         self.dispatcher.tick()
         self.deliver(comment_payload(), event="issue_comment", delivery="c1")
-        self.assertEqual(self.dispatcher.tick(time.time() + bridge.STALE_SECONDS + 10), "idle")
+        later = time.time() + bridge.STALE_SECONDS + 10
+        self.assertEqual(self.dispatcher.tick(later), "idle")
         self.assertEqual(self.events(), [("d1", "needs_attention"), ("c1", "accepted")])
         self.assertEqual(self.fake.labels[7], [NEEDS])
         self.assertEqual(self.op("begin", "d1", attempt=1)["status"], "terminal")
         self.assertTrue(self.op("retry_event", "d1")["ok"])
-        self.assertEqual(self.dispatcher.tick(), "dispatched")
+        self.assertEqual(self.dispatcher.tick(later + 10), "dispatched")
         self.assertEqual(self.fake.dispatched[-1][1]["delivery_id"], "d1")
+        # The parked run's old heartbeat must not park the retried dispatch before n8n begins it.
+        self.assertEqual(self.dispatcher.tick(later + 20), "busy")
+        self.assertEqual(self.events(), [("d1", "dispatched"), ("c1", "accepted")])
+        self.assertEqual(self.op("begin", "d1", attempt=1)["status"], "started")
 
     def test_review_request_supersedes_parked_review_and_runs(self) -> None:
         # Live cc-lb#890: the attention notice told the user to comment `@bulgasaribot review`, but the queued
