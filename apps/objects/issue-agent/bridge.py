@@ -2412,11 +2412,25 @@ class Bridge:
         The hub resumes a session only on its own machine, so after a runner home is replaced (new
         machine id) such a session answers every resume with ``no_machine_online``. A briefly
         offline runner keeps its machine id and is not affected: ``_machine`` fails until it is back.
+        This relies on the single-runner contract ``_machine`` enforces: a different online runner is
+        the replacement, never a peer of an offline one.
         """
         machine = self._session_machine(session)
         if machine is None or machine in self._machine_ids():
             return False
         return machine != self._machine(cfg)
+
+    def _abandon_turns(self, repo: str, number: int, session_id: str) -> None:
+        """Park this subject's in-flight turns on an abandoned session for a re-send under a fresh localId."""
+        chain = {session_id, *json.loads(self.store.issue(repo, number)["superseded"] or "[]")}
+        keys = {(t["delivery_id"], t["mode"]) for t in self.store.query(
+            "SELECT t.delivery_id, t.mode FROM turns t JOIN events e ON e.delivery_id = t.delivery_id"
+            " WHERE e.repo = ? AND e.issue_number = ?", (repo, number))}
+        for delivery, mode in keys:
+            turn = self.store.turn(delivery, mode)
+            if turn["state"] in ("sending", "sent") and turn["session_id"] in chain:
+                self.store.put_turn(delivery, mode, resend_local_id(delivery, mode, turn["local_id"]),
+                                    turn["session_id"], "lost")
 
     def _matching_sessions(self, cfg: RepoConfig, worktree_name: str) -> list[str]:
         status, data = self.hapi.request("GET", "/api/sessions", query={"limit": 500, "order": "updatedAt"})
@@ -2464,6 +2478,7 @@ class Bridge:
                 if not session.get("active") and self._orphaned(cfg, session):
                     LOG.warning("%s#%s session %s is bound to a removed runner machine; starting a new session",
                                 repo, number, session["id"])
+                    self._abandon_turns(repo, number, session["id"])
                     self.store.update_issue(repo, number, session_state="none", pending_at=None)
                 else:
                     resumed = False

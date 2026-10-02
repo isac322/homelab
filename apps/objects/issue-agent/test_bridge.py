@@ -2497,6 +2497,16 @@ class TurnTests(BridgeTestCase):
         self.assertEqual(states[-1], "attention")
         self.assertTrue(all(s == "running" for s in states[:-1]))
 
+    def test_sent_turn_on_a_removed_runner_machine_is_resent_to_the_new_session(self) -> None:
+        self.send()
+        self.fake.sessions[self.sid]["active"] = False
+        self.fake.sessions[self.sid]["metadata"]["machineId"] = "m-old"
+        new_sid = self.op("ensure_session")["session_id"]
+        self.assertNotEqual(new_sid, self.sid)
+        sent = self.send()
+        self.assertEqual((sent["delivery"], sent["session_id"], sent["local_id"]), ("sent", new_sid, f"{self.lid}-r1"))
+        self.assertEqual([p["localId"] for p in self.fake.message_posts], [self.lid, f"{self.lid}-r1"])
+
     def test_session_lost_mid_turn_is_resent_under_a_fresh_local_id(self) -> None:
         self.send()
         self.fake.invoke(self.sid, self.lid)
