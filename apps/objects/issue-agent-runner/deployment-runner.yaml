@@ -97,7 +97,7 @@ spec:
                       - macmini
       containers:
         - name: runner
-          image: ghcr.io/isac322/issue-agent-runner:0.30.7-codex0.159.2-20261002-docker-native-drm@sha256:317dec5af4e942ba924198108f83b110de23d781b6e4e351229271c02a6eb913
+          image: ghcr.io/isac322/issue-agent-runner:0.30.7-codex0.159.2-20261002-login-path@sha256:3c0190450b30800f6c179a20a1e6c99073ba1a20fcf437936c8736b0005dfe9a
           env:
             - name: HOME
               value: /home/agent

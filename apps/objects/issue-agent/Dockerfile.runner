@@ -161,6 +161,9 @@ ENV HOME=/home/agent \
     PATH=/home/agent/.cargo/bin:/usr/local/cargo/bin:/home/agent/go/bin:/usr/local/go/bin:/opt/issue-agent/sccache-bin:/usr/local/sbin:/usr/local/bin:/usr/sbin:/usr/bin:/sbin:/bin \
     HAPI_RUNNER_SUPERVISED=1 \
     HAPI_DISABLE_VERSION_HANDOFF=1
+# Codex runs commands in a login shell, and Debian's /etc/profile resets PATH,
+# which drops Go, Cargo and the sccache wrappers. Restore the image PATH there.
+RUN printf 'PATH=%s\nexport PATH\n' "$PATH" >/etc/profile.d/00-issue-agent-path.sh
 
 USER 1000:1000
 WORKDIR /home/agent
