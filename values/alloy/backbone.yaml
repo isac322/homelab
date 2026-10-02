@@ -83,7 +83,13 @@ alloy:
         }
       }
 
+image:
+  repository: grafana/alloy
+  tag: v1.20.1@sha256:2aa2099af76c0098d4af7a4d6e48f86cb66dc1a000222ad927a1c67c6542d13f
+
 configReloader:
+  image:
+    tag: v0.94.1@sha256:06b52bd4dbe3ed6dd5905aadaf8b9987d9da4c31d37bb86deaadae68cee2d26b
   resources:
     requests:
       cpu: 5m
