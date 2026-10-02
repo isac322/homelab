@@ -85,7 +85,7 @@ valkey:
               memory: 256Mi
   persistence:
     data:
-      enabled: true
+      enabled: false
       size: 1Gi
       # Optional: Set this to persistentVolumeClaim to keep job queues persistent
       type: persistentVolumeClaim
