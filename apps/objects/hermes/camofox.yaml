@@ -13,18 +13,6 @@ spec:
 apiVersion: v1
 kind: PersistentVolumeClaim
 metadata:
-  name: isacmes-jay-camofox-data
-spec:
-  accessModes:
-    - ReadWriteOnce
-  storageClassName: ssd-ha-xfs
-  resources:
-    requests:
-      storage: 5Gi
----
-apiVersion: v1
-kind: PersistentVolumeClaim
-metadata:
   name: yjyou-camofox-data
   annotations:
     # Created by democratic-csi and imported into pillar-csi in place on
