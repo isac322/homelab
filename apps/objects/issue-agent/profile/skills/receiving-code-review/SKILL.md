@@ -10,7 +10,7 @@ description: Use in the GitHub issue automation's `followup` mode to evaluate a 
 - 에이전트의 GitHub 토큰은 읽기 전용이다. 스레드 답글(`gh api .../replies`), 스레드 resolve, push, 리뷰어 재요청을 하지 않는다. n8n이 결과를 보고 게시·push한다.
 - 단계 → 결과 필드:
   - 8. Respond의 답변 → `issue_comment`(항목별 disposition과 근거). 코드를 바꿨으면 `pr.body`를 현재 diff에 맞게 고치고 `pr.title`과 함께 반환한다.
-  - 6. Implement의 결과 → `hapi-issue-<n>` 브랜치의 로컬 커밋. 최종 커밋이 `head_sha`이고 `status: "ready"`다.
+  - 6. Implement의 결과 → `hapi-issue-<n>` 브랜치의 로컬 커밋과 `status: "ready"`. 모든 변경을 커밋한 뒤 반환한다. 자동화가 브랜치 head를 push한다.
   - 구현 없이 답만 하는 경우 → `status: "no_change"`와 `issue_comment`.
   - 질문(2. Understand, 4. Verify the claim, Clarification needed, 막힌 cluster) → `questions`와 `issue_comment`, `status: "needs_info"`. 채팅으로 기다리지 않고 턴을 끝낸다.
 
@@ -103,7 +103,7 @@ A successful edit is not proof. Report only verification that actually ran and d
 
 Write the response into the result `issue_comment`; n8n posts it on the issue. Do not post, reply to, or resolve anything on GitHub yourself. Keep each response specific to that item or interacting cluster, addressing items by quoting or naming them. Lead with the disposition, evidence, or result rather than praise or gratitude.
 
-- **Implemented:** state what changed and cite the relevant verification; return the new `head_sha` and an updated `pr.body` with `status: "ready"`.
+- **Implemented:** state what changed and cite the relevant verification; commit everything on the worktree branch, then return an updated `pr.body` with `status: "ready"` (the automation pushes the branch head).
 - **Adapted:** explain the verified concern and why the chosen implementation differs.
 - **Clarification needed:** ask one concrete question and name the dependency it blocks; put the question in `questions` and return `status: "needs_info"`.
 - **Rejected:** give the shortest sufficient technical reason, backed by code, tests, contracts, or reproduced behavior.

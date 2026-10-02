@@ -108,6 +108,7 @@ MAX_THREAD_PAGES = 4  # GraphQL reviewThreads: 50 per page
 MAX_IDEMPOTENCY_PAGES = 10  # review/comment lists scanned for hidden markers
 ADVISORY_SCAN_STATES = ("draft", "triage")  # security advisories scanned for a lost filing's marker
 PUBLISHER_CHECKOUT_TIMEOUT = 600.0
+PUBLISHER_RESOLVE_TIMEOUT = 300.0
 PUBLISHER_PUSH_TIMEOUT = 300.0
 PUBLISHER_CLEANUP_TIMEOUT = 300.0
 CLEANUP_AFTER_DAYS = 30  # a subject closed this long loses its agent state
@@ -1513,7 +1514,6 @@ replaces the other labels of that group."""
 
 _IMPLEMENT_SCHEMA = """\
 {"status":"ready|no_change|needs_info|blocked",
- "head_sha": null | "40-hex commit on branch hapi-issue-<n>" (required iff ready),
  "pr": null | {"title":"<=256","body":"<=60000 English, must contain `Fixes #<n>` or `Related to #<n>`"} (required iff ready),
  "issue_comment": null | "English markdown <=60000" (optional note posted on the issue; required iff no_change),
  "questions":[strings <=500, max 5] (non-empty iff needs_info),
@@ -1526,7 +1526,8 @@ run each of them locally in this worktree, fix failures, and rerun until all pas
 final exit code in local_checks. GitHub CI after the push only confirms this. A gate that genuinely cannot run
 locally (needs secrets, external services or special hardware) goes in summary and the PR body as not run, never
 in local_checks. Keep build outputs and caches in the worktree's default locations, never under /tmp.
-Commit locally on your worktree branch; do not push or open pull requests."""
+Commit everything on your worktree branch before reporting ready; the automation pushes the branch head.
+Do not push or open pull requests."""
 
 _REVIEW_SCHEMA = """\
 {"status":"reviewed|blocked",
@@ -1566,8 +1567,8 @@ def build_message(ev: sqlite3.Row, mode: str, branch: str | None, default_branch
         "  the automation publishes your result.",
     ]
     if mode in ("implement", "followup"):
-        lines.append(f"- Commit your changes locally on branch {branch or f'hapi-issue-{n}'} and report that commit as "
-                     "head_sha; the automation pushes it and opens or updates the pull request.")
+        lines.append(f"- Commit all your changes locally on branch {branch or f'hapi-issue-{n}'} before reporting "
+                     "ready; the automation pushes the branch head and opens or updates the pull request.")
     lines += [
         "- End your final reply with exactly one line: the tag, the nonce, then the result JSON on the same line:",
         f"  {RESULT_TAG} {nonce} {{...}}",
@@ -1807,8 +1808,6 @@ def security_advisory(value: Any) -> dict[str, Any]:
 def _implement(v: dict[str, Any], number: int) -> dict[str, Any]:
     status = _choice(v["status"], ("ready", "no_change", "needs_info", "blocked"), "status")
     ready = status == "ready"
-    head = None if v["head_sha"] is None else _sha(v["head_sha"], "head_sha")
-    _require((head is not None) == ready, "head_sha is required iff status is ready")
     pr = v["pr"]
     if pr is not None:
         _fields(pr, ("title", "body"), "pr")
@@ -1835,7 +1834,7 @@ def _implement(v: dict[str, Any], number: int) -> dict[str, Any]:
         _require(bool(local_checks), "local_checks must list the CI gates run locally when status is ready")
         failing = [c["command"] for c in local_checks if c["exit_code"] != 0]
         _require(not failing, f"local_checks must all exit 0 when status is ready; failing: {failing}"[:1000])
-    return {"status": status, "head_sha": head, "pr": pr, "issue_comment": note, "questions": questions,
+    return {"status": status, "pr": pr, "issue_comment": note, "questions": questions,
             "summary": _text(v["summary"], 2000, "summary"), "blockers": blockers, "local_checks": local_checks}
 
 
@@ -1877,7 +1876,7 @@ def _review(v: dict[str, Any]) -> dict[str, Any]:
 RESULT_KEYS = {
     "triage": ("status", "verdict", "fault_domain", "duplicate_of", "labels", "comment", "next_action",
                "implementation_brief", "questions", "summary", "blockers", "security_advisory"),
-    "implement": ("status", "head_sha", "pr", "issue_comment", "questions", "summary", "blockers", "local_checks"),
+    "implement": ("status", "pr", "issue_comment", "questions", "summary", "blockers", "local_checks"),
     "review": ("status", "head_sha", "event", "body", "comments", "thread_replies", "summary", "blockers"),
 }
 
@@ -3466,11 +3465,17 @@ class Bridge:
         return branch
 
     def op_git_push(self, req: dict[str, Any]) -> dict[str, Any]:
+        """Push the commit the issue worktree branch points at.
+
+        The agent is the only writer of its worktree and this runs after its turn, so the branch head is the
+        result; the publisher resolves it rather than trusting a SHA carried in the request."""
         ev = self._event(req)
-        head = req.get("head_sha")
-        if not isinstance(head, str) or not _SHA_RE.match(head):
-            raise OpError("bad head_sha")
         branch = self._issue_branch(ev)
+        resolved = self.publisher.request("/resolve", {"repo": ev["repo"], "branch": branch},
+                                          timeout=PUBLISHER_RESOLVE_TIMEOUT)
+        head = resolved.get("sha")
+        if not isinstance(head, str) or not _SHA_RE.match(head):
+            raise OpError(f"publisher resolved {branch} to {head!r}", needs_operator=True)
         pr_number = ev["pr_number"] or self.store.issue(ev["repo"], ev["issue_number"])["pr_number"]
         if ev["kind"] == "pr_repair" and pr_number:
             fresh = self._get_pr(ev["repo"], int(pr_number))
@@ -3478,6 +3483,7 @@ class Bridge:
             if remote not in (ev["head_sha"], head) or fresh.get("state") != "open":
                 self.store.dirty_pr(ev["repo"], int(pr_number))
                 return {"branch": branch, "sha": remote, "superseded": True}
+        # expected_sha refuses the push if the branch moved after it was resolved.
         data = self.publisher.request("/push", {"repo": ev["repo"], "branch": branch, "expected_sha": head},
                                       timeout=PUBLISHER_PUSH_TIMEOUT)
         if data.get("sha") != head:
