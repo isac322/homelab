@@ -20,7 +20,7 @@ spec:
           - values.yaml
           - $homelab/values/gha-runner-scale-set-controller/backbone.yaml
       repoURL: ghcr.io/actions/actions-runner-controller-charts
-      targetRevision: 0.14.2
+      targetRevision: 0.15.0
   syncPolicy:
     automated:
       prune: true
