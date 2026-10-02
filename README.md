@@ -208,6 +208,8 @@ K3s version과 순차 rollout은 기존 Rancher `system-upgrade-controller`가 �
 
 `n2p1`, `n2p2`, `rpi4`, `rpi5`, `rock5bp`, `macmini`는 live iSCSI client dependency를 유지한다. Debian 계열은 `open-iscsi.service`, Arch Linux는 `iscsi.service`를 login unit으로 사용하며 두 계열 모두 `iscsid.service`를 먼저 기동한다. `rock5bp`의 NAS plane은 계속 외부 소유다. Nix는 ZFS pool/dataset/zvol, rtslib/targetcli, Samba/NFS, storage cron, `democratic-csi` uid/gid 1001 identity, `/home/democratic-csi/.ssh/authorized_keys`, `/etc/sudoers.d/democratic-csi`, native firewall file/runtime chain을 선언하거나 쓰지 않는다. Commit generation의 sshd는 기존 home key lookup과 managed admin-key lookup을 함께 유지한다.
 
+외부 소유 영역의 LIO restore는 모든 zvol link를 기다린 뒤 실행하고, 저장된 storage object나 LUN이 빠지면 unit을 실패시킨다. 수동 설치 파일과 절차는 [`docs/rock5bp-lio-restore`](docs/rock5bp-lio-restore/README.md)에 있다.
+
 ### Issue agent (n8n + HAPI)
 
 `apps/objects/issue-agent/`는 GitHub App `bulgasaribot`이 설치된 저장소의 이슈·PR 자동화 중 hub·n8n·bridge를 `issue-agent` namespace에, `apps/objects/issue-agent-runner/`는 Runner Pod를 `issue-agent-runner` namespace에 배포한다. Runner 이미지는 계속 `apps/objects/issue-agent/`에서 빌드한다. 현재 운영 대상은 `isac322/cc-lb`다. 설계와 책임 경계는 `docs/issue-agent-platform.md`를 따른다. Argo CD 등록 파일은 `argocd/apps/issue-agent.yaml`, `argocd/apps/issue-agent-runner.yaml`, `argocd/appprojects/issue-agent.yaml`이다. 자동 merge는 하지 않는다.

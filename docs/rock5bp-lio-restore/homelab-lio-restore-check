@@ -1,0 +1,75 @@
+#!/usr/bin/python3
+"""Fail the LIO restore when it skipped part of the saved configuration.
+
+`targetctl restore` prints "Could not create StorageObject ..., skipped" for a
+backstore whose device is missing (for example a /dev/zvol link udev has not
+created yet), drops that object's LUNs, and still exits 0. Run as an
+ExecStartPost of rtslib-fb-targetctl.service, this compares the saved storage
+objects and LUNs with the live configfs state and exits 1 when any is missing,
+so the unit fails instead of reporting success. It only reads.
+"""
+
+import json
+import os
+import sys
+
+from rtslib_fb import RTSRoot
+
+SAVECONFIG = "/etc/rtslib-fb-target/saveconfig.json"
+
+
+def saved(path):
+    with open(path, encoding="utf-8") as file:
+        config = json.load(file)
+    objects = {
+        f"/backstores/{so['plugin']}/{so['name']}": so.get("dev", "")
+        for so in config.get("storage_objects", [])
+    }
+    luns = {
+        (target["fabric"], target["wwn"], tpg["tag"], lun["index"], lun["storage_object"])
+        for target in config.get("targets", [])
+        for tpg in target.get("tpgs", [])
+        for lun in tpg.get("luns", [])
+    }
+    return objects, luns
+
+
+def live():
+    root = RTSRoot()
+    objects = {f"/backstores/{so.plugin}/{so.name}" for so in root.storage_objects}
+    luns = set()
+    for lun in root.luns:
+        tpg = lun.parent_tpg
+        target = tpg.parent_target
+        so = lun.storage_object
+        luns.add((target.fabric_module.name, target.wwn, tpg.tag, lun.lun, f"/backstores/{so.plugin}/{so.name}"))
+    return objects, luns
+
+
+def main(argv):
+    path = argv[1] if len(argv) > 1 else SAVECONFIG
+    if not os.path.exists(path):
+        return 0
+    want_objects, want_luns = saved(path)
+    have_objects, have_luns = live()
+    missing_objects = sorted(set(want_objects) - have_objects)
+    missing_luns = sorted(want_luns - have_luns)
+    for name in missing_objects:
+        dev = want_objects[name]
+        state = "present" if dev and os.path.exists(dev) else "missing"
+        print(f"storage object not restored: {name} (device {dev}: {state})", file=sys.stderr)
+    for fabric, wwn, tag, index, name in missing_luns:
+        print(f"LUN not restored: {fabric} {wwn} tpg {tag} lun {index} -> {name}", file=sys.stderr)
+    if missing_objects or missing_luns:
+        print(
+            f"LIO restore incomplete: {len(missing_objects)} storage object(s) and "
+            f"{len(missing_luns)} LUN(s) from {path} are missing",
+            file=sys.stderr,
+        )
+        return 1
+    print(f"LIO restore complete: {len(want_objects)} storage objects, {len(want_luns)} LUNs")
+    return 0
+
+
+if __name__ == "__main__":
+    sys.exit(main(sys.argv))
