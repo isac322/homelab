@@ -2545,6 +2545,14 @@ class TurnTests(BridgeTestCase):
         self.assertEqual(self.store.event("d1")["state"], "needs_attention")
         self.assertEqual(self.store.turn("d1", "implement")["local_id"], self.lid)
 
+    def test_retry_keeps_the_local_id_of_a_step_not_yet_handed_to_the_agent(self) -> None:
+        self.send()  # stored, never invoked
+        self.fake.codex(self.sid, "message", message=self.result_line(status="blocked", blockers=["x"]))
+        self.assertTrue(self.op("fail", detail="operator stop")["ok"])
+        with patch.object(self.bridge, "_queued_state", return_value="unknown"):
+            self.assertTrue(self.op("retry_event")["ok"])
+        self.assertEqual(self.store.turn("d1", "implement")["local_id"], self.lid)
+
     def test_session_lost_mid_turn_is_resent_under_a_fresh_local_id(self) -> None:
         self.send()
         self.fake.invoke(self.sid, self.lid)

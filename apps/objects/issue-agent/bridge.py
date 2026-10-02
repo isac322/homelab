@@ -2367,7 +2367,8 @@ class Bridge:
                 raise
             return False  # session gone for good: nothing can be re-read, keep the turn as it is
         sid = session["id"]
-        if self._queued_state(sid, local_id) in ("queued", "indeterminate"):
+        state = self._queued_state(sid, local_id)
+        if state in ("queued", "indeterminate"):
             return False
         try:
             history = self._history_from(sid, local_id)
@@ -2375,8 +2376,8 @@ class Bridge:
             if exc.retryable:
                 raise
             return False  # our message is out of reach: nothing to re-read
-        if history is None:
-            return False
+        if history is None or not invoked(history[0]) and state != "invoked":
+            return False  # not yet handed to the agent: session_turn reports it as queued
         alive = session.get("active") is not False
         if alive and (session.get("thinking") or (session.get("agentState") or {}).get("requests")):
             return False
