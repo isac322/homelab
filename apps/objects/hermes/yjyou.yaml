@@ -8,7 +8,7 @@ spec:
       enabled: false
   image:
     repository: nousresearch/hermes-agent
-    tag: v2026.9.21@sha256:6bece0644e29a347e5ae17db43c36938c86f171c6f5e0cef18aa2075d331f3a3
+    tag: v2026.9.24@sha256:fca358f12efd65bfaaca05884166f15c0e2788375ca30d77061ac1ebc96452b7
   scheduling:
     affinity:
       nodeAffinity:
@@ -28,7 +28,7 @@ spec:
       memory: 2Gi
   initContainers:
     - name: install-hermes-lcm
-      image: nousresearch/hermes-agent:v2026.9.21@sha256:6bece0644e29a347e5ae17db43c36938c86f171c6f5e0cef18aa2075d331f3a3
+      image: nousresearch/hermes-agent:v2026.9.24@sha256:fca358f12efd65bfaaca05884166f15c0e2788375ca30d77061ac1ebc96452b7
       command:
         - /bin/sh
         - -ec
@@ -67,7 +67,7 @@ spec:
         - name: hermes-lcm
           mountPath: /lcm
     - name: install-default-skills
-      image: nousresearch/hermes-agent:v2026.9.21@sha256:6bece0644e29a347e5ae17db43c36938c86f171c6f5e0cef18aa2075d331f3a3
+      image: nousresearch/hermes-agent:v2026.9.24@sha256:fca358f12efd65bfaaca05884166f15c0e2788375ca30d77061ac1ebc96452b7
       command:
         - /bin/sh
         - -e
@@ -114,7 +114,7 @@ spec:
         - name: hermes-default-skills
           mountPath: /skills
     - name: patch-openai-native-web-search
-      image: nousresearch/hermes-agent:v2026.9.21@sha256:6bece0644e29a347e5ae17db43c36938c86f171c6f5e0cef18aa2075d331f3a3
+      image: nousresearch/hermes-agent:v2026.9.24@sha256:fca358f12efd65bfaaca05884166f15c0e2788375ca30d77061ac1ebc96452b7
       command:
         - /opt/hermes/.venv/bin/python
         - /patch/patch.py
@@ -142,7 +142,7 @@ spec:
         - name: hermes-patched-files
           mountPath: /patched
     - name: prepare-camofox-home
-      image: ghcr.io/jo-inc/camofox-browser:1.16.0@sha256:3cc29763d3c784ae71a7d56853a12c43e100ff2f13da1e2eb88322b08e12d6a0
+      image: ghcr.io/jo-inc/camofox-browser:1.18.0@sha256:e7789fd79fbe0004b3d25fabf4f1f1eb4a1984801e2a102b50b5433333a0a011
       command:
         - /bin/sh
         - -ec
@@ -227,7 +227,7 @@ spec:
       readOnly: true
   sidecars:
     - name: camofox
-      image: ghcr.io/jo-inc/camofox-browser:1.16.0@sha256:3cc29763d3c784ae71a7d56853a12c43e100ff2f13da1e2eb88322b08e12d6a0
+      image: ghcr.io/jo-inc/camofox-browser:1.18.0@sha256:e7789fd79fbe0004b3d25fabf4f1f1eb4a1984801e2a102b50b5433333a0a011
       imagePullPolicy: IfNotPresent
       env:
         - name: HOME
