@@ -4,10 +4,10 @@
 # No repository checkout, credential, or provider config is baked in; the
 # publisher sidecar clones repositories at runtime into the home PVC.
 
-# docker:29.4.0-cli (linux/arm64): Docker CLI plus the buildx/compose plugins.
+# docker:29.8.2-cli (linux/arm64): Docker CLI plus the buildx/compose plugins.
 # Docker 29's `docker build` requires buildx; the daemon is the pod's dockerd
-# sidecar (docker:29.4.0-dind), reached through DOCKER_HOST.
-FROM docker:29.4.0-cli@sha256:9d3f67fe1f4cf51c084744dec419b466b7075f5b365ef4b9b791187d9c2d4127 AS docker-cli
+# sidecar (docker:29.8.2-dind), reached through DOCKER_HOST.
+FROM docker:29.8.2-cli@sha256:b1805116a6a86cc591b5d5f60a910a0715cdcc9d18d866ad68b1457ead25c35c AS docker-cli
 
 # node:24.21.0-trixie-slim (linux/arm64). Node runs Codex's npm launcher.
 FROM node:24.21.0-trixie-slim@sha256:7da5980a342ed134ad56bb16c918f94548cd15cf3b961aa231c286598accb536
@@ -16,14 +16,14 @@ FROM node:24.21.0-trixie-slim@sha256:7da5980a342ed134ad56bb16c918f94548cd15cf3b9
 # must match the hub image. Checksum = release checksums.txt = asset digest.
 ARG HAPI_VERSION=0.30.7
 ARG HAPI_SHA256=4c11ed308412e4510289ed5e5875a43f60f7ee5cee9cbfdc0e2d97f55851a193
-# @openai/codex 0.159.2 (HAPI shared sessions require >= 0.154.0).
+# @openai/codex 0.160.0 (HAPI shared sessions require >= 0.154.0).
 # SHA-256 of the npm tarballs whose sha512 matched the registry `integrity`.
-ARG CODEX_VERSION=0.159.2
-ARG CODEX_SHA256=cf1e5d7b6e317a4a1d36dbff2ebd9b3cf048ac98d06fcb6682c57248e023cad2
-ARG CODEX_LINUX_ARM64_SHA256=1c4756c2f67f1310ffb03234d61d540ad85916cef5383e46e0e7851f1721c142
-# GitHub CLI 2.101.0; checksum = release checksums.txt = asset digest.
-ARG GH_VERSION=2.101.0
-ARG GH_SHA256=b57e8063f18862647c9d22727c32e9da1b963f8bf9db648fe123a6975695640f
+ARG CODEX_VERSION=0.160.0
+ARG CODEX_SHA256=373517768e912eeb5054024ae9215e2c90a1420957b66fe134ef745a00948d4a
+ARG CODEX_LINUX_ARM64_SHA256=9286a7e01d500ab224c9e5b4b223b7adf5dd901fba23efd6a438316426798b17
+# GitHub CLI 2.102.0; checksum = release checksums.txt = asset digest.
+ARG GH_VERSION=2.102.0
+ARG GH_SHA256=7862c86c72f43df3a2d93ddde6f473285b4e2af61b494849846827e513ef6484
 # rustup 1.29.1 (versioned archive). Toolchains install lazily into the home PVC.
 ARG RUSTUP_VERSION=1.29.1
 ARG RUSTUP_SHA256=15f6e4ce9f583b929c996c91562bad6d4454f3281de858b02cdfdef615fac433

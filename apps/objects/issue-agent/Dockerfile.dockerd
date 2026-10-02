@@ -3,15 +3,15 @@
 # Build context: apps/objects/issue-agent (see .dockerignore). linux/arm64 only.
 # No credentials are baked in and the sidecar mounts none.
 
-# docker:29.4.0-dind (linux/arm64); matches the runner image's docker:29.4.0-cli.
-FROM docker:29.4.0-dind@sha256:553d694bc3ae2a92b67b73072e3923a8d2256e609b568c60d08e4544e8f39ff3
+# docker:29.8.2-dind (linux/arm64); matches the runner image's docker:29.8.2-cli.
+FROM docker:29.8.2-dind@sha256:7dcdfc4a20246236f558175182ccace1eb15a41bd3eb119dd2284f393498b7c1
 
-# The dind image already ships iptables/ip6tables v1.8.11 on the nf_tables
+# The dind image already ships iptables/ip6tables on the nf_tables
 # backend; fail the build if they ever resolve to legacy. util-linux provides
 # `unshare --cgroup` (BusyBox lacks the flag) so dockerd-start can scope itself
 # under its own cgroup when the container shares the node's cgroup namespace.
-# The pin is an Alpine 3.23 package.
-RUN apk add --no-cache util-linux-misc=2.41.6-r1 \
+# The pin is an Alpine 3.24 package.
+RUN apk add --no-cache util-linux-misc=2.42.3-r1 \
     && unshare --version \
     && iptables --version | grep -F '(nf_tables)' \
     && ip6tables --version | grep -F '(nf_tables)'

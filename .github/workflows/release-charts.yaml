@@ -21,10 +21,10 @@ jobs:
     runs-on: ubuntu-latest
     steps:
       - name: Checkout
-        uses: actions/checkout@v6
+        uses: actions/checkout@v7.0.1
 
       - name: Checkout Helm chart repo
-        uses: actions/checkout@v6
+        uses: actions/checkout@v7.0.1
         with:
           repository: ${{ env.CHART_REPO }}
           path: .helm-chart-repo
@@ -42,16 +42,16 @@ jobs:
           | sort -u \
           | sed -E 's/^/- /' \
           | yq --no-colors --indent 0 --output-format json '.' \
-          | sed -E 's/^/charts=/' >> $GITHUB_OUTPUT
+          | sed -E 's/^/charts=/' >> "$GITHUB_OUTPUT"
 
       - name: Install chart releaser
         # language=Bash
         run: |
           set -e
           arch="$(dpkg --print-architecture)"
-          curl -s https://api.github.com/repos/helm/chart-releaser/releases/tags/v1.6.1 \
+          curl -s https://api.github.com/repos/helm/chart-releaser/releases/tags/v1.8.1 \
           | yq --indent 0 --no-colors --input-format json --unwrapScalar \
-            ".assets[] | select(.name | test("\""^chart-releaser_.+_linux_${arch}\.tar\.gz$"\"")) | .browser_download_url" \
+            ".assets[] | select(.name | test(\"^chart-releaser_.+_linux_${arch}[.]tar[.]gz$\")) | .browser_download_url" \
           | xargs curl -SsL \
           | tar zxf - -C /usr/local/bin
 
@@ -65,7 +65,7 @@ jobs:
           echo '${{ steps.charts.outputs.charts }}' \
           | yq --indent 0 --no-colors --input-format json --unwrapScalar '.[]' \
           | while read -r dir; do
-              helm dependency update $dir;
+              helm dependency update "$dir";
               if [ -f "$dir/Chart.lock" ]; then
                 yq --indent 0 \
                   '.dependencies | map(["helm", "repo", "add", .name, .repository] | join(" ")) | .[]' \
@@ -83,7 +83,7 @@ jobs:
           echo '${{ steps.charts.outputs.charts }}' \
           | yq --indent 0 --no-colors --input-format json --unwrapScalar '.[]' \
           | xargs -d$'\n' cr package --package-path "$PACKAGES"
-          echo "dir=${PACKAGES}" >> $GITHUB_OUTPUT
+          echo "dir=${PACKAGES}" >> "$GITHUB_OUTPUT"
 
       - name: Upload packages
         # language=Bash
