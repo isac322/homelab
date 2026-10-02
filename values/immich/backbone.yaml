@@ -85,12 +85,14 @@ valkey:
               memory: 256Mi
   persistence:
     data:
-      enabled: false
+      enabled: true
       size: 1Gi
       # Optional: Set this to persistentVolumeClaim to keep job queues persistent
       type: persistentVolumeClaim
       accessMode: ReadWriteOnce
-      storageClass: ssd-ha-xfs
+      storageClass: ssd-ha
+      annotations:
+        pillar-csi.bhyoo.com/import-zvol: hot-data/k8s/pvc-ee3ed006-37a7-41ce-a181-272a7072da61
 
 # Immich components
 
