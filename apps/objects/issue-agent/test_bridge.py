@@ -2523,6 +2523,28 @@ class TurnTests(BridgeTestCase):
         self.assertEqual([p["localId"] for p in self.fake.message_posts], [self.lid, f"{self.lid}-r1"])
         self.assertEqual(self.op("session_turn")["state"], "queued")
 
+    def test_retry_keeps_the_local_id_of_a_step_that_is_still_running(self) -> None:
+        self.send()
+        self.fake.invoke(self.sid, self.lid)
+        self.fake.codex(self.sid, "message", message=self.result_line(status="blocked", blockers=["x"]))
+        self.fake.sessions[self.sid]["thinking"] = True
+        self.assertTrue(self.op("fail", detail="operator stop")["ok"])
+        self.assertTrue(self.op("retry_event")["ok"])
+        turn = self.store.turn("d1", "implement")
+        self.assertEqual((turn["state"], turn["local_id"]), ("sent", self.lid))
+
+    def test_retry_stays_parked_when_the_session_history_is_unavailable(self) -> None:
+        self.send()
+        self.fake.invoke(self.sid, self.lid)
+        self.fake.codex(self.sid, "message", message=self.result_line(status="blocked", blockers=["x"]))
+        self.assertTrue(self.op("fail", detail="operator stop")["ok"])
+        with patch.object(self.bridge, "_history_from", side_effect=bridge.OpError("history HTTP 502", retryable=True)):
+            failed = self.op("retry_event")
+        self.assertFalse(failed["ok"])
+        self.assertTrue(failed["retryable"])
+        self.assertEqual(self.store.event("d1")["state"], "needs_attention")
+        self.assertEqual(self.store.turn("d1", "implement")["local_id"], self.lid)
+
     def test_session_lost_mid_turn_is_resent_under_a_fresh_local_id(self) -> None:
         self.send()
         self.fake.invoke(self.sid, self.lid)
