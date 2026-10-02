@@ -35,7 +35,9 @@ install -m 644 /opt/issue-agent/profile/AGENTS.md "$CODEX_HOME/AGENTS.md"
 
 # Base clones only; the publisher sidecar clones a repository on first use.
 # HAPI creates per-issue worktrees next to each clone (<repo>-worktrees/<name>)
-# from the clone's local HEAD, so fast-forward every existing clone.
+# from the clone's local HEAD, so fast-forward every existing clone. Agents never
+# commit on the default branch, so when upstream rewrote its history (force-push)
+# the base clone is reset to it; worktree branches and their commits are kept.
 shopt -s nullglob
 for checkout in "$ISSUE_AGENT_CHECKOUTS"/*/*; do
   [[ -d "$checkout" && ! -L "$checkout" ]] || continue
@@ -54,8 +56,16 @@ for checkout in "$ISSUE_AGENT_CHECKOUTS"/*/*; do
     fail "$checkout must stay on $default_branch; agents work only in HAPI worktrees"
   [[ -z "$(git -C "$checkout" status --porcelain --untracked-files=normal)" ]] ||
     fail "$checkout has local changes; refusing to update the base clone"
-  git -C "$checkout" merge --quiet --ff-only "$default_ref" ||
-    fail "$checkout cannot fast-forward to $default_ref"
+  if ! git -C "$checkout" merge --quiet --ff-only "$default_ref"; then
+    # Reset only when the local branch is no longer an ancestor of upstream (exit 1);
+    # any other fast-forward or merge-base failure stays fatal.
+    ancestor=0
+    git -C "$checkout" merge-base --is-ancestor HEAD "$default_ref" || ancestor=$?
+    [[ "$ancestor" -eq 1 ]] || fail "$checkout cannot fast-forward to $default_ref"
+    printf 'runner-bootstrap: %s history rewritten upstream; reset %s -> %s\n' "$repository" \
+      "$(git -C "$checkout" rev-parse HEAD)" "$(git -C "$checkout" rev-parse "$default_ref")" >&2
+    git -C "$checkout" reset --quiet --hard "$default_ref"
+  fi
 done
 
 # HAPI's single-runner state and lock record the runner PID and treat a live PID as a
