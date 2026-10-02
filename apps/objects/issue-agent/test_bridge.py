@@ -321,6 +321,10 @@ class Fake:
         if not rest:
             return 200, {"session": session}
         if rest == ["resume"]:
+            # The hub resumes a session only on the machine it was created on.
+            machine = session["metadata"].get("machineId")
+            if machine is not None and machine not in {m["id"] for m in self.machines}:
+                return 503, {"error": "No machine online", "code": "no_machine_online"}
             new = self.make_session(session["metadata"]["worktree"]["basePath"], session["metadata"]["worktree"]["name"])
             self.messages[new] = list(self.messages[sid])
             session["metadata"]["supersededBySessionId"] = new
@@ -2137,6 +2141,33 @@ class SessionTests(BridgeTestCase):
         self.assertNotEqual(again["session_id"], old)
         self.assertTrue(again["resumed"])
         self.assertIn(old, json.loads(self.store.issue(REPO, 7)["superseded"]))
+
+    def test_session_of_a_removed_runner_machine_is_replaced_instead_of_resumed(self) -> None:
+        # Live krema#55: after the runner home was replaced, every resume of an old session answered
+        # 503 no_machine_online, and the old session kept claiming the worktree name.
+        self.started()
+        old = self.op("ensure_session")["session_id"]
+        self.fake.sessions[old]["active"] = False
+        self.fake.sessions[old]["metadata"]["machineId"] = "m-old"
+        again = self.op("ensure_session")
+        self.assertNotEqual(again["session_id"], old)
+        self.assertFalse(again["resumed"])
+        self.assertEqual(len(self.fake.spawns), 2)
+        self.assertEqual(self.store.issue(REPO, 7)["session_id"], again["session_id"])
+
+    def test_session_of_a_briefly_offline_runner_is_kept(self) -> None:
+        self.started()
+        old = self.op("ensure_session")["session_id"]
+        self.fake.sessions[old]["active"] = False
+        self.fake.sessions[old]["metadata"]["machineId"] = "m1"
+        self.fake.machines = []
+        failed = self.op("ensure_session")
+        self.assertTrue(failed["retryable"], failed)
+        self.assertEqual(len(self.fake.spawns), 1)
+        self.fake.machines = [{"id": "m1", "active": True}]
+        again = self.op("ensure_session")
+        self.assertTrue(again["resumed"])
+        self.assertEqual(len(self.fake.spawns), 1)
 
     def test_finish_stops_the_session_and_the_next_event_resumes_it(self) -> None:
         self.started(7, "d1")
