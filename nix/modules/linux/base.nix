@@ -69,10 +69,10 @@ in
       type = lib.types.listOf lib.types.str;
       default = tuning.disabledServices or [ ];
     };
-    tmpOnTmpfs = lib.mkOption {
-      type = lib.types.bool;
-      default = true;
-      description = "Mount /tmp as a 256M tmpfs on K3s members; disable to keep /tmp on the root filesystem.";
+    tmpSize = lib.mkOption {
+      type = lib.types.nullOr lib.types.str;
+      default = "256M";
+      description = "Size of the /tmp tmpfs on K3s members (e.g. \"256M\", \"2G\"); null keeps /tmp on the root filesystem.";
     };
   };
 
@@ -326,11 +326,11 @@ in
     ];
 
     systemd.mounts = lib.optionals k8sMember (
-      lib.optional cfg.tmpOnTmpfs {
+      lib.optional (cfg.tmpSize != null) {
         what = "tmpfs";
         where = "/tmp";
         type = "tmpfs";
-        options = "defaults,noatime,nosuid,nodev,mode=1777,size=256M";
+        options = "defaults,noatime,nosuid,nodev,mode=1777,size=${cfg.tmpSize}";
         wantedBy = [ "system-manager.target" ];
       }
       ++ [
