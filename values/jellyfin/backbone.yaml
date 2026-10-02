@@ -3,6 +3,9 @@ nameOverride: ""
 # -- Override the default full name of the chart.
 fullnameOverride: ""
 
+# -- Temporarily 0 while the config volume moves from openebs zfs-localpv to pillar-csi (in-place import).
+replicaCount: 0
+
 image:
   tag: 12.1@sha256:78d3ea1207d1322471fcac39a614f004f2ccf7e878f95ab2977d752f07e4dd7e
 
