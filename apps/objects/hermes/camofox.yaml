@@ -23,18 +23,6 @@ spec:
       storage: 5Gi
 ---
 apiVersion: v1
-kind: PersistentVolumeClaim
-metadata:
-  name: yjyou-camofox-data
-spec:
-  accessModes:
-    - ReadWriteOnce
-  storageClassName: ssd-ha-xfs
-  resources:
-    requests:
-      storage: 5Gi
----
-apiVersion: v1
 kind: Service
 metadata:
   name: isacmes-vnc
