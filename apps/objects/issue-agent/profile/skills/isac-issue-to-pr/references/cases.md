@@ -200,3 +200,4 @@
 | 2026-09-27 | I2P-02, 03, 10, 28, 49, 54, 58 | 의미 좁힘: 적용 조건 명시(첫 패스 한정, "전부 지원"·API 이식 한정, 새 방식 도입 시, 설치·실사용 검증, 배포 패키지 설치 경로 CI, 머지 지시 시, 확인된 잔여 결함 있을 때만 부분 해결) | CASE-20260924-old-new-before-pr, CASE-20260914-full-schema-parity |
 | 2026-09-27 | I2P-14 | 계획 단계에서 결정된 변경은 구현 때 재승인하지 않는다는 문장 추가 | CASE-20260927-planned-change-no-reapproval |
 | 2026-09-30 | I2P-01 | 의미 확장: `isac-issue-triage`에서 승인된 제안(`enhancement` + `triage:fix-direction-decided`)을 진입 조건에 추가 | CASE-20260930-proposal-track |
+| 2026-10-02 | I2P-24, 46, 48 | PR CI 게이트 전부(느린 suite 포함)의 로컬 실행을 `ready` 전 조건으로 명시하고 `local_checks`에 명령·종료 코드를 보고하게 함. 게시 후 GitHub CI는 확인일 뿐(flareway#138: repair가 envtest를 돌리지 않고 `ready`를 냄) | - |
