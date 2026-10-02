@@ -166,6 +166,12 @@ in
     description = "Machine-encrypted K3s token loaded by systemd for the daemon.";
   };
 
+  options.homelab.k3s.goMemLimit = lib.mkOption {
+    type = lib.types.str;
+    default = "2GiB";
+    description = "Go runtime soft memory limit (GOMEMLIMIT) for the K3s server process.";
+  };
+
   config = lib.mkIf enabled {
     environment.etc = {
       "rancher/k3s/config.yaml" = {
@@ -297,7 +303,7 @@ in
           "k3s-token:/var/lib/homelab-secrets/active/k3s-token.cred"
         ];
       };
-      environment = lib.optionalAttrs server { GOMEMLIMIT = "2GiB"; };
+      environment = lib.optionalAttrs server { GOMEMLIMIT = config.homelab.k3s.goMemLimit; };
     };
   };
 }
