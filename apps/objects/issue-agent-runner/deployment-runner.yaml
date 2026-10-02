@@ -100,7 +100,7 @@ spec:
                       - macmini
       containers:
         - name: runner
-          image: ghcr.io/isac322/issue-agent-runner:0.30.7-codex0.159.2-20261002-login-path@sha256:3c0190450b30800f6c179a20a1e6c99073ba1a20fcf437936c8736b0005dfe9a
+          image: ghcr.io/isac322/issue-agent-runner:0.30.7-codex0.159.2-20261002-base-reset@sha256:67599799561ac79d641fffa906712fb81e24c18cc5b094a28512100550f1bfcd
           env:
             - name: HOME
               value: /home/agent
