@@ -20,7 +20,7 @@ spec:
           - values.yaml
           - $homelab/values/cloudnative-pg/cluster-hindsight.yaml
       repoURL: https://cloudnative-pg.github.io/charts/
-      targetRevision: 0.8.1
+      targetRevision: 0.9.0
   syncPolicy:
     automated:
       prune: true
