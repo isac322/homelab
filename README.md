@@ -217,6 +217,11 @@ K3s version과 순차 rollout은 기존 Rancher `system-upgrade-controller`가 �
 - ARC 0.15.0은 `AutoscalingRunnerSet.spec.listenerConfig`를 추가한다. controller image pin과 CRD를 먼저 올리고 새 schema의 server-side dry-run이 통과한 뒤 runner-set chart를 올린다.
 - Loki·Alloy·VersityGW 변경은 기존 PVC UID와 PV 연결을 보존한다. Loki 실제 query, Alloy 재시작 이후 로그 전달, VersityGW 소비자 IAM read 및 별도 QA prefix의 multipart/checksum·정리를 검증한다.
 - rock5bp 재부팅은 원격 NVMe-oF PVC의 I/O와 Pod 종료·재부착을 막을 수 있다. chart rollout과 NAS 호스트 maintenance를 겹치지 않으며, 경로가 복구되기 전 RWO Pod를 강제 삭제해 새 writer를 만들지 않는다.
+- CNPG operator 업그레이드 전 두 DB의 새 백업 완료를 확인한다. instance manager 갱신으로 단일 DB Pod가 재생성될 수 있으므로 SQL 응답, PVC UID/PV 연결, PostgreSQL system ID가 유지되는지 검증한다.
+- DB cluster chart 변경은 DB Pod를 바꾸지 않고 label이나 alert rule만 바꿀 수 있다. 전체 `Cluster.spec`을 비교하고 PostgreSQL image pin, resources, storage 설정을 보존한다.
+- Hindsight는 chart와 API/UI image pin을 함께 갱신한다. image rollback은 forward migration을 되돌리지 않으므로 API version, 기존 기록 조회, migration head와 index 상태를 확인한다.
+- 내장 `barmanObjectStore` 백업은 CNPG 1.31.0에서 제거된다. 그 전에 Barman Cloud Plugin으로 전환해야 하며, 이번 1.30.1 업그레이드에서는 기존 백업 설정을 유지한다.
+- Hindsight 0.10.2는 corrective retry에서 parsed reply dict를 assistant text로 전달해 갱신이 실패할 수 있다([upstream PR #4903](https://github.com/vectorize-io/hindsight/pull/4903)). 데이터 보존 guard는 유지하고, 이 회귀의 source 수정은 별도 승인 범위로 다룬다. guard를 끄거나 provider를 바꾸지 않는다.
 
 
 ### Issue agent (n8n + HAPI)
