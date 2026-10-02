@@ -7,8 +7,12 @@ called only by the bridge (bearer token the agent container cannot read).
 
   GET  /healthz
   POST /checkout {repo}                        -> {path, created, default_branch}
+  POST /resolve  {repo, branch}                -> {sha}
   POST /push     {repo, branch, expected_sha}  -> {sha}
   POST /cleanup  {repo, worktree, branch, codex_session_ids} -> {removed}
+
+/resolve reports the commit the checkout's branch points at; /push pushes that
+branch only while it still points at expected_sha.
 
 Git never runs with an agent-controlled checkout as its working directory or
 git dir: commits are fetched *from* the checkout by path into a private bare
@@ -215,11 +219,11 @@ def do_checkout(repo: str) -> dict:
     return {"path": path, "created": True, "default_branch": default_branch}
 
 
-def do_push(repo: str, branch: str, expected_sha: str) -> dict:
+def fetch_branch(repo: str, branch: str) -> str:
+    """Commit ``branch`` points at in the checkout, fetched into the private mirror (no token needed)."""
     path = checkout_path(repo)
     if not os.path.isdir(os.path.join(path, ".git")):
         raise PublisherError(HTTPStatus.NOT_FOUND, "checkout_missing", f"no checkout for {repo}")
-    token = read_secret(PUSH_TOKEN_FILE, "push token")
     mirror = ensure_mirror(repo)
     local_ref = f"refs/issue-agent/{branch}"
 
@@ -243,12 +247,23 @@ def do_push(repo: str, branch: str, expected_sha: str) -> dict:
     sha = result.stdout.strip()
     if result.returncode != 0 or not SHA_RE.match(sha):
         raise PublisherError(HTTPStatus.INTERNAL_SERVER_ERROR, "local_fetch_failed", f"cannot resolve {branch}")
+    return sha
+
+
+def do_resolve(repo: str, branch: str) -> dict:
+    return {"sha": fetch_branch(repo, branch)}
+
+
+def do_push(repo: str, branch: str, expected_sha: str) -> dict:
+    token = read_secret(PUSH_TOKEN_FILE, "push token")
+    sha = fetch_branch(repo, branch)
+    # The caller resolved the branch first; refuse if it moved since.
     if sha != expected_sha:
         raise PublisherError(HTTPStatus.CONFLICT, "sha_mismatch", f"{branch} is at {sha}, expected {expected_sha}")
 
     result = run_git(
         [
-            "--git-dir", mirror,
+            "--git-dir", mirror_path(repo),
             "push", "--quiet", "--porcelain", "--no-verify", "--",
             f"https://github.com/{repo}.git",
             f"{sha}:refs/heads/{branch}",
@@ -479,6 +494,10 @@ class Handler(BaseHTTPRequestHandler):
                 args = self.body({"repo": REPO_RE})
                 with repo_lock(args["repo"]):
                     self.reply(HTTPStatus.OK, do_checkout(args["repo"]))
+            elif self.path == "/resolve":
+                args = self.body({"repo": REPO_RE, "branch": BRANCH_RE})
+                with repo_lock(args["repo"]):
+                    self.reply(HTTPStatus.OK, do_resolve(args["repo"], args["branch"]))
             elif self.path == "/push":
                 args = self.body({"repo": REPO_RE, "branch": BRANCH_RE, "expected_sha": SHA_RE})
                 with repo_lock(args["repo"]):

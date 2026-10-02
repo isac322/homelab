@@ -201,3 +201,4 @@
 | 2026-09-27 | I2P-14 | 계획 단계에서 결정된 변경은 구현 때 재승인하지 않는다는 문장 추가 | CASE-20260927-planned-change-no-reapproval |
 | 2026-09-30 | I2P-01 | 의미 확장: `isac-issue-triage`에서 승인된 제안(`enhancement` + `triage:fix-direction-decided`)을 진입 조건에 추가 | CASE-20260930-proposal-track |
 | 2026-10-02 | I2P-24, 46, 48 | PR CI 게이트 전부(느린 suite 포함)의 로컬 실행을 `ready` 전 조건으로 명시하고 `local_checks`에 명령·종료 코드를 보고하게 함. 게시 후 GitHub CI는 확인일 뿐(flareway#138: repair가 envtest를 돌리지 않고 `ready`를 냄) | - |
+| 2026-10-03 | I2P-44 | 결과의 `head_sha`를 없앰: `ready` 전에 모든 변경을 브랜치에 커밋하고, 자동화가 턴 뒤 브랜치 head를 직접 읽어 push한다(flareway#138: 손으로 옮긴 SHA가 앞 7자만 맞아 push가 `sha_mismatch`로 멈춤) | - |

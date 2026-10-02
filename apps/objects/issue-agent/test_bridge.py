@@ -105,6 +105,8 @@ class Fake:
         self.checkouts: list[dict[str, Any]] = []
         self.pushes: list[dict[str, Any]] = []
         self.push_error: str | None = None
+        # worktree_heads: the agent's local branch heads in the checkout; branch_heads: the remote refs
+        self.worktree_heads: dict[str, str] = {}
         self.branch_heads: dict[str, str] = {}
         self.cleanups: list[dict[str, Any]] = []
         self.cleanup_error: str | None = None
@@ -266,10 +268,15 @@ class Fake:
         if path == "/checkout":
             self.checkouts.append(body)
             return 200, {"path": f"/home/agent/checkouts/{body['repo']}", "created": True, "default_branch": "master"}
+        if path == "/resolve":
+            sha = self.worktree_heads.get(body["branch"])
+            return (200, {"sha": sha}) if sha else (404, {"error": "branch_missing"})
         if path == "/push":
             self.pushes.append(body)
             if self.push_error:
                 return 409, {"error": self.push_error}
+            if self.worktree_heads.get(body["branch"]) != body["expected_sha"]:
+                return 409, {"error": "sha_mismatch"}
             pr = next((p for p in self.prs.values() if p["head"]["ref"] == body["branch"]), None)
             if pr is not None:
                 pr["head"]["sha"] = body["expected_sha"]
@@ -618,7 +625,7 @@ TRIAGE_ADVISORY: dict[str, Any] = {
     "summary": "reported privately", "security_advisory": ADVISORY,
 }
 IMPLEMENT_OK: dict[str, Any] = {
-    "status": "ready", "head_sha": SHA_A, "pr": {"title": "Fix it", "body": "Fixes #7"}, "issue_comment": None,
+    "status": "ready", "pr": {"title": "Fix it", "body": "Fixes #7"}, "issue_comment": None,
     "questions": [], "summary": "done", "blockers": [], "local_checks": [{"command": "make test", "exit_code": 0}],
 }
 REVIEW_OK: dict[str, Any] = {
@@ -1106,7 +1113,8 @@ class PrRepairTests(BridgeTestCase):
         self.assertEqual(reopened.pr_state(REPO, 144)["dirty"], 1)
         self.assertGreater(reopened.pr_state(REPO, 144)["revision"], before)
         pr.update(mergeStateStatus="UNKNOWN", mergeable="UNKNOWN")
-        pushed = self.op("git.push", delivery, head_sha=SHA_B)
+        self.fake.worktree_heads["hapi-issue-141"] = SHA_B
+        pushed = self.op("git.push", delivery)
         self.assertTrue(pushed["ok"])
         reads = len(self.fake.pr_state_reads)
         self.assertTrue(self.op("finish", delivery, outcome="implemented")["ok"])
@@ -1124,7 +1132,8 @@ class PrRepairTests(BridgeTestCase):
         self.op("ensure_session", delivery)
         pr["head"]["sha"] = SHA_B
         pr.update(mergeStateStatus="UNKNOWN", mergeable="UNKNOWN")
-        response = self.op("git.push", delivery, head_sha="c" * 40)
+        self.fake.worktree_heads["hapi-issue-141"] = "c" * 40  # the repair's own commit
+        response = self.op("git.push", delivery)
         self.assertTrue(response["ok"])
         self.assertTrue(response["superseded"])
         self.assertEqual(self.fake.pushes, [])
@@ -1396,10 +1405,14 @@ class PrRepairTests(BridgeTestCase):
         delivery = self.repair_delivery()
         self.assertEqual(self.op("begin", delivery, attempt=1)["status"], "started")
         self.assertTrue(self.op("ensure_session", delivery)["ok"])
-        pushed = self.op("git.push", delivery, head_sha=SHA_B)
+        self.fake.worktree_heads["hapi-issue-141"] = SHA_B
+        pushed = self.op("git.push", delivery)
         self.assertEqual((pushed["ok"], pushed["branch"], pushed["sha"]), (True, "hapi-issue-141", SHA_B), pushed)
         self.assertEqual(self.fake.pushes, [{"repo": REPO, "branch": "hapi-issue-141", "expected_sha": SHA_B}])
         self.assertEqual(self.fake.prs[144]["head"]["sha"], SHA_B)
+        # A retried push finds the remote already at the resolved head: not superseded, the same commit again.
+        again = self.op("git.push", delivery)
+        self.assertEqual((again["ok"], again["sha"], again.get("superseded")), (True, SHA_B, None), again)
         reopened = bridge.Store(self.config.state_path)
         row = reopened.pr_state(REPO, 144)
         self.assertEqual((row["head_sha"], row["dirty"], row["active_delivery"]), (SHA_B, 1, delivery))
@@ -1409,7 +1422,8 @@ class PrRepairTests(BridgeTestCase):
     def test_pr_upsert_succeeds_when_post_write_state_observation_fails(self) -> None:
         self.started()
         self.assertTrue(self.op("ensure_session")["ok"])
-        self.assertTrue(self.op("git.push", head_sha=SHA_A)["ok"])
+        self.fake.worktree_heads["hapi-issue-7"] = SHA_A
+        self.assertTrue(self.op("git.push")["ok"])
         with patch.object(self.bridge, "_pr_state",
                           side_effect=bridge.OpError("computed state unavailable", retryable=True)):
             created = self.op("github.pr_upsert", head_sha=SHA_A, title="Fix it", body="Fixes #7")
@@ -1421,7 +1435,8 @@ class PrRepairTests(BridgeTestCase):
         self.assertEqual(self.store.issue(REPO, 7)["pr_number"], number)
         row = self.store.pr_state(REPO, number)
         self.assertEqual((row["head_sha"], row["dirty"]), (SHA_A, 1))
-        self.assertTrue(self.op("git.push", head_sha=SHA_B)["ok"])
+        self.fake.worktree_heads["hapi-issue-7"] = SHA_B
+        self.assertTrue(self.op("git.push")["ok"])
         with patch.object(self.bridge, "_pr_state",
                           side_effect=bridge.TransportError("computed state timed out", not_sent=False)):
             updated = self.op("github.pr_upsert", head_sha=SHA_B, title="Fix it v2", body="Related to #7")
@@ -1449,7 +1464,8 @@ class PrRepairTests(BridgeTestCase):
         self.assertEqual(begun["status"], "started")
         self.assertEqual(begun["repair"]["findings"]["change_requests"][0]["commit_id"], SHA_A)
         self.assertTrue(self.op("ensure_session", delivery)["ok"])
-        self.assertTrue(self.op("git.push", delivery, head_sha=SHA_B)["ok"])
+        self.fake.worktree_heads["hapi-issue-141"] = SHA_B
+        self.assertTrue(self.op("git.push", delivery)["ok"])
         pr["reviewDecision"] = "CHANGES_REQUESTED"
         self.assertTrue(self.op("finish", delivery, outcome="implemented")["ok"])
         self.assertEqual(self.bridge.reconcile_pr(REPO, 144), "waiting")
@@ -2424,7 +2440,7 @@ class TurnTests(BridgeTestCase):
         return self.op("session_send", mode=mode, instructions="Implement it.", **kw)
 
     def result_line(self, nonce: str | None = None, **fields: Any) -> str:
-        data = {"status": "no_change", "head_sha": None, "pr": None, "issue_comment": "nothing needed",
+        data = {"status": "no_change", "pr": None, "issue_comment": "nothing needed",
                 "questions": [], "summary": "nothing needed", "blockers": [], "local_checks": [], **fields}
         return f"done.\n{bridge.RESULT_TAG} {nonce or self.lid} {json.dumps(data)}"
 
@@ -2482,7 +2498,7 @@ class TurnTests(BridgeTestCase):
     def test_invalid_result_is_sent_back_once_for_correction(self) -> None:
         self.send()
         self.fake.invoke(self.sid, self.lid)
-        self.say(self.result_line(status="ready", head_sha=SHA_A, pr={"title": "x", "body": "Fixes #70"}))
+        self.say(self.result_line(status="ready", pr={"title": "x", "body": "Fixes #70"}))
         self.assertEqual(self.op("session_turn")["state"], "running")
         fix_lid = f"{self.lid}{bridge.CORRECTION_SUFFIX}"
         correction = self.fake.message_posts[-1]
@@ -2492,11 +2508,30 @@ class TurnTests(BridgeTestCase):
         self.assertEqual(self.op("session_turn")["state"], "queued")  # no second correction while it waits
         self.assertEqual(len(self.fake.message_posts), 2)
         self.fake.invoke(self.sid, fix_lid)
-        self.say(self.result_line(fix_lid, status="ready", head_sha=SHA_A, pr={"title": "x", "body": "Fixes #7"},
+        self.say(self.result_line(fix_lid, status="ready", pr={"title": "x", "body": "Fixes #7"},
                                   local_checks=[{"command": "make test", "exit_code": 0}]))
         done = self.op("session_turn")
-        self.assertEqual((done["state"], done["result"]["head_sha"]), ("done", SHA_A))
+        self.assertEqual((done["state"], done["result"]["status"]), ("done", "ready"))
         self.assertEqual(bridge.resend_local_id("d1", "implement", fix_lid), f"{self.lid}-r1")
+
+    def test_agent_reported_head_sha_is_rejected_and_corrected(self) -> None:
+        # The push resolves the branch head itself; a hand-typed head_sha (the pre-change contract) is refused.
+        ready = {"status": "ready", "pr": {"title": "x", "body": "Fixes #7"},
+                 "local_checks": [{"command": "make test", "exit_code": 0}]}
+        self.send()
+        self.fake.invoke(self.sid, self.lid)
+        self.say(self.result_line(head_sha="ab4a9408d6d2" + "0" * 28, **ready))
+        self.assertEqual(self.op("session_turn")["state"], "running")
+        fix_lid = f"{self.lid}{bridge.CORRECTION_SUFFIX}"
+        correction = self.fake.message_posts[-1]
+        self.assertEqual(correction["localId"], fix_lid)
+        self.assertIn("unknown keys ['head_sha']", correction["text"])
+        self.assertNotIn('"head_sha"', correction["text"])
+        self.fake.invoke(self.sid, fix_lid)
+        self.say(self.result_line(fix_lid, **ready))
+        done = self.op("session_turn")
+        self.assertEqual((done["state"], done["result"]["status"]), ("done", "ready"))
+        self.assertNotIn("head_sha", done["result"])
 
     def test_result_still_invalid_after_correction_is_attention(self) -> None:
         self.send()
@@ -2716,7 +2751,7 @@ class ResultValidationTests(unittest.TestCase):
     def test_valid_results_are_normalized(self) -> None:
         triage = bridge.validate_result("triage", variant(TRIAGE_OK, summary="  asked  "), 7)
         self.assertEqual(triage["summary"], "asked")
-        self.assertEqual(bridge.validate_result("followup", IMPLEMENT_OK, 7)["head_sha"], SHA_A)
+        self.assertEqual(bridge.validate_result("followup", IMPLEMENT_OK, 7)["status"], "ready")
         related = variant(IMPLEMENT_OK, pr={"title": "t", "body": "Related to #7"})
         self.assertEqual(bridge.validate_result("implement", related, 7)["pr"]["body"], "Related to #7")
         self.assertEqual(bridge.validate_result("review", REVIEW_OK, 7)["event"], "REQUEST_CHANGES")
@@ -2788,17 +2823,17 @@ class ResultValidationTests(unittest.TestCase):
         self.assertInvalid("triage", variant(TRIAGE_OK, labels={"add": ["bug"], "remove": ["bug"]}), "repeated")
 
     def test_implement_conditional_fields(self) -> None:
-        self.assertInvalid("implement", variant(IMPLEMENT_OK, head_sha=None), "head_sha")
-        self.assertInvalid("implement", variant(IMPLEMENT_OK, head_sha="abc"), "40-hex")
+        # The automation pushes the branch head; the agent no longer reports a commit, in any status.
+        for status in ("ready", "no_change"):
+            self.assertInvalid("implement", variant(IMPLEMENT_OK, status=status, head_sha=SHA_A),
+                               "unknown keys ['head_sha']")
         self.assertInvalid("implement", variant(IMPLEMENT_OK, pr=None), "pr is required")
         self.assertInvalid("implement", variant(IMPLEMENT_OK, pr={"title": "t", "body": "Fixes #70"}), "Fixes #7")
         self.assertInvalid("implement", variant(IMPLEMENT_OK, pr={"title": "t", "body": "Fixes #7", "draft": True}),
                            "unknown keys")
-        self.assertInvalid("implement", variant(IMPLEMENT_OK, status="no_change", head_sha=None, pr=None),
-                           "issue_comment")
-        self.assertInvalid("implement", variant(IMPLEMENT_OK, status="needs_info", head_sha=None, pr=None),
-                           "needs_info")
-        self.assertInvalid("implement", variant(IMPLEMENT_OK, status="blocked", head_sha=None, pr=None), "blockers")
+        self.assertInvalid("implement", variant(IMPLEMENT_OK, status="no_change", pr=None), "issue_comment")
+        self.assertInvalid("implement", variant(IMPLEMENT_OK, status="needs_info", pr=None), "needs_info")
+        self.assertInvalid("implement", variant(IMPLEMENT_OK, status="blocked", pr=None), "blockers")
         self.assertInvalid("implement", variant(IMPLEMENT_OK, blockers=["x"]), "blockers")
 
     def test_a_ready_result_requires_passing_local_ci_gates(self) -> None:
@@ -2812,7 +2847,7 @@ class ResultValidationTests(unittest.TestCase):
         self.assertEqual(bridge.validate_result("implement", variant(IMPLEMENT_OK, local_checks=passing), 7)
                          ["local_checks"], passing)
         # Only a ready head is pushed; other outcomes may report failing or no local runs.
-        blocked = variant(IMPLEMENT_OK, status="blocked", head_sha=None, pr=None, blockers=["envtest needs KVM"],
+        blocked = variant(IMPLEMENT_OK, status="blocked", pr=None, blockers=["envtest needs KVM"],
                           local_checks=failing)
         self.assertEqual(bridge.validate_result("implement", blocked, 7)["status"], "blocked")
 
@@ -3082,19 +3117,52 @@ class PullRequestOpsTests(BridgeTestCase):
     def test_push_then_pr_upsert_creates_then_updates(self) -> None:
         self.started()
         self.op("ensure_session")
-        pushed = self.op("git.push", head_sha=SHA_A)
+        self.fake.worktree_heads["hapi-issue-7"] = SHA_A
+        pushed = self.op("git.push")
         self.assertEqual((pushed["branch"], pushed["sha"]), ("hapi-issue-7", SHA_A))
         self.assertEqual(self.fake.pushes, [{"repo": REPO, "branch": "hapi-issue-7", "expected_sha": SHA_A}])
-        created = self.op("github.pr_upsert", head_sha=SHA_A, title="Fix it", body="Fixes #7")
+        created = self.op("github.pr_upsert", head_sha=pushed["sha"], title="Fix it", body="Fixes #7")
         self.assertTrue(created["created"], created)
         self.assertEqual(self.fake.pr_creates, [{"title": "Fix it", "body": "Fixes #7", "head": "hapi-issue-7",
                                                  "base": "master", "draft": False}])
         self.assertEqual(self.store.issue(REPO, 7)["pr_number"], created["number"])
-        self.op("git.push", head_sha=SHA_B)
-        updated = self.op("github.pr_upsert", head_sha=SHA_B, title="Fix it v2", body="Related to #7")
+        self.fake.worktree_heads["hapi-issue-7"] = SHA_B
+        pushed = self.op("git.push")
+        updated = self.op("github.pr_upsert", head_sha=pushed["sha"], title="Fix it v2", body="Related to #7")
         self.assertEqual((updated["created"], updated["number"]), (False, created["number"]))
         self.assertEqual(self.fake.pr_patches, [{"title": "Fix it v2", "body": "Related to #7"}])
         self.assertEqual(len(self.fake.pr_creates), 1)
+        self.assertEqual(self.fake.prs[created["number"]]["head"]["sha"], SHA_B)
+
+    def test_push_uses_the_branch_head_not_a_requested_sha(self) -> None:
+        # flareway#138: the agent typed a SHA sharing only the 7-char prefix of the real head. An in-flight run
+        # retried after this change may still send it; the push ignores it and pushes what the branch points at.
+        self.started()
+        self.op("ensure_session")
+        real = "ab4a940e2e8d" + "1" * 28
+        self.fake.worktree_heads["hapi-issue-7"] = real
+        for attempt in range(2):  # the retry of an already-pushed head pushes the same commit again
+            pushed = self.op("git.push", head_sha="ab4a9408d6d2" + "0" * 28)
+            self.assertEqual((pushed["ok"], pushed["sha"]), (True, real), (attempt, pushed))
+        self.assertEqual(self.fake.pushes, [{"repo": REPO, "branch": "hapi-issue-7", "expected_sha": real}] * 2)
+        self.assertEqual(self.fake.branch_heads["hapi-issue-7"], real)
+
+    def test_push_refuses_a_branch_that_moved_after_it_was_resolved(self) -> None:
+        self.started()
+        self.op("ensure_session")
+        self.fake.worktree_heads["hapi-issue-7"] = SHA_A
+        request = self.bridge.publisher.request
+
+        def commit_after_resolve(path: str, body: Any, timeout: float) -> dict:
+            data = request(path, body, timeout)
+            if path == "/resolve":
+                self.fake.worktree_heads["hapi-issue-7"] = SHA_B
+            return data
+
+        with patch.object(self.bridge.publisher, "request", side_effect=commit_after_resolve):
+            result = self.op("git.push")
+        self.assertEqual((result["ok"], result["error"]), (False, "sha_mismatch"))
+        self.assertNotIn("hapi-issue-7", self.fake.branch_heads)
 
     def test_pr_upsert_requires_issue_reference_and_pushed_head(self) -> None:
         self.started()
@@ -3154,8 +3222,12 @@ class PullRequestOpsTests(BridgeTestCase):
     def test_publisher_push_errors_are_surfaced(self) -> None:
         self.started()
         self.op("ensure_session")
+        missing = self.op("git.push")
+        self.assertEqual((missing["error"], missing["retryable"]), ("branch_missing", False))
+        self.assertEqual(self.fake.pushes, [])
+        self.fake.worktree_heads["hapi-issue-7"] = SHA_A
         self.fake.push_error = "non_fast_forward"
-        result = self.op("git.push", head_sha=SHA_A)
+        result = self.op("git.push")
         self.assertEqual((result["error"], result["retryable"]), ("non_fast_forward", False))
 
 
