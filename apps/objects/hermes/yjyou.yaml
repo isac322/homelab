@@ -3,6 +3,7 @@ kind: HermesInstance
 metadata:
   name: yjyou
 spec:
+  suspended: true
   security:
     networkPolicy:
       enabled: false
