@@ -87,15 +87,29 @@ compactor:
   # compaction the compactor treats that overlap as corruption and halts.
   extraFlags:
     - --compact.enable-vertical-compaction
+  # Prefer macmini (8 cores, ~10Gi free, not control-plane). On the 4 GiB
+  # control-plane Pis the compactor's IO and page cache pushed the node into
+  # swap thrashing (rpi4, 2026-10-01: ~5k pages/s swap-in, 3+ busy cores,
+  # k3s server starved).
+  affinity:
+    nodeAffinity:
+      preferredDuringSchedulingIgnoredDuringExecution:
+        - weight: 100
+          preference:
+            matchExpressions:
+              - key: kubernetes.io/hostname
+                operator: In
+                values:
+                  - macmini
   resources:
     requests:
       cpu: 120m
       memory: 200Mi
     # Temporary: the compactor halted from 2026-03 to 2026-10 and must catch
-    # up on months of blocks; at 256Mi it stalled for hours merging the March
+    # up on months of blocks; at 256Mi/500m it stalled or crawled through the
     # backlog. Resize from the observed peak once the backlog is cleared.
     limits:
-      cpu: 500m
+      cpu: "2"
       memory: 2Gi
   # Created by democratic-csi and imported into pillar-csi in place on
   # 2026-10-01.
