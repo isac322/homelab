@@ -180,15 +180,23 @@ MAX_SUPERSEDE_HOPS = 8
 # REVIEW_MAX_DELAY_SECONDS after the oldest one, so a push and the comment that follows it run one review.
 REVIEW_SETTLE_SECONDS = 90.0
 REVIEW_MAX_DELAY_SECONDS = 300.0
-# Automatic PR repair bounds: reconciliation stops queueing repairs once one blocker cause (base, checks,
-# review) survived this many consecutive repairs, or after this many automatic repairs of any causes (a
-# backstop against causes alternating forever). A human repair signal or a merge-ready state resets both.
+# Automatic PR repair bounds. A blocker cause (base, checks, review) that survived MAX_PR_REPAIR_STREAK
+# consecutive repairs does not stop repairs at once: reconciliation waits PR_REPAIR_BACKOFF_SECONDS[i] and then
+# queues exactly one more repair per stage; once every stage is used and the cause still survives, it stops.
+# Independently, at most MAX_PR_REPAIRS_PER_WINDOW automatic repairs start per PR_REPAIR_WINDOW_SECONDS (a
+# backstop against causes alternating forever). A human repair signal or a merge-ready state resets everything.
 MAX_PR_REPAIR_STREAK = 3
-MAX_PR_REPAIRS_TOTAL = 10
-# Repair cause -> wording; findings map onto them in Bridge._repair_causes. Streaks persist in prs.repair_streaks
-# as {"base": n, "checks": n, "review": n, "total": n}.
+PR_REPAIR_BACKOFF_SECONDS = (3600.0, 4 * 3600.0, 16 * 3600.0)
+MAX_PR_REPAIRS_PER_WINDOW = 10
+PR_REPAIR_WINDOW_SECONDS = 24 * 3600.0
+# Repair cause -> wording; findings map onto them in Bridge._repair_causes. prs.repair_streaks persists
+# {"base": n, "checks": n, "review": n} consecutive counts plus "check_names" (sorted failing check names of
+# the last repair), "backoff" ({cause: stages used}), "cool_until" (epoch seconds), "attempts" (start times of
+# automatic repairs inside the window) and "stopped" (the reason repairs stopped). Older rows may carry "total".
 PR_REPAIR_CAUSES = {"base": "an outdated or conflicting base", "checks": "failing checks",
                     "review": "requested changes"}
+# A check whose run has not finished: CheckRun.status other than COMPLETED, or these StatusContext states.
+PENDING_STATUS_STATES = ("PENDING", "EXPECTED")
 
 REQUIRED_ENV = (
     "BRIDGE_STATE_PATH",
@@ -1510,7 +1518,14 @@ _IMPLEMENT_SCHEMA = """\
  "issue_comment": null | "English markdown <=60000" (optional note posted on the issue; required iff no_change),
  "questions":[strings <=500, max 5] (non-empty iff needs_info),
  "summary":"<=2000",
- "blockers":[strings] (non-empty iff blocked)}
+ "blockers":[strings] (non-empty iff blocked),
+ "local_checks":[{"command":"<=500 exact command you ran in this worktree","exit_code":int}] (max 30; when ready: non-empty and every exit_code 0)}
+Before reporting ready, discover every gate the repository's pull-request CI runs (the jobs in .github/workflows/*
+and the Makefile/justfile/script targets they call, including slow suites such as envtest or integration tests),
+run each of them locally in this worktree, fix failures, and rerun until all pass; record each command with its
+final exit code in local_checks. GitHub CI after the push only confirms this. A gate that genuinely cannot run
+locally (needs secrets, external services or special hardware) goes in summary and the PR body as not run, never
+in local_checks. Keep build outputs and caches in the worktree's default locations, never under /tmp.
 Commit locally on your worktree branch; do not push or open pull requests."""
 
 _REVIEW_SCHEMA = """\
@@ -1807,8 +1822,21 @@ def _implement(v: dict[str, Any], number: int) -> dict[str, Any]:
     _require(bool(questions) == (status == "needs_info"), "questions must be non-empty iff status is needs_info")
     blockers = _texts(v["blockers"], 2000, 20, "blockers")
     _require(bool(blockers) == (status == "blocked"), "blockers must be non-empty iff status is blocked")
+    checks_in = v["local_checks"]
+    _require(isinstance(checks_in, list) and len(checks_in) <= 30, "local_checks must be a list of at most 30")
+    local_checks = []
+    for check in checks_in:
+        _fields(check, ("command", "exit_code"), "local check")
+        code = check["exit_code"]
+        _require(isinstance(code, int) and not isinstance(code, bool), "local check exit_code must be an int")
+        local_checks.append({"command": _text(check["command"], 500, "local check command"), "exit_code": code})
+    if ready:
+        # n8n pushes only a ready head; it must have passed the repository's CI gates locally first.
+        _require(bool(local_checks), "local_checks must list the CI gates run locally when status is ready")
+        failing = [c["command"] for c in local_checks if c["exit_code"] != 0]
+        _require(not failing, f"local_checks must all exit 0 when status is ready; failing: {failing}"[:1000])
     return {"status": status, "head_sha": head, "pr": pr, "issue_comment": note, "questions": questions,
-            "summary": _text(v["summary"], 2000, "summary"), "blockers": blockers}
+            "summary": _text(v["summary"], 2000, "summary"), "blockers": blockers, "local_checks": local_checks}
 
 
 def _review(v: dict[str, Any]) -> dict[str, Any]:
@@ -1849,7 +1877,7 @@ def _review(v: dict[str, Any]) -> dict[str, Any]:
 RESULT_KEYS = {
     "triage": ("status", "verdict", "fault_domain", "duplicate_of", "labels", "comment", "next_action",
                "implementation_brief", "questions", "summary", "blockers", "security_advisory"),
-    "implement": ("status", "head_sha", "pr", "issue_comment", "questions", "summary", "blockers"),
+    "implement": ("status", "head_sha", "pr", "issue_comment", "questions", "summary", "blockers", "local_checks"),
     "review": ("status", "head_sha", "event", "body", "comments", "thread_replies", "summary", "blockers"),
 }
 
@@ -2771,7 +2799,14 @@ class Bridge:
                 "Evaluate ALL currently observed CI failures and review findings together in this ONE followup "
                 "with receiving-code-review. Read current CI logs, reviews and threads yourself, verify claims, "
                 "repair only supported blockers, and retain the full issue scope in the PR body. "
-                "Do not add a separate behind-only turn. GitHub owns merge policy; never merge the PR."
+                "Do not add a separate behind-only turn. Before reporting ready, discover every gate the "
+                "repository's pull-request CI runs (.github/workflows/* jobs and the Makefile/justfile targets they "
+                "call, including slow suites such as envtest or integration tests), run them all locally in this "
+                "worktree, fix failures and rerun until every gate passes, and record each command with its exit "
+                "code in local_checks; GitHub CI after the push only confirms this. List gates that genuinely "
+                "cannot run locally (secrets, external services, special hardware) as not run in summary and the "
+                "PR body, never in local_checks. Keep build outputs off /tmp. "
+                "GitHub owns merge policy; never merge the PR."
             )
             self.store.update_event(ev["delivery_id"], head_sha=snapshot["head_sha"],
                                     default_branch=snapshot["default_branch"])
@@ -3520,10 +3555,13 @@ class Bridge:
                 latest[author] = review
         requested = [r for r in latest.values() if r.get("state") == "CHANGES_REQUESTED"
                      and r.get("commit_id") == state["head_sha"]]
+        # The reviewer's own commit status mirrors its verdict, which already counts as a change request.
+        review_context = self.config.review_status_context
         failed = [c for c in state["checks"]
-                  if c.get("state") in ("FAILURE", "ERROR")
-                  or c.get("conclusion") in ("FAILURE", "CANCELLED", "TIMED_OUT", "ACTION_REQUIRED",
-                                            "STARTUP_FAILURE", "STALE")]
+                  if c.get("context") != review_context
+                  and (c.get("state") in ("FAILURE", "ERROR")
+                       or c.get("conclusion") in ("FAILURE", "CANCELLED", "TIMED_OUT", "ACTION_REQUIRED",
+                                                 "STARTUP_FAILURE", "STALE"))]
         threads = [t for t in self._threads(repo, number) if not t["is_resolved"] and not t["is_outdated"]]
         return {"behind": state["merge_state"] == "BEHIND",
                 "conflicts": state["mergeable"] == "CONFLICTING",
@@ -3539,6 +3577,67 @@ class Bridge:
         present = {"base": findings.get("behind") or findings.get("conflicts"),
                    "checks": findings.get("failed_checks"), "review": findings.get("change_requests")}
         return [c for c in PR_REPAIR_CAUSES if present[c]]
+
+    @staticmethod
+    def _checks_pending(state: Mapping[str, Any]) -> bool:
+        """Whether any check on the head (the reviewer status included) has not finished yet."""
+        return any(c.get("state") in PENDING_STATUS_STATES if "context" in c
+                   else c.get("status") not in (None, "COMPLETED") for c in state["checks"])
+
+    @staticmethod
+    def _failed_check_names(findings: Mapping[str, Any]) -> list[str]:
+        return sorted({str(c.get("name") or c.get("context") or "") for c in findings.get("failed_checks") or []})
+
+    @classmethod
+    def _plan_auto_repair(cls, streaks: dict[str, Any], findings: Mapping[str, Any], unchanged: bool,
+                          now: float) -> str | dict[str, Any]:
+        """Decide what an automatic repair attempt does under the repair bounds.
+
+        ``streaks`` is the stored ``prs.repair_streaks`` state and ``unchanged`` whether the evidence matches
+        the last attempted fingerprint. Returns ``"unchanged"`` or ``"cooling"`` when nothing is written,
+        ``{"cooling": True, "streaks": s}`` when a backoff stage starts, ``{"stop": why | None, "streaks": s}``
+        when repairs stop (``why`` None once already stopped), else ``{"streaks": s}`` to queue a repair.
+        """
+        if streaks.get("stopped"):
+            return "unchanged" if unchanged else {"stop": None, "streaks": streaks}
+        causes = cls._repair_causes(findings)
+        names = cls._failed_check_names(findings)
+        counts = {c: int(streaks.get(c, 0)) for c in PR_REPAIR_CAUSES}
+        backoff = {c: int(n) for c, n in (streaks.get("backoff") or {}).items() if c in PR_REPAIR_CAUSES}
+        if "checks" in causes and streaks.get("check_names") and names != streaks["check_names"]:
+            # Different checks fail now: the last repair made progress, so the checks budget starts over.
+            counts["checks"] = 0
+            backoff.pop("checks", None)
+        worn = [c for c in causes if counts[c] >= MAX_PR_REPAIR_STREAK]
+        attempts = [float(t) for t in streaks.get("attempts") or () if float(t) > now - PR_REPAIR_WINDOW_SECONDS]
+        state: dict[str, Any] = {**counts, "check_names": names, "attempts": attempts}
+        if not worn:
+            if unchanged:
+                return "unchanged"
+        else:
+            # A cause survived MAX_PR_REPAIR_STREAK repairs in a row: wait out the next backoff stage, then
+            # retry exactly once (even with identical evidence, e.g. after a no_change repair).
+            cool_until = streaks.get("cool_until")
+            if cool_until is None:
+                stage = max(backoff.get(c, 0) for c in worn)
+                if stage >= len(PR_REPAIR_BACKOFF_SECONDS):
+                    waits = ", ".join(f"{s / 3600:g} h" for s in PR_REPAIR_BACKOFF_SECONDS)
+                    why = (f"{' and '.join(PR_REPAIR_CAUSES[c] for c in worn)} survived {MAX_PR_REPAIR_STREAK} "
+                           f"consecutive automatic repairs and every backoff retry (after {waits})")
+                    return {"stop": why, "streaks": {**state, "backoff": backoff, "stopped": "backoff"}}
+                backoff.update({c: stage + 1 for c in worn})
+                return {"cooling": True, "streaks": {**state, "backoff": backoff,
+                                                     "cool_until": now + PR_REPAIR_BACKOFF_SECONDS[stage]}}
+            if now < float(cool_until):
+                return "cooling"
+        if len(attempts) >= MAX_PR_REPAIRS_PER_WINDOW:
+            why = (f"it already started {len(attempts)} automatic repairs in the last "
+                   f"{PR_REPAIR_WINDOW_SECONDS / 3600:g} hours (limit {MAX_PR_REPAIRS_PER_WINDOW}) and GitHub still "
+                   "reports blockers")
+            return {"stop": why, "streaks": {**state, "backoff": backoff, "stopped": "window"}}
+        counts = {c: counts[c] + 1 if c in causes else 0 for c in PR_REPAIR_CAUSES}
+        return {"streaks": {**state, **counts, "attempts": [*attempts, now],
+                            **({"backoff": backoff} if worn else {})}}
 
     def _notify_pr_ready(self, repo: str, number: int, state: Mapping[str, Any]) -> dict[str, Any]:
         """``state`` is the caller's fresh ``_pr_state``; the mention re-reads GitHub after assigning."""
@@ -3707,6 +3806,13 @@ class Bridge:
                                  "WHERE repo = ? AND pr_number = ? AND revision = ?",
                                  (state["head_sha"], repo, number, row["revision"]))
                 return "ready"
+            if self._checks_pending(state):
+                # Repair only finished CI: a push while a run is in flight cancels the run whose failure the
+                # repair should see. The periodic reconcile re-checks; a manual signal stays recorded.
+                with self.store.tx() as conn:
+                    conn.execute("UPDATE prs SET dirty = 0, head_sha = ? WHERE repo = ? AND pr_number = ? "
+                                 "AND revision = ?", (state["head_sha"], repo, number, row["revision"]))
+                return "checks_pending"
             findings = self._pr_findings(repo, state)
             if not self._actionable(findings) and not manual:
                 with self.store.tx() as conn:
@@ -3716,38 +3822,39 @@ class Bridge:
             evidence = {"repo": repo, "head": state["head_sha"], "base": state["default_sha"],
                         "findings": findings, "manual": manual}
             fingerprint = hashlib.sha256(json.dumps(evidence, sort_keys=True).encode()).hexdigest()
-            if row["attempted_key"] == fingerprint:
-                return "unchanged"
-            streaks = json.loads(row["repair_streaks"] or "{}")
-            causes = self._repair_causes(findings)
+            unchanged = row["attempted_key"] == fingerprint
             if manual:
-                streaks = {}  # a human repair signal starts a fresh automatic-repair budget
+                if unchanged:
+                    return "unchanged"
+                streaks: dict[str, Any] = {}  # a human repair signal starts a fresh automatic-repair budget
             else:
-                # Each repair pushes a head whose new evidence would queue the next one. Stop when one cause
-                # survived MAX_PR_REPAIR_STREAK repairs in a row, or after MAX_PR_REPAIRS_TOTAL repairs while
-                # causes alternate; say so once per manual-signal cycle.
-                worn = [c for c in causes if streaks.get(c, 0) >= MAX_PR_REPAIR_STREAK]
-                total = streaks.get("total", 0)
-                if worn or total >= MAX_PR_REPAIRS_TOTAL:
-                    if worn:
-                        why = (f"{' and '.join(PR_REPAIR_CAUSES[c] for c in worn)} survived {MAX_PR_REPAIR_STREAK} "
-                               "consecutive automatic repairs")
-                    else:
-                        why = (f"it already queued {total} automatic repairs (limit {MAX_PR_REPAIRS_TOTAL}) and "
-                               "GitHub still reports blockers")
-                    slug = (self.config.github_bot_login or "").removesuffix("[bot]")
-                    again = f"Mention `@{slug}` in a comment to request another repair, or fix" if slug else "Fix"
-                    self._comment(repo, number, f"pr-repair-limit:{number}:{row['last_manual_id'] or 0}",
-                                  f"**Automatic repair stopped** — the issue agent stopped repairing this pull "
-                                  f"request at `{state['head_sha']}`: {why}. {again} the cause manually; the "
-                                  "limits reset when the pull request becomes merge-ready.")
+                planned = self._plan_auto_repair(json.loads(row["repair_streaks"] or "{}"), findings,
+                                                 unchanged, now)
+                if isinstance(planned, str):
+                    return planned
+                if "stop" in planned:
+                    if planned["stop"] is not None:
+                        slug = (self.config.github_bot_login or "").removesuffix("[bot]")
+                        again = (f"Mention `@{slug}` in a comment to request another repair, or fix" if slug
+                                 else "Fix")
+                        self._comment(repo, number, f"pr-repair-limit:{number}:{row['last_manual_id'] or 0}",
+                                      f"**Automatic repair stopped** — the issue agent stopped repairing this pull "
+                                      f"request at `{state['head_sha']}`: {planned['stop']}. {again} the cause "
+                                      "manually; the limits reset when the pull request becomes merge-ready.")
                     with self.store.tx() as conn:
-                        conn.execute("UPDATE prs SET dirty = 0, attempted_key = ?, head_sha = ?, updated_at = ?"
-                                     " WHERE repo = ? AND pr_number = ? AND revision = ?",
-                                     (fingerprint, state["head_sha"], now, repo, number, row["revision"]))
+                        conn.execute("UPDATE prs SET dirty = 0, attempted_key = ?, head_sha = ?, repair_streaks = ?,"
+                                     " updated_at = ? WHERE repo = ? AND pr_number = ? AND revision = ?",
+                                     (fingerprint, state["head_sha"], json.dumps(planned["streaks"], sort_keys=True),
+                                      now, repo, number, row["revision"]))
                     return "repair_limit"
-                streaks = {**{c: streaks.get(c, 0) + 1 if c in causes else 0 for c in PR_REPAIR_CAUSES},
-                           "total": total + 1}
+                if "cooling" in planned:
+                    with self.store.tx() as conn:
+                        conn.execute("UPDATE prs SET dirty = 0, head_sha = ?, repair_streaks = ?, updated_at = ?"
+                                     " WHERE repo = ? AND pr_number = ? AND revision = ?",
+                                     (state["head_sha"], json.dumps(planned["streaks"], sort_keys=True), now,
+                                      repo, number, row["revision"]))
+                    return "cooling"
+                streaks = planned["streaks"]
             with self.store.tx() as conn:
                 active = conn.execute("SELECT 1 FROM events WHERE repo = ? AND issue_number = ? "
                                       "AND state IN ('accepted', 'dispatching', 'dispatched') LIMIT 1",

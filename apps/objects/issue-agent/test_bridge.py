@@ -619,7 +619,7 @@ TRIAGE_ADVISORY: dict[str, Any] = {
 }
 IMPLEMENT_OK: dict[str, Any] = {
     "status": "ready", "head_sha": SHA_A, "pr": {"title": "Fix it", "body": "Fixes #7"}, "issue_comment": None,
-    "questions": [], "summary": "done", "blockers": [],
+    "questions": [], "summary": "done", "blockers": [], "local_checks": [{"command": "make test", "exit_code": 0}],
 }
 REVIEW_OK: dict[str, Any] = {
     "status": "reviewed", "head_sha": SHA_A, "event": "REQUEST_CHANGES", "body": "Needs work",
@@ -1593,39 +1593,61 @@ class PrRepairTests(BridgeTestCase):
         self.assertEqual(self.store.pr_state(REPO, 144)["active_delivery"], second["delivery_id"])
         self.assertEqual(json.loads(second["stages"])["repair_input"]["manual"]["id"], 902)
 
-    def repair_round(self, n: int, *causes: str) -> str:
-        """Finish the active repair, then report a fresh blocker for each cause ('checks', 'review')."""
+    def repair_round(self, n: int, *causes: str, check: str = "flaky", now: float | None = None,
+                     outcome: str = "implemented") -> str:
+        """Finish the active repair, then report a fresh blocker for each cause ('checks', 'review'); the
+        failing check keeps the name ``check`` so its streak counts as the same failure surviving."""
         delivery = self.store.pr_state(REPO, 144)["active_delivery"]
         if delivery:
-            self.store.update_event(delivery, state="completed", outcome="implemented")
+            self.store.update_event(delivery, state="completed", outcome=outcome)
             self.assertTrue(self.store.release_pr_repair(REPO, 144, delivery, success=True))
-        self.fake.checks[SHA_A] = ([{"name": f"flaky-{n}", "status": "COMPLETED", "conclusion": "FAILURE"}]
+        self.fake.checks[SHA_A] = ([{"name": check, "status": "COMPLETED", "conclusion": "FAILURE",
+                                     "detailsUrl": f"https://ci/{n}"}]
                                    if "checks" in causes else [])
         self.fake.reviews = ([{"id": n, "state": "CHANGES_REQUESTED", "commit_id": SHA_A,
                                "user": {"login": REVIEWER}, "body": f"Fix boundary {n}."}]
                              if "review" in causes else [])
-        return self.bridge.reconcile_pr(REPO, 144)
+        return self.bridge.reconcile_pr(REPO, 144, now)
+
+    def repair_count(self) -> int:
+        return len(self.store.query("SELECT 1 FROM events WHERE kind = 'pr_repair'"))
 
     def repair_notices(self) -> list[str]:
         return [c["body"] for c in self.fake.comments.get(144, []) if "Automatic repair stopped" in c["body"]]
 
-    def test_a_cause_surviving_consecutive_repairs_stops_them_until_a_human_signal(self) -> None:
+    def test_a_surviving_cause_backs_off_then_retries_once_per_stage_before_stopping(self) -> None:
         # krema#63: each repair pushed a head whose flaky CI failed again, so every new fingerprint queued
-        # another repair without end.
+        # another repair without end; flareway#138 then showed a permanent stop gives up on a real failure.
         self.use_reviewer_app()
         self.managed_pr(merge_state="BLOCKED")
+        t = time.time()
         for n in range(bridge.MAX_PR_REPAIR_STREAK):
-            self.assertEqual(self.repair_round(n, "checks"), "queued")
-        self.assertEqual(self.repair_round(90, "checks"), "repair_limit")
-        self.assertEqual(self.repair_round(91, "checks", "review"), "repair_limit")
-        repairs = self.store.query("SELECT 1 FROM events WHERE kind = 'pr_repair'")
-        self.assertEqual(len(repairs), bridge.MAX_PR_REPAIR_STREAK)
+            self.assertEqual(self.repair_round(n, "checks", now=t), "queued")
+        # Round 90's evidence stays identical from here on, so every retry repeats the attempted fingerprint.
+        self.assertEqual(self.repair_round(90, "checks", now=t), "cooling")
+        for n, wait in enumerate(bridge.PR_REPAIR_BACKOFF_SECONDS):
+            # Silent while cooling, however often reconciliation runs.
+            self.assertEqual(self.bridge.reconcile_pr(REPO, 144, t + wait - 1), "cooling")
+            self.assertEqual(self.repair_count(), bridge.MAX_PR_REPAIR_STREAK + n)
+            self.assertEqual(self.repair_notices(), [])
+            # Expired: exactly one more repair although the evidence equals the attempted fingerprint.
+            t += wait
+            self.assertEqual(self.bridge.reconcile_pr(REPO, 144, t), "queued")
+            self.assertEqual(self.repair_count(), bridge.MAX_PR_REPAIR_STREAK + n + 1)
+            # The retry changed nothing (no_change keeps the attempted fingerprint): the next stage starts.
+            self.assertEqual(self.repair_round(90, "checks", now=t, outcome="no_change"),
+                             "cooling" if n + 1 < len(bridge.PR_REPAIR_BACKOFF_SECONDS) else "repair_limit")
+        self.assertEqual(self.repair_count(), bridge.MAX_PR_REPAIR_STREAK + len(bridge.PR_REPAIR_BACKOFF_SECONDS))
+        [notice] = self.repair_notices()
+        self.assertIn(f"failing checks survived {bridge.MAX_PR_REPAIR_STREAK} consecutive", notice)
+        self.assertIn("every backoff retry", notice)
+        self.assertIn("`@bulgasaribot`", notice)
         row = self.store.pr_state(REPO, 144)
         self.assertEqual((row["dirty"], row["active_delivery"]), (0, None))
-        notices = self.repair_notices()
-        self.assertEqual(len(notices), 1)
-        self.assertIn(f"failing checks survived {bridge.MAX_PR_REPAIR_STREAK} consecutive", notices[0])
-        self.assertIn("`@bulgasaribot`", notices[0])
+        # Stopped for good: later evidence or time neither repairs nor comments again.
+        self.assertEqual(self.repair_round(91, "checks", "review", now=t + 10 ** 6), "repair_limit")
+        self.assertEqual(self.repair_count(), bridge.MAX_PR_REPAIR_STREAK + len(bridge.PR_REPAIR_BACKOFF_SECONDS))
+        self.assertEqual(len(self.repair_notices()), 1)
         # A human repair signal is allowed and restarts the automatic budget.
         request = comment_payload(144, 950, on_pr=True, body="@bulgasaribot fix the flaky check")
         self.assertEqual(self.deliver(request, event="issue_comment", delivery="manual").outcome,
@@ -1633,19 +1655,87 @@ class PrRepairTests(BridgeTestCase):
         self.assertEqual(self.bridge.reconcile_pr(REPO, 144), "queued")
         for n in range(bridge.MAX_PR_REPAIR_STREAK):
             self.assertEqual(self.repair_round(92 + n, "checks"), "queued")
-        self.assertEqual(self.repair_round(99, "checks"), "repair_limit")
-        self.assertEqual(len(self.repair_notices()), 2)  # one notice per manual-signal cycle
+        self.assertEqual(self.repair_round(99, "checks"), "cooling")
 
-    def test_alternating_causes_reset_streaks_until_the_total_backstop(self) -> None:
+    def test_a_cause_that_clears_ends_its_backoff(self) -> None:
         self.use_reviewer_app()
         self.managed_pr(merge_state="BLOCKED")
-        for n in range(bridge.MAX_PR_REPAIRS_TOTAL):
-            self.assertEqual(self.repair_round(n, "checks" if n % 2 else "review"), "queued")
-        self.assertEqual(self.repair_round(50, "checks"), "repair_limit")
-        repairs = self.store.query("SELECT 1 FROM events WHERE kind = 'pr_repair'")
-        self.assertEqual(len(repairs), bridge.MAX_PR_REPAIRS_TOTAL)
+        t = time.time()
+        for n in range(bridge.MAX_PR_REPAIR_STREAK):
+            self.assertEqual(self.repair_round(n, "checks", now=t), "queued")
+        self.assertEqual(self.repair_round(90, "checks", now=t), "cooling")
+        # The checks pass meanwhile and a review asks for changes: that is not the cooling cause.
+        self.assertEqual(self.repair_round(91, "review", now=t + 1), "queued")
+        self.assertNotIn("cool_until", json.loads(self.store.pr_state(REPO, 144)["repair_streaks"]))
+
+    def test_a_changed_set_of_failing_checks_restarts_the_checks_streak(self) -> None:
+        self.use_reviewer_app()
+        self.managed_pr(merge_state="BLOCKED")
+        for n in range(bridge.MAX_PR_REPAIR_STREAK):
+            self.assertEqual(self.repair_round(n, "checks", check="lint"), "queued")
+        # lint now passes and envtest fails: progress, so this is a fresh failure with a fresh budget.
+        for n in range(bridge.MAX_PR_REPAIR_STREAK):
+            self.assertEqual(self.repair_round(10 + n, "checks", check="envtest"), "queued")
+        self.assertEqual(self.repair_round(20, "checks", check="envtest"), "cooling")
+        self.assertEqual(self.repair_count(), 2 * bridge.MAX_PR_REPAIR_STREAK)
+
+    def test_the_rolling_window_caps_alternating_repairs(self) -> None:
+        self.use_reviewer_app()
+        self.managed_pr(merge_state="BLOCKED")
+        t = time.time()
+        for n in range(bridge.MAX_PR_REPAIRS_PER_WINDOW):
+            self.assertEqual(self.repair_round(n, "checks" if n % 2 else "review", now=t + n), "queued")
+        self.assertEqual(self.repair_round(50, "checks", now=t + 50), "repair_limit")
+        self.assertEqual(self.repair_count(), bridge.MAX_PR_REPAIRS_PER_WINDOW)
         [notice] = self.repair_notices()
-        self.assertIn(f"queued {bridge.MAX_PR_REPAIRS_TOTAL} automatic repairs", notice)
+        self.assertIn(f"started {bridge.MAX_PR_REPAIRS_PER_WINDOW} automatic repairs in the last 24 hours", notice)
+
+    def test_repairs_spread_beyond_the_window_are_not_capped(self) -> None:
+        self.use_reviewer_app()
+        self.managed_pr(merge_state="BLOCKED")
+        t = time.time()
+        for n in range(bridge.MAX_PR_REPAIRS_PER_WINDOW + 2):
+            t += bridge.PR_REPAIR_WINDOW_SECONDS / bridge.MAX_PR_REPAIRS_PER_WINDOW + 1
+            self.assertEqual(self.repair_round(n, "checks" if n % 2 else "review", now=t), "queued")
+        self.assertEqual(self.repair_notices(), [])
+
+    def test_the_reviewer_status_alone_is_not_a_failing_check(self) -> None:
+        # flareway#138: the reviewer's FAILURE status counted as a failing check on top of the review itself.
+        self.use_reviewer_app()
+        self.managed_pr(merge_state="BLOCKED")
+        self.fake.statuses[SHA_A] = [{"context": bridge.DEFAULT_REVIEW_STATUS_CONTEXT, "state": "failure",
+                                     "description": "Changes requested"}]
+        self.assertEqual(self.bridge.reconcile_pr(REPO, 144), "waiting")
+        self.assertEqual(self.repair_count(), 0)
+        self.fake.reviews = [{"id": 1, "state": "CHANGES_REQUESTED", "commit_id": SHA_A,
+                              "user": {"login": REVIEWER}, "body": "Fix the boundary."}]
+        self.assertEqual(self.bridge.reconcile_pr(REPO, 144), "queued")
+        streaks = json.loads(self.store.pr_state(REPO, 144)["repair_streaks"])
+        self.assertEqual((streaks["checks"], streaks["review"]), (0, 1))
+
+    def test_a_repair_waits_for_running_checks(self) -> None:
+        # flareway#138: repairs pushed while envtest still ran, cancelling the run whose failure mattered.
+        self.use_reviewer_app()
+        self.managed_pr(merge_state="BLOCKED")
+        lint = {"name": "lint", "status": "COMPLETED", "conclusion": "FAILURE"}
+        for running in ({"name": "envtest", "status": "IN_PROGRESS", "conclusion": None},
+                        {"__typename": "StatusContext", "context": "ci/legacy", "state": "PENDING"}):
+            with self.subTest(running=running):
+                self.fake.checks[SHA_A] = [lint, running]
+                self.assertEqual(self.bridge.reconcile_pr(REPO, 144), "checks_pending")
+                self.assertEqual(self.repair_count(), 0)
+                self.assertIsNone(self.store.pr_state(REPO, 144)["attempted_key"])
+        # A manual signal also waits, and is kept for when the checks finish.
+        request = comment_payload(144, 960, on_pr=True, body="@bulgasaribot fix lint")
+        self.assertEqual(self.deliver(request, event="issue_comment", delivery="manual").outcome,
+                         "reconcile_pending")
+        self.assertEqual(self.bridge.reconcile_pr(REPO, 144), "checks_pending")
+        self.assertIsNotNone(self.store.pr_state(REPO, 144)["latest_signal"])
+        self.fake.checks[SHA_A] = [lint, {"name": "envtest", "status": "COMPLETED", "conclusion": "FAILURE"}]
+        self.assertEqual(self.bridge.reconcile_pr(REPO, 144), "queued")
+        self.assertEqual(self.repair_count(), 1)
+        repair = self.store.query("SELECT stages FROM events WHERE kind = 'pr_repair'")[0]
+        self.assertEqual(json.loads(repair["stages"])["repair_input"]["manual"]["id"], 960)
 
     def test_a_merge_ready_state_resets_the_repair_budget(self) -> None:
         self.use_reviewer_app()
@@ -2335,7 +2425,7 @@ class TurnTests(BridgeTestCase):
 
     def result_line(self, nonce: str | None = None, **fields: Any) -> str:
         data = {"status": "no_change", "head_sha": None, "pr": None, "issue_comment": "nothing needed",
-                "questions": [], "summary": "nothing needed", "blockers": [], **fields}
+                "questions": [], "summary": "nothing needed", "blockers": [], "local_checks": [], **fields}
         return f"done.\n{bridge.RESULT_TAG} {nonce or self.lid} {json.dumps(data)}"
 
     def say(self, text: str) -> None:
@@ -2402,7 +2492,8 @@ class TurnTests(BridgeTestCase):
         self.assertEqual(self.op("session_turn")["state"], "queued")  # no second correction while it waits
         self.assertEqual(len(self.fake.message_posts), 2)
         self.fake.invoke(self.sid, fix_lid)
-        self.say(self.result_line(fix_lid, status="ready", head_sha=SHA_A, pr={"title": "x", "body": "Fixes #7"}))
+        self.say(self.result_line(fix_lid, status="ready", head_sha=SHA_A, pr={"title": "x", "body": "Fixes #7"},
+                                  local_checks=[{"command": "make test", "exit_code": 0}]))
         done = self.op("session_turn")
         self.assertEqual((done["state"], done["result"]["head_sha"]), ("done", SHA_A))
         self.assertEqual(bridge.resend_local_id("d1", "implement", fix_lid), f"{self.lid}-r1")
@@ -2709,6 +2800,21 @@ class ResultValidationTests(unittest.TestCase):
                            "needs_info")
         self.assertInvalid("implement", variant(IMPLEMENT_OK, status="blocked", head_sha=None, pr=None), "blockers")
         self.assertInvalid("implement", variant(IMPLEMENT_OK, blockers=["x"]), "blockers")
+
+    def test_a_ready_result_requires_passing_local_ci_gates(self) -> None:
+        self.assertInvalid("implement", variant(IMPLEMENT_OK, local_checks=[]), "local_checks must list")
+        failing = [{"command": "make lint", "exit_code": 0}, {"command": "make test", "exit_code": 2}]
+        self.assertInvalid("implement", variant(IMPLEMENT_OK, local_checks=failing), "make test")
+        self.assertInvalid("implement", variant(IMPLEMENT_OK, local_checks=[{"command": "make test",
+                                                                                "exit_code": True}]), "exit_code")
+        self.assertInvalid("implement", variant(IMPLEMENT_OK, local_checks=[{"command": "make"}]), "missing")
+        passing = [{"command": "make lint", "exit_code": 0}, {"command": "make test-envtest", "exit_code": 0}]
+        self.assertEqual(bridge.validate_result("implement", variant(IMPLEMENT_OK, local_checks=passing), 7)
+                         ["local_checks"], passing)
+        # Only a ready head is pushed; other outcomes may report failing or no local runs.
+        blocked = variant(IMPLEMENT_OK, status="blocked", head_sha=None, pr=None, blockers=["envtest needs KVM"],
+                          local_checks=failing)
+        self.assertEqual(bridge.validate_result("implement", blocked, 7)["status"], "blocked")
 
     def test_review_conditional_fields(self) -> None:
         self.assertInvalid("review", variant(REVIEW_OK, head_sha=None), "head_sha")
