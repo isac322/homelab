@@ -2507,6 +2507,52 @@ class TurnTests(BridgeTestCase):
         self.assertEqual((sent["delivery"], sent["session_id"], sent["local_id"]), ("sent", new_sid, f"{self.lid}-r1"))
         self.assertEqual([p["localId"] for p in self.fake.message_posts], [self.lid, f"{self.lid}-r1"])
 
+    def test_retry_of_a_parked_step_resends_it_instead_of_rereading_the_result(self) -> None:
+        # Live flareway#135: the agent answered 'blocked' (go missing from PATH), the event parked, and after
+        # the runner was fixed every retry re-read that same answer under the old localId within minutes.
+        self.send()
+        self.fake.invoke(self.sid, self.lid)
+        self.fake.codex(self.sid, "message", message=self.result_line(status="blocked", blockers=["go missing"]))
+        self.assertEqual(self.op("session_turn")["state"], "done")
+        self.assertTrue(self.op("fail", detail="Route implement result: agent reported blocked")["ok"])
+        self.assertTrue(self.op("retry_event")["ok"])
+        self.assertEqual(self.dispatcher.tick(), "dispatched")
+        self.assertEqual(self.op("begin", attempt=1)["status"], "started")
+        sent = self.send()
+        self.assertEqual((sent["delivery"], sent["session_id"], sent["local_id"]), ("sent", self.sid, f"{self.lid}-r1"))
+        self.assertEqual([p["localId"] for p in self.fake.message_posts], [self.lid, f"{self.lid}-r1"])
+        self.assertEqual(self.op("session_turn")["state"], "queued")
+
+    def test_retry_keeps_the_local_id_of_a_step_that_is_still_running(self) -> None:
+        self.send()
+        self.fake.invoke(self.sid, self.lid)
+        self.fake.codex(self.sid, "message", message=self.result_line(status="blocked", blockers=["x"]))
+        self.fake.sessions[self.sid]["thinking"] = True
+        self.assertTrue(self.op("fail", detail="operator stop")["ok"])
+        self.assertTrue(self.op("retry_event")["ok"])
+        turn = self.store.turn("d1", "implement")
+        self.assertEqual((turn["state"], turn["local_id"]), ("sent", self.lid))
+
+    def test_retry_stays_parked_when_the_session_history_is_unavailable(self) -> None:
+        self.send()
+        self.fake.invoke(self.sid, self.lid)
+        self.fake.codex(self.sid, "message", message=self.result_line(status="blocked", blockers=["x"]))
+        self.assertTrue(self.op("fail", detail="operator stop")["ok"])
+        with patch.object(self.bridge, "_history_from", side_effect=bridge.OpError("history HTTP 502", retryable=True)):
+            failed = self.op("retry_event")
+        self.assertFalse(failed["ok"])
+        self.assertTrue(failed["retryable"])
+        self.assertEqual(self.store.event("d1")["state"], "needs_attention")
+        self.assertEqual(self.store.turn("d1", "implement")["local_id"], self.lid)
+
+    def test_retry_keeps_the_local_id_of_a_step_not_yet_handed_to_the_agent(self) -> None:
+        self.send()  # stored, never invoked
+        self.fake.codex(self.sid, "message", message=self.result_line(status="blocked", blockers=["x"]))
+        self.assertTrue(self.op("fail", detail="operator stop")["ok"])
+        with patch.object(self.bridge, "_queued_state", return_value="unknown"):
+            self.assertTrue(self.op("retry_event")["ok"])
+        self.assertEqual(self.store.turn("d1", "implement")["local_id"], self.lid)
+
     def test_session_lost_mid_turn_is_resent_under_a_fresh_local_id(self) -> None:
         self.send()
         self.fake.invoke(self.sid, self.lid)

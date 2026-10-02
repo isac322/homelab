@@ -2336,13 +2336,59 @@ class Bridge:
             # A retry before the first send needs current evidence, not a parked snapshot.
             # Keep snapshots once a send may have landed so localId delivery remains idempotent.
             stages.pop("repair_snapshot", None)
-        # Drop the parked run's heartbeat and execution: the dispatcher keeps an existing heartbeat, so an
-        # old one would make the stale sweep park the retried event again before n8n can begin it.
-        self.store.update_event(ev["delivery_id"], state="accepted", stages=json.dumps(stages), attempts=0,
-                                next_attempt_at=0, detail=None, attention_pending=0, attention_node=None,
-                                heartbeat_at=None, execution_id=None)
+        with self.session_lock:
+            # Same lock as session_send/session_turn, so a live operation cannot finish the turn in between.
+            turn = self.store.turn(ev["delivery_id"])
+            if turn is not None and turn["state"] == "sent" and self._answered(ev, turn):
+                # The parked step already returned its result. Re-running it needs a new message: under the old
+                # localId session_send reports 'already' and session_turn re-reads that same result. A turn
+                # still running, or without a result, keeps its localId so it is never sent twice.
+                self.store.put_turn(ev["delivery_id"], turn["mode"],
+                                    resend_local_id(ev["delivery_id"], turn["mode"], turn["local_id"]),
+                                    turn["session_id"], "lost")
+            # Drop the parked run's heartbeat and execution: the dispatcher keeps an existing heartbeat, so an
+            # old one would make the stale sweep park the retried event again before n8n can begin it.
+            self.store.update_event(ev["delivery_id"], state="accepted", stages=json.dumps(stages), attempts=0,
+                                    next_attempt_at=0, detail=None, attention_pending=0, attention_node=None,
+                                    heartbeat_at=None, execution_id=None)
         self.store.update_issue(ev["repo"], ev["issue_number"], blocked=0, detail=None)
         return {}
+
+    def _answered(self, ev: sqlite3.Row, turn: sqlite3.Row) -> bool:
+        """Whether this turn finished with a result line, by session_turn's rule (not while still running).
+
+        Retryable lookup failures propagate, so the event stays parked rather than resuming on a stale turn.
+        """
+        local_id = turn["local_id"]
+        try:
+            session = self._follow(ev["repo"], ev["issue_number"], turn["session_id"])
+        except OpError as exc:
+            if exc.retryable:
+                raise
+            return False  # session gone for good: nothing can be re-read, keep the turn as it is
+        sid = session["id"]
+        state = self._queued_state(sid, local_id)
+        if state in ("queued", "indeterminate"):
+            return False
+        try:
+            history = self._history_from(sid, local_id)
+        except OpError as exc:
+            if exc.retryable:
+                raise
+            return False  # our message is out of reach: nothing to re-read
+        if history is None or not invoked(history[0]) and state != "invoked":
+            return False  # not yet handed to the agent: session_turn reports it as queued
+        alive = session.get("active") is not False
+        if alive and (session.get("thinking") or (session.get("agentState") or {}).get("requests")):
+            return False
+        last_text: list[str] = []
+        for m in history[1:]:
+            if message_role(m) == "user" and m.get("localId") != local_id and invoked(m):
+                break
+            texts = assistant_texts(m)
+            if texts:
+                last_text = texts
+        return find_result(last_text, local_id) is not None
 
     def op_unblock_issue(self, req: dict[str, Any]) -> dict[str, Any]:
         repo, number = req.get("repo"), _positive_int(req.get("issue_number"))
