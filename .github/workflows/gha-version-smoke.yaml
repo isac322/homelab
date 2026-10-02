@@ -1,0 +1,20 @@
+name: Actions upgrade verification
+on:
+  pull_request:
+    branches: [master]
+permissions:
+  contents: read
+jobs:
+  checkout:
+    strategy:
+      matrix:
+        runner: [ubuntu-latest, ubuntu-24.04-arm]
+    runs-on: ${{ matrix.runner }}
+    steps:
+      - uses: actions/checkout@v7.0.1
+      - name: Verify checked-out event revision
+        env:
+          EXPECTED_SHA: ${{ github.sha }}
+        run: |
+          test "$(git rev-parse HEAD)" = "$EXPECTED_SHA"
+          git log -1 --format='%H'
