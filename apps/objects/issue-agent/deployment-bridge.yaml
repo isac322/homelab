@@ -3,7 +3,7 @@ kind: Deployment
 metadata:
   name: issue-agent-bridge
 spec:
-  replicas: 0
+  replicas: 1
   strategy:
     type: Recreate
   selector:
@@ -16,6 +16,9 @@ spec:
     spec:
       automountServiceAccountToken: false
       enableServiceLinks: false
+      # pillar-csi volumes attach only where its node plugin is registered.
+      nodeSelector:
+        pillar-csi.bhyoo.com/nvmeof: "true"
       securityContext:
         runAsNonRoot: true
         runAsUser: 1000
