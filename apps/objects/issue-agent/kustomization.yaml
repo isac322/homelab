@@ -3,7 +3,6 @@ kind: Kustomization
 namespace: issue-agent
 resources:
   - namespace.yaml
-  - pvc.yaml
   - external-secret-auth.yaml
   - external-secret-github.yaml
   - external-secret-publisher.yaml

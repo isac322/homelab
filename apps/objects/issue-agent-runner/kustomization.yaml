@@ -6,7 +6,6 @@ kind: Kustomization
 namespace: issue-agent-runner
 resources:
   - namespace.yaml
-  - pvc.yaml
   - secret-store.yaml
   - external-secret-shared.yaml
   - external-secret-provider.yaml
