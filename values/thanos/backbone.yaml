@@ -112,11 +112,13 @@ compactor:
       cpu: "2"
       memory: 2Gi
   # Created by democratic-csi and imported into pillar-csi in place on
-  # 2026-10-01.
+  # 2026-10-01. A 2-week compaction downloads its source blocks (~15GiB here)
+  # and writes a block of similar size next to them; at 20Gi it halted with
+  # "no space left on device" (2026-10-03).
   persistence:
     enabled: true
     storageClass: ssd-ha
-    size: 20Gi
+    size: 60Gi
     annotations:
       pillar-csi.bhyoo.com/import-zvol: hot-data/k8s/pvc-d9bfa3b6-0d6e-4d3e-8ab6-c7b57774c55f
   retentionResolutionRaw: 30d
