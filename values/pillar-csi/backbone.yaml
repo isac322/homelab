@@ -113,3 +113,13 @@ agent:
       limits:
         cpu: null
         memory: 16Mi
+
+# Serves pillar-agent (:9501) and pillar-node (:9502) /metrics — including
+# pillar_csi_pool_{size,available,provisioned}_bytes per backend, the capacity
+# bound used by the PillarPool* alerts — and renders the prometheus-operator
+# PodMonitors that scrape them. The endpoints are plaintext HTTP on the host
+# IP (chart design); Prometheus on the cluster network is the only consumer.
+metrics:
+  enabled: true
+  podMonitor:
+    enabled: true

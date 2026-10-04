@@ -1,0 +1,78 @@
+# Capacity alerts for the ZFS pools pillar-csi provisions zvols from.
+#
+# pillar_csi_pool_available_bytes is the allocatable-space bound at the
+# provisioning root (<pool>/k8s), not zpool-wide free space: it already
+# accounts for raidz parity, ancestor quotas/reservations and slop space.
+# Volumes on these pools are thin zvols (refreservation=none) whose summed
+# volsize overcommits the available space, so any large reservation — a
+# thick zvol, an import, a volume grow — can exhaust the pool while every
+# guest filesystem still reports free space. Exhaustion stops writes at the
+# backend and makes XFS/EXT4 inside the volumes shut down with ENOSPC
+# (the 2026-10-04 hot-data incident).
+#
+# PrometheusRule alerts have no Alertmanager in this cluster (Grafana alerts
+# to Telegram instead); values/kube-prometheus-stack/backbone.yaml forwards
+# the firing ALERTS{alertname=~"PillarPool.*"} series to Grafana.
+apiVersion: monitoring.coreos.com/v1
+kind: PrometheusRule
+metadata:
+  name: pillar-csi-pool-capacity
+spec:
+  groups:
+    - name: pillar-csi.pools
+      rules:
+        - alert: PillarPoolSpaceLow
+          expr: |
+            (
+              pillar_csi_pool_available_bytes / pillar_csi_pool_size_bytes < 0.15
+              or pillar_csi_pool_available_bytes < 96636764160
+            )
+            unless
+            (
+              pillar_csi_pool_available_bytes / pillar_csi_pool_size_bytes < 0.05
+              or pillar_csi_pool_available_bytes < 34359738368
+            )
+          for: 15m
+          labels:
+            severity: warning
+          annotations:
+            summary: 'ZFS pool {{ $labels.pool }} ({{ $labels.backend }}) is running low on allocatable space'
+            description: >-
+              pillar-csi zvols are thin (refreservation=none) and heavily
+              overcommit the pool: summed volsize exceeds the allocatable
+              space, so the pool can be exhausted while guests still see
+              free space. When available hits 0 every volume's writes fail
+              and its filesystem shuts down. Check on the storage node:
+              `zfs list -o name,used,avail,refer,mountpoint -r <pool>/k8s`.
+              Reclaim space by deleting unused volumes/PVCs (pvc-* zvols),
+              shrinking or removing thick reservations, or moving volumes
+              to another pool.
+        - alert: PillarPoolSpaceLow
+          expr: |
+            pillar_csi_pool_available_bytes / pillar_csi_pool_size_bytes < 0.05
+            or pillar_csi_pool_available_bytes < 34359738368
+          for: 5m
+          labels:
+            severity: critical
+          annotations:
+            summary: 'ZFS pool {{ $labels.pool }} ({{ $labels.backend }}) is critically low on allocatable space'
+            description: >-
+              The pool backing <pool>/k8s is about to run out of space.
+              Thin zvols overcommit it, so a single thick reservation or
+              continued sparse growth can drive available to 0 and shut
+              down every filesystem on the pool. Check on the storage node:
+              `zfs list -o name,used,avail,refer,mountpoint -r <pool>/k8s`.
+              Immediately delete unused volumes/PVCs or reduce thick
+              reservations (refreservation) to restore free space.
+        - alert: PillarPoolMetricsAbsent
+          expr: absent(pillar_csi_pool_available_bytes)
+          for: 10m
+          labels:
+            severity: warning
+          annotations:
+            summary: pillar-csi pool capacity metrics are missing
+            description: >-
+              pillar_csi_pool_available_bytes has no series, so the
+              PillarPoolSpaceLow alerts above cannot observe pool capacity.
+              Check the pillar-csi-agent PodMonitor scrape target on the
+              storage node and the agent's /metrics endpoint (port 9501).
