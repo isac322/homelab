@@ -626,7 +626,9 @@ grafana:
                     maxDataPoints: 43200
                     refId: B
                     type: threshold
-              noDataState: NoData
+              # OK (not NoData): a missing ALERTS series means no Pillar alert is firing,
+              # so the steady state must not emit a DatasourceNoData notification.
+              noDataState: OK
               execErrState: Error
               for: 1m
               annotations:
