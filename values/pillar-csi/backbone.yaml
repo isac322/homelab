@@ -114,12 +114,11 @@ agent:
         cpu: null
         memory: 16Mi
 
-# Serves pillar-agent (:9501) and pillar-node (:9502) /metrics — including
-# pillar_csi_pool_{size,available,provisioned}_bytes per backend, the capacity
-# bound used by the PillarPool* alerts — and renders the prometheus-operator
-# PodMonitors that scrape them. The endpoints are plaintext HTTP on the host
-# IP (chart design); Prometheus on the cluster network is the only consumer.
+
+# Scrape the controller's controller-runtime metrics (always served on :8080).
+# Agent/node /metrics stay off: they bind host-IP ports (9501/9502) that the
+# rock5bp HOMELAB_PILLAR firewall chain does not allow, and PillarStore
+# capacity is already exported through kube-state-metrics customResourceState.
 metrics:
-  enabled: true
   podMonitor:
     enabled: true
