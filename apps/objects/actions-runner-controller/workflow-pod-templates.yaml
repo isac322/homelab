@@ -1,0 +1,132 @@
+# Pod templates for the ARC kubernetes-mode container hook.
+# Each runner scale set mounts this ConfigMap and points
+# ACTIONS_RUNNER_CONTAINER_HOOK_TEMPLATE at its own key; the hook merges it
+# into every `<runner>-workflow` job pod and `-step-*` pod it creates.
+# `$<name>` containers are merged into the hook-generated container of the
+# same base name (`$job` = job container, `$postgres` = the postgres service);
+# non-prefixed containers would be appended as extra containers.
+#
+# Keep CI compute on macmini: rock5bp is the NVMe/TCP storage host (2026-10-04
+# a cc-lb workflow pod running cargo clippy drove load to 48 and starved
+# jellyfin/hermes liveness probes), and n2p*/rpi* lack the RAM (3.7-8Gi
+# allocatable) for these jobs. cpu limits bound the worst case on macmini;
+# requests stay small so job pods schedule next to their runner pod.
+# Add a `$<service>` entry here whenever a cc-lb workflow adds a service.
+apiVersion: v1
+kind: ConfigMap
+metadata:
+  name: workflow-pod-templates
+  namespace: arc-runners
+data:
+  cc-lb-4.yaml: |
+    spec:
+      affinity:
+        nodeAffinity:
+          requiredDuringSchedulingIgnoredDuringExecution:
+            nodeSelectorTerms:
+              - matchExpressions:
+                  - key: kubernetes.io/hostname
+                    operator: In
+                    values:
+                      - macmini
+      containers:
+        - name: $job
+          resources:
+            requests:
+              cpu: 200m
+              memory: 512Mi
+            limits:
+              cpu: "4"
+              memory: 6Gi
+        - name: $postgres
+          resources:
+            requests:
+              cpu: 100m
+              memory: 256Mi
+            limits:
+              cpu: "2"
+              memory: 2Gi
+  cc-lb-2.yaml: |
+    spec:
+      affinity:
+        nodeAffinity:
+          requiredDuringSchedulingIgnoredDuringExecution:
+            nodeSelectorTerms:
+              - matchExpressions:
+                  - key: kubernetes.io/hostname
+                    operator: In
+                    values:
+                      - macmini
+      containers:
+        - name: $job
+          resources:
+            requests:
+              cpu: 200m
+              memory: 512Mi
+            limits:
+              cpu: "2"
+              memory: 4Gi
+        - name: $postgres
+          resources:
+            requests:
+              cpu: 100m
+              memory: 256Mi
+            limits:
+              cpu: "2"
+              memory: 2Gi
+  cc-lb-1.yaml: |
+    spec:
+      affinity:
+        nodeAffinity:
+          requiredDuringSchedulingIgnoredDuringExecution:
+            nodeSelectorTerms:
+              - matchExpressions:
+                  - key: kubernetes.io/hostname
+                    operator: In
+                    values:
+                      - macmini
+      containers:
+        - name: $job
+          resources:
+            requests:
+              cpu: 100m
+              memory: 256Mi
+            limits:
+              cpu: "1"
+              memory: 2Gi
+        - name: $postgres
+          resources:
+            requests:
+              cpu: 100m
+              memory: 256Mi
+            limits:
+              cpu: "1"
+              memory: 1Gi
+  cc-lb-500m.yaml: |
+    spec:
+      affinity:
+        nodeAffinity:
+          requiredDuringSchedulingIgnoredDuringExecution:
+            nodeSelectorTerms:
+              - matchExpressions:
+                  - key: kubernetes.io/hostname
+                    operator: In
+                    values:
+                      - macmini
+      containers:
+        - name: $job
+          resources:
+            requests:
+              cpu: 100m
+              memory: 256Mi
+            limits:
+              cpu: "1"
+              memory: 2Gi
+        - name: $postgres
+          resources:
+            requests:
+              cpu: 100m
+              memory: 256Mi
+            limits:
+              cpu: "1"
+              memory: 1Gi
