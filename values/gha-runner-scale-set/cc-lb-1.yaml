@@ -22,8 +22,24 @@ containerMode:
 # No maxRunners: ARC omits the cap and scales with the GitHub queue.
 # No DinD. Image builds go to buildkit.arc-systems.svc:1234.
 # actions/cache talks to the in-cluster cache server, not GitHub.
+# Runner pods and hook-created workflow pods stay on macmini so CI CPU never
+# lands on rock5bp (storage host; load-48 incident) or the small n2p/rpi nodes.
 template:
   spec:
+    affinity:
+      nodeAffinity:
+        requiredDuringSchedulingIgnoredDuringExecution:
+          nodeSelectorTerms:
+            - matchExpressions:
+                - key: kubernetes.io/hostname
+                  operator: In
+                  values:
+                    - macmini
+    volumes:
+      - name: workflow-pod-templates
+        configMap:
+          name: workflow-pod-templates
+          defaultMode: 0644
     containers:
       - name: runner
         image: ghcr.io/isac322/cc-lb-actions-runner:2.337.0-cclb-fe7ac6d6df4f@sha256:c2f09887524d6616d0b97be3316822b47466f5633409f743d6e1bab277deefb4
@@ -31,6 +47,8 @@ template:
         env:
           - name: ACTIONS_RUNNER_CONTAINER_HOOKS
             value: /home/runner/k8s/index.js
+          - name: ACTIONS_RUNNER_CONTAINER_HOOK_TEMPLATE
+            value: /home/runner/pod-templates/cc-lb-1.yaml
           - name: ACTIONS_RUNNER_POD_NAME
             valueFrom:
               fieldRef:
@@ -98,6 +116,10 @@ template:
           limits:
             cpu: 1
             memory: 2Gi
+        volumeMounts:
+          - name: workflow-pod-templates
+            mountPath: /home/runner/pod-templates
+            readOnly: true
 
 listenerTemplate:
   spec:
