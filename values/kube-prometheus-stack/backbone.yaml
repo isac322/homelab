@@ -907,6 +907,9 @@ kubeApiServer:
         regex: apiserver_request_sli_duration_seconds_bucket|apiserver_client_certificate_expiration_seconds_bucket|workqueue_queue_duration_seconds_bucket
         targetLabel: __tmp_bucket_keep
         replacement: keep
+        # Written explicitly: the operator defaults action=replace on the live
+        # ServiceMonitor; omitting it leaves the app permanently OutOfSync.
+        action: replace
       - sourceLabels: [__name__, __tmp_bucket_keep]
         separator: ';'
         regex: .+_bucket;
