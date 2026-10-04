@@ -631,7 +631,7 @@ grafana:
               for: 1m
               annotations:
                 display_name: pillar-csi 스토리지 풀 알림
-                target: '{{`{{ $labels.alertname }} · {{ $labels.pool }}`}}'
+                target: '{{`{{ $labels.alertname }}{{ with $labels.pool }} · {{ . }}{{ end }}`}}'
                 current_value: '{{`severity={{ $labels.severity }}, firing`}}'
                 threshold: Prometheus PillarPool* 규칙이 firing 상태임
                 description: pillar-csi PrometheusRule이 발행한 알림을 전달합니다. 스토리지 노드에서 `zfs list -o name,used,avail -r <pool>/k8s`로 가용 공간을 확인하고, 사용하지 않는 볼륨(PVC)을 삭제하거나 thick 예약을 줄이세요.
