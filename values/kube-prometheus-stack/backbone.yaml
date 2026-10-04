@@ -895,6 +895,22 @@ kubeApiServer:
       - sourceLabels: [__name__]
         regex: kubelet_.*|volume_manager_.*|volume_operation_.*|storage_operation_.*|csi_operations_.*|plugin_manager_.*|reconstruct_volume_.*|dra_operations_.*|dra_resource_.*
         action: drop
+      ## Histogram buckets are ~80% of the apiserver job's head series. The
+      ## only buckets any loaded rule or provisioned dashboard reads from
+      ## job="apiserver" are the SLO source and the apiserver dashboard's
+      ## workqueue panel; mark those, then drop every other *_bucket series
+      ## (apiserver_request_duration_seconds_bucket,
+      ## etcd_request_duration_seconds_bucket, apiserver_response_sizes_bucket,
+      ## flowcontrol/rest_client/scheduler buckets, etc. ~95k series). The
+      ## cert-expiry alert needs its histogram too.
+      - sourceLabels: [__name__]
+        regex: apiserver_request_sli_duration_seconds_bucket|apiserver_client_certificate_expiration_seconds_bucket|workqueue_queue_duration_seconds_bucket
+        targetLabel: __tmp_bucket_keep
+        replacement: keep
+      - sourceLabels: [__name__, __tmp_bucket_keep]
+        separator: ';'
+        regex: .+_bucket;
+        action: drop
 
 ## Component scraping the kubelet and kubelet-hosted cAdvisor
 ##
