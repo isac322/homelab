@@ -1,0 +1,15 @@
+apiVersion: v1
+kind: PersistentVolumeClaim
+metadata:
+  name: versitygw-data
+  annotations:
+    # Created by democratic-csi and imported into pillar-csi in place on
+    # 2026-10-05, so the S3 backend kept its contents.
+    pillar-csi.bhyoo.com/import-zvol: hot-data/k8s/pvc-951b2dac-9580-4d39-8323-abe6a1ad8b0b
+spec:
+  accessModes:
+    - ReadWriteOnce
+  storageClassName: ssd-ha-retain
+  resources:
+    requests:
+      storage: 100Gi
