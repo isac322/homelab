@@ -122,7 +122,7 @@ compactor:
     annotations:
       pillar-csi.bhyoo.com/import-zvol: hot-data/k8s/pvc-d9bfa3b6-0d6e-4d3e-8ab6-c7b57774c55f
   retentionResolutionRaw: 30d
-  retentionResolution5m: 180d
+  retentionResolution5m: 90d
   retentionResolution1h: 0d
 
 ruler:
