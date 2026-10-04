@@ -589,7 +589,7 @@ spec:
     persistence:
       enabled: true
       size: 10Gi
-      storageClassName: ssd-ha-xfs
+      storageClassName: ssd-ha-retain
   gateways:
     telegram:
       enabled: true
