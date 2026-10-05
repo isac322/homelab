@@ -18,8 +18,8 @@ Responsibilities (agent turns live in n8n; durable PR coordination lives here):
   into a dirty revision, and runs finite periodic passes as a webhook fallback.
   GitHub's computed merge state owns repository policy. A ready current head
   assigns and mentions the registry's ``project_owner`` once; this bridge never merges.
-* A daily ``cleanup_closed`` op deletes the agent state (HAPI sessions, Codex
-  rollouts, worktree and branch) of subjects closed for at least 30 days.
+* An hourly ``cleanup_closed`` op deletes the agent state (HAPI sessions, Codex
+  rollouts, worktree and branch) of every closed subject.
 * ``POST /ops`` is the private, bearer-authenticated adapter n8n uses for every
   side effect: HAPI session lifecycle, message delivery and per-mode turn
   correlation, and every GitHub write. The coding agent reads GitHub itself
@@ -111,7 +111,7 @@ PUBLISHER_CHECKOUT_TIMEOUT = 600.0
 PUBLISHER_RESOLVE_TIMEOUT = 300.0
 PUBLISHER_PUSH_TIMEOUT = 300.0
 PUBLISHER_CLEANUP_TIMEOUT = 300.0
-CLEANUP_AFTER_DAYS = 30  # a subject closed this long loses its agent state
+CLEANUP_AFTER_DAYS = 0  # a subject closed this long loses its agent state; 0 = as soon as it is closed
 MAX_CLEANUP_CODEX_IDS = 50  # per publisher /cleanup request
 ACTIVE_EVENT_STATES = ("accepted", "dispatching", "dispatched")
 # A push updates the branch ref immediately but the open PR's head asynchronously.
@@ -2973,8 +2973,8 @@ class Bridge:
 
     def op_cleanup_closed(self, req: dict[str, Any]) -> dict[str, Any]:
         """Delete the agent state of subjects closed for ``older_than_days``; GitHub content and events stay."""
-        days = _positive_int(req.get("older_than_days", CLEANUP_AFTER_DAYS))
-        if days is None:
+        days = req.get("older_than_days", CLEANUP_AFTER_DAYS)
+        if not isinstance(days, int) or isinstance(days, bool) or days < 0:
             raise OpError("bad older_than_days")
         dry_run = req.get("dry_run", False)
         if not isinstance(dry_run, bool):

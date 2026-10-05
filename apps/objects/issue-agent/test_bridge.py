@@ -2372,19 +2372,19 @@ class CleanupTests(BridgeTestCase):
         self.assertFalse(fresh["resumed"])
         self.assertEqual((len(self.fake.spawns), self.fake.spawns[-1]["worktreeName"]), (2, "issue-7"))
 
-    def test_recent_open_and_active_subjects_are_skipped_and_dry_run_changes_nothing(self) -> None:
+    def test_open_and_active_subjects_are_skipped_and_dry_run_changes_nothing(self) -> None:
         self.finished_subject(7, "d1")
         self.finished_subject(8, "d2")
         self.finished_subject(10, "d4")
         self.started(9, "d3")
         self.op("ensure_session", "d3")  # d3 stays dispatched
-        self.fake.issue_states.update({7: closed_days_ago(29), 8: {"state": "open", "closed_at": None},
+        self.fake.issue_states.update({7: closed_days_ago(0.01), 8: {"state": "open", "closed_at": None},
                                        9: closed_days_ago(90), 10: closed_days_ago(45)})
         before = [dict(r) for r in self.store.query("SELECT * FROM issues ORDER BY issue_number")]
         calls = len(self.fake.calls)
 
         dry = self.cleanup(dry_run=True)
-        self.assertEqual([c["issue_number"] for c in dry["cleaned"]], [10])
+        self.assertEqual([c["issue_number"] for c in dry["cleaned"]], [7, 10])  # default: every closed subject
         self.assertEqual(dry["skipped_active"], [{"repo": REPO, "issue_number": 9}])
         self.assertEqual((dry["checked"], dry["errors"]), (4, []))
         self.assertEqual(self.fake.calls[calls:], [])
@@ -2396,8 +2396,8 @@ class CleanupTests(BridgeTestCase):
         self.assertEqual([c["worktree"] for c in self.fake.cleanups], ["issue-10"])
         for number in (7, 8, 9):
             self.assertIsNotNone(self.store.issue(REPO, number)["session_id"])
-        self.assertEqual(self.cleanup(older_than_days=1)["cleaned"][0]["issue_number"], 7)  # cutoff is configurable
-        self.assertEqual(self.bridge.handle({"op": "cleanup_closed", "older_than_days": 0})["error"],
+        self.assertEqual([c["issue_number"] for c in self.cleanup()["cleaned"]], [7])  # closed minutes ago
+        self.assertEqual(self.bridge.handle({"op": "cleanup_closed", "older_than_days": -1})["error"],
                          "bad older_than_days")
 
     def test_failures_leave_the_row_for_the_next_run(self) -> None:

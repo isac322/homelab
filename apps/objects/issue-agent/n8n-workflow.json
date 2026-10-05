@@ -2138,16 +2138,15 @@
         "rule": {
           "interval": [
             {
-              "field": "days",
-              "daysInterval": 1,
-              "triggerAtHour": 4,
+              "field": "hours",
+              "hoursInterval": 1,
               "triggerAtMinute": 0
             }
           ]
         }
       },
       "id": "29853f64-371a-4896-9c73-1c9be4dd169e",
-      "name": "Daily cleanup",
+      "name": "Hourly cleanup",
       "type": "n8n-nodes-base.scheduleTrigger",
       "typeVersion": 1.2,
       "position": [
@@ -2163,7 +2162,7 @@
         "genericAuthType": "httpHeaderAuth",
         "sendBody": true,
         "specifyBody": "json",
-        "jsonBody": "={{ JSON.stringify({ op: 'cleanup_closed', older_than_days: 30 }) }}",
+        "jsonBody": "={{ JSON.stringify({ op: 'cleanup_closed', older_than_days: 0 }) }}",
         "options": {
           "timeout": 900000
         }
@@ -3047,7 +3046,7 @@
         ]
       ]
     },
-    "Daily cleanup": {
+    "Hourly cleanup": {
       "main": [
         [
           {
