@@ -16,7 +16,7 @@ spec:
   storageClassName: ssd-ha
   resources:
     requests:
-      storage: 20Gi
+      storage: 100Gi
 ---
 # /var/lib/docker of the runner pod's dockerd sidecar (images, build cache,
 # containerd content store). Discardable cache: no retention annotations.
