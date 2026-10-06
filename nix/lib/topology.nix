@@ -237,6 +237,10 @@ let
       address = "10.222.0.195/32";
       publicKey = "Ix/v1dcNN7xqEdwxxfwiJMgVZ8y56HySkIVQYqBMzEM=";
     };
+    jay-macbook = {
+      address = "10.222.0.196/32";
+      publicKey = "FT7BtAXTATRY9OPuqOrxrDqXxdD5u6o4aclCHG8BcQg=";
+    };
     yjyoo-phone = {
       address = "10.222.0.225/32";
       publicKey = "NXZLnxi5gPwhH3KhBjYFXbpuzPYPJVAmZIBIah60KE0=";

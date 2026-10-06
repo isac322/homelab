@@ -60,6 +60,10 @@
             ip_address: 10.222.0.195
             allowed_groups:
               - backbone
+          jay-macbook:
+            ip_address: 10.222.0.196
+            allowed_groups:
+              - backbone
           yjyoo-phone:
             ip_address: 10.222.0.225
             allowed_groups:
