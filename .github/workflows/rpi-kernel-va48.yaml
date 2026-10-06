@@ -174,8 +174,10 @@ jobs:
           TAG="__TAG__"
           WORK=$(mktemp -d) && cd "$WORK"
 
-          gh release download "$TAG" --repo __REPO__ --pattern '*.deb'
-          rm -f *-dbg_*.deb linux-libc-dev_*.deb
+          # Public release assets: plain wget (preinstalled on Raspberry Pi OS)
+          # needs no GitHub CLI or login. Debug and libc-dev packages are skipped.
+          BASE="https://github.com/__REPO__/releases/download/$TAG"
+          __DOWNLOAD_CMD__
 
           # Replace the metapackages.
           sudo apt-mark unhold linux-image-rpi-v8 linux-base-rpi-v8 linux-headers-rpi-v8 2>/dev/null || true
@@ -228,10 +230,23 @@ jobs:
           ```
           BODY_EOF
 
+          # Explicit asset list for the wget step; the -dbg/-dbgsym/libc-dev
+          # packages are not installed on rpi4, so they are not downloaded.
+          mapfile -t DEBS < <(find "$BUILD_DIR/out" -maxdepth 1 -name '*.deb' -printf '%f\n' \
+            | grep -Ev -- '-dbg_|-dbgsym_|^linux-libc-dev_' | sort)
+          (( ${#DEBS[@]} > 0 ))
+          DOWNLOAD_FILE=$(mktemp)
+          {
+            printf 'wget --no-verbose'
+            printf ' \\\n  "$BASE/%s"' "${DEBS[@]}"
+            printf '\n'
+          } > "$DOWNLOAD_FILE"
+
           sed -i \
             -e "s|__LATEST__|${LATEST}|g" \
             -e "s|__TAG__|${TAG}|g" \
             -e "s|__REPO__|${GITHUB_REPOSITORY}|g" \
+            -e "/^__DOWNLOAD_CMD__\$/{r $DOWNLOAD_FILE" -e 'd}' \
             "$NOTES_FILE"
 
           gh release create "$TAG" \

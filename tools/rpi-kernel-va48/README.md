@@ -92,13 +92,18 @@ sudo apt-get download \
 ### 2) Install the custom build
 
 ```bash
-# Resolve the latest VA48 release tag.
-TAG=$(gh release list --repo isac322/homelab --limit 50 \
-        --json tagName -q '[.[] | select(.tagName | startswith("rpi-kernel-va48-"))][0].tagName')
+# Release assets are public, so plain wget (preinstalled on Raspberry Pi OS)
+# is enough — no GitHub CLI or login. Resolve the latest VA48 release tag.
+API=https://api.github.com/repos/isac322/homelab/releases
+TAG=$(wget -qO- "$API?per_page=100" \
+        | grep -o '"tag_name": *"rpi-kernel-va48-[^"]*"' | head -n1 | cut -d'"' -f4)
 WORK=$(mktemp -d) && cd "$WORK"
 
-gh release download "$TAG" --repo isac322/homelab --pattern '*.deb'
-rm -f *-dbg_*.deb linux-libc-dev_*.deb
+# Download the install set; debug and libc-dev packages are skipped.
+wget -qO- "$API/tags/$TAG" \
+  | grep -o '"browser_download_url": *"[^"]*\.deb"' | cut -d'"' -f4 \
+  | grep -Ev -- '-dbg_|-dbgsym_|/linux-libc-dev_' \
+  | wget --no-verbose -i -
 
 # Replace the metapackages.
 sudo apt-mark unhold linux-image-rpi-v8 linux-base-rpi-v8 linux-headers-rpi-v8 2>/dev/null || true
