@@ -265,7 +265,7 @@ GitHub App 이름은 `bulgasaribot`(작성)·`haechibot`(리뷰)이지만 인증
 
 v2는 Runner Pod에 publisher 사이드카를 추가했다. manifest의 값은 CPU 요청 10m, 메모리 요청 64Mi, 메모리 제한 256Mi이며 CPU 제한은 없다. 위 표의 승인 수치에는 포함되지 않은 추가분이다.
 
-Runner Pod의 native sidecar `dockerd`는 위 표의 dockerd 행 값을 쓴다. home 복사에 쓰는 임시 scratch Pod 두 개도 각각 Tier 4, CPU 요청 1, 메모리 요청 2Gi, 메모리 제한 8Gi이며 CPU 제한이 없고, `migrate` 실행 중에만 존재한다. 사용자는 두 값을 14일 측정 없이 초기 예외로 승인했다. 이 요청을 포함한 클러스터 메모리 요청 비율은 배포 직전에 다시 계산한다.
+위 표의 Codex Runner·dockerd 행은 초기 예외 값이다. 14일 측정(Runner 메모리 p50 515Mi·최대 3.4Gi, CPU p95 0.04코어·최대 3.05코어; dockerd 메모리 p50 61Mi·최대 168Mi, CPU 약 0) 뒤 Tier 3으로 재산정해 manifest의 Runner는 CPU 요청 100m, 메모리 요청 640Mi, native sidecar `dockerd`는 CPU 요청 10m, 메모리 요청 80Mi다. CPU 요청은 진행 보장용 하한, 메모리 요청은 p50의 약 1.25배이며 메모리 제한(4Gi·8Gi)은 그대로 두고 CPU 제한은 없다. home 복사에 쓰는 임시 scratch Pod 두 개는 각각 Tier 4, CPU 요청 1, 메모리 요청 2Gi, 메모리 제한 8Gi이며 CPU 제한이 없고, `migrate` 실행 중에만 존재한다. 사용자는 scratch Pod 값을 14일 측정 없이 초기 예외로 승인했다. 이 요청을 포함한 클러스터 메모리 요청 비율은 배포 직전에 다시 계산한다.
 
 ## 구현 체크리스트
 

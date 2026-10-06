@@ -59,8 +59,8 @@ spec:
             failureThreshold: 6
           resources:
             requests:
-              cpu: "1"
-              memory: 2Gi
+              cpu: 10m
+              memory: 80Mi
             limits:
               memory: 8Gi
           securityContext:
@@ -158,8 +158,8 @@ spec:
             failureThreshold: 5
           resources:
             requests:
-              cpu: "1"
-              memory: 1Gi
+              cpu: 100m
+              memory: 640Mi
             limits:
               memory: 4Gi
           securityContext:
