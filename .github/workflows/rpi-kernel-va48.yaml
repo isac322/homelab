@@ -1,12 +1,16 @@
 name: RPi v8 kernel (VA_BITS=48)
 
 # Builds a custom linux-image-rpi-v8 package with CONFIG_ARM64_VA_BITS=48
-# whenever RPi publishes a new linux source version in their trixie archive.
+# whenever RPi publishes a new linux source version in their trixie archive
+# or the build itself changes.
 #
 # - daily schedule: checks the archive for a new source version
-# - if a GitHub release for that version already exists, the workflow exits
+# - the release tag combines the RPi source version with the build revision
+#   from tools/rpi-kernel-va48/revision.sh, which grows with every commit
+#   touching the build inputs (Dockerfile, build.sh)
+# - if a GitHub release for that tag already exists, the workflow exits
 #   without spending build minutes
-# - otherwise it cross-builds and publishes a release with the resulting .deb
+# - otherwise it builds and publishes a release with the resulting .deb
 #   files attached as assets
 #
 # Manual trigger via workflow_dispatch always rebuilds against the current
@@ -42,7 +46,16 @@ jobs:
       should_build: ${{ steps.check.outputs.should_build }}
       latest_version: ${{ steps.check.outputs.latest_version }}
       release_tag: ${{ steps.check.outputs.release_tag }}
+      build_revision: ${{ steps.check.outputs.build_revision }}
     steps:
+      - name: Checkout
+        uses: actions/checkout@v7.0.1
+        with:
+          # revision.sh counts build-input commits, so it needs full history;
+          # blob:none keeps the clone small since only trees are inspected.
+          fetch-depth: 0
+          filter: blob:none
+
       - name: Fetch latest RPi linux source version and compare with existing releases
         id: check
         env:
@@ -64,9 +77,14 @@ jobs:
           # Debian versions, illegal/unsafe in tag refs / release asset URLs).
           TAG_VER="${LATEST//:/-}"
           TAG_VER="${TAG_VER//+/-}"
-          TAG="rpi-kernel-va48-${TAG_VER}"
-          echo "release_tag=$TAG" >> "$GITHUB_OUTPUT"
-          echo "latest_version=$LATEST" >> "$GITHUB_OUTPUT"
+          REV=$(tools/rpi-kernel-va48/revision.sh)
+          echo "Build revision: $REV"
+          TAG="rpi-kernel-va48-${TAG_VER}-isacva48.${REV}"
+          {
+            echo "build_revision=$REV"
+            echo "release_tag=$TAG"
+            echo "latest_version=$LATEST"
+          } >> "$GITHUB_OUTPUT"
           echo "Release tag: $TAG"
 
           if [ "${FORCE:-false}" = "true" ]; then
@@ -91,6 +109,7 @@ jobs:
     timeout-minutes: 45
     env:
       BUILD_DIR: ${{ github.workspace }}/build-work
+      VA48_REV: ${{ needs.check.outputs.build_revision }}
     steps:
       - name: Checkout
         uses: actions/checkout@v7.0.1
@@ -143,7 +162,8 @@ jobs:
           Based on upstream raspberrypi/linux source version `__LATEST__`.
           Package names are identical to the official RPi packages so
           `dpkg -i` overwrites them in place. Version suffix
-          `+isacva48.1` ranks higher than `+rpt1`.
+          `+isacva48.__REV__` ranks higher than `+rpt1` and than earlier
+          VA48 builds of the same source version.
 
           See [tools/rpi-kernel-va48/README.md](https://github.com/__REPO__/blob/master/tools/rpi-kernel-va48/README.md)
           for build details and the underlying rationale.
@@ -238,12 +258,15 @@ jobs:
           DOWNLOAD_FILE=$(mktemp)
           {
             printf 'wget --no-verbose'
+            # $BASE is expanded on rpi4 by the reader's shell, not here.
+            # shellcheck disable=SC2016
             printf ' \\\n  "$BASE/%s"' "${DEBS[@]}"
             printf '\n'
           } > "$DOWNLOAD_FILE"
 
           sed -i \
             -e "s|__LATEST__|${LATEST}|g" \
+            -e "s|__REV__|${VA48_REV}|g" \
             -e "s|__TAG__|${TAG}|g" \
             -e "s|__REPO__|${GITHUB_REPOSITORY}|g" \
             -e "/^__DOWNLOAD_CMD__\$/{r $DOWNLOAD_FILE" -e 'd}' \
@@ -251,6 +274,6 @@ jobs:
 
           gh release create "$TAG" \
             --repo "$GITHUB_REPOSITORY" \
-            --title "RPi v8 kernel (VA_BITS=48) — ${LATEST}" \
+            --title "RPi v8 kernel (VA_BITS=48) — ${LATEST}+isacva48.${VA48_REV}" \
             --notes-file "$NOTES_FILE" \
             "$BUILD_DIR"/out/*.deb

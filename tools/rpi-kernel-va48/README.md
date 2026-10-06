@@ -23,13 +23,24 @@ The [`rpi-kernel-va48`](../../.github/workflows/rpi-kernel-va48.yaml)
 workflow runs daily on a `ubuntu-24.04-arm` runner, polls the RPi
 `trixie` archive for the latest `src:linux` source version, and:
 
-* **skips** if a release tagged for that exact version already exists,
+* **skips** if a release tagged for that exact version and build revision
+  already exists,
 * **builds + publishes** a GitHub release otherwise, attaching all the
   `.deb` artifacts.
 
 So as soon as RPi cuts a new stable, this repo ships a `VA_BITS=48`
 counterpart on the next daily run. Releases are named
-`rpi-kernel-va48-<sanitized-version>` (e.g. `rpi-kernel-va48-1-6.18.34-1-rpt1`).
+`rpi-kernel-va48-<sanitized-version>-isacva48.<rev>` (e.g.
+`rpi-kernel-va48-1-6.18.50-1-rpt1-isacva48.5`).
+
+### Build revision
+
+`<rev>` is printed by [`revision.sh`](revision.sh): the number of commits
+that changed `Dockerfile` or `build.sh`. Merging a change to either file
+therefore produces a new release on the push-triggered run, even when RPi
+has not published a new source version, and its `+isacva48.<rev>` package
+version outranks the previous build. `revision.sh` needs full git history;
+set `VA48_REV` to override it (CI passes the value from the check job).
 
 ## How the build works
 
@@ -57,7 +68,7 @@ Requires only `docker`. The first run builds the
 `rpi-kernel-builder:trixie` image; subsequent runs reuse it. Takes
 ~8–10 minutes on a 16-core host. Output:
 
-* `linux-image-6.18.34+rpt-rpi-v8_<ver>+isacva48.1_arm64.deb` — vmlinuz + modules + dtb
+* `linux-image-6.18.34+rpt-rpi-v8_<ver>+isacva48.<rev>_arm64.deb` — vmlinuz + modules + dtb
 * `linux-headers-6.18.34+rpt-rpi-v8_…_arm64.deb`
 * `linux-headers-6.18.34+rpt-common-rpi_…_all.deb`
 * `linux-kbuild-6.18.34+rpt_…_arm64.deb`
@@ -66,7 +77,7 @@ Requires only `docker`. The first run builds the
 * (optional) matching `-dbg` packages
 
 Package names are **identical to the official RPi packages** so `dpkg -i`
-overwrites them in place. The version suffix `+isacva48.1` ranks higher
+overwrites them in place. The version suffix `+isacva48.<rev>` ranks higher
 than `+rpt1`, so dpkg accepts it without `--force-downgrade`.
 
 ## Install on rpi4

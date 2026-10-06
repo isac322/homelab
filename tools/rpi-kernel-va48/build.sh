@@ -12,8 +12,9 @@
 # Always picks up the LATEST source version currently published by RPi in the
 # trixie archive — no version pinning. The resulting .deb files use the same
 # package names as the official `linux-image-rpi-v8` metapackage chain, with
-# the version suffix "+isacva48.1" so dpkg treats them as a higher version
-# and correctly overwrites the official files (including kernel8.img).
+# the version suffix "+isacva48.<rev>" so dpkg treats them as a higher version
+# and correctly overwrites the official files (including kernel8.img). <rev>
+# comes from revision.sh and grows whenever this build changes.
 #
 # Why this build exists:
 #   The official RPi kernel (linux-image-rpi-v8) is built with
@@ -28,6 +29,8 @@
 # Env vars (optional):
 #   BUILD_DIR    working directory (default: $PWD)
 #   DOCKER_HOST  docker daemon endpoint (default: docker default)
+#   VA48_REV     build revision (default: output of revision.sh, which
+#                needs full git history)
 #
 # Requirements:
 #   * docker
@@ -39,6 +42,8 @@ BUILD_DIR=${BUILD_DIR:-$(pwd)}
 SRC_DIR=$BUILD_DIR/src
 OUT_DIR=$BUILD_DIR/out
 SCRIPT_DIR=$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)
+VA48_REV=${VA48_REV:-$("$SCRIPT_DIR/revision.sh")}
+[[ "$VA48_REV" =~ ^[1-9][0-9]*$ ]] || { echo "invalid VA48_REV: '$VA48_REV'" >&2; exit 1; }
 RPI_POOL=https://archive.raspberrypi.com/debian/pool/main/l/linux
 SOURCES_URL=https://archive.raspberrypi.com/debian/dists/trixie/main/source/Sources.gz
 BUILDER_IMAGE=rpi-kernel-builder:trixie
@@ -105,7 +110,7 @@ for f in ('v8-rt', '2712'):
 p.write_text(t)
 PY
 
-NEW_VER="${LATEST_VER}+isacva48.1"
+NEW_VER="${LATEST_VER}+isacva48.${VA48_REV}"
 TS="$(LC_ALL=C date -R)"
 python3 <<PY
 from pathlib import Path
