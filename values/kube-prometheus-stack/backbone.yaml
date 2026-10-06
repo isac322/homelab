@@ -641,6 +641,77 @@ grafana:
               labels:
                 managed_by: gitops
               isPaused: false
+
+            # Forwards alerts evaluated by the storage-integrity PrometheusRule
+            # (apps/objects/storage-integrity/prometheusrule.yaml, isac322/homelab#385)
+            # to Telegram. Severity labels come from the forwarded ALERTS series.
+            - uid: infra-storage-integrity-alerts
+              title: Storage integrity alert (Prometheus-forwarded)
+              condition: B
+              data:
+                - refId: A
+                  relativeTimeRange:
+                    from: 300
+                    to: 0
+                  datasourceUid: prometheus
+                  model:
+                    datasource:
+                      type: prometheus
+                      uid: prometheus
+                    editorMode: code
+                    expr: >-
+                      ALERTS{cluster="backbone", alertname=~"StorageIntegrity.*",
+                      alertstate="firing"}
+                    instant: true
+                    intervalMs: 60000
+                    legendFormat: __auto
+                    maxDataPoints: 43200
+                    range: false
+                    refId: A
+                - refId: B
+                  relativeTimeRange:
+                    from: 0
+                    to: 0
+                  datasourceUid: __expr__
+                  model:
+                    conditions:
+                      - evaluator:
+                          params:
+                            - 0
+                          type: gt
+                        operator:
+                          type: and
+                        query:
+                          params:
+                            - B
+                        reducer:
+                          params: []
+                          type: last
+                        type:
+                          type: query
+                    datasource:
+                      type: __expr__
+                      uid: __expr__
+                    expression: A
+                    intervalMs: 60000
+                    maxDataPoints: 43200
+                    refId: B
+                    type: threshold
+              # OK (not NoData): a missing ALERTS series means no StorageIntegrity alert
+              # is firing, so the steady state must not emit a DatasourceNoData notification.
+              noDataState: OK
+              execErrState: Error
+              for: 1m
+              annotations:
+                display_name: 스토리지 무결성 알림
+                target: '{{`{{ $labels.alertname }}{{ with $labels.arm }} · {{ . }}{{ end }}{{ with $labels.pod }} · {{ . }}{{ end }}`}}'
+                current_value: '{{`severity={{ $labels.severity }}, firing`}}'
+                threshold: Prometheus StorageIntegrity* 규칙이 firing 상태임
+                description: storage-integrity PrometheusRule이 발행한 알림을 전달합니다. 데이터가 조용히 손상되었을 수 있습니다. storage-canary 로그(msg=MISMATCH)와 /data/evidence 증거, Thanos/Prometheus 로그의 손상 블록을 확인하고 docs/storage-integrity.md 런북을 따르세요.
+                summary: 스토리지 데이터 무결성(손상 의심) 알림이 발생했습니다.
+              labels:
+                managed_by: gitops
+              isPaused: false
     templates.yaml:
       apiVersion: 1
       templates:

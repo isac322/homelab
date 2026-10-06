@@ -1,0 +1,16 @@
+# Canary scratch volume on the suspect path: pillar-csi ssd-ha (nvmet-tcp
+# export of a hot-data zvol on rock5bp). Holds per-iteration working copies
+# and mismatch evidence; discardable.
+apiVersion: v1
+kind: PersistentVolumeClaim
+metadata:
+  name: storage-canary
+  labels:
+    app.kubernetes.io/name: storage-canary
+spec:
+  accessModes:
+    - ReadWriteOnce
+  storageClassName: ssd-ha
+  resources:
+    requests:
+      storage: 4Gi

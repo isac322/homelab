@@ -1,0 +1,134 @@
+# Silent data-corruption alerts for storage served through kernel storage
+# targets (nvmet-tcp / LIO) from rock5bp's ZFS zvols (isac322/homelab#385).
+#
+# ZFS checksums and scrubs stay clean for this class of corruption because
+# the bytes are already wrong when they reach the zvol; only application
+# checksums notice. Two signal sources are watched:
+#   - the storage-canary Deployment (apps/objects/storage-integrity/), which
+#     continuously writes real Thanos chunk objects into an ssd-ha PVC and
+#     re-reads them with O_DIRECT, keeping evidence of every mismatch;
+#   - Thanos and Prometheus TSDB compaction/load failure and chunk
+#     corruption metrics not already covered by the Grafana rules.
+#
+# PrometheusRule alerts have no Alertmanager in this cluster (Grafana alerts
+# to Telegram instead); values/kube-prometheus-stack/backbone.yaml forwards
+# the firing ALERTS{alertname=~"StorageIntegrity.*"} series to Grafana.
+apiVersion: monitoring.coreos.com/v1
+kind: PrometheusRule
+metadata:
+  name: storage-integrity
+  namespace: prometheus
+spec:
+  groups:
+    - name: storage-integrity
+      rules:
+        - alert: StorageIntegrityCanaryMismatch
+          expr: increase(storage_canary_iterations_total{result="mismatch"}[6h]) > 0
+          labels:
+            severity: critical
+          annotations:
+            summary: 'storage-canary read back corrupted data on arm {{ $labels.arm }}'
+            description: >-
+              A Thanos chunk object written by storage-canary to the
+              {{ $labels.arm }} volume did not match its source sha256 after
+              fsync and an O_DIRECT re-read: data was silently corrupted on
+              the storage path (#385). Look at the pod log line
+              msg=MISMATCH and the evidence report and byte windows under
+              /data/evidence on the storage-canary PVC (namespace
+              prometheus), then follow the runbook to localise the layer.
+            runbook_url: https://github.com/isac322/homelab/blob/master/docs/storage-integrity.md
+        - alert: StorageIntegrityCanaryStalled
+          expr: time() - max by (arm) (storage_canary_last_verified_timestamp_seconds) > 7200
+          labels:
+            severity: warning
+          annotations:
+            summary: 'storage-canary has not verified any object on arm {{ $labels.arm }} for 2h'
+            description: >-
+              No successful verification on arm {{ $labels.arm }} for over
+              two hours, so silent corruption on that volume is not being
+              detected. Check the storage-canary pod logs in namespace
+              prometheus and storage_canary_errors_total{stage=...} for
+              select/download/fsync/verify failures (S3 access, PVC full or
+              read-only, volume I/O errors).
+            runbook_url: https://github.com/isac322/homelab/blob/master/docs/storage-integrity.md
+        - alert: StorageIntegrityCanaryAbsent
+          expr: absent(storage_canary_last_verified_timestamp_seconds)
+          # Initial selection hashes every object twice at -mbps, which takes
+          # about 30 minutes before the first verification.
+          for: 1h
+          labels:
+            severity: warning
+          annotations:
+            summary: storage-canary metrics are missing
+            description: >-
+              storage_canary_last_verified_timestamp_seconds has no series,
+              so the storage integrity canary is either not running, not
+              scraped, or has never completed a verification. Check the
+              storage-canary Deployment, its PVC (StorageClass ssd-ha) and
+              the storage-canary PodMonitor in namespace prometheus.
+            runbook_url: https://github.com/isac322/homelab/blob/master/docs/storage-integrity.md
+        - alert: StorageIntegrityThanosCompactionFailures
+          expr: increase(thanos_compact_group_compactions_failures_total[1h]) > 0
+          labels:
+            severity: warning
+          annotations:
+            summary: 'Thanos compaction failed for group {{ $labels.group }}'
+            description: >-
+              Thanos compaction failed within the last hour. Failures on
+              chunk or index reads point at corrupted blocks in object
+              storage. Check the compactor logs for the failing block ULID
+              and verify it with thanos tools bucket verify.
+            runbook_url: https://github.com/isac322/homelab/blob/master/docs/storage-integrity.md
+        - alert: StorageIntegrityThanosBlockMarkedCorrupt
+          expr: increase(thanos_compact_blocks_marked_total{marker="no-compact-mark.json", reason="block-index-out-of-order-chunk"}[1h]) > 0
+          labels:
+            severity: warning
+          annotations:
+            summary: Thanos compactor marked a block no-compact for out-of-order chunks
+            description: >-
+              The compactor found a block whose index references
+              out-of-order chunks, an index inconsistency that silent
+              corruption can produce, and excluded it from compaction with
+              no-compact-mark.json. Find the block via the compactor logs
+              and inspect it; the data in it may be partly corrupted.
+            runbook_url: https://github.com/isac322/homelab/blob/master/docs/storage-integrity.md
+        - alert: StorageIntegrityStoreBlockLoadFailures
+          expr: increase(thanos_bucket_store_block_load_failures_total[1h]) > 0
+          labels:
+            severity: warning
+          annotations:
+            summary: 'Thanos store gateway {{ $labels.pod }} failed to load blocks'
+            description: >-
+              The Thanos store gateway could not load one or more blocks in
+              the last hour, so queries over those time ranges are missing
+              data. Corrupted index or index-header files are a common
+              cause. Check the store gateway logs for the block ULID and
+              verify the block in object storage.
+            runbook_url: https://github.com/isac322/homelab/blob/master/docs/storage-integrity.md
+        # WAL corruption and the compactor halt already have Grafana rules
+        # (infra-prometheus-wal-failure, infra-thanos-compactor-halted).
+        - alert: StorageIntegrityPrometheusChunkCorruption
+          expr: increase(prometheus_tsdb_mmap_chunk_corruptions_total[1h]) > 0
+          labels:
+            severity: critical
+          annotations:
+            summary: 'Prometheus {{ $labels.pod }} detected corrupted head mmap chunks'
+            description: >-
+              Prometheus found corrupted head mmap chunks on its local volume
+              in the last hour and dropped the affected data. On a
+              pillar-csi volume this matches the #385 silent corruption.
+              Check the Prometheus logs for the corrupted file, the node and
+              PVC behind the pod, and compare with storage-canary evidence.
+            runbook_url: https://github.com/isac322/homelab/blob/master/docs/storage-integrity.md
+        - alert: StorageIntegrityPrometheusCompactionFailures
+          expr: increase(prometheus_tsdb_compactions_failed_total[1h]) > 0
+          labels:
+            severity: warning
+          annotations:
+            summary: 'Prometheus {{ $labels.pod }} TSDB compaction failed'
+            description: >-
+              Prometheus TSDB compaction failed in the last hour. Errors
+              reading chunks or index of local blocks indicate on-disk
+              corruption of its volume. Check the Prometheus logs for the
+              failing block and the PVC/node behind the pod.
+            runbook_url: https://github.com/isac322/homelab/blob/master/docs/storage-integrity.md

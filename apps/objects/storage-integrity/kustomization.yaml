@@ -1,0 +1,10 @@
+apiVersion: kustomize.config.k8s.io/v1beta1
+kind: Kustomization
+# Storage integrity canary and corruption alerts (isac322/homelab#385).
+# Lives in the prometheus namespace to reuse the thanos-objstore-config Secret.
+namespace: prometheus
+resources:
+  - pvc.yaml
+  - deployment.yaml
+  - podmonitor.yaml
+  - prometheusrule.yaml

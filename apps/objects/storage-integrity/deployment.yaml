@@ -1,0 +1,133 @@
+# Storage integrity canary (isac322/homelab#385): continuously downloads real
+# Thanos chunk objects from S3 into a pillar-csi ssd-ha PVC (nvmet-tcp export
+# of a hot-data zvol), re-reads them with O_DIRECT and compares sha256 to catch
+# the silent shifted/zero-filled byte-span corruption seen through kernel
+# storage targets. Mismatches are kept as evidence under /data/evidence.
+#
+# Resources: Tier 3. New workload, so there is no 14-day history yet; sized from
+# a measured ~32 MiB RSS for a three-arm run on rock5bp (one arm here) with
+# GOMEMLIMIT=48MiB. No CPU limit.
+#
+# -mbps 3 caps download plus O_DIRECT verify read at 3 MB/s, about 120 GiB
+# written and verified per day. That keeps hot-data SSD wear low and still gives
+# roughly one expected corruption event per day at the observed rate of one
+# event per 90-150 GiB written.
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: storage-canary
+  labels:
+    app.kubernetes.io/name: storage-canary
+spec:
+  replicas: 1
+  strategy:
+    type: Recreate
+  selector:
+    matchLabels:
+      app.kubernetes.io/name: storage-canary
+  template:
+    metadata:
+      labels:
+        app.kubernetes.io/name: storage-canary
+    spec:
+      automountServiceAccountToken: false
+      terminationGracePeriodSeconds: 30
+      nodeSelector:
+        kubernetes.io/arch: arm64
+      securityContext:
+        runAsNonRoot: true
+        runAsUser: 65532
+        runAsGroup: 65532
+        fsGroup: 65532
+        fsGroupChangePolicy: OnRootMismatch
+        seccompProfile:
+          type: RuntimeDefault
+      containers:
+        - name: storage-canary
+          image: ghcr.io/isac322/storage-canary:6a819b6ce8c1@sha256:1b3c42f03bcb6dba2cd8a498f115149c50f4d8f87df17002f5c297e68208c3b4
+          args:
+            - -mode
+            - canary
+            - -objstore
+            - /etc/objstore/objstore.yml
+            - -dir
+            - /data/work
+            - -evidence
+            - /data/evidence
+            - -arm
+            - ssd-ha
+            - -mbps
+            - "3"
+            - -objects
+            - "6"
+            - -min-size
+            - "268435456"
+            - -reselect
+            - 6h
+            - -listen
+            - :9090
+          env:
+            - name: NODE_NAME
+              valueFrom:
+                fieldRef:
+                  fieldPath: spec.nodeName
+            - name: POD_NAME
+              valueFrom:
+                fieldRef:
+                  fieldPath: metadata.name
+            - name: GOMEMLIMIT
+              value: 48MiB
+          ports:
+            - name: metrics
+              containerPort: 9090
+              protocol: TCP
+          livenessProbe:
+            httpGet:
+              path: /metrics
+              port: metrics
+            initialDelaySeconds: 10
+            periodSeconds: 30
+            timeoutSeconds: 5
+            failureThreshold: 3
+          readinessProbe:
+            httpGet:
+              path: /metrics
+              port: metrics
+            initialDelaySeconds: 5
+            periodSeconds: 30
+            timeoutSeconds: 5
+            failureThreshold: 3
+          resources:
+            requests:
+              cpu: 10m
+              memory: 48Mi
+            limits:
+              memory: 96Mi
+          securityContext:
+            allowPrivilegeEscalation: false
+            readOnlyRootFilesystem: true
+            capabilities:
+              drop:
+                - ALL
+          volumeMounts:
+            - name: data
+              mountPath: /data
+            - name: objstore
+              mountPath: /etc/objstore
+              readOnly: true
+            - name: tmp
+              mountPath: /tmp
+      volumes:
+        - name: data
+          persistentVolumeClaim:
+            claimName: storage-canary
+        - name: objstore
+          secret:
+            secretName: thanos-objstore-config
+            defaultMode: 0440
+            items:
+              - key: objstore.yml
+                path: objstore.yml
+        - name: tmp
+          emptyDir:
+            sizeLimit: 64Mi
