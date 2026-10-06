@@ -119,6 +119,10 @@ let
       ''
   );
   yamlList = values: lib.concatMapStringsSep "\n" (value: "  - ${value}") values;
+  # kube-reserved only lowers Allocatable (enforceNodeAllocatable stays `pods`,
+  # no cgroup cap); K3s server RSS is held near GOMEMLIMIT (measured max +6%).
+  # eviction-hard replaces kubelet's defaults, so the 5% disk thresholds repeat.
+  kubeReservedMemory = lib.replaceStrings [ "GiB" "MiB" ] [ "Gi" "Mi" ] config.homelab.k3s.goMemLimit;
   serverConfig =
     if server then
       ''
@@ -145,6 +149,8 @@ let
           - image-gc-low-threshold=40
           - feature-gates=ImageVolume=true
           - feature-gates=NodeSwap=true
+          - kube-reserved=memory=${kubeReservedMemory}
+          - eviction-hard=memory.available<100Mi,nodefs.available<5%,imagefs.available<5%
       ''
     else
       ''
@@ -167,9 +173,9 @@ in
   };
 
   options.homelab.k3s.goMemLimit = lib.mkOption {
-    type = lib.types.str;
+    type = lib.types.strMatching "[0-9]+(GiB|MiB)";
     default = "2GiB";
-    description = "Go runtime soft memory limit (GOMEMLIMIT) for the K3s server process.";
+    description = "Go runtime soft memory limit (GOMEMLIMIT) for the K3s server process; also sets the server kubelet's kube-reserved memory so the scheduler does not hand the K3s server's memory to pods.";
   };
 
   config = lib.mkIf enabled {
