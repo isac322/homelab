@@ -9,7 +9,7 @@ controllers:
     containers:
       main:
         image:
-          tag: v3.2.2@sha256:79cc1623323d5894922686d8743b4780181428f98eecbfb58ce12c41ef02d1ea
+          tag: v3.2.4@sha256:d317916b28090c33eb36b308464ea391f8b7df1d850fcfea227a39ec879718c2
         env:
           REDIS_HOSTNAME: '{{ printf "%s-valkey" .Release.Name }}'
           # Add the env vars to connect to your database here.
@@ -250,7 +250,7 @@ machine-learning:
           image:
             repository: ghcr.io/isac322/immich-machine-learning
             # Keep in sync with persistence.patched-models.volumeSpec.image.reference
-            tag: v3.2.2-rknn@sha256:1f7f68bc02a39629e9b9b4bdbf7e10862ba569c4b02ff25d2db10cfa74775d42
+            tag: v3.2.4-rknn@sha256:a61aa0d745a8a0cc1d5bb3afcf63ab9a1446bc8811fa4069a8e458e93b18b50f
           env:
             MACHINE_LEARNING_RKNN_THREADS: 3
           securityContext:
@@ -303,7 +303,7 @@ machine-learning:
       volumeSpec:
         image:
           # Keep tag in sync with controllers.main.containers.main.image.tag above
-          reference: ghcr.io/isac322/immich-patched-models:v3.2.2-rknn@sha256:5d57a5b30ae46f167d2b8000695dcd7a86aaa0f71f258490f9b96bb5e79397b1
+          reference: ghcr.io/isac322/immich-patched-models:v3.2.4-rknn@sha256:97656c6e21541a0e469c28cc5be8931ece993f8ac9042a20a8864b082912219f
           pullPolicy: IfNotPresent
       advancedMounts:
         main:
