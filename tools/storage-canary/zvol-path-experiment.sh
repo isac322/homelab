@@ -45,7 +45,9 @@ tcp_port() {
 ctrl_of() {
 	local c
 	for c in /sys/class/nvme/nvme*; do
-		[[ -e $c/subsysnqn && $(<"$c/subsysnqn") == "$(nqn "$1")" ]] && basename "$c"
+		if [[ -e $c/subsysnqn && $(<"$c/subsysnqn") == "$(nqn "$1")" ]]; then
+			basename "$c"
+		fi
 	done
 }
 
