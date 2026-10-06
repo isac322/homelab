@@ -57,15 +57,13 @@ storegateway:
   replicaCount: 1
   extraFlags:
     - --index-cache-size=512MB
-  # Heavy I/O; stays on rock5bp.
-  podAnnotations:
-    descheduler.alpha.kubernetes.io/prefer-no-eviction: "true"
+  # Heavy I/O on a volume served by rock5bp: required so it returns there after
+  # a rock5bp reboot and the descheduler never moves it.
   affinity:
     nodeAffinity:
-      preferredDuringSchedulingIgnoredDuringExecution:
-        - weight: 100
-          preference:
-            matchExpressions:
+      requiredDuringSchedulingIgnoredDuringExecution:
+        nodeSelectorTerms:
+          - matchExpressions:
               - key: kubernetes.io/hostname
                 operator: In
                 values:

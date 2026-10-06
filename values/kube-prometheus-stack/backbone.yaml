@@ -1194,19 +1194,18 @@ prometheus:
       ## Allow delayed remote-write samples to arrive after transient network partitions
       outOfOrderTimeWindow: 1h
 
-    podMetadata:
-      annotations:
-        descheduler.alpha.kubernetes.io/prefer-no-eviction: "true"
-
     ## Resource limits & requests
     ##
 
+    # Required, not preferred: the TSDB volume is served by rock5bp, so the pod
+    # cannot run anywhere else while rock5bp is down, and a preference let the
+    # pod stay on another node after a rock5bp reboot and push heavy I/O over
+    # NVMe/TCP. Required affinity also keeps the descheduler from moving it.
     affinity:
       nodeAffinity:
-        preferredDuringSchedulingIgnoredDuringExecution:
-          - weight: 100
-            preference:
-              matchExpressions:
+        requiredDuringSchedulingIgnoredDuringExecution:
+          nodeSelectorTerms:
+            - matchExpressions:
                 - key: kubernetes.io/hostname
                   operator: In
                   values:
