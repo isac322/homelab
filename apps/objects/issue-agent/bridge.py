@@ -18,6 +18,9 @@ Responsibilities (agent turns live in n8n; durable PR coordination lives here):
   into a dirty revision, and runs finite periodic passes as a webhook fallback.
   GitHub's computed merge state owns repository policy. A ready current head
   assigns and mentions the registry's ``project_owner`` once; this bridge never merges.
+* An open pull request review sweep (at start, then every ``REVIEW_SWEEP_SECONDS``)
+  queues the review a missed webhook would have queued; an automatic review
+  request never repeats a head that was already reviewed, is parked, or is in flight.
 * An hourly ``cleanup_closed`` op deletes the agent state (HAPI sessions, Codex
   rollouts, worktree and branch) of every closed subject.
 * ``POST /ops`` is the private, bearer-authenticated adapter n8n uses for every
@@ -49,6 +52,7 @@ import sqlite3
 import sys
 import threading
 import time
+import uuid
 import urllib.error
 import urllib.parse
 import urllib.request
@@ -176,11 +180,19 @@ IDLE_WITHOUT_RESULT_LIMIT = 3
 HISTORY_PAGE_LIMIT = 200
 MAX_HISTORY_PAGES = 25
 MAX_SUPERSEDE_HOPS = 8
-# A pull request has at most one pending review. Every request (open, push, `review` comment, reconciliation)
+# A pull request has at most one pending review. Every request (open, push, `review` comment, review sweep)
 # folds into it and pushes its start back to REVIEW_SETTLE_SECONDS after the newest request, but never past
 # REVIEW_MAX_DELAY_SECONDS after the oldest one, so a push and the comment that follows it run one review.
 REVIEW_SETTLE_SECONDS = 90.0
 REVIEW_MAX_DELAY_SECONDS = 300.0
+# Open pull request review sweep (at bridge start, then every REVIEW_SWEEP_SECONDS): recovers the review of an
+# open, non-draft pull request head whose webhook was missed. A head committed more than
+# REVIEW_SWEEP_MAX_AGE_SECONDS ago is left alone, and one sweep queues at most REVIEW_SWEEP_MAX_ENQUEUES reviews
+# across every repository. Lists are read 100 per page, at most REVIEW_SWEEP_MAX_PAGES pages.
+REVIEW_SWEEP_SECONDS = 600.0
+REVIEW_SWEEP_MAX_AGE_SECONDS = 14 * 86400.0
+REVIEW_SWEEP_MAX_ENQUEUES = 10
+REVIEW_SWEEP_MAX_PAGES = 10
 # Automatic PR repair bounds. A blocker cause (base, checks, review) that survived MAX_PR_REPAIR_STREAK
 # consecutive repairs does not stop repairs at once: reconciliation waits PR_REPAIR_BACKOFF_SECONDS[i] and then
 # queues exactly one more repair per stage; once every stage is used and the cause still survives, it stops.
@@ -538,7 +550,8 @@ SCHEMA = ";\n".join([
 # Event: accepted -> dispatched -> completed | needs_attention. A pull request keeps at most one pending
 # ('accepted') review: a new review request folds older pending ones into itself with outcome 'coalesced',
 # completes parked ones with outcome 'superseded', and cancels a running review of an older head with outcome
-# 'cancelled' (Store.enqueue)
+# 'cancelled' (Store.enqueue). An automatic review request (no `review` comment) for a head that already had
+# a review request (pending, running, parked or finished) answers 'duplicate'; a `review` comment always queues.
 # issues.edited is accepted only while the issue is 'implementing' (Store.enqueue answers 'edit_ignored' otherwise)
 # Issue session: none -> pending -> ready (pending may fall back to none)
 # Issue phase: none -> triaged -> implementing; pull requests: none -> reviewing
@@ -653,58 +666,94 @@ class Store:
 
     def enqueue(self, ev: dict[str, Any]) -> str:
         """Durably record a webhook delivery and mark repair signals dirty."""
-        now = time.time()
         with self.tx() as conn:
-            if ev.get("managed_issue"):
-                self._track_pr(conn, ev["repo"], int(ev["pr_number"]), int(ev["managed_issue"]),
-                               ev.get("head_sha"), now)
-            if ev["kind"] == "pr_signal":
-                numbers = ev.get("pr_numbers", [ev.get("pr_number")])
-                for number in numbers:
-                    if number:
-                        self._dirty_pr(conn, ev["repo"], number, now, ev.get("manual"))
-                if ev.get("head_sha"):
-                    conn.execute("UPDATE prs SET dirty = 1, revision = revision + 1, next_reconcile_at = 0,"
-                                 " updated_at = ? WHERE repo = ? AND head_sha = ?",
-                                 (now, ev["repo"], ev["head_sha"]))
-                if ev.get("all_prs"):
-                    conn.execute("UPDATE prs SET dirty = 1, revision = revision + 1, next_reconcile_at = 0,"
-                                 " updated_at = ? WHERE repo = ? AND closed = 0", (now, ev["repo"]))
-                return "reconcile_pending"
-            if ev["kind"] == "issue_edited":
-                row = conn.execute("SELECT phase FROM issues WHERE repo = ? AND issue_number = ?",
-                                   (ev["repo"], ev["issue_number"])).fetchone()
-                if row is None or row["phase"] != "implementing":
-                    return "edit_ignored"
-            if ev["kind"] == "issue_opened" and not ev.get("trusted"):
-                (recent,) = conn.execute(
-                    "SELECT COUNT(*) FROM events WHERE kind = 'issue_opened' AND trusted = 0 AND received_at > ?",
-                    (now - UNTRUSTED_ISSUE_WINDOW,),
-                ).fetchone()
-                if recent >= UNTRUSTED_ISSUE_LIMIT:
-                    seen = conn.execute("SELECT 1 FROM events WHERE delivery_id = ? OR semantic_key = ?",
-                                        (ev["delivery_id"], ev["semantic_key"])).fetchone()
-                    return "duplicate" if seen else "rate_limited"
-            try:
-                conn.execute(
-                    "INSERT INTO events (delivery_id, semantic_key, repo, kind, issue_number, pr_number, comment_id, actor,"
-                    " title, body, default_branch, head_sha, trusted, received_at, updated_at)"
-                    " VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)",
-                    (ev["delivery_id"], ev["semantic_key"], ev["repo"], ev["kind"], ev["issue_number"],
-                     ev.get("pr_number"), ev.get("comment_id"), ev["actor"], ev["title"], ev["body"],
-                     ev.get("default_branch"), ev.get("head_sha"), 1 if ev.get("trusted") else 0, now, now),
-                )
-            except sqlite3.IntegrityError:
-                return "duplicate"
+            return self.enqueue_in(conn, ev)
+
+    def enqueue_in(self, conn: sqlite3.Connection, ev: dict[str, Any]) -> str:
+        """``enqueue`` inside the caller's write transaction, so checks the caller made in it still hold."""
+        now = time.time()
+        if ev.get("managed_issue"):
+            self._track_pr(conn, ev["repo"], int(ev["pr_number"]), int(ev["managed_issue"]),
+                           ev.get("head_sha"), now)
+        if ev["kind"] == "pr_signal":
+            numbers = ev.get("pr_numbers", [ev.get("pr_number")])
+            for number in numbers:
+                if number:
+                    self._dirty_pr(conn, ev["repo"], number, now, ev.get("manual"))
+            if ev.get("head_sha"):
+                conn.execute("UPDATE prs SET dirty = 1, revision = revision + 1, next_reconcile_at = 0,"
+                             " updated_at = ? WHERE repo = ? AND head_sha = ?",
+                             (now, ev["repo"], ev["head_sha"]))
+            if ev.get("all_prs"):
+                conn.execute("UPDATE prs SET dirty = 1, revision = revision + 1, next_reconcile_at = 0,"
+                             " updated_at = ? WHERE repo = ? AND closed = 0", (now, ev["repo"]))
+            return "reconcile_pending"
+        if ev["kind"] == "issue_edited":
+            row = conn.execute("SELECT phase FROM issues WHERE repo = ? AND issue_number = ?",
+                               (ev["repo"], ev["issue_number"])).fetchone()
+            if row is None or row["phase"] != "implementing":
+                return "edit_ignored"
+        if ev["kind"] == "issue_opened" and not ev.get("trusted"):
+            (recent,) = conn.execute(
+                "SELECT COUNT(*) FROM events WHERE kind = 'issue_opened' AND trusted = 0 AND received_at > ?",
+                (now - UNTRUSTED_ISSUE_WINDOW,),
+            ).fetchone()
+            if recent >= UNTRUSTED_ISSUE_LIMIT:
+                seen = conn.execute("SELECT 1 FROM events WHERE delivery_id = ? OR semantic_key = ?",
+                                    (ev["delivery_id"], ev["semantic_key"])).fetchone()
+                return "duplicate" if seen else "rate_limited"
+        # A redelivered webhook is answered 'duplicate' before any dedupe side effect runs.
+        if conn.execute("SELECT 1 FROM events WHERE delivery_id = ?", (ev["delivery_id"],)).fetchone():
+            return "duplicate"
+        # An automatic review request (no `review` comment) is dropped when the head was already requested
+        # (``head_review_exists``): pending, running, parked or finished reviews of it stand. It still settles
+        # running automatic reviews of other heads (a push back to a reviewed head makes the review started for
+        # the newer head stale), and `_begin_review_head` ends pending ones. A running review carrying a
+        # `review` comment keeps running: it reviews the live head, and this request queues nothing to replace
+        # it. A `review` comment always queues.
+        if ev["kind"] == "pr_review" and ev.get("comment_id") is None and ev.get("head_sha") \
+                and self.head_review_exists(conn, ev["repo"], int(ev["issue_number"]), ev["head_sha"]):
+            self._cancel_outdated_review(conn, ev, now, automatic_only=True)
+            return "duplicate"
+        try:
             conn.execute(
-                "INSERT OR IGNORE INTO issues (repo, issue_number, subject, updated_at) VALUES (?, ?, ?, ?)",
-                (ev["repo"], ev["issue_number"], subject_of(ev["kind"]), now),
+                "INSERT INTO events (delivery_id, semantic_key, repo, kind, issue_number, pr_number, comment_id, actor,"
+                " title, body, default_branch, head_sha, trusted, received_at, updated_at)"
+                " VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)",
+                (ev["delivery_id"], ev["semantic_key"], ev["repo"], ev["kind"], ev["issue_number"],
+                 ev.get("pr_number"), ev.get("comment_id"), ev["actor"], ev["title"], ev["body"],
+                 ev.get("default_branch"), ev.get("head_sha"), 1 if ev.get("trusted") else 0, now, now),
             )
-            if ev["kind"] == "pr_review":
-                self._fold_review_requests(conn, ev, now)
-                self._cancel_outdated_review(conn, ev, now)
-                self._supersede_parked_reviews(conn, ev, now)
+        except sqlite3.IntegrityError:
+            return "duplicate"
+        conn.execute(
+            "INSERT OR IGNORE INTO issues (repo, issue_number, subject, updated_at) VALUES (?, ?, ?, ?)",
+            (ev["repo"], ev["issue_number"], subject_of(ev["kind"]), now),
+        )
+        if ev["kind"] == "pr_review":
+            self._fold_review_requests(conn, ev, now)
+            self._cancel_outdated_review(conn, ev, now)
+            self._supersede_parked_reviews(conn, ev, now)
         return "queued"
+
+
+    @staticmethod
+    def head_review_exists(conn: sqlite3.Connection, repo: str, number: int, head: str) -> bool:
+        """Whether a review of pull request ``number``'s ``head`` was already requested: a ``pr_review`` row
+        for ``head`` pending, running or completed with an outcome that produced (or parked) a review, or any
+        row of the pull request whose published review (``stages.review_published``) is of ``head``. Requests
+        folded ('coalesced'), cancelled, or ended 'head_moved'/'already_reviewed'/'pr_not_open' never produced
+        a review of their head, so they count only through publish evidence: a push landing between the
+        publish op and ``finish`` cancels the row, but the review is on GitHub and stands; a comment review
+        whose head read failed keeps ``head_sha`` NULL yet still published one (review events carry the pull
+        request number as ``issue_number``)."""
+        return conn.execute(
+            "SELECT 1 FROM events WHERE repo = ? AND kind = 'pr_review' AND issue_number = ? AND ("
+            " (head_sha = ? AND (outcome IS NULL"
+            "  OR outcome NOT IN ('coalesced', 'cancelled', 'head_moved', 'already_reviewed', 'pr_not_open')))"
+            " OR json_extract(stages, '$.review_published.sha') = ?) LIMIT 1",
+            (repo, number, head, head),
+        ).fetchone() is not None
 
     @staticmethod
     def _fold_review_requests(conn: sqlite3.Connection, ev: dict[str, Any], now: float) -> None:
@@ -731,7 +780,11 @@ class Store:
         conn.execute(f"UPDATE events SET {', '.join(f'{k} = ?' for k in fields)} WHERE delivery_id = ?",
                      (*fields.values(), ev["delivery_id"]))
         conn.execute(
-            "UPDATE events SET state = 'completed', outcome = 'coalesced', detail = ?, updated_at = ?"
+            "UPDATE events SET state = 'completed', outcome = 'coalesced', detail = ?,"
+            # Release the head key of a request that ended unreviewed, even one that inherited a comment by
+            # folding: the key is freed by its shape, not by the comment marker. `#comment:<id>` keys stay.
+            " semantic_key = CASE WHEN semantic_key = repo || '#pr:' || issue_number || ':review:' || head_sha"
+            " THEN semantic_key || ':coalesced:' || delivery_id ELSE semantic_key END, updated_at = ?"
             " WHERE repo = ? AND issue_number = ? AND kind = 'pr_review' AND state = 'accepted'"
             " AND delivery_id != ?",
             (f"coalesced into review request {ev['delivery_id']}", now, ev["repo"], ev["issue_number"],
@@ -739,18 +792,22 @@ class Store:
         )
 
     @staticmethod
-    def _cancel_outdated_review(conn: sqlite3.Connection, ev: dict[str, Any], now: float) -> None:
+    def _cancel_outdated_review(conn: sqlite3.Connection, ev: dict[str, Any], now: float, *,
+                                automatic_only: bool = False) -> None:
         """A request for a new head cancels the running review of an older head instead of letting it finish.
 
         The cancelled event is terminal, so its workflow's next op gets ``event_terminal`` and nothing is
-        published; the dispatcher then stops its agent (``cancelled.archive`` stage). Its semantic key is
-        released so that head can be requested again. Requests without a head (comments) never cancel."""
+        published; the dispatcher then stops its agent (``cancelled.archive`` stage). Its head key is released
+        so that head can be requested again; requests without a head (comments) never cancel.
+        ``automatic_only`` spares running reviews that carry a `review` comment (a request that queues
+        nothing must not drop a human re-request)."""
         head = ev.get("head_sha")
         if not head:
             return
         running = conn.execute(
             "SELECT * FROM events WHERE repo = ? AND issue_number = ? AND kind = 'pr_review'"
-            " AND state IN ('dispatching', 'dispatched') AND head_sha IS NOT NULL AND head_sha != ?",
+            " AND state IN ('dispatching', 'dispatched') AND head_sha IS NOT NULL AND head_sha != ?"
+            + (" AND comment_id IS NULL" if automatic_only else ""),
             (ev["repo"], ev["issue_number"], head),
         ).fetchall()
         for row in running:
@@ -758,7 +815,9 @@ class Store:
             stages["cancelled"] = {"at": now, "archive": "started" in stages}
             conn.execute(
                 "UPDATE events SET state = 'completed', outcome = 'cancelled', detail = ?, stages = ?,"
-                " semantic_key = semantic_key || ':cancelled:' || delivery_id, updated_at = ? WHERE seq = ?",
+                " semantic_key = CASE WHEN semantic_key = repo || '#pr:' || issue_number || ':review:' || head_sha"
+                " THEN semantic_key || ':cancelled:' || delivery_id ELSE semantic_key END, updated_at = ?"
+                " WHERE seq = ?",
                 (f"head moved from {row['head_sha']} to {head} (review request {ev['delivery_id']})",
                  json.dumps(stages), now, row["seq"]),
             )
@@ -1177,6 +1236,20 @@ def review_footer(bot_login: str | None, *, pushes_reviewed: bool) -> str:
             "pushing fixes or replying to the findings. The same comment restarts a review that stopped with "
             "an error. The pull request author or a maintainer can request it.</sub>")
 
+
+def _github_time(value: Any) -> float | None:
+    """Epoch seconds of a GitHub ISO 8601 timestamp; None when absent or malformed."""
+    if not isinstance(value, str):
+        return None
+    try:
+        parsed = datetime.datetime.fromisoformat(value.replace("Z", "+00:00"))
+    except ValueError:
+        return None
+    if parsed.tzinfo is None:
+        parsed = parsed.replace(tzinfo=datetime.timezone.utc)
+    return parsed.timestamp()
+
+
 def _pull_request_issue_number(pr: Mapping[str, Any]) -> int | None:
     """Map a generated PR back to its issue worktree."""
     head = pr.get("head")
@@ -1187,11 +1260,24 @@ def _pull_request_issue_number(pr: Mapping[str, Any]) -> int | None:
     return None
 
 
+def _app_review_of(reviews: list[dict[str, Any]], login: str | None, sha: str) -> dict[str, Any] | None:
+    """The latest review ``login`` (the review App) published of commit ``sha``: GitHub lists reviews
+    oldest-first and the latest carries the verdict. Only reviews whose body carries the bridge's hidden
+    marker count; a reply-only review (an empty COMMENTED review GitHub records when a thread reply is
+    posted) is stamped with the head at that moment but reviewed nothing."""
+    if not login:
+        return None
+    return next((r for r in reversed(reviews)
+                 if r.get("commit_id") == sha and isinstance(r.get("user"), dict)
+                 and (r["user"].get("login") or "").casefold() == login.casefold()
+                 and BOT_MARKER_PREFIX in (r.get("body") or "")), None)
+
+
 def _pr_signal(
     cfg: RepoConfig,
     delivery: str,
     login: str,
-    default_branch: str,
+    default_branch: str | None,
     pr: Mapping[str, Any],
     *,
     kind: str,
@@ -1936,6 +2022,8 @@ class Bridge:
         self._keyed_locks: dict[Any, threading.Lock] = {}
         # Catalog labels this process has seen exist (repo, name); only spares repeat existence reads.
         self._known_labels: set[tuple[str, str]] = set()
+        # Wall-clock time of the next open pull request review sweep; 0 runs the first one at bridge start.
+        self._next_review_sweep = 0.0
         self.ops: dict[str, Callable[[dict[str, Any]], dict[str, Any]]] = {
             "begin": self.op_begin,
             "stage": self.op_stage,
@@ -2063,7 +2151,7 @@ class Bridge:
                 )
                 status = "started"
         if status == "started" and ev["kind"] == "pr_review":
-            self._record_review_head(ev)
+            status = self._begin_review_head(ev)
         if status == "started" and ev["kind"] == "pr_repair":
             pr_number = ev["pr_number"] or self.store.issue(ev["repo"], ev["issue_number"])["pr_number"]
             if not pr_number:
@@ -3317,18 +3405,97 @@ class Bridge:
         """Login that submits reviews: the review App when configured, else the issue App."""
         return self.config.github_review_bot_login if self.review_github is not None else self.config.github_bot_login
 
-    def _record_review_head(self, ev: sqlite3.Row) -> None:
+    def _begin_review_head(self, ev: sqlite3.Row) -> str:
         """Record the head a starting review checks out, so a push to another head cancels it.
 
-        Best effort: on a failed read the event keeps the head of its latest request."""
+        A request carrying a `review` comment (its own or one folded into it) always reviews the live head.
+        An automatic request (no comment) is tied to the head it was raised for: when the pull request was
+        closed or turned draft since it queued it ends 'pr_not_open'; when another request
+        already published a review of the head it is about to review it ends 'already_reviewed'; when the
+        pull request moved before the review started and that live head was already requested (pending,
+        running, parked, finished or published), it ends 'head_moved'; otherwise it retargets to the live
+        head (a folded or cancelled request never produced a review, so the newer head still gets its one
+        review). A retargeted row moves its head key (``repo#pr:<n>:review:<head>``) along, or releases it
+        when another row holds the new one; `#comment:<id>` keys stay. Best effort: on a failed read the
+        event keeps the head of its latest request."""
         repo, number = ev["repo"], int(ev["pr_number"] or ev["issue_number"])
+        explicit = ev["comment_id"] is not None or ev["head_sha"] is None
+        now = time.time()
+        # An automatic request ends 'already_reviewed' when another request already published a review of the
+        # head it is about to review — e.g. a push cancelled a run whose review POST landed before this row
+        # queued. The check runs before the live-head read so a GitHub hiccup cannot skip it.
+        if not explicit:
+            with self.store.tx() as conn:
+                if conn.execute("SELECT 1 FROM events WHERE seq = ? AND state IN ('dispatching', 'dispatched')",
+                                (ev["seq"],)).fetchone() is None:
+                    return "terminal"
+                if conn.execute(
+                        "SELECT 1 FROM events WHERE repo = ? AND kind = 'pr_review' AND issue_number = ?"
+                        " AND seq != ? AND json_extract(stages, '$.review_published.sha') = ? LIMIT 1",
+                        (repo, number, ev["seq"], ev["head_sha"])).fetchone() is not None:
+                    conn.execute(
+                        "UPDATE events SET state = 'completed', outcome = 'already_reviewed', detail = ?,"
+                        " semantic_key = CASE"
+                        " WHEN semantic_key = repo || '#pr:' || issue_number || ':review:' || head_sha"
+                        " THEN semantic_key || ':already_reviewed:' || delivery_id ELSE semantic_key END,"
+                        " updated_at = ? WHERE seq = ?",
+                        (f"another request already published a review of {ev['head_sha']}", now, ev["seq"]),
+                    )
+                    return "terminal"
         try:
-            head = (self._get_pr(repo, number, client=self.review_github).get("head") or {}).get("sha")
+            live = self._get_pr(repo, number, client=self.review_github)
+            head = (live.get("head") or {}).get("sha")
         except (OpError, TransportError) as exc:
             LOG.warning("review head of %s#%s not recorded: %s", repo, number, exc)
-            return
-        if isinstance(head, str) and _SHA_RE.fullmatch(head):
-            self.store.update_event(ev["delivery_id"], head_sha=head)
+            return "started"
+        if not isinstance(head, str) or not _SHA_RE.fullmatch(head):
+            return "started"
+        if explicit and head == ev["head_sha"]:
+            return "started"
+        # The checks and the retarget (or the end) are one write: a request for the live head cannot insert
+        # between them and get itself or this run to review the same head twice. A request for another head
+        # may have cancelled this event since it started, though: then there is nothing to retarget.
+        with self.store.tx() as conn:
+            if conn.execute("SELECT 1 FROM events WHERE seq = ? AND state IN ('dispatching', 'dispatched')",
+                            (ev["seq"],)).fetchone() is None:
+                return "terminal"
+            if not explicit:
+                # The sweep reads the pull request outside its write, and closing or turning it draft queues
+                # no event, so a request may outlive the state that raised it.
+                if live.get("state") != "open" or live.get("draft"):
+                    ended, outcome = True, "pr_not_open"
+                    detail = f"pull request is {'a draft' if live.get('draft') else live.get('state')}"
+                elif head == ev["head_sha"]:
+                    ended = conn.execute(
+                        "SELECT 1 FROM events WHERE repo = ? AND kind = 'pr_review' AND issue_number = ?"
+                        " AND seq != ? AND json_extract(stages, '$.review_published.sha') = ? LIMIT 1",
+                        (repo, number, ev["seq"], head)).fetchone() is not None
+                    outcome, detail = "already_reviewed", f"another request already published a review of {head}"
+                else:
+                    ended = Store.head_review_exists(conn, repo, number, head)
+                    outcome = "head_moved"
+                    detail = f"pull request head moved from {ev['head_sha']} to {head}, which was already requested"
+                if ended:
+                    conn.execute(
+                        "UPDATE events SET state = 'completed', outcome = ?, detail = ?, semantic_key = CASE"
+                        " WHEN semantic_key = repo || '#pr:' || issue_number || ':review:' || head_sha"
+                        " THEN semantic_key || ':' || ? || ':' || delivery_id ELSE semantic_key END, updated_at = ?"
+                        " WHERE seq = ?",
+                        (outcome, detail, outcome, now, ev["seq"]),
+                    )
+                    return "terminal"
+                if head == ev["head_sha"]:
+                    return "started"
+            key = ev["semantic_key"]
+            if ev["head_sha"] is not None and key == f"{repo}#pr:{number}:review:{ev['head_sha']}":
+                key = f"{repo}#pr:{number}:review:{head}"
+                if conn.execute("SELECT 1 FROM events WHERE semantic_key = ? AND seq != ?",
+                                (key, ev["seq"])).fetchone() is not None:
+                    key = f"{ev['semantic_key']}:retargeted:{ev['delivery_id']}"
+            conn.execute("UPDATE events SET head_sha = ?, semantic_key = ?, updated_at = ? WHERE seq = ?",
+                         (head, key, now, ev["seq"]))
+        return "started"
+
     def op_github_review(self, req: dict[str, Any]) -> dict[str, Any]:
         ev = self._event(req)
         if subject_of(ev["kind"]) != "pull_request":
@@ -3347,9 +3514,22 @@ class Bridge:
         # there and leave the new head unreviewed rather than stamping unread code or stopping the event.
         stale = head != reviewed
 
+        reviewer = self.reviewer_login()
+        reviews = self._paged(f"/repos/{repo}/pulls/{number}/reviews", MAX_IDEMPOTENCY_PAGES, strict=True,
+                              client=gh)
+        marker = f"{BOT_MARKER_PREFIX}:{delivery}:review -->"
+        existing = next((r for r in reviews if marker in (r.get("body") or "")), None)
+        reused = False
+        if existing is None and ev["comment_id"] is None:
+            # An automatic request does not post a second review of a head the review App already reviewed:
+            # this delivery may be retrying a POST whose reply was lost after the review landed. That review
+            # belongs to another run, which posted its own thread replies, so this run posts and resolves none.
+            existing = _app_review_of(reviews, reviewer, reviewed)
+            reused = existing is not None
+
         replies: list[int] = []
         resolved: list[str] = []
-        if result["thread_replies"]:
+        if result["thread_replies"] and not reused:
             threads = self._threads(repo, number, client=gh)
             by_comment = {c["comment_id"]: t for t in threads for c in t["comments"]}
             unknown = [r["comment_id"] for r in result["thread_replies"] if r["comment_id"] not in by_comment]
@@ -3360,13 +3540,13 @@ class Bridge:
                                   client=gh)]
             for r in result["thread_replies"]:
                 cid = r["comment_id"]
-                marker = f"{BOT_MARKER_PREFIX}:{delivery}:reply:{cid} -->"
+                reply_marker = f"{BOT_MARKER_PREFIX}:{delivery}:reply:{cid} -->"
                 thread = by_comment[cid]
                 # The replies endpoint only accepts a thread's top-level comment; the marker keeps the given id.
                 root = thread["comments"][0]["comment_id"] or cid
-                if not any(marker in b for b in posted):
+                if not any(reply_marker in b for b in posted):
                     self._gh("POST", f"/repos/{repo}/pulls/{number}/comments/{root}/replies",
-                             {"body": f"{marker}\n{r['body']}"}, ok=(201,), client=gh)
+                             {"body": f"{reply_marker}\n{r['body']}"}, ok=(201,), client=gh)
                 replies.append(cid)
                 if r["resolve"]:
                     if not thread["is_resolved"]:
@@ -3374,18 +3554,16 @@ class Bridge:
                         thread["is_resolved"] = True
                     resolved.append(thread["thread_id"])
 
-        marker = f"{BOT_MARKER_PREFIX}:{delivery}:review -->"
-        for r in self._paged(f"/repos/{repo}/pulls/{number}/reviews", MAX_IDEMPOTENCY_PAGES, strict=True,
-                             client=gh):
-            if marker in (r.get("body") or ""):
-                submitted = REVIEW_STATE_EVENTS.get(r.get("state"), r.get("state"))
-                return {"review_id": r.get("id"), "html_url": r.get("html_url"), "event_submitted": submitted,
-                        "replies": replies, "resolved": resolved, "created": False, "stale": stale,
-                        "commit_status": None if stale else self._review_status(repo, head, submitted,
-                                                                                r.get("html_url"))}
+        if existing is not None:
+            submitted = REVIEW_STATE_EVENTS.get(existing.get("state"), existing.get("state"))
+            self._review_published(delivery, reviewed)
+            return {"review_id": existing.get("id"), "html_url": existing.get("html_url"),
+                    "event_submitted": submitted, "replies": replies, "resolved": resolved,
+                    "created": False, "stale": stale,
+                    "commit_status": None if stale else self._review_status(repo, head, submitted,
+                                                                            existing.get("html_url"))}
         event, body = result["event"], result["body"]
         author = ((pr.get("user") or {}).get("login") or "").casefold()
-        reviewer = self.reviewer_login()
         if event != "COMMENT" and reviewer and author == reviewer:
             action = "approve" if event == "APPROVE" else "request changes on"
             body = (f"**Verdict: {event}** — GitHub does not let the app {action} its own pull request, "
@@ -3424,14 +3602,30 @@ class Bridge:
             findings = f"\n\n{findings_section(result['comments'])}" if result["comments"] else ""
             posted = self._comment(repo, number, f"{delivery}:review",
                                    f"**Verdict: {event}**\n\n{body}{findings}{tail}", client=gh)
+            self._review_published(delivery, reviewed)
             return {"review_id": None, "html_url": posted["url"], "event_submitted": "COMMENT",
                     "replies": replies, "resolved": resolved, "created": posted["created"], "stale": True,
                     "inline_folded": bool(result["comments"]), "commit_status": None}
         if status != 200 or not isinstance(data, dict):
             raise OpError(f"github review HTTP {status}", retryable=status >= 500 or status == 429)
+        self._review_published(delivery, reviewed)
         return {"review_id": data.get("id"), "html_url": data.get("html_url"), "event_submitted": event,
                 "replies": replies, "resolved": resolved, "created": True, "inline_folded": folded, "stale": stale,
                 "commit_status": None if stale else self._review_status(repo, head, event, data.get("html_url"))}
+
+    def _review_published(self, delivery_id: str, sha: str) -> None:
+        """Record that this event's review of ``sha`` reached GitHub (or already carried our marker). The
+        evidence survives the event: a request for ``sha`` counts as requested even if a push cancelled the
+        event before ``finish`` ran (``Store.head_review_exists``)."""
+        with self.store.tx() as conn:
+            row = conn.execute("SELECT stages FROM events WHERE delivery_id = ?",
+                               (delivery_id,)).fetchone()
+            if row is None:
+                return
+            stages = json.loads(row["stages"])
+            stages["review_published"] = {"sha": sha, "at": time.time()}
+            conn.execute("UPDATE events SET stages = ?, updated_at = ? WHERE delivery_id = ?",
+                         (json.dumps(stages), time.time(), delivery_id))
 
     def _review_status(self, repo: str, sha: str, event: str, target_url: Any) -> dict[str, Any] | None:
         """Mirror the submitted verdict as a commit status on the reviewed head (review App only).
@@ -3759,19 +3953,150 @@ class Bridge:
             ready = current["ready"] and current["head_sha"] == head
         return {"number": pr_number, "html_url": pr.get("html_url"), "created": created, "ready": ready}
 
-    def _queue_head_review(self, repo: str, number: int, state: Mapping[str, Any]) -> None:
-        """Reuse the existing review flow for each pushed head, including missed synchronize webhooks."""
-        if self.review_github is None or state["state"] != "OPEN" or state["draft"]:
-            return
-        digest = hashlib.sha256(f"{repo}:{number}:{state['head_sha']}".encode()).hexdigest()[:48]
-        self.store.enqueue({
-            "delivery_id": f"pr-review-{digest}",
-            "semantic_key": f"{repo}#pr:{number}:review:{state['head_sha']}",
-            "repo": repo, "kind": "pr_review", "issue_number": number, "pr_number": number,
-            "actor": self.config.github_bot_login or "issue-agent", "title": state["title"],
-            "body": state["body"] or "", "default_branch": state["default_branch"],
-            "head_sha": state["head_sha"], "trusted": False,
-        })
+    # -- open pull request review sweep ---------------------------------------
+
+    def sweep_open_prs(self, now: float) -> int:
+        """Queue the review a missed webhook would have queued (e.g. the bridge was down when it arrived).
+
+        Covers every open pull request of the review App's installation, bot-managed or not. Returns the
+        number of reviews queued; GitHub failures are logged and skip only that repository or pull request.
+        """
+        if self.review_github is None:
+            return 0  # without the review App a push does not queue a review either (classify_event)
+        try:
+            registry = self.registry()
+            repos = self._installation_repos()
+        except (OpError, TransportError) as exc:
+            LOG.warning("review sweep pending: %s", exc)
+            return 0
+        queued = 0
+        for name in repos:
+            if queued >= REVIEW_SWEEP_MAX_ENQUEUES:
+                LOG.info("review sweep queued %d reviews; the rest wait for the next sweep", queued)
+                break
+            cfg = registry.get(name)
+            if cfg is None:
+                continue
+            try:
+                queued += self._sweep_repo(cfg, now, REVIEW_SWEEP_MAX_ENQUEUES - queued)
+            except (OpError, TransportError) as exc:
+                LOG.warning("review sweep of %s pending: %s", name, exc)
+        return queued
+
+    def _installation_repos(self) -> list[str]:
+        names: list[str] = []
+        for page in range(1, REVIEW_SWEEP_MAX_PAGES + 1):
+            data = self._gh("GET", f"/installation/repositories?per_page=100&page={page}", client=self.review_github)
+            repos = data.get("repositories") if isinstance(data, dict) else None
+            if not isinstance(repos, list):
+                raise OpError("github installation repositories: unexpected response", retryable=True)
+            names.extend(r["full_name"] for r in repos if isinstance(r, dict) and isinstance(r.get("full_name"), str))
+            if len(repos) < 100:
+                return names
+        LOG.warning("review sweep: more than %d installation repositories; the rest are not swept",
+                    REVIEW_SWEEP_MAX_PAGES * 100)
+        return names
+
+    def _sweep_repo(self, cfg: RepoConfig, now: float, budget: int) -> int:
+        repo, gh = cfg.name, self.review_github
+        pulls = self._paged(f"/repos/{repo}/pulls?state=open", REVIEW_SWEEP_MAX_PAGES, client=gh)
+        if len(pulls) >= REVIEW_SWEEP_MAX_PAGES * 100:
+            LOG.warning("review sweep of %s: more than %d open pull requests; the oldest are not swept",
+                        repo, REVIEW_SWEEP_MAX_PAGES * 100)
+        cutoff = now - REVIEW_SWEEP_MAX_AGE_SECONDS
+        queued = 0
+        for pr in pulls:
+            if queued >= budget:
+                break
+            number = _positive_int(pr.get("number"))
+            head = pr["head"].get("sha") if isinstance(pr.get("head"), dict) else None
+            if number is None or not isinstance(head, str) or not _SHA_RE.fullmatch(head) \
+                    or pr.get("state") != "open" or pr.get("draft"):
+                continue
+            # The head commit cannot be newer than the pull request's last update.
+            updated = _github_time(pr.get("updated_at"))
+            if updated is None or updated < cutoff:
+                continue
+            try:
+                if self._sweep_queue(cfg, number, head, cutoff):
+                    queued += 1
+            except (OpError, TransportError) as exc:
+                LOG.warning("review sweep of %s#%s pending: %s", repo, number, exc)
+        return queued
+
+    def _sweep_queue(self, cfg: RepoConfig, number: int, head: str, cutoff: float) -> bool:
+        """Queue the review of ``head`` unless one was ever requested or the pull request is busy."""
+        repo, gh = cfg.name, self.review_github
+        with self.store.tx() as conn:
+            if self._sweep_blocked(conn, repo, number, head):
+                return False
+        # No local record: the review App's review of this commit on this pull request shows a review this
+        # state never recorded (a dependabot rebase moves the App's review onto the new head; pillar-csi#162).
+        # The review status is not consulted: it is scoped to the commit, so another pull request with the
+        # same head (a different base) would hide this one's missing review.
+        reviews = self._paged(f"/repos/{repo}/pulls/{number}/reviews", MAX_IDEMPOTENCY_PAGES, client=gh)
+        if _app_review_of(reviews, self.reviewer_login(), head) is not None:
+            return False
+        commit = self._gh("GET", f"/repos/{repo}/commits/{head}", client=gh)
+        committed = _github_time(((commit.get("commit") or {}).get("committer") or {}).get("date")
+                                 if isinstance(commit, dict) else None)
+        if committed is None or committed < cutoff:
+            return False
+        # The live read happens before the write transaction: no SQLite write lock is held across a network
+        # call. A push may still land between the read and the insert; the stale request then only meets
+        # pending or running reviews if none were in flight at the check (Rule 2 below), and `begin` ends or
+        # retargets it ('head_moved'). The one place a stale request could do harm is superseding a parked
+        # review (`Store._supersede_parked_reviews`), so a pull request with a parked review or a blocked
+        # subject is never swept: an operator or a `review` comment resolves it.
+        live = self._get_pr(repo, number, client=gh)
+        if live.get("state") != "open" or live.get("draft") or (live.get("head") or {}).get("sha") != head:
+            return False
+        # A fresh delivery id per request: dedupe lives in `head_review_exists`/`semantic_key`, and a
+        # digest of the head would repeat once a retargeted row no longer carries this head.
+        delivery = f"pr-review-sweep-{uuid.uuid4().hex}"
+        default_branch = ((live.get("base") or {}).get("repo") or {}).get("default_branch")
+        ev = _pr_signal(cfg, delivery, self.config.github_bot_login or "issue-agent",
+                        default_branch, live, kind="pr_review", body=live.get("body") or "")
+        if isinstance(ev, str):
+            return False
+        # The in-flight checks and the insert share one write transaction: a webhook enqueue racing the
+        # sweep cannot land between them.
+        with self.store.tx() as conn:
+            if self._sweep_blocked(conn, repo, number, head, ev.get("managed_issue")):
+                return False
+            outcome = self.store.enqueue_in(conn, ev)
+        LOG.info("review sweep %s#%s at %s: %s", repo, number, head, outcome)
+        return outcome == "queued"
+
+    @staticmethod
+    def _sweep_blocked(conn: sqlite3.Connection, repo: str, number: int, head: str,
+                       linked_issue: int | None = None) -> bool:
+        """A review of ``head`` produced, published or owed (``Store.head_review_exists``: unpublished
+        requests folded, cancelled or ended before they ran do not count); a parked review or a blocked
+        subject on the pull request; or something in flight or parked on the pull request (a `review` comment
+        whose head is not recorded yet included) or on the issue the pull request is managed for, whether the
+        link comes from ``prs`` or, for a PR never tracked, from the ``hapi-issue-N`` branch name
+        (``linked_issue``). A parked issue blocks too: its implementation or repair session may live."""
+        if Store.head_review_exists(conn, repo, number, head):
+            return True
+        marks = ", ".join("?" for _ in ACTIVE_EVENT_STATES)
+        if conn.execute(f"SELECT 1 FROM events WHERE repo = ? AND (issue_number = ? OR pr_number = ?)"
+                        f" AND state IN ({marks}) LIMIT 1", (repo, number, number, *ACTIVE_EVENT_STATES)).fetchone():
+            return True
+        if conn.execute("SELECT 1 FROM events WHERE repo = ? AND issue_number = ? AND kind = 'pr_review'"
+                        " AND state = 'needs_attention' LIMIT 1", (repo, number)).fetchone():
+            return True
+        managed = conn.execute("SELECT issue_number FROM prs WHERE repo = ? AND pr_number = ?",
+                               (repo, number)).fetchone()
+        for issue in {number, managed["issue_number"] if managed is not None else None, linked_issue} - {None}:
+            if conn.execute("SELECT 1 FROM issues WHERE repo = ? AND issue_number = ? AND blocked = 1",
+                            (repo, issue)).fetchone():
+                return True
+            if issue != number and conn.execute(
+                    f"SELECT 1 FROM events WHERE repo = ? AND issue_number = ? AND state IN ({marks}) LIMIT 1",
+                    (repo, issue, *ACTIVE_EVENT_STATES)).fetchone():
+                return True
+        return False
 
     def reconcile_pr(self, repo: str, number: int, now: float | None = None) -> str:
         """A finite reconciliation pass; the SQLite lease is the only repair writer owner."""
@@ -3792,7 +4117,6 @@ class Bridge:
             if issue["blocked"]:
                 return "blocked"
             state = self._pr_state(repo, number)
-            self._queue_head_review(repo, number, state)
             if state["state"] != "OPEN":
                 with self.store.tx() as conn:
                     conn.execute("UPDATE prs SET closed = 1, dirty = 0, head_sha = ? "
@@ -3895,6 +4219,12 @@ class Bridge:
                 self.reconcile_pr(row["repo"], int(row["pr_number"]), now)
             except (OpError, TransportError) as exc:
                 LOG.warning("PR reconciliation pending for %s#%s: %s", row["repo"], row["pr_number"], exc)
+        if now >= self._next_review_sweep:
+            self._next_review_sweep = now + REVIEW_SWEEP_SECONDS
+            try:
+                self.sweep_open_prs(now)
+            except Exception:  # never into the dispatcher tick; the next sweep starts over
+                LOG.exception("open pull request review sweep failed")
 
 
 # --------------------------------------------------------------------------
