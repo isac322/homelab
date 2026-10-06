@@ -20,6 +20,10 @@ configMapGenerator:
     files:
       - bridge.py
       - repo-registry.json
+    options:
+      annotations:
+        # bridge.py exceeds the 256 KiB last-applied-configuration annotation client-side apply writes.
+        argocd.argoproj.io/sync-options: ServerSideApply=true
   - name: issue-agent-n8n-workflow
     files:
       - n8n-workflow.json
