@@ -513,7 +513,8 @@ class Fake:
         if len(rest) == 1:
             return 200, pr
         if rest[1] == "reviews" and method == "GET":
-            return 200, self.reviews
+            # Reviews are scoped to their pull request; seeded reviews without "pull" belong to every one.
+            return 200, [r for r in self.reviews if r.get("pull", pr["number"]) == pr["number"]]
         if rest[1] == "reviews":
             self.review_posts.append(body)
             if body.get("commit_id") in self.reject_review_commits:
@@ -523,7 +524,7 @@ class Fake:
             state = {"APPROVE": "APPROVED", "REQUEST_CHANGES": "CHANGES_REQUESTED", "COMMENT": "COMMENTED"}
             review = {"id": self._next(), "html_url": f"https://github.com/{repo}/pull/{pr['number']}#r{self.seq}",
                       "state": state[body["event"]], "body": body["body"], "commit_id": body["commit_id"],
-                      "user": {"login": self.gh_actor}}
+                      "user": {"login": self.gh_actor}, "pull": pr["number"]}
             self.reviews.append(review)
             return 200, review
         if rest[1] == "comments" and len(rest) == 2:
@@ -2120,24 +2121,91 @@ class ReviewSweepTests(BridgeTestCase):
         self.assertEqual(self.sweep(), 1)
         self.assertEqual(self.reviews(), [(REPO, 144, SHA_A, "accepted")])
 
-    def test_a_review_status_without_a_local_record_skips_the_head(self) -> None:
+    def test_another_pull_requests_review_of_a_shared_head_does_not_skip_it(self) -> None:
+        # Two pull requests with the same head on different bases: the review status of #100 is on the
+        # commit, so it must not hide that #101 was never reviewed. Reviews are scoped to their pull request.
+        self.fake.add_pr(100, ref="feature", sha=SHA_A)
+        self.fake.add_pr(101, ref="feature-backport", sha=SHA_A)
+        self.fake.statuses[SHA_A] = [{"context": bridge.DEFAULT_REVIEW_STATUS_CONTEXT, "state": "success"}]
+        self.fake.reviews = [{"id": 1, "state": "APPROVED", "commit_id": SHA_A, "pull": 100,
+                              "body": f"{bridge.BOT_MARKER_PREFIX}:d0:review -->\nok", "user": {"login": REVIEWER}}]
+        self.assertEqual(self.sweep(), 1)
+        self.assertEqual(self.reviews(), [(REPO, 101, SHA_A, "accepted")])
+
+    def test_a_reply_only_review_does_not_count_as_a_review_of_the_head(self) -> None:
+        # A thread reply makes GitHub record an empty COMMENTED review stamped with the head at that moment.
         self.fake.add_pr(12, ref="feature")
-        self.fake.statuses[SHA_A] = [{"context": bridge.DEFAULT_REVIEW_STATUS_CONTEXT, "state": "failure"}]
-        self.assertEqual(self.sweep(), 0)
-        self.fake.statuses[SHA_A] = [{"context": "ci/build", "state": "success"}]
+        self.fake.reviews = [{"id": 1, "state": "COMMENTED", "commit_id": SHA_A, "body": "",
+                              "user": {"login": REVIEWER}}]
         self.assertEqual(self.sweep(), 1)
 
     def test_a_head_that_moved_after_listing_is_left_to_the_next_sweep(self) -> None:
         self.fake.add_pr(12, ref="feature")
         self.fake.head_after_list[12] = SHA_B
-        # The head moved between the listing and the enqueue: nothing is queued for the stale head, and the
-        # parked review of the head before it is left alone (it is settled by the request that lands later).
+        # The head moved between the listing and the enqueue: nothing is queued for the stale head.
+        self.assertEqual(self.sweep(), 0)
+        self.assertEqual(self.events(), [])
+        self.assertEqual(self.sweep(), 1)
+        self.assertEqual(self.reviews(), [(REPO, 12, SHA_B, "accepted")])
+
+    def test_a_swept_review_ends_when_the_pull_request_closes_before_it_starts(self) -> None:
+        # Closing (or turning draft) queues no event, so the swept request outlives the open pull request: it
+        # ends at start without reviewing, and does not count once the pull request reopens.
+        pr = self.fake.add_pr(12, ref="feature")
+        self.assertEqual(self.sweep(), 1)
+        swept = self.store.query("SELECT delivery_id FROM events")[0]["delivery_id"]
+        pr["state"] = "closed"
+        self.assertEqual(self.dispatcher.tick(), "dispatched")
+        self.assertEqual(self.op("begin", swept, attempt=1)["status"], "terminal")
+        row = self.store.event(swept)
+        self.assertEqual((row["state"], row["outcome"]), ("completed", "pr_not_open"))
+        self.assertEqual(self.op("github.review", swept, result=REVIEW_OK)["error"], "event_terminal")
+        self.assertEqual((self.fake.review_posts, self.fake.status_posts), ([], []))
+        self.assertEqual(self.store.issue(REPO, 12)["blocked"], 0)
+        pr["state"] = "open"
+        reopened = pr_payload(12, action="reopened")
+        reopened["pull_request"]["head"]["ref"] = "feature"
+        self.assertEqual(self.deliver(reopened, event="pull_request", delivery="o1").outcome, "queued")
+        self.assertEqual(self.sweep(), 0)  # the reopened head's review is pending
+
+    def test_a_parked_review_or_a_blocked_pull_request_is_never_swept(self) -> None:
+        # A stale swept request would supersede the parked review (`_supersede_parked_reviews`); the operator
+        # or a `review` comment resolves it instead.
+        self.fake.add_pr(12, ref="feature")
         self.store.update_event(self._parked_review(12), state="needs_attention")
         self.assertEqual(self.sweep(), 0)
         self.assertEqual(self.events(), [("x12", "needs_attention")])
+        self.store.update_event("x12", state="completed", outcome="superseded")
+        with self.store.tx() as conn:
+            conn.execute("UPDATE issues SET blocked = 1 WHERE repo = ? AND issue_number = 12", (REPO,))
+        self.assertEqual(self.sweep(), 0)
+        with self.store.tx() as conn:
+            conn.execute("UPDATE issues SET blocked = 0 WHERE repo = ? AND issue_number = 12", (REPO,))
         self.assertEqual(self.sweep(), 1)
-        self.assertEqual(self.store.event("x12")["outcome"], "superseded")
-        self.assertEqual(self.reviews(), [(REPO, 12, sha(99), "completed"), (REPO, 12, SHA_B, "accepted")])
+
+    def test_the_sweep_holds_no_write_lock_across_the_live_read(self) -> None:
+        # The live read can take the client's whole timeout; a webhook or op writing meanwhile must not wait
+        # for it (busy_timeout equals the HTTP timeout, so it would fail with 'database is locked').
+        self.fake.add_pr(12, ref="feature")
+        original = self.fake.github
+        probes: list[bool] = []
+
+        def probe_during_live_read(method: str, path: str, query: dict, body: Any) -> tuple[int, Any]:
+            if method == "GET" and path.endswith("/pulls/12"):
+                conn = sqlite3.connect(self.env["BRIDGE_STATE_PATH"], timeout=0)
+                try:
+                    conn.execute("BEGIN IMMEDIATE")
+                    conn.rollback()
+                    probes.append(True)
+                except sqlite3.OperationalError:
+                    probes.append(False)
+                finally:
+                    conn.close()
+            return original(method, path, query, body)
+
+        self.fake.github = probe_during_live_read
+        self.assertEqual(self.sweep(), 1)
+        self.assertEqual(probes, [True])
 
     def _parked_review(self, number: int) -> str:
         """Insert a parked review request for another head directly (its own head is long gone)."""
@@ -2148,7 +2216,36 @@ class ReviewSweepTests(BridgeTestCase):
                 " VALUES (?, ?, ?, 'pr_review', ?, ?, 'someone', 't', '', 'accepted', NULL, NULL, 0, 0)",
                 (f"x{number}", f"{REPO}#pr:{number}:review:{sha(99)}", REPO, number, sha(99)),
             )
+            conn.execute("INSERT OR IGNORE INTO issues (repo, issue_number, subject, updated_at)"
+                         " VALUES (?, ?, 'pull_request', 0)", (REPO, number))
         return f"x{number}"
+
+    def test_a_review_app_review_of_the_head_without_a_local_record_skips_it(self) -> None:
+        # pillar-csi#162: a dependabot rebase moved the App's APPROVED review onto the new head, which has no
+        # review status and no local row; reviewing it again would only repeat that verdict.
+        self.fake.add_pr(12, ref="feature")
+        self.fake.reviews = [{"id": 1, "state": "APPROVED", "commit_id": SHA_A, "user": {"login": REVIEWER},
+                              "body": f"{bridge.BOT_MARKER_PREFIX}:d0:review -->\nok"}]
+        self.assertEqual(self.sweep(), 0)
+        self.fake.reviews = [{"id": 1, "state": "APPROVED", "commit_id": SHA_A, "user": {"login": "maintainer"},
+                              "body": f"{bridge.BOT_MARKER_PREFIX}:d0:review -->\nok"}]
+        self.assertEqual(self.sweep(), 1)
+
+    def test_a_parked_linked_issue_blocks_the_sweep(self) -> None:
+        # A parked implementation or repair session may still be live, whether the link comes from `prs` or
+        # from the hapi-issue-<n> branch of a pull request never tracked.
+        for issue, delivery in ((141, "d1"), (142, "d2")):
+            self.started(issue, delivery)
+            self.store.update_event(delivery, state="completed", outcome="triaged")
+        self.fake.add_pr(144, author=BOT, ref="hapi-issue-141", body="Fixes #141", sha=sha(144))
+        self.fake.add_pr(145, author=BOT, ref="feature-145", body="Fixes #142", sha=sha(145))
+        self.store.track_pr(REPO, 145, 142, sha(145))
+        with self.store.tx() as conn:
+            conn.execute("UPDATE issues SET blocked = 1 WHERE repo = ? AND issue_number IN (141, 142)", (REPO,))
+        self.assertEqual(self.sweep(), 0)
+        with self.store.tx() as conn:
+            conn.execute("UPDATE issues SET blocked = 0 WHERE repo = ? AND issue_number IN (141, 142)", (REPO,))
+        self.assertEqual(self.sweep(), 2)
 
     def test_one_sweep_queues_at_most_the_cap_across_repositories(self) -> None:
         self.fake.installation_repos = [REPO, OTHER]
@@ -2208,12 +2305,12 @@ class ReviewSweepTests(BridgeTestCase):
         self.assertEqual(self.reviews(), [(REPO, 144, SHA_A, "accepted")])
 
     def test_a_swept_review_ends_instead_of_retargeting_after_the_head_moves(self) -> None:
-        # Head B was parked, the move to A's webhook was missed, the sweep queued A, and the push back to B
+        # Head B was reviewed, the move to A's webhook was missed, the sweep queued A, and the push back to B
         # was deduplicated: the queued A request must not review B again.
         pr = self.fake.add_pr(12, ref="feature", sha=SHA_B)
         self.assertEqual(self.sweep(), 1)
-        parked = self.store.query("SELECT delivery_id FROM events")[0]["delivery_id"]
-        self.store.update_event(parked, state="needs_attention")
+        reviewed = self.store.query("SELECT delivery_id FROM events")[0]["delivery_id"]
+        self.store.update_event(reviewed, state="completed", outcome="reviewed")
         pr["head"]["sha"] = SHA_A
         self.assertEqual(self.sweep(), 1)
         stale = self.store.query("SELECT delivery_id FROM events WHERE head_sha = ?", (SHA_A,))[0]["delivery_id"]
@@ -2428,10 +2525,9 @@ class ReviewSweepTests(BridgeTestCase):
         self.assertEqual(self.store.event("s2")["outcome"], "already_reviewed")
         self.assertEqual(len(self.fake.review_posts), 1)
 
-    def test_an_automatic_request_does_not_repost_a_head_whose_post_reply_was_lost(self) -> None:
-        # Old A's review POST landed at GitHub but the reply was lost, so the bridge has no evidence; a push to
-        # B cancelled old A and the push back to A queued new A. New A finds the review App's review of A on
-        # the pull request and records it instead of posting a second one.
+    def reuse_after_lost_post(self, result: dict[str, Any]) -> dict[str, Any]:
+        """Old A's review POST lands at GitHub but its reply is lost, a push to B cancels old A and the push
+        back to A queues new A; returns new A's `github.review` result."""
         self.started_review(12, "p1")
         client = self.bridge.review_github or self.bridge.github
         real_request = client.request
@@ -2443,7 +2539,7 @@ class ReviewSweepTests(BridgeTestCase):
             return status, data
 
         with patch.object(client, "request", side_effect=lose_post_reply):
-            lost = self.op("github.review", "p1", result=REVIEW_OK)
+            lost = self.op("github.review", "p1", result=result)
         self.assertEqual((lost["ok"], lost["retryable"]), (False, True))
         self.assertEqual(len(self.fake.review_posts), 1)
         self.fake.prs[12]["head"]["sha"] = SHA_B
@@ -2456,10 +2552,50 @@ class ReviewSweepTests(BridgeTestCase):
         self.assertEqual(self.dispatcher.tick(), "dispatched")
         self.assertEqual(self.fake.dispatched[-1][1]["delivery_id"], "s2")
         self.assertEqual(self.op("begin", "s2", attempt=1)["status"], "started")
-        published = self.op("github.review", "s2", result=REVIEW_OK)
+        return self.op("github.review", "s2", result=result)
+
+    def test_an_automatic_request_does_not_repost_a_head_whose_post_reply_was_lost(self) -> None:
+        # The bridge has no evidence of old A's review; new A finds the review App's review of A on the pull
+        # request and records it instead of posting a second one.
+        published = self.reuse_after_lost_post(REVIEW_OK)
         self.assertEqual((published["ok"], published["created"]), (True, False))
         self.assertEqual(len(self.fake.review_posts), 1)
         self.assertEqual(json.loads(self.store.event("s2")["stages"])["review_published"]["sha"], SHA_A)
+
+    def test_a_reused_review_posts_no_thread_replies_again(self) -> None:
+        # Old A replied to (and resolved) the thread before its review POST; new A reuses that review, so it
+        # neither replies nor resolves again.
+        self.fake.threads = [{"id": "T1", "isResolved": False, "isOutdated": False, "path": "a.py", "line": 3,
+                              "comments": {"nodes": [{"databaseId": 501, "author": {"login": "isac322"},
+                                                      "body": "why?", "createdAt": "t"}]}}]
+        result = variant(REVIEW_OK, thread_replies=[{"comment_id": 501, "body": "fixed", "resolve": True}])
+        published = self.reuse_after_lost_post(result)
+        self.assertEqual((published["ok"], published["created"], published["replies"], published["resolved"]),
+                         (True, False, [], []))
+        self.assertEqual((len(self.fake.reply_posts), self.fake.resolved, len(self.fake.review_posts)),
+                         (1, ["T1"], 1))
+
+    def test_a_push_back_to_a_reviewed_head_keeps_a_running_review_comment(self) -> None:
+        # Fuzz: A was reviewed, a `review` comment queued, the push to B folded it into B's request, which
+        # started; the push back to A is a duplicate and must not cancel the human re-request.
+        self.started_review(12, "p1")
+        self.assertTrue(self.op("github.review", "p1", result=REVIEW_OK)["ok"])
+        self.assertTrue(self.op("finish", "p1", outcome="reviewed")["ok"])
+        command = comment_payload(12, 500, body="@haechibot review", on_pr=True)
+        self.assertEqual(self.deliver(command, event="issue_comment", delivery="d3").outcome, "queued")
+        self.fake.prs[12]["head"]["sha"] = SHA_B
+        push_b = pr_payload(12, action="synchronize", sha=SHA_B)
+        self.assertEqual(self.deliver(push_b, event="pull_request", delivery="d4").outcome, "queued")
+        self.assertEqual(self.store.event("d4")["comment_id"], 500)
+        self.assertEqual(self.dispatcher.tick(), "dispatched")
+        self.assertEqual(self.op("begin", "d4", attempt=1)["status"], "started")
+        self.fake.prs[12]["head"]["sha"] = SHA_A
+        back = pr_payload(12, action="synchronize", sha=SHA_A)
+        self.assertEqual(self.deliver(back, event="pull_request", delivery="d5").outcome, "duplicate")
+        self.assertEqual(self.store.event("d4")["state"], "dispatched")
+        published = self.op("github.review", "d4", result=REVIEW_OK)
+        self.assertEqual((published["ok"], published["created"]), (True, True))
+        self.assertEqual(len(self.fake.review_posts), 2)
 
     def test_an_automatic_request_reuses_the_latest_review_of_its_head(self) -> None:
         # The reviewer App already left two reviews of A (the older verdict superseded by a newer one, as
@@ -2467,9 +2603,14 @@ class ReviewSweepTests(BridgeTestCase):
         self.started_review(12, "p1")
         self.fake.reviews = [
             {"id": 7, "html_url": f"https://github.com/{REPO}/pull/12#r7", "state": "CHANGES_REQUESTED",
-             "body": "Fix the boundary.", "commit_id": SHA_A, "user": {"login": REVIEWER}},
+             "body": f"{bridge.BOT_MARKER_PREFIX}:d0:review -->\nFix the boundary.", "commit_id": SHA_A,
+             "user": {"login": REVIEWER}},
             {"id": 8, "html_url": f"https://github.com/{REPO}/pull/12#r8", "state": "APPROVED",
-             "body": "Looks good.", "commit_id": SHA_A, "user": {"login": REVIEWER}},
+             "body": f"{bridge.BOT_MARKER_PREFIX}:d1:review -->\nLooks good.", "commit_id": SHA_A,
+             "user": {"login": REVIEWER}},
+            # A later thread reply's empty review carries no verdict and is not reused.
+            {"id": 9, "html_url": f"https://github.com/{REPO}/pull/12#r9", "state": "COMMENTED",
+             "body": "", "commit_id": SHA_A, "user": {"login": REVIEWER}},
         ]
         published = self.op("github.review", "p1", result=REVIEW_OK)
         self.assertEqual((published["ok"], published["created"], published["event_submitted"]),

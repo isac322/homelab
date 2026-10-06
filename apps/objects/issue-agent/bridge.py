@@ -707,11 +707,13 @@ class Store:
             return "duplicate"
         # An automatic review request (no `review` comment) is dropped when the head was already requested
         # (``head_review_exists``): pending, running, parked or finished reviews of it stand. It still settles
-        # running reviews of other heads (a push back to a reviewed head makes the review started for the
-        # newer head stale), and `_begin_review_head` ends pending ones. A `review` comment always queues.
+        # running automatic reviews of other heads (a push back to a reviewed head makes the review started for
+        # the newer head stale), and `_begin_review_head` ends pending ones. A running review carrying a
+        # `review` comment keeps running: it reviews the live head, and this request queues nothing to replace
+        # it. A `review` comment always queues.
         if ev["kind"] == "pr_review" and ev.get("comment_id") is None and ev.get("head_sha") \
                 and self.head_review_exists(conn, ev["repo"], int(ev["issue_number"]), ev["head_sha"]):
-            self._cancel_outdated_review(conn, ev, now)
+            self._cancel_outdated_review(conn, ev, now, automatic_only=True)
             return "duplicate"
         try:
             conn.execute(
@@ -740,15 +742,15 @@ class Store:
         """Whether a review of pull request ``number``'s ``head`` was already requested: a ``pr_review`` row
         for ``head`` pending, running or completed with an outcome that produced (or parked) a review, or any
         row of the pull request whose published review (``stages.review_published``) is of ``head``. Requests
-        folded ('coalesced'), cancelled, or ended 'head_moved'/'already_reviewed' never produced a review of
-        their head, so they count only through publish evidence: a push landing between the publish op and
-        ``finish`` cancels the row, but the review is on GitHub and stands; a comment review whose head read
-        failed keeps ``head_sha`` NULL yet still published one (review events carry the pull request number
-        as ``issue_number``)."""
+        folded ('coalesced'), cancelled, or ended 'head_moved'/'already_reviewed'/'pr_not_open' never produced
+        a review of their head, so they count only through publish evidence: a push landing between the
+        publish op and ``finish`` cancels the row, but the review is on GitHub and stands; a comment review
+        whose head read failed keeps ``head_sha`` NULL yet still published one (review events carry the pull
+        request number as ``issue_number``)."""
         return conn.execute(
             "SELECT 1 FROM events WHERE repo = ? AND kind = 'pr_review' AND issue_number = ? AND ("
             " (head_sha = ? AND (outcome IS NULL"
-            "  OR outcome NOT IN ('coalesced', 'cancelled', 'head_moved', 'already_reviewed')))"
+            "  OR outcome NOT IN ('coalesced', 'cancelled', 'head_moved', 'already_reviewed', 'pr_not_open')))"
             " OR json_extract(stages, '$.review_published.sha') = ?) LIMIT 1",
             (repo, number, head, head),
         ).fetchone() is not None
@@ -790,18 +792,22 @@ class Store:
         )
 
     @staticmethod
-    def _cancel_outdated_review(conn: sqlite3.Connection, ev: dict[str, Any], now: float) -> None:
+    def _cancel_outdated_review(conn: sqlite3.Connection, ev: dict[str, Any], now: float, *,
+                                automatic_only: bool = False) -> None:
         """A request for a new head cancels the running review of an older head instead of letting it finish.
 
         The cancelled event is terminal, so its workflow's next op gets ``event_terminal`` and nothing is
         published; the dispatcher then stops its agent (``cancelled.archive`` stage). Its head key is released
-        so that head can be requested again; requests without a head (comments) never cancel."""
+        so that head can be requested again; requests without a head (comments) never cancel.
+        ``automatic_only`` spares running reviews that carry a `review` comment (a request that queues
+        nothing must not drop a human re-request)."""
         head = ev.get("head_sha")
         if not head:
             return
         running = conn.execute(
             "SELECT * FROM events WHERE repo = ? AND issue_number = ? AND kind = 'pr_review'"
-            " AND state IN ('dispatching', 'dispatched') AND head_sha IS NOT NULL AND head_sha != ?",
+            " AND state IN ('dispatching', 'dispatched') AND head_sha IS NOT NULL AND head_sha != ?"
+            + (" AND comment_id IS NULL" if automatic_only else ""),
             (ev["repo"], ev["issue_number"], head),
         ).fetchall()
         for row in running:
@@ -1252,6 +1258,19 @@ def _pull_request_issue_number(pr: Mapping[str, Any]) -> int | None:
     if match:
         return int(match.group(1))
     return None
+
+
+def _app_review_of(reviews: list[dict[str, Any]], login: str | None, sha: str) -> dict[str, Any] | None:
+    """The latest review ``login`` (the review App) published of commit ``sha``: GitHub lists reviews
+    oldest-first and the latest carries the verdict. Only reviews whose body carries the bridge's hidden
+    marker count; a reply-only review (an empty COMMENTED review GitHub records when a thread reply is
+    posted) is stamped with the head at that moment but reviewed nothing."""
+    if not login:
+        return None
+    return next((r for r in reversed(reviews)
+                 if r.get("commit_id") == sha and isinstance(r.get("user"), dict)
+                 and (r["user"].get("login") or "").casefold() == login.casefold()
+                 and BOT_MARKER_PREFIX in (r.get("body") or "")), None)
 
 
 def _pr_signal(
@@ -3390,7 +3409,8 @@ class Bridge:
         """Record the head a starting review checks out, so a push to another head cancels it.
 
         A request carrying a `review` comment (its own or one folded into it) always reviews the live head.
-        An automatic request (no comment) is tied to the head it was raised for: when another request
+        An automatic request (no comment) is tied to the head it was raised for: when the pull request was
+        closed or turned draft since it queued it ends 'pr_not_open'; when another request
         already published a review of the head it is about to review it ends 'already_reviewed'; when the
         pull request moved before the review started and that live head was already requested (pending,
         running, parked, finished or published), it ends 'head_moved'; otherwise it retargets to the live
@@ -3423,7 +3443,8 @@ class Bridge:
                     )
                     return "terminal"
         try:
-            head = (self._get_pr(repo, number, client=self.review_github).get("head") or {}).get("sha")
+            live = self._get_pr(repo, number, client=self.review_github)
+            head = (live.get("head") or {}).get("sha")
         except (OpError, TransportError) as exc:
             LOG.warning("review head of %s#%s not recorded: %s", repo, number, exc)
             return "started"
@@ -3439,7 +3460,12 @@ class Bridge:
                             (ev["seq"],)).fetchone() is None:
                 return "terminal"
             if not explicit:
-                if head == ev["head_sha"]:
+                # The sweep reads the pull request outside its write, and closing or turning it draft queues
+                # no event, so a request may outlive the state that raised it.
+                if live.get("state") != "open" or live.get("draft"):
+                    ended, outcome = True, "pr_not_open"
+                    detail = f"pull request is {'a draft' if live.get('draft') else live.get('state')}"
+                elif head == ev["head_sha"]:
                     ended = conn.execute(
                         "SELECT 1 FROM events WHERE repo = ? AND kind = 'pr_review' AND issue_number = ?"
                         " AND seq != ? AND json_extract(stages, '$.review_published.sha') = ? LIMIT 1",
@@ -3488,9 +3514,22 @@ class Bridge:
         # there and leave the new head unreviewed rather than stamping unread code or stopping the event.
         stale = head != reviewed
 
+        reviewer = self.reviewer_login()
+        reviews = self._paged(f"/repos/{repo}/pulls/{number}/reviews", MAX_IDEMPOTENCY_PAGES, strict=True,
+                              client=gh)
+        marker = f"{BOT_MARKER_PREFIX}:{delivery}:review -->"
+        existing = next((r for r in reviews if marker in (r.get("body") or "")), None)
+        reused = False
+        if existing is None and ev["comment_id"] is None:
+            # An automatic request does not post a second review of a head the review App already reviewed:
+            # this delivery may be retrying a POST whose reply was lost after the review landed. That review
+            # belongs to another run, which posted its own thread replies, so this run posts and resolves none.
+            existing = _app_review_of(reviews, reviewer, reviewed)
+            reused = existing is not None
+
         replies: list[int] = []
         resolved: list[str] = []
-        if result["thread_replies"]:
+        if result["thread_replies"] and not reused:
             threads = self._threads(repo, number, client=gh)
             by_comment = {c["comment_id"]: t for t in threads for c in t["comments"]}
             unknown = [r["comment_id"] for r in result["thread_replies"] if r["comment_id"] not in by_comment]
@@ -3501,13 +3540,13 @@ class Bridge:
                                   client=gh)]
             for r in result["thread_replies"]:
                 cid = r["comment_id"]
-                marker = f"{BOT_MARKER_PREFIX}:{delivery}:reply:{cid} -->"
+                reply_marker = f"{BOT_MARKER_PREFIX}:{delivery}:reply:{cid} -->"
                 thread = by_comment[cid]
                 # The replies endpoint only accepts a thread's top-level comment; the marker keeps the given id.
                 root = thread["comments"][0]["comment_id"] or cid
-                if not any(marker in b for b in posted):
+                if not any(reply_marker in b for b in posted):
                     self._gh("POST", f"/repos/{repo}/pulls/{number}/comments/{root}/replies",
-                             {"body": f"{marker}\n{r['body']}"}, ok=(201,), client=gh)
+                             {"body": f"{reply_marker}\n{r['body']}"}, ok=(201,), client=gh)
                 replies.append(cid)
                 if r["resolve"]:
                     if not thread["is_resolved"]:
@@ -3515,18 +3554,6 @@ class Bridge:
                         thread["is_resolved"] = True
                     resolved.append(thread["thread_id"])
 
-        reviewer = self.reviewer_login()
-        reviews = self._paged(f"/repos/{repo}/pulls/{number}/reviews", MAX_IDEMPOTENCY_PAGES, strict=True,
-                              client=gh)
-        marker = f"{BOT_MARKER_PREFIX}:{delivery}:review -->"
-        existing = next((r for r in reviews if marker in (r.get("body") or "")), None)
-        if existing is None and ev["comment_id"] is None and reviewer:
-            # An automatic request does not post a second review of a head the review App already reviewed:
-            # this delivery may be retrying a POST whose reply was lost after the review landed. The latest
-            # such review carries the head's current verdict, as _pr_findings reads it.
-            existing = next((r for r in reversed(reviews)
-                             if r.get("commit_id") == reviewed and isinstance(r.get("user"), dict)
-                             and (r["user"].get("login") or "").casefold() == reviewer.casefold()), None)
         if existing is not None:
             submitted = REVIEW_STATE_EVENTS.get(existing.get("state"), existing.get("state"))
             self._review_published(delivery, reviewed)
@@ -4003,30 +4030,38 @@ class Bridge:
         with self.store.tx() as conn:
             if self._sweep_blocked(conn, repo, number, head):
                 return False
-        # No local record: the review App's commit status shows a review this state never recorded.
-        statuses = self._paged(f"/repos/{repo}/commits/{head}/statuses", MAX_IDEMPOTENCY_PAGES, client=gh)
-        if any(s.get("context") == self.config.review_status_context for s in statuses):
+        # No local record: the review App's review of this commit on this pull request shows a review this
+        # state never recorded (a dependabot rebase moves the App's review onto the new head; pillar-csi#162).
+        # The review status is not consulted: it is scoped to the commit, so another pull request with the
+        # same head (a different base) would hide this one's missing review.
+        reviews = self._paged(f"/repos/{repo}/pulls/{number}/reviews", MAX_IDEMPOTENCY_PAGES, client=gh)
+        if _app_review_of(reviews, self.reviewer_login(), head) is not None:
             return False
         commit = self._gh("GET", f"/repos/{repo}/commits/{head}", client=gh)
         committed = _github_time(((commit.get("commit") or {}).get("committer") or {}).get("date")
                                  if isinstance(commit, dict) else None)
         if committed is None or committed < cutoff:
             return False
-        # The live read, the in-flight checks and the insert share one write transaction (the lock is held
-        # across a single GET, under the client's normal timeout): a webhook enqueue or a push racing the
-        # sweep cannot land between the staleness check and the insert.
+        # The live read happens before the write transaction: no SQLite write lock is held across a network
+        # call. A push may still land between the read and the insert; the stale request then only meets
+        # pending or running reviews if none were in flight at the check (Rule 2 below), and `begin` ends or
+        # retargets it ('head_moved'). The one place a stale request could do harm is superseding a parked
+        # review (`Store._supersede_parked_reviews`), so a pull request with a parked review or a blocked
+        # subject is never swept: an operator or a `review` comment resolves it.
+        live = self._get_pr(repo, number, client=gh)
+        if live.get("state") != "open" or live.get("draft") or (live.get("head") or {}).get("sha") != head:
+            return False
+        # A fresh delivery id per request: dedupe lives in `head_review_exists`/`semantic_key`, and a
+        # digest of the head would repeat once a retargeted row no longer carries this head.
+        delivery = f"pr-review-sweep-{uuid.uuid4().hex}"
+        default_branch = ((live.get("base") or {}).get("repo") or {}).get("default_branch")
+        ev = _pr_signal(cfg, delivery, self.config.github_bot_login or "issue-agent",
+                        default_branch, live, kind="pr_review", body=live.get("body") or "")
+        if isinstance(ev, str):
+            return False
+        # The in-flight checks and the insert share one write transaction: a webhook enqueue racing the
+        # sweep cannot land between them.
         with self.store.tx() as conn:
-            live = self._get_pr(repo, number, client=gh)
-            if live.get("state") != "open" or live.get("draft") or (live.get("head") or {}).get("sha") != head:
-                return False
-            # A fresh delivery id per request: dedupe lives in `head_review_exists`/`semantic_key`, and a
-            # digest of the head would repeat once a retargeted row no longer carries this head.
-            delivery = f"pr-review-sweep-{uuid.uuid4().hex}"
-            default_branch = ((live.get("base") or {}).get("repo") or {}).get("default_branch")
-            ev = _pr_signal(cfg, delivery, self.config.github_bot_login or "issue-agent",
-                            default_branch, live, kind="pr_review", body=live.get("body") or "")
-            if isinstance(ev, str):
-                return False
             if self._sweep_blocked(conn, repo, number, head, ev.get("managed_issue")):
                 return False
             outcome = self.store.enqueue_in(conn, ev)
@@ -4037,25 +4072,31 @@ class Bridge:
     def _sweep_blocked(conn: sqlite3.Connection, repo: str, number: int, head: str,
                        linked_issue: int | None = None) -> bool:
         """A review of ``head`` produced, published or owed (``Store.head_review_exists``: unpublished
-        requests folded, cancelled or ended 'head_moved'/'already_reviewed' do not count), or something is in
-        flight on the pull request (a `review` comment whose head is not recorded yet included) or on the issue
-        the pull request is managed for, whether the link comes from ``prs`` or, for a PR never tracked, from the
-        ``hapi-issue-N`` branch name (``linked_issue``)."""
+        requests folded, cancelled or ended before they ran do not count); a parked review or a blocked
+        subject on the pull request; or something in flight or parked on the pull request (a `review` comment
+        whose head is not recorded yet included) or on the issue the pull request is managed for, whether the
+        link comes from ``prs`` or, for a PR never tracked, from the ``hapi-issue-N`` branch name
+        (``linked_issue``). A parked issue blocks too: its implementation or repair session may live."""
         if Store.head_review_exists(conn, repo, number, head):
             return True
         marks = ", ".join("?" for _ in ACTIVE_EVENT_STATES)
         if conn.execute(f"SELECT 1 FROM events WHERE repo = ? AND (issue_number = ? OR pr_number = ?)"
                         f" AND state IN ({marks}) LIMIT 1", (repo, number, number, *ACTIVE_EVENT_STATES)).fetchone():
             return True
+        if conn.execute("SELECT 1 FROM events WHERE repo = ? AND issue_number = ? AND kind = 'pr_review'"
+                        " AND state = 'needs_attention' LIMIT 1", (repo, number)).fetchone():
+            return True
         managed = conn.execute("SELECT issue_number FROM prs WHERE repo = ? AND pr_number = ?",
                                (repo, number)).fetchone()
-        if managed is not None and conn.execute(
-                f"SELECT 1 FROM events WHERE repo = ? AND issue_number = ? AND state IN ({marks}) LIMIT 1",
-                (repo, managed["issue_number"], *ACTIVE_EVENT_STATES)).fetchone() is not None:
-            return True
-        return linked_issue is not None and conn.execute(
-            f"SELECT 1 FROM events WHERE repo = ? AND issue_number = ? AND state IN ({marks}) LIMIT 1",
-            (repo, linked_issue, *ACTIVE_EVENT_STATES)).fetchone() is not None
+        for issue in {number, managed["issue_number"] if managed is not None else None, linked_issue} - {None}:
+            if conn.execute("SELECT 1 FROM issues WHERE repo = ? AND issue_number = ? AND blocked = 1",
+                            (repo, issue)).fetchone():
+                return True
+            if issue != number and conn.execute(
+                    f"SELECT 1 FROM events WHERE repo = ? AND issue_number = ? AND state IN ({marks}) LIMIT 1",
+                    (repo, issue, *ACTIVE_EVENT_STATES)).fetchone():
+                return True
+        return False
 
     def reconcile_pr(self, repo: str, number: int, now: float | None = None) -> str:
         """A finite reconciliation pass; the SQLite lease is the only repair writer owner."""
