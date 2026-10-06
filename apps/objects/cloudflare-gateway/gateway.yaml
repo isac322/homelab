@@ -12,3 +12,37 @@ spec:
       allowedRoutes:
         namespaces:
           from: All
+  infrastructure:
+    parametersRef:
+      group: ""
+      kind: ConfigMap
+      name: cloudflare-tunnel
+---
+# The gateway controller passes these strings through to the cloudflared
+# Deployment it owns. macmini egresses through Cloudflare WARP, which drops
+# the tunnel's QUIC (UDP 7844) handshake; on 2026-10-07 the tunnel landed
+# there during a rock5bp reboot and crash-looped, taking public ingress down.
+apiVersion: v1
+kind: ConfigMap
+metadata:
+  name: cloudflare-tunnel
+  namespace: cloudflare-gateway
+data:
+  affinity: |
+    nodeAffinity:
+      requiredDuringSchedulingIgnoredDuringExecution:
+        nodeSelectorTerms:
+          - matchExpressions:
+              - key: kubernetes.io/arch
+                operator: In
+                values:
+                  - amd64
+                  - arm64
+              - key: kubernetes.io/os
+                operator: In
+                values:
+                  - linux
+              - key: kubernetes.io/hostname
+                operator: NotIn
+                values:
+                  - macmini
