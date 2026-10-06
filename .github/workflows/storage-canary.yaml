@@ -1,0 +1,67 @@
+name: Storage canary image
+
+on:
+  workflow_dispatch:
+  push:
+    branches:
+      - master
+    paths:
+      - tools/storage-canary/**
+      - .github/workflows/storage-canary.yaml
+
+permissions:
+  contents: read
+  packages: write
+
+env:
+  IMAGE: ghcr.io/isac322/storage-canary
+
+jobs:
+  build:
+    name: Build, verify, and publish
+    runs-on: ubuntu-24.04-arm
+    timeout-minutes: 30
+    steps:
+      - name: Checkout homelab
+        uses: actions/checkout@v6
+
+      - name: Compute tag
+        run: echo "TAG=${GITHUB_SHA::12}" >> "$GITHUB_ENV"
+
+      - name: Log in to GHCR
+        uses: docker/login-action@v4
+        with:
+          registry: ghcr.io
+          username: ${{ github.actor }}
+          password: ${{ secrets.GITHUB_TOKEN }}
+
+      - name: Build ARM64 image
+        run: |
+          set -euo pipefail
+          docker build \
+            --platform linux/arm64 \
+            --label "org.opencontainers.image.source=https://github.com/${GITHUB_REPOSITORY}" \
+            --label "org.opencontainers.image.revision=${GITHUB_SHA}" \
+            --tag "${IMAGE}:${TAG}" \
+            tools/storage-canary
+
+      - name: Smoke test
+        run: |
+          set -euo pipefail
+          docker run --rm --read-only --user 65532:65532 "${IMAGE}:${TAG}" -h
+          if docker run --rm --read-only --user 65532:65532 "${IMAGE}:${TAG}" \
+            -mode canary -objstore /nonexistent/objstore.yml -arm smoke -dir /tmp/work; then
+            echo "canary mode started without an objstore config" >&2
+            exit 1
+          fi
+
+      - name: Publish image
+        run: |
+          set -euo pipefail
+          docker push "${IMAGE}:${TAG}"
+          digest=$(docker inspect --format '{{index .RepoDigests 0}}' "${IMAGE}:${TAG}")
+          {
+            echo "### Storage canary image"
+            echo
+            echo "Pin in apps/objects/storage-integrity: \`${IMAGE}:${TAG}@${digest#*@}\`"
+          } >> "$GITHUB_STEP_SUMMARY"
