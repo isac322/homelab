@@ -5,6 +5,12 @@ deschedulerPolicy:
     enabled: true
   maxNoOfPodsToEvictPerNode: 3
   maxNoOfPodsToEvictTotal: 5
+  # LowNodeUtilization balances on pod requests (the same ledger the scheduler
+  # uses), not live metrics. PVC protection covers only node-bound or
+  # unverified storage classes; pillar-csi ssd-ha*/hdd-ha* and democratic-csi
+  # *-xfs volumes attach on every node, so those pods stay evictable.
+  # Preferred node affinity is re-applied, so pods drift back to their
+  # preferred node after it reboots.
   profiles:
     - name: default
       pluginConfig:
@@ -12,8 +18,22 @@ deschedulerPolicy:
           args:
             nodeFit: true
             minPodAge: 30m
-            ignorePvcPods: true
-            evictLocalStoragePods: true
+            noEvictionPolicy: Mandatory
+            podProtections:
+              defaultDisabled:
+                - PodsWithLocalStorage
+              extraEnabled:
+                - PodsWithPVC
+              config:
+                PodsWithPVC:
+                  protectedStorageClasses:
+                    - name: ssd-ha-cnpg
+                    - name: ssd-ha-cnpg-thin
+                    - name: hdd-ha-local
+                    - name: local-path
+                    - name: ssd-single
+                    - name: ssd-single-retain
+                    - name: ssd-ha-local
         - name: RemoveDuplicates
         - name: RemovePodsHavingTooManyRestarts
           args:
@@ -23,15 +43,20 @@ deschedulerPolicy:
           args:
             nodeAffinityType:
               - requiredDuringSchedulingIgnoredDuringExecution
+              - preferredDuringSchedulingIgnoredDuringExecution
         - name: RemovePodsViolatingNodeTaints
         - name: RemovePodsViolatingInterPodAntiAffinity
         - name: RemovePodsViolatingTopologySpreadConstraint
         - name: LowNodeUtilization
           args:
             useDeviationThresholds: true
-            metricsUtilization:
-              source: KubernetesMetrics
-            numberOfNodes: 2
+            # Running CI jobs, BuildKit builds and agent sessions would be killed
+            # mid-run; their nodes are fixed by affinity anyway.
+            evictableNamespaces:
+              exclude:
+                - arc-runners
+                - arc-systems
+                - issue-agent-runner
             thresholds:
               cpu: 5
               memory: 15

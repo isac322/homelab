@@ -1194,6 +1194,10 @@ prometheus:
       ## Allow delayed remote-write samples to arrive after transient network partitions
       outOfOrderTimeWindow: 1h
 
+    podMetadata:
+      annotations:
+        descheduler.alpha.kubernetes.io/prefer-no-eviction: "true"
+
     ## Resource limits & requests
     ##
 

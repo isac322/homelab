@@ -57,6 +57,9 @@ storegateway:
   replicaCount: 1
   extraFlags:
     - --index-cache-size=512MB
+  # Heavy I/O; stays on rock5bp.
+  podAnnotations:
+    descheduler.alpha.kubernetes.io/prefer-no-eviction: "true"
   affinity:
     nodeAffinity:
       preferredDuringSchedulingIgnoredDuringExecution:
