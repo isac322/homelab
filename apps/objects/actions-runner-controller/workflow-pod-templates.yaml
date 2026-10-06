@@ -6,11 +6,12 @@
 # same base name (`$job` = job container, `$postgres` = the postgres service);
 # non-prefixed containers would be appended as extra containers.
 #
-# Keep CI compute on macmini: rock5bp is the NVMe/TCP storage host (2026-10-04
-# a cc-lb workflow pod running cargo clippy drove load to 48 and starved
-# jellyfin/hermes liveness probes), and n2p*/rpi* lack the RAM (3.7-8Gi
-# allocatable) for these jobs. cpu limits bound the worst case on macmini;
-# requests stay small so job pods schedule next to their runner pod.
+# Keep CI compute on macmini or rock5bp: n2p*/rpi* lack the RAM (3.7-8Gi
+# allocatable) for these jobs. This list must match each scale set's runner
+# affinity because job pods share the runner's ReadWriteOnce work volume.
+# cpu limits bound the worst case (2026-10-04 an unbounded cargo clippy pod
+# drove rock5bp to load 48); requests stay small so job pods schedule next to
+# their runner pod.
 # Add a `$<service>` entry here whenever a cc-lb workflow adds a service.
 apiVersion: v1
 kind: ConfigMap
@@ -29,6 +30,7 @@ data:
                     operator: In
                     values:
                       - macmini
+                      - rock5bp
       containers:
         - name: $job
           resources:
@@ -57,6 +59,7 @@ data:
                     operator: In
                     values:
                       - macmini
+                      - rock5bp
       containers:
         - name: $job
           resources:
@@ -85,6 +88,7 @@ data:
                     operator: In
                     values:
                       - macmini
+                      - rock5bp
       containers:
         - name: $job
           resources:
@@ -113,6 +117,7 @@ data:
                     operator: In
                     values:
                       - macmini
+                      - rock5bp
       containers:
         - name: $job
           resources:

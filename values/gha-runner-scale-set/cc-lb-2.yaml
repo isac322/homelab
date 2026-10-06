@@ -21,8 +21,8 @@ containerMode:
 # No maxRunners: ARC omits the cap and scales with the GitHub queue.
 # No DinD. Image builds go to buildkit.arc-systems.svc:1234.
 # actions/cache talks to the in-cluster cache server, not GitHub.
-# Runner pods and hook-created workflow pods stay on macmini so CI CPU never
-# lands on rock5bp (storage host; load-48 incident) or the small n2p/rpi nodes.
+# Runner pods and hook-created workflow pods stay on macmini or rock5bp; the
+# small n2p/rpi nodes lack the RAM for these jobs.
 template:
   spec:
     affinity:
@@ -34,6 +34,7 @@ template:
                   operator: In
                   values:
                     - macmini
+                    - rock5bp
     volumes:
       - name: workflow-pod-templates
         configMap:
