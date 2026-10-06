@@ -37,6 +37,11 @@ SHA_B = "b" * 40
 NEEDS = bridge.NEEDS_ATTENTION
 
 
+def iso_ago(days: float) -> str:
+    """GitHub timestamp ``days`` before now."""
+    return time.strftime("%Y-%m-%dT%H:%M:%SZ", time.gmtime(time.time() - days * 86400))
+
+
 class Fake:
     """One HTTP server playing HAPI hub (/api), GitHub (/repos, /graphql), publisher (/publisher) and n8n."""
 
@@ -67,7 +72,12 @@ class Fake:
         self.label_delete_status = 200  # DELETE issue label answers this instead of removing when not 200
         # (entered, release): the next issue-comment POST signals ``entered`` and waits for ``release``
         self.comment_gate: tuple[threading.Event, threading.Event] | None = None
-        self.prs: dict[int, dict[str, Any]] = {}
+        self.prs: dict[int, dict[str, Any]] = {}  # pull requests of REPO
+        self.repo_prs: dict[str, dict[int, dict[str, Any]]] = {}  # pull requests of other repositories
+        self.installation_repos: list[str] = []  # GET /installation/repositories
+        self.pull_list_fail: set[str] = set()  # repositories whose open pull request list answers 502
+        self.commit_dates: dict[str, str] = {}  # sha -> committer date; absent -> now
+        self.head_after_list: dict[int, str] = {}  # pull request heads pushed right after a list was read
         self.pr_creates: list[dict[str, Any]] = []
         self.pr_patches: list[dict[str, Any]] = []
         self.reviews: list[dict[str, Any]] = []
@@ -178,14 +188,14 @@ class Fake:
         return (at, m["seq"])
 
     def add_pr(self, number: int, *, author: str = "isac322", sha: str = SHA_A, body: str = "Fixes #7",
-               ref: str = "hapi-issue-7") -> dict[str, Any]:
+               ref: str = "hapi-issue-7", repo: str = REPO, updated_at: str | None = None) -> dict[str, Any]:
         pr = {"number": number, "title": "Fix it", "body": body, "state": "open", "draft": False,
-              "user": {"login": author},
-              "head": {"ref": ref, "sha": sha, "repo": {"full_name": REPO}},
-              "base": {"ref": "master", "sha": SHA_B, "repo": {"full_name": REPO}},
-              "html_url": f"https://github.com/{REPO}/pull/{number}",
+              "user": {"login": author}, "updated_at": updated_at or iso_ago(0),
+              "head": {"ref": ref, "sha": sha, "repo": {"full_name": repo}},
+              "base": {"ref": "master", "sha": SHA_B, "repo": {"full_name": repo}},
+              "html_url": f"https://github.com/{repo}/pull/{number}",
               "mergeStateStatus": "UNKNOWN", "mergeable": "UNKNOWN", "reviewDecision": None}
-        self.prs[number] = pr
+        (self.prs if repo == REPO else self.repo_prs.setdefault(repo, {}))[number] = pr
         return pr
 
     # -- request routing ---------------------------------------------------
@@ -380,6 +390,11 @@ class Fake:
         parts = path.strip("/").split("/")
         if parts == ["graphql"]:
             return self.graphql(body)
+        if parts == ["installation", "repositories"]:
+            page = int(query.get("page", 1))
+            names = self.installation_repos[(page - 1) * 100: page * 100]
+            return 200, {"total_count": len(self.installation_repos),
+                         "repositories": [{"full_name": name} for name in names]}
         repo, rest = "/".join(parts[1:3]), parts[3:]
         if not rest:
             return 200, {"full_name": repo, "default_branch": "master"}
@@ -402,6 +417,8 @@ class Fake:
             return 201, body
         if rest[0] == "commits" and rest[2:] == ["statuses"]:
             return 200, self.statuses.get(rest[1], [])
+        if rest[0] == "commits" and len(rest) == 2:
+            return 200, {"sha": rest[1], "commit": {"committer": {"date": self.commit_dates.get(rest[1], iso_ago(0))}}}
         if rest[:3] == ["git", "ref", "heads"]:
             branch = "/".join(rest[3:])
             return ((200, {"object": {"sha": self.branch_heads[branch]}}) if branch in self.branch_heads
@@ -466,8 +483,18 @@ class Fake:
 
     def pulls(self, method: str, repo: str, rest: list[str], query: dict[str, str], body: Any) -> tuple[int, Any]:
         owner = repo.split("/")[0]
+        prs = self.prs if repo == REPO else self.repo_prs.get(repo, {})
+        if not rest and method == "GET" and "head" not in query:
+            if repo in self.pull_list_fail:
+                return 502, {"message": "Bad Gateway"}
+            page = int(query.get("page", 1))
+            listed = [p for p in sorted(prs.values(), key=lambda p: -p["number"]) if p["state"] == "open"]
+            listed = json.loads(json.dumps(listed[(page - 1) * 100: page * 100]))  # as read, before any push
+            for number, sha in self.head_after_list.items():
+                prs[number]["head"]["sha"] = sha
+            return 200, listed
         if not rest and method == "GET":
-            return 200, [p for p in self.prs.values()
+            return 200, [p for p in prs.values()
                          if p["state"] == "open" and f"{owner}:{p['head']['ref']}" == query.get("head")]
         if not rest:
             self.pr_creates.append(body)
@@ -476,7 +503,7 @@ class Fake:
                              ref=body["head"])
             pr["title"] = body["title"]
             return 201, pr
-        pr = self.prs.get(int(rest[0]))
+        pr = prs.get(int(rest[0]))
         if pr is None:
             return 404, {"message": "Not Found"}
         if len(rest) == 1 and method == "PATCH":
@@ -1250,16 +1277,19 @@ class PrRepairTests(BridgeTestCase):
         self.assertEqual(self.dispatcher.tick(), "dispatched")
         self.assertEqual(self.op("begin", row["active_delivery"], attempt=1)["status"], "started")
 
-    def test_periodic_fallback_reviews_new_heads_without_duplicate_review_sessions(self) -> None:
+    def test_review_sweep_covers_managed_prs_and_reconciliation_queues_no_review(self) -> None:
         self.use_reviewer_app()
+        self.fake.installation_repos = [REPO]
         pr = self.managed_pr(merge_state="UNKNOWN", mergeable="UNKNOWN")
-        self.bridge.reconcile_pr(REPO, 144)
-        self.bridge.reconcile_pr(REPO, 144)
+        self.assertEqual(self.bridge.reconcile_pr(REPO, 144), "waiting")
+        self.assertEqual(self.store.query("SELECT * FROM events WHERE kind = 'pr_review'"), [])
+        self.assertEqual(self.bridge.sweep_open_prs(time.time()), 1)
+        self.assertEqual(self.bridge.sweep_open_prs(time.time()), 0)
         reviews = self.store.query("SELECT * FROM events WHERE kind = 'pr_review'")
         self.assertEqual([(r["issue_number"], r["head_sha"]) for r in reviews], [(144, SHA_A)])
         self.store.update_event(reviews[0]["delivery_id"], state="completed", outcome="reviewed")
         pr["head"]["sha"] = SHA_B
-        self.bridge.reconcile_pr(REPO, 144)
+        self.assertEqual(self.bridge.sweep_open_prs(time.time()), 1)
         reviews = self.store.query("SELECT * FROM events WHERE kind = 'pr_review' ORDER BY seq")
         self.assertEqual([r["head_sha"] for r in reviews], [SHA_A, SHA_B])
         signal = pr_payload(144, action="synchronize", sha=SHA_B)
@@ -1456,8 +1486,6 @@ class PrRepairTests(BridgeTestCase):
         self.fake.reviews = [{"id": 1, "state": "CHANGES_REQUESTED", "commit_id": SHA_A,
                              "user": {"login": REVIEWER}, "body": "Fix the boundary."}]
         self.assertEqual(self.bridge.reconcile_pr(REPO, 144), "queued")
-        old_review = self.store.query("SELECT * FROM events WHERE kind = 'pr_review'")[0]
-        self.store.update_event(old_review["delivery_id"], state="completed", outcome="reviewed")
         self.assertEqual(self.dispatcher.tick(), "dispatched")
         delivery = self.repair_delivery()
         begun = self.op("begin", delivery, attempt=1)
@@ -1472,6 +1500,8 @@ class PrRepairTests(BridgeTestCase):
         self.assertIsNone(self.store.pr_state(REPO, 144)["active_delivery"])
         repairs = self.store.query("SELECT delivery_id, state FROM events WHERE kind = 'pr_repair'")
         self.assertEqual([tuple(row) for row in repairs], [(delivery, "completed")])
+        self.fake.installation_repos = [REPO]
+        self.assertEqual(self.bridge.sweep_open_prs(time.time()), 1)
         new_review = self.store.query("SELECT * FROM events WHERE kind = 'pr_review' AND head_sha = ?", (SHA_B,))[0]
         self.assertEqual(new_review["state"], "accepted")
         self.assertEqual(self.dispatcher.tick(), "dispatched")
@@ -1550,8 +1580,6 @@ class PrRepairTests(BridgeTestCase):
         self.use_reviewer_app()
         pr = self.managed_pr()
         self.assertEqual(self.bridge.reconcile_pr(REPO, 144), "queued")
-        old_review = self.store.query("SELECT * FROM events WHERE kind = 'pr_review'")[0]
-        self.store.update_event(old_review["delivery_id"], state="completed", outcome="reviewed")
         self.assertEqual(self.dispatcher.tick(), "dispatched")
         delivery = self.repair_delivery()
         self.assertEqual(self.op("begin", delivery, attempt=1)["status"], "started")
@@ -1968,10 +1996,16 @@ class DispatchTests(BridgeTestCase):
         calls = len(self.fake.calls)
         self.assertEqual(self.dispatcher.tick(), "busy")
         self.assertNotIn(f"archive {sid}", self.fake.calls[calls:])  # the agent is stopped once, not again
-        # The released key lets the cancelled head be reviewed again if the branch returns to it.
+        # A cancelled review never produced a review: a push back to that head is requested again, and the
+        # fresh request cancels the review still running on the moved head.
         self.fake.prs[12]["head"]["sha"] = SHA_A
         back = pr_payload(12, action="synchronize", sha=SHA_A)
         self.assertEqual(self.deliver(back, event="pull_request", delivery="s2").outcome, "queued")
+        self.assertEqual(self.store.event("s1")["outcome"], "cancelled")
+        command = comment_payload(12, 500, body="@haechibot review", on_pr=True)
+        self.assertEqual(self.deliver(command, event="issue_comment", delivery="c1").outcome, "queued")
+        self.assertEqual(self.store.event("s2")["outcome"], "coalesced")
+        self.assertEqual(self.store.event("c1")["state"], "accepted")
 
     def test_review_comment_during_a_running_review_queues_one_follow_up(self) -> None:
         # The running review checked out before the comment's replies; the request runs once more, and a
@@ -1995,6 +2029,483 @@ class DispatchTests(BridgeTestCase):
             ev = self.store.event(older)
             self.assertEqual(ev["outcome"], "coalesced")
             self.assertIn(newer, ev["detail"])
+
+
+def sha(n: int) -> str:
+    return f"{n:040x}"
+
+
+class ReviewSweepTests(BridgeTestCase):
+    def setUp(self) -> None:
+        super().setUp()
+        self.use_reviewer_app()
+        self.fake.installation_repos = [REPO]
+
+    def sweep(self) -> int:
+        return self.bridge.sweep_open_prs(time.time())
+
+    def reviews(self) -> list[tuple[str, int, str, str]]:
+        return [(r["repo"], r["issue_number"], r["head_sha"], r["state"])
+                for r in self.store.query("SELECT * FROM events WHERE kind = 'pr_review' ORDER BY seq")]
+
+    def test_a_missed_head_is_reviewed_once_whatever_the_review_outcome(self) -> None:
+        # cc-lb#902: the bridge was down when the pull request was opened, so its head was never reviewed.
+        self.fake.add_pr(12, ref="feature")
+        self.assertEqual(self.sweep(), 1)
+        row = self.store.query("SELECT * FROM events WHERE kind = 'pr_review'")[0]
+        self.assertEqual((row["semantic_key"], row["comment_id"]), (f"{REPO}#pr:12:review:{SHA_A}", None))
+        self.assertEqual(self.sweep(), 0)
+        self.assertEqual(self.dispatcher.tick(), "dispatched")
+        self.assertEqual(self.fake.dispatched[-1][1]["kind"], "pr_review")
+        # Parked and finished reviews of the head stand: the sweep never re-requests them.
+        for state, outcome in (("needs_attention", None), ("completed", "reviewed")):
+            self.store.update_event(row["delivery_id"], state=state, outcome=outcome)
+            self.assertEqual(self.sweep(), 0, (state, outcome))
+        # A cancelled or folded request never produced a review: the same head is requested again.
+        self.store.update_event(row["delivery_id"], state="completed", outcome="cancelled",
+                                semantic_key=row["semantic_key"] + ":cancelled:" + row["delivery_id"])
+        self.assertEqual(self.sweep(), 1)
+        row = self.store.query("SELECT * FROM events WHERE state = 'accepted'")[0]
+        self.store.update_event(row["delivery_id"], state="completed", outcome="coalesced",
+                                semantic_key=row["semantic_key"] + ":coalesced:" + row["delivery_id"])
+        self.assertEqual(self.sweep(), 1)
+        row = self.store.query("SELECT * FROM events WHERE state = 'accepted'")[0]
+        self.assertEqual(self.sweep(), 0)  # the newest request is pending
+        self.store.update_event(row["delivery_id"], state="completed", outcome="head_moved",
+                                semantic_key=row["semantic_key"] + ":head_moved:" + row["delivery_id"])
+        self.assertEqual(self.sweep(), 1)
+        self.assertEqual(len(self.store.query("SELECT seq FROM events")), 4)
+
+    def test_a_new_head_after_a_reviewed_head_is_reviewed(self) -> None:
+        pr = self.fake.add_pr(12, ref="feature")
+        self.assertEqual(self.sweep(), 1)
+        self.store.update_event(self.store.query("SELECT delivery_id FROM events")[0]["delivery_id"],
+                                state="completed", outcome="reviewed")
+        pr["head"]["sha"] = SHA_B
+        self.assertEqual(self.sweep(), 1)
+        self.assertEqual(self.reviews(), [(REPO, 12, SHA_A, "completed"), (REPO, 12, SHA_B, "accepted")])
+
+    def test_draft_closed_and_stale_pull_requests_are_skipped(self) -> None:
+        self.fake.add_pr(12, ref="draft", sha=sha(12))["draft"] = True
+        self.fake.add_pr(13, ref="closed", sha=sha(13))["state"] = "closed"
+        self.fake.add_pr(14, ref="untouched", sha=sha(14), updated_at=iso_ago(15))
+        self.fake.add_pr(15, ref="old-commit", sha=sha(15))  # recently updated, but its head is 15 days old
+        self.fake.commit_dates[sha(15)] = iso_ago(15)
+        self.fake.add_pr(16, ref="recent", sha=sha(16))
+        self.fake.commit_dates[sha(16)] = iso_ago(13)
+        self.assertEqual(self.sweep(), 1)
+        self.assertEqual(self.reviews(), [(REPO, 16, sha(16), "accepted")])
+
+    def test_a_pending_review_comment_without_a_head_blocks_the_sweep(self) -> None:
+        self.fake.add_pr(12, ref="feature")
+        command = comment_payload(12, 500, body="@haechibot review", on_pr=True)
+        self.assertEqual(self.deliver(command, event="issue_comment", delivery="c1").outcome, "queued")
+        self.assertIsNone(self.store.event("c1")["head_sha"])
+        self.assertEqual(self.sweep(), 0)
+        self.assertEqual(self.events(), [("c1", "accepted")])
+
+    def test_work_in_flight_on_the_pull_request_or_its_linked_issue_blocks_the_sweep(self) -> None:
+        self.started(141, "d1")
+        pr = self.fake.add_pr(144, author=BOT, ref="hapi-issue-141", body="Fixes #141")
+        pr.update(mergeStateStatus="BEHIND", mergeable="MERGEABLE")
+        self.store.track_pr(REPO, 144, 141, SHA_A)
+        self.assertEqual(self.sweep(), 0)  # the linked issue's event is running
+        self.store.update_event("d1", state="completed", outcome="triaged")
+        self.assertEqual(self.bridge.reconcile_pr(REPO, 144), "queued")
+        repair = self.store.query("SELECT delivery_id FROM events WHERE kind = 'pr_repair'")[0]["delivery_id"]
+        self.assertEqual(self.sweep(), 0)  # a repair of the pull request is pending
+        # A finished repair keeps its lease row; only in-flight events block the sweep.
+        self.store.update_event(repair, state="needs_attention")
+        self.assertEqual(self.store.pr_state(REPO, 144)["active_delivery"], repair)
+        self.assertEqual(self.sweep(), 1)
+        self.assertEqual(self.reviews(), [(REPO, 144, SHA_A, "accepted")])
+
+    def test_a_review_status_without_a_local_record_skips_the_head(self) -> None:
+        self.fake.add_pr(12, ref="feature")
+        self.fake.statuses[SHA_A] = [{"context": bridge.DEFAULT_REVIEW_STATUS_CONTEXT, "state": "failure"}]
+        self.assertEqual(self.sweep(), 0)
+        self.fake.statuses[SHA_A] = [{"context": "ci/build", "state": "success"}]
+        self.assertEqual(self.sweep(), 1)
+
+    def test_a_head_that_moved_after_listing_is_left_to_the_next_sweep(self) -> None:
+        self.fake.add_pr(12, ref="feature")
+        self.fake.head_after_list[12] = SHA_B
+        # The head moved between the listing and the enqueue: nothing is queued for the stale head, and the
+        # parked review of the head before it is left alone (it is settled by the request that lands later).
+        self.store.update_event(self._parked_review(12), state="needs_attention")
+        self.assertEqual(self.sweep(), 0)
+        self.assertEqual(self.events(), [("x12", "needs_attention")])
+        self.assertEqual(self.sweep(), 1)
+        self.assertEqual(self.store.event("x12")["outcome"], "superseded")
+        self.assertEqual(self.reviews(), [(REPO, 12, sha(99), "completed"), (REPO, 12, SHA_B, "accepted")])
+
+    def _parked_review(self, number: int) -> str:
+        """Insert a parked review request for another head directly (its own head is long gone)."""
+        with self.store.tx() as conn:
+            conn.execute(
+                "INSERT INTO events (delivery_id, semantic_key, repo, kind, issue_number, head_sha, actor,"
+                " title, body, state, outcome, detail, received_at, updated_at)"
+                " VALUES (?, ?, ?, 'pr_review', ?, ?, 'someone', 't', '', 'accepted', NULL, NULL, 0, 0)",
+                (f"x{number}", f"{REPO}#pr:{number}:review:{sha(99)}", REPO, number, sha(99)),
+            )
+        return f"x{number}"
+
+    def test_one_sweep_queues_at_most_the_cap_across_repositories(self) -> None:
+        self.fake.installation_repos = [REPO, OTHER]
+        for n in range(1, 7):
+            self.fake.add_pr(n, ref=f"b{n}", sha=sha(n))
+            self.fake.add_pr(n, ref=f"b{n}", sha=sha(100 + n), repo=OTHER)
+        self.assertEqual(self.sweep(), bridge.REVIEW_SWEEP_MAX_ENQUEUES)
+        self.assertEqual(self.sweep(), 12 - bridge.REVIEW_SWEEP_MAX_ENQUEUES)
+        self.assertEqual(self.sweep(), 0)
+        self.assertEqual(sorted((repo, n) for repo, n, _, _ in self.reviews()),
+                         sorted((repo, n) for repo in (REPO, OTHER) for n in range(1, 7)))
+
+    def test_a_failing_repository_does_not_stop_the_sweep(self) -> None:
+        self.fake.installation_repos = [OTHER, REPO]
+        self.fake.add_pr(5, ref="other", repo=OTHER)
+        self.fake.pull_list_fail.add(OTHER)
+        self.fake.add_pr(12, ref="feature")
+        self.assertEqual(self.sweep(), 1)
+        self.assertEqual(self.reviews(), [(REPO, 12, SHA_A, "accepted")])
+
+    def test_open_pull_requests_beyond_the_first_page_are_swept(self) -> None:
+        for n in range(1, 151):
+            self.fake.add_pr(n, ref=f"b{n}", sha=sha(n), updated_at=iso_ago(30))
+        self.fake.prs[1]["updated_at"] = iso_ago(0)  # listed newest first, so #1 is on the second page
+        self.assertEqual(self.sweep(), 1)
+        self.assertEqual(self.reviews(), [(REPO, 1, sha(1), "accepted")])
+
+    def test_ready_for_review_after_a_review_comment_at_the_same_head_does_not_review_again(self) -> None:
+        # krema#76: a `review` comment reviewed the draft, then `ready_for_review` reviewed the same head again.
+        pr = self.fake.add_pr(76, ref="feature")
+        pr["draft"] = True
+        command = comment_payload(76, 500, body="@haechibot review", on_pr=True)
+        self.assertEqual(self.deliver(command, event="issue_comment", delivery="c1").outcome, "queued")
+        self.assertEqual(self.dispatcher.tick(), "dispatched")
+        self.assertEqual(self.op("begin", "c1", attempt=1)["status"], "started")
+        self.assertEqual(self.store.event("c1")["head_sha"], SHA_A)
+        self.assertTrue(self.op("finish", "c1", outcome="reviewed")["ok"])
+        pr["draft"] = False
+        ready = pr_payload(76, action="ready_for_review")
+        ready["pull_request"]["head"]["ref"] = "feature"
+        self.assertEqual(self.deliver(ready, event="pull_request", delivery="r1").outcome, "duplicate")
+        self.assertEqual(self.sweep(), 0)
+        # An explicit `review` comment is a re-request and always runs.
+        again = comment_payload(76, 501, body="@haechibot review", on_pr=True)
+        self.assertEqual(self.deliver(again, event="issue_comment", delivery="c2").outcome, "queued")
+        self.assertEqual(self.events(), [("c1", "completed"), ("c2", "accepted")])
+
+    def test_a_running_event_on_the_untracked_linked_issue_blocks_the_sweep(self) -> None:
+        # No prs row yet (the PR's webhook was missed); the hapi-issue-<n> branch still links the issue.
+        self.started(141, "d1")
+        self.fake.add_pr(144, author=BOT, ref="hapi-issue-141", body="Fixes #141")
+        self.assertIsNone(self.store.pr_state(REPO, 144))
+        self.assertEqual(self.sweep(), 0)
+        self.assertEqual(self.events(), [("d1", "dispatched")])
+        self.store.update_event("d1", state="completed", outcome="triaged")
+        self.assertEqual(self.sweep(), 1)
+        self.assertEqual(self.reviews(), [(REPO, 144, SHA_A, "accepted")])
+
+    def test_a_swept_review_ends_instead_of_retargeting_after_the_head_moves(self) -> None:
+        # Head B was parked, the move to A's webhook was missed, the sweep queued A, and the push back to B
+        # was deduplicated: the queued A request must not review B again.
+        pr = self.fake.add_pr(12, ref="feature", sha=SHA_B)
+        self.assertEqual(self.sweep(), 1)
+        parked = self.store.query("SELECT delivery_id FROM events")[0]["delivery_id"]
+        self.store.update_event(parked, state="needs_attention")
+        pr["head"]["sha"] = SHA_A
+        self.assertEqual(self.sweep(), 1)
+        stale = self.store.query("SELECT delivery_id FROM events WHERE head_sha = ?", (SHA_A,))[0]["delivery_id"]
+        pr["head"]["sha"] = SHA_B
+        back = pr_payload(12, action="synchronize", sha=SHA_B)
+        self.assertEqual(self.deliver(back, event="pull_request", delivery="s2").outcome, "duplicate")
+        self.assertEqual(self.dispatcher.tick(), "dispatched")
+        self.assertEqual(self.fake.dispatched[-1][1]["delivery_id"], stale)
+        self.assertEqual(self.op("begin", stale, attempt=1)["status"], "terminal")
+        row = self.store.event(stale)
+        self.assertEqual((row["state"], row["outcome"]), ("completed", "head_moved"))
+        self.assertEqual(self.fake.review_posts, [])
+        self.assertEqual(self.op("github.review", stale, result=REVIEW_OK)["error"], "event_terminal")
+
+    def test_a_pending_automatic_review_retargets_to_the_live_head(self) -> None:
+        pr = self.fake.add_pr(12, ref="feature")
+        self.assertEqual(self.deliver(pr_payload(12), event="pull_request", delivery="p1").outcome, "queued")
+        pr["head"]["sha"] = SHA_B  # pushed before the settle window ran, and its webhook was lost
+        self.assertEqual(self.dispatcher.tick(), "dispatched")
+        self.assertEqual(self.op("begin", "p1", attempt=1)["status"], "started")
+        self.assertEqual(self.store.event("p1")["head_sha"], SHA_B)
+        self.assertTrue(self.op("github.review", "p1", result=REVIEW_OK)["ok"])
+        self.assertTrue(self.op("finish", "p1", outcome="reviewed")["ok"])
+        self.assertEqual(len(self.fake.review_posts), 1)
+        self.assertEqual(self.sweep(), 0)  # the retargeted review counts for head B
+
+    def test_a_coalesced_survivor_retargets_instead_of_ending(self) -> None:
+        # The push to B's webhook arrived first, then the delayed webhook for the older head A: folding makes
+        # A's request the survivor, and at review start it retargets to B rather than ending or reviewing A.
+        pr = self.fake.add_pr(12, ref="feature", sha=SHA_B)
+        push_b = pr_payload(12, action="synchronize", sha=SHA_B)
+        self.assertEqual(self.deliver(push_b, event="pull_request", delivery="s1").outcome, "queued")
+        push_a = pr_payload(12, action="synchronize", sha=SHA_A)
+        self.assertEqual(self.deliver(push_a, event="pull_request", delivery="o1").outcome, "queued")
+        self.assertEqual(self.store.event("s1")["outcome"], "coalesced")
+        self.assertEqual(self.dispatcher.tick(), "dispatched")
+        self.assertEqual(self.fake.dispatched[-1][1]["delivery_id"], "o1")
+        self.assertEqual(self.op("begin", "o1", attempt=1)["status"], "started")
+        self.assertEqual(self.store.event("o1")["head_sha"], SHA_B)
+        self.assertTrue(self.op("github.review", "o1", result=REVIEW_OK)["ok"])
+        self.assertTrue(self.op("finish", "o1", outcome="reviewed")["ok"])
+        self.assertEqual(len(self.fake.review_posts), 1)
+        self.assertEqual(self.sweep(), 0)
+
+    def test_a_deduplicated_request_cancels_the_running_review_of_a_moved_head(self) -> None:
+        # A ran, B pushed (A cancelled), B running, then the branch came back to A: A's cancelled review
+        # never produced a review, so the request queues again and cancels the review still running on B.
+        self.started_review(12, "p1")
+        pr = self.fake.prs[12]
+        pr["head"]["sha"] = SHA_B
+        push_b = pr_payload(12, action="synchronize", sha=SHA_B)
+        self.assertEqual(self.deliver(push_b, event="pull_request", delivery="s1").outcome, "queued")
+        self.assertEqual(self.store.event("p1")["outcome"], "cancelled")
+        self.assertEqual(self.dispatcher.tick(), "dispatched")
+        self.assertEqual(self.op("begin", "s1", attempt=1)["status"], "started")
+        self.assertEqual(self.store.event("s1")["head_sha"], SHA_B)
+        pr["head"]["sha"] = SHA_A
+        push_a = pr_payload(12, action="synchronize", sha=SHA_A)
+        self.assertEqual(self.deliver(push_a, event="pull_request", delivery="s2").outcome, "queued")
+        row = self.store.event("s1")
+        self.assertEqual((row["state"], row["outcome"]), ("completed", "cancelled"))
+        self.assertEqual(self.op("fail", "s1", detail="stale")["already"], True)
+        self.assertEqual(self.events(), [("p1", "completed"), ("s1", "completed"), ("s2", "accepted")])
+
+    def test_the_sweep_queues_a_head_a_retargeted_request_left_unreviewed(self) -> None:
+        # The sweep queued A, the request retargeted to B at start (A never reviewed), and the push back to A
+        # was lost: the next sweep must review A even though its earlier row now carries B.
+        pr = self.fake.add_pr(12, ref="feature")
+        self.assertEqual(self.sweep(), 1)
+        pr["head"]["sha"] = SHA_B
+        self.assertEqual(self.dispatcher.tick(), "dispatched")
+        delivery = self._review_delivery()
+        self.assertEqual(self.op("begin", delivery, attempt=1)["status"], "started")
+        self.assertTrue(self.op("github.review", delivery,
+                                result=variant(REVIEW_OK, head_sha=SHA_B))["ok"])
+        self.assertTrue(self.op("finish", delivery, outcome="reviewed")["ok"])
+        pr["head"]["sha"] = SHA_A  # back to A; its synchronize webhook never arrived
+        self.assertEqual(self.sweep(), 1)
+        self.assertEqual(self.reviews()[-1], (REPO, 12, SHA_A, "accepted"))
+
+    def _review_delivery(self) -> str:
+        return self.store.query("SELECT delivery_id FROM events WHERE kind = 'pr_review' ORDER BY seq")[-1][
+            "delivery_id"]
+
+    def test_a_folded_automatic_request_releases_its_head_key(self) -> None:
+        # An automatic request that folded a pending `review` comment keeps that comment's id, but its head
+        # key is still the review key: coalescing it later frees the head, so a request for it queues.
+        pr = self.fake.add_pr(12, ref="feature")
+        command = comment_payload(12, 500, body="@haechibot review", on_pr=True)
+        self.assertEqual(self.deliver(command, event="issue_comment", delivery="c1").outcome, "queued")
+        self.assertEqual(self.deliver(pr_payload(12), event="pull_request", delivery="w1").outcome, "queued")
+        self.assertEqual(self.store.event("w1")["comment_id"], 500)  # inherited c1's comment
+        pr["head"]["sha"] = SHA_B
+        push_b = pr_payload(12, action="synchronize", sha=SHA_B)
+        self.assertEqual(self.deliver(push_b, event="pull_request", delivery="w2").outcome, "queued")
+        self.assertEqual(self.store.event("w1")["outcome"], "coalesced")
+        self.assertEqual(self.dispatcher.tick(), "dispatched")
+        self.assertEqual(self.op("begin", "w2", attempt=1)["status"], "started")
+        self.assertTrue(self.op("github.review", "w2", result=variant(REVIEW_OK, head_sha=SHA_B))["ok"])
+        self.assertTrue(self.op("finish", "w2", outcome="reviewed")["ok"])
+        pr["head"]["sha"] = SHA_A  # the branch returned; A was folded away unreviewed
+        back = pr_payload(12, action="synchronize", sha=SHA_A)
+        self.assertEqual(self.deliver(back, event="pull_request", delivery="w3").outcome, "queued")
+        self.assertEqual(self.store.event("w3")["state"], "accepted")
+
+    def test_a_redelivered_webhook_leaves_the_running_review_alone(self) -> None:
+        # A ran to a finished review, B is being reviewed, and GitHub redelivers A's original webhook:
+        # the redelivery is an idempotent 'duplicate' and must not cancel B's review.
+        self.started_review(12, "p1")
+        self.assertTrue(self.op("github.review", "p1", result=REVIEW_OK)["ok"])
+        self.assertTrue(self.op("finish", "p1", outcome="reviewed")["ok"])
+        self.fake.prs[12]["head"]["sha"] = SHA_B
+        push_b = pr_payload(12, action="synchronize", sha=SHA_B)
+        self.assertEqual(self.deliver(push_b, event="pull_request", delivery="s1").outcome, "queued")
+        self.assertEqual(self.dispatcher.tick(), "dispatched")
+        self.assertEqual(self.op("begin", "s1", attempt=1)["status"], "started")
+        self.assertEqual(self.deliver(pr_payload(12), event="pull_request", delivery="p1").outcome,
+                         "duplicate")
+        self.assertEqual(self.store.event("s1")["state"], "dispatched")  # still reviewing B
+
+    def test_a_published_review_counts_though_a_push_cancelled_its_request(self) -> None:
+        # n8n posts the review before it calls finish; a push in between cancels the event, but the head
+        # was reviewed on GitHub: neither a webhook nor the sweep requests it again.
+        self.started_review(12, "p1")
+        self.assertTrue(self.op("github.review", "p1", result=REVIEW_OK)["ok"])  # published for SHA_A
+        self.fake.prs[12]["head"]["sha"] = SHA_B
+        push_b = pr_payload(12, action="synchronize", sha=SHA_B)
+        self.assertEqual(self.deliver(push_b, event="pull_request", delivery="s1").outcome, "queued")
+        self.assertEqual(self.store.event("p1")["outcome"], "cancelled")  # cancelled after publishing
+        self.assertEqual(self.dispatcher.tick(), "dispatched")
+        self.assertEqual(self.op("begin", "s1", attempt=1)["status"], "started")
+        self.assertTrue(self.op("github.review", "s1", result=variant(REVIEW_OK, head_sha=SHA_B))["ok"])
+        self.assertTrue(self.op("finish", "s1", outcome="reviewed")["ok"])
+        self.fake.prs[12]["head"]["sha"] = SHA_A
+        back = pr_payload(12, action="synchronize", sha=SHA_A)
+        self.assertEqual(self.deliver(back, event="pull_request", delivery="s2").outcome, "duplicate")
+        self.assertEqual(self.sweep(), 0)
+
+    def test_a_retargeted_request_carrying_a_comment_moves_its_head_key(self) -> None:
+        # A `review` comment folded into the automatic request for A; the push to B's webhook was lost, so the
+        # request reviews B at start. Its head key moves to B, so the branch coming back to A still queues A.
+        pr = self.fake.add_pr(12, ref="feature")
+        command = comment_payload(12, 500, body="@haechibot review", on_pr=True)
+        self.assertEqual(self.deliver(command, event="issue_comment", delivery="c1").outcome, "queued")
+        self.assertEqual(self.deliver(pr_payload(12), event="pull_request", delivery="w1").outcome, "queued")
+        self.assertEqual(self.store.event("w1")["comment_id"], 500)
+        pr["head"]["sha"] = SHA_B
+        self.assertEqual(self.dispatcher.tick(), "dispatched")
+        self.assertEqual(self.op("begin", "w1", attempt=1)["status"], "started")
+        self.assertEqual(self.store.event("w1")["head_sha"], SHA_B)
+        self.assertTrue(self.op("github.review", "w1", result=variant(REVIEW_OK, head_sha=SHA_B))["ok"])
+        self.assertTrue(self.op("finish", "w1", outcome="reviewed")["ok"])
+        pr["head"]["sha"] = SHA_A
+        back = pr_payload(12, action="synchronize", sha=SHA_A)
+        self.assertEqual(self.deliver(back, event="pull_request", delivery="w2").outcome, "queued")
+
+    def test_an_automatic_request_ends_when_another_already_published_its_head(self) -> None:
+        # The review of A was being posted when a push to B cancelled it and the branch came back to A: the new
+        # request for A was queued before the publish evidence landed, so it ends at start instead of
+        # reviewing A a second time.
+        self.started_review(12, "p1")
+        original = self.fake.github
+
+        def push_during_post(method: str, path: str, query: dict, body: Any) -> tuple[int, Any]:
+            if method == "POST" and path.endswith("/pulls/12/reviews") and self.store.event("s2") is None:
+                self.fake.prs[12]["head"]["sha"] = SHA_B
+                push_b = pr_payload(12, action="synchronize", sha=SHA_B)
+                self.assertEqual(self.deliver(push_b, event="pull_request", delivery="s1").outcome, "queued")
+                self.fake.prs[12]["head"]["sha"] = SHA_A
+                back = pr_payload(12, action="synchronize", sha=SHA_A)
+                self.assertEqual(self.deliver(back, event="pull_request", delivery="s2").outcome, "queued")
+            return original(method, path, query, body)
+
+        self.fake.github = push_during_post
+        self.assertTrue(self.op("github.review", "p1", result=REVIEW_OK)["ok"])
+        self.fake.github = original
+        self.assertEqual(self.store.event("p1")["outcome"], "cancelled")
+        self.assertEqual(self.store.event("s2")["state"], "accepted")
+        self.assertEqual(self.dispatcher.tick(), "dispatched")
+        self.assertEqual(self.fake.dispatched[-1][1]["delivery_id"], "s2")
+        self.assertEqual(self.op("begin", "s2", attempt=1)["status"], "terminal")
+        self.assertEqual(self.store.event("s2")["outcome"], "already_reviewed")
+        self.assertEqual(len(self.fake.review_posts), 1)
+
+    def test_published_evidence_ends_an_automatic_request_though_the_head_read_fails(self) -> None:
+        # As above, but GitHub fails the start's head read: the local evidence still ends the new request for A.
+        self.started_review(12, "p1")
+        original = self.fake.github
+
+        def push_during_post(method: str, path: str, query: dict, body: Any) -> tuple[int, Any]:
+            if method == "POST" and path.endswith("/pulls/12/reviews") and self.store.event("s2") is None:
+                self.fake.prs[12]["head"]["sha"] = SHA_B
+                push_b = pr_payload(12, action="synchronize", sha=SHA_B)
+                self.assertEqual(self.deliver(push_b, event="pull_request", delivery="s1").outcome, "queued")
+                self.fake.prs[12]["head"]["sha"] = SHA_A
+                back = pr_payload(12, action="synchronize", sha=SHA_A)
+                self.assertEqual(self.deliver(back, event="pull_request", delivery="s2").outcome, "queued")
+            return original(method, path, query, body)
+
+        self.fake.github = push_during_post
+        self.assertTrue(self.op("github.review", "p1", result=REVIEW_OK)["ok"])
+        self.assertEqual(self.dispatcher.tick(), "dispatched")
+
+        def fail_head_read(method: str, path: str, query: dict, body: Any) -> tuple[int, Any]:
+            if method == "GET" and path.endswith("/pulls/12"):
+                return 502, {"message": "Bad Gateway"}
+            return original(method, path, query, body)
+
+        self.fake.github = fail_head_read
+        self.assertEqual(self.op("begin", "s2", attempt=1)["status"], "terminal")
+        self.fake.github = original
+        self.assertEqual(self.store.event("s2")["outcome"], "already_reviewed")
+        self.assertEqual(len(self.fake.review_posts), 1)
+
+    def test_an_automatic_request_does_not_repost_a_head_whose_post_reply_was_lost(self) -> None:
+        # Old A's review POST landed at GitHub but the reply was lost, so the bridge has no evidence; a push to
+        # B cancelled old A and the push back to A queued new A. New A finds the review App's review of A on
+        # the pull request and records it instead of posting a second one.
+        self.started_review(12, "p1")
+        client = self.bridge.review_github or self.bridge.github
+        real_request = client.request
+
+        def lose_post_reply(method: str, path: str, body: Any = None) -> tuple[int, Any]:
+            status, data = real_request(method, path, body)
+            if method == "POST" and path.endswith("/pulls/12/reviews"):
+                raise bridge.TransportError("review reply lost", not_sent=False)
+            return status, data
+
+        with patch.object(client, "request", side_effect=lose_post_reply):
+            lost = self.op("github.review", "p1", result=REVIEW_OK)
+        self.assertEqual((lost["ok"], lost["retryable"]), (False, True))
+        self.assertEqual(len(self.fake.review_posts), 1)
+        self.fake.prs[12]["head"]["sha"] = SHA_B
+        push_b = pr_payload(12, action="synchronize", sha=SHA_B)
+        self.assertEqual(self.deliver(push_b, event="pull_request", delivery="s1").outcome, "queued")
+        self.assertEqual(self.store.event("p1")["outcome"], "cancelled")
+        self.fake.prs[12]["head"]["sha"] = SHA_A
+        back = pr_payload(12, action="synchronize", sha=SHA_A)
+        self.assertEqual(self.deliver(back, event="pull_request", delivery="s2").outcome, "queued")
+        self.assertEqual(self.dispatcher.tick(), "dispatched")
+        self.assertEqual(self.fake.dispatched[-1][1]["delivery_id"], "s2")
+        self.assertEqual(self.op("begin", "s2", attempt=1)["status"], "started")
+        published = self.op("github.review", "s2", result=REVIEW_OK)
+        self.assertEqual((published["ok"], published["created"]), (True, False))
+        self.assertEqual(len(self.fake.review_posts), 1)
+        self.assertEqual(json.loads(self.store.event("s2")["stages"])["review_published"]["sha"], SHA_A)
+
+    def test_an_automatic_request_reuses_the_latest_review_of_its_head(self) -> None:
+        # The reviewer App already left two reviews of A (the older verdict superseded by a newer one, as
+        # GitHub lists reviews oldest-first): the automatic request reuses the latest and posts nothing.
+        self.started_review(12, "p1")
+        self.fake.reviews = [
+            {"id": 7, "html_url": f"https://github.com/{REPO}/pull/12#r7", "state": "CHANGES_REQUESTED",
+             "body": "Fix the boundary.", "commit_id": SHA_A, "user": {"login": REVIEWER}},
+            {"id": 8, "html_url": f"https://github.com/{REPO}/pull/12#r8", "state": "APPROVED",
+             "body": "Looks good.", "commit_id": SHA_A, "user": {"login": REVIEWER}},
+        ]
+        published = self.op("github.review", "p1", result=REVIEW_OK)
+        self.assertEqual((published["ok"], published["created"], published["event_submitted"]),
+                         (True, False, "APPROVE"))
+        self.assertEqual(published["review_id"], 8)
+        self.assertEqual(published["commit_status"],
+                         {"context": bridge.DEFAULT_REVIEW_STATUS_CONTEXT, "state": "success",
+                          "created": True})
+        self.assertEqual(len(self.fake.review_posts), 0)
+        self.assertEqual(json.loads(self.store.event("p1")["stages"])["review_published"]["sha"], SHA_A)
+
+    def test_a_review_published_without_a_recorded_head_still_counts(self) -> None:
+        # The comment review's head read failed at start (head_sha stays NULL), yet it published a review of
+        # A: the `ready_for_review` webhook for A must not review it again.
+        self.fake.add_pr(12, ref="feature")
+        command = comment_payload(12, 500, body="@haechibot review", on_pr=True)
+        self.assertEqual(self.deliver(command, event="issue_comment", delivery="c1").outcome, "queued")
+        self.assertEqual(self.dispatcher.tick(), "dispatched")
+        original = self.fake.github
+
+        def fail_head_read(method: str, path: str, query: dict, body: Any) -> tuple[int, Any]:
+            if method == "GET" and path.endswith("/pulls/12"):
+                return 502, {"message": "Bad Gateway"}
+            return original(method, path, query, body)
+
+        self.fake.github = fail_head_read
+        self.assertEqual(self.op("begin", "c1", attempt=1)["status"], "started")
+        self.fake.github = original
+        self.assertIsNone(self.store.event("c1")["head_sha"])
+        self.assertTrue(self.op("github.review", "c1", result=REVIEW_OK)["ok"])
+        self.assertTrue(self.op("finish", "c1", outcome="reviewed")["ok"])
+        ready = pr_payload(12, action="ready_for_review")
+        ready["pull_request"]["head"]["ref"] = "feature"
+        self.assertEqual(self.deliver(ready, event="pull_request", delivery="r1").outcome, "duplicate")
+        self.assertEqual(self.sweep(), 0)
+
 
 
 class LifecycleOpsTests(BridgeTestCase):

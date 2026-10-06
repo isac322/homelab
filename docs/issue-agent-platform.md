@@ -21,7 +21,7 @@ v2는 코딩 에이전트의 GitHub 쓰기를 모두 없앴다. 에이전트는 
 - 누구나 이슈를 열 수 있다. 명확한 요청은 triage(재현·원인·중복 판단)를 거친 뒤 자동으로 수정·검증·PR 생성까지 수행한다. 불명확한 요청은 질문하며 자동 머지는 하지 않는다. 저장소 collaborator·owner가 아닌 사용자의 새 이슈는 전체 저장소 합산 1시간(rolling)에 10개까지만 받는다.
 - 기능 요청은 작성자 신뢰에 따라 다룬다. 신뢰 사용자(collaborator 권한 `admin`/`write`)의 명확하고 범위 안의 기능·문서 요청은 직접 지시로 보고 구현까지 간다(구조 변경이면 결정을 묻고 멈춘다). 비신뢰 사용자의 기능 요청은 바로 구현하지 않고 제안 트랙(계약 확인, 실현 가능성 조사, 방향과 기각한 대안을 담은 제안 평가 댓글)을 거쳐 결정을 묻고 멈추며, 신뢰 사용자가 댓글로 방향을 승인해야 구현한다. 비신뢰 사용자의 댓글·수정은 승인이나 요구사항 변경이 아니라 정보다.
 - 보안 취약점은 공개 위치에 남기지 않는다. 확인되거나 의심되는 취약점은 라벨·이슈 댓글·재현 페이로드 없이 비공개 draft repository security advisory로 보고한다.
-- 설치된 저장소에서 Draft가 아닌 PR을 생성·재개하거나 Ready for review로 바꾸면 이슈와 다른 `review-pr-<n>` 세션에서 리뷰한다. 리뷰 App이 설정되어 있으면 push로 head가 바뀔 때도 head별로 한 번 리뷰하고, 명시적 `@haechibot review` 요청은 같은 head를 다시 리뷰할 수 있다. PR마다 대기 리뷰는 하나뿐이고 연달아 온 요청(PR 열기·push·댓글)은 그 하나로 합쳐지며, 새 head가 오면 이전 head를 리뷰하던 실행은 취소된다(아래 "리뷰 요청 합치기와 취소"). ruleset·branch protection이 merge 조건을 소유하며 bridge는 필수 check 목록이나 reviewer 수를 하드코딩하지 않는다.
+- 설치된 저장소에서 Draft가 아닌 PR을 생성·재개하거나 Ready for review로 바꾸면 이슈와 다른 `review-pr-<n>` 세션에서 리뷰한다. 리뷰 App이 설정되어 있으면 push로 head가 바뀔 때도 head별로 한 번 리뷰하고, 명시적 `@haechibot review` 요청은 같은 head를 다시 리뷰할 수 있다. 자동 요청은 같은 head를 두 번 리뷰하지 않으며, bridge가 내려가 놓친 webhook은 열린 PR 리뷰 스윕이 복구한다. PR마다 대기 리뷰는 하나뿐이고 연달아 온 요청(PR 열기·push·댓글)은 그 하나로 합쳐지며, 새 head가 오면 이전 head를 리뷰하던 실행은 취소된다(아래 "리뷰 요청 합치기와 취소"). ruleset·branch protection이 merge 조건을 소유하며 bridge는 필수 check 목록이나 reviewer 수를 하드코딩하지 않는다.
 - 코딩 에이전트는 GitHub에 쓰지 않는다. 댓글·라벨·push·PR·리뷰는 모두 n8n이 에이전트 결과를 검증된 bridge op로 적용한다.
 
 ## 책임 분리
@@ -99,11 +99,26 @@ krema#63에서 리뷰 ↔ repair 조정이 약 12시간 동안 반복돼 토큰 
 
 pillar-csi#155에서 PR 열기 → 31초 뒤 force-push → 3초 뒤 `@haechibot review` 댓글이 리뷰 세 번을, 이후 push → 12초 뒤 댓글이 리뷰 두 번을 실행했다. 2026-10-01 기준 리뷰 94회 중 16회가 직전 요청 2분 안의 중복이었다. 요청 하나가 리뷰 실행 하나가 되는 구조였고, push가 이미 리뷰를 시작하는데 footer는 push 뒤 댓글을 달라고 안내해 push마다 요청이 둘 생겼다. 이제 리뷰 요청은 PR별 대기 리뷰 하나에 모이는 수요로 다룬다.
 
-- 대기 리뷰 하나: 새 `pr_review`(PR 열기·재개·Ready, push, `@haechibot review` 댓글, 관리 PR 재조회)는 같은 PR의 대기(`accepted`) 리뷰를 `coalesced`로 끝내고 그 자리를 잇는다. 살아남은 행은 가장 최근 댓글 요청(본문은 프롬프트의 `COMMENT_BY_<actor>`)과 가장 최근 head를 이어받는다.
+- 대기 리뷰 하나: 새 `pr_review`(PR 열기·재개·Ready, push, `@haechibot review` 댓글, 열린 PR 리뷰 스윕)는 같은 PR의 대기(`accepted`) 리뷰를 `coalesced`로 끝내고 그 자리를 잇는다. 살아남은 행은 가장 최근 댓글 요청(본문은 프롬프트의 `COMMENT_BY_<actor>`)과 가장 최근 head를 이어받는다.
 - 정착 시간: 대기 리뷰는 마지막 요청 `REVIEW_SETTLE_SECONDS`(90초) 뒤에 시작하되, 가장 오래된 대기 요청으로부터 `REVIEW_MAX_DELAY_SECONDS`(300초)를 넘기지 않는다. push와 그 뒤 댓글, PR 열기 직후 force-push는 리뷰 하나가 된다.
 - 충족 기준: 요청은 그 뒤에 시작한 리뷰가 있어야 충족된다. 이미 시작한 리뷰는 그 뒤에 단 답글을 보지 못하므로, 실행 중에 온 댓글 요청은 한 번 더 리뷰한다. GitHub 리뷰 제출 시각으로 건너뛰는 규칙은 없다.
-- 이전 head 취소: `begin`은 리뷰가 체크아웃할 현재 PR head를 이벤트에 기록한다. head를 가진 새 요청(push 등)이 오면 다른 head를 리뷰 중인(`dispatching`/`dispatched`) 이벤트를 `cancelled`로 끝내고 semantic key를 풀어 같은 head를 다시 요청할 수 있게 한다. 취소된 실행의 다음 op는 `event_terminal`이라 아무것도 게시하지 않고, `fail`은 `already`로 조용히 끝난다. 다음 dispatcher tick이 그 세션을 archive해 에이전트를 멈춘다. 같은 PR의 다른 이벤트가 이미 dispatch 슬롯을 잡았으면 공유 세션이므로 archive하지 않는다. head가 없는 댓글 요청은 취소하지 않는다.
+- 이전 head 취소: `begin`은 리뷰가 체크아웃할 현재 PR head를 이벤트에 기록한다. head를 가진 새 요청(push 등)이 오면 다른 head를 리뷰 중인(`dispatching`/`dispatched`) 이벤트를 `cancelled`로 끝낸다. 취소된 실행의 다음 op는 `event_terminal`이라 아무것도 게시하지 않고, `fail`은 `already`로 조용히 끝난다. 다음 dispatcher tick이 그 세션을 archive해 에이전트를 멈춘다. 같은 PR의 다른 이벤트가 이미 dispatch 슬롯을 잡았으면 공유 세션이므로 archive하지 않는다. head가 없는 댓글 요청은 취소하지 않는다. 취소된 리뷰는 그 head를 리뷰한 적이 없으므로(아래 head별 자동 리뷰 1회) branch가 그 head로 돌아오면 다시 요청된다. 자동 요청은 시작 시점에도 자기 head에 묶여 있다. 다른 요청이 이미 그 head의 리뷰를 게시했으면 `already_reviewed`로 끝난다. 시작 전에 PR head가 바뀌었으면 새 head가 요청된 적 없는 한 그 head로 옮겨 붙고(`head_sha`와 semantic key를 다시 쓴다), 이미 요청된 head면 `head_moved`로 끝난다. 댓글을 가진 요청(자기 댓글이든 합쳐져 이어받은 댓글이든)은 시작 시점의 현재 head를 리뷰하고, head 모양 semantic key를 가졌으면 그 key도 새 head로 옮긴다(새 key를 다른 행이 쥐고 있으면 풀어 둔다).
 - footer: 리뷰 App이 있으면 push는 자동 리뷰되므로 footer는 push 없이(답글 뒤) 다시 받고 싶을 때나 오류로 멈춘 리뷰를 재시작할 때만 댓글을 쓰라고 안내한다. 리뷰 중 push로 생긴 stale 리뷰도 새 head는 push가 이미 리뷰를 예약했다고 쓴다.
+- head별 자동 리뷰 1회: 자동 요청(`pull_request` opened/reopened/ready_for_review/synchronize, 열린 PR 리뷰 스윕)은 같은 저장소·PR·head의 `pr_review` 요청이 대기·실행 중이거나 리뷰를 만들었거나(완료) parked(`needs_attention`) 또는 다른 요청에 밀려 끝난(`superseded`) 행이 있으면 큐에 넣지 않고 `duplicate`로 답한다. 같은 delivery id의 재전송 webhook은 어떤 부수 효과 없이 먼저 `duplicate`로 답한다. 합쳐진(`coalesced`)·취소된(`cancelled`)·시작 전에 끝난(`head_moved`, `already_reviewed`) 요청은 그 head를 리뷰한 적이 없으므로 세지 않고, 그 행의 head semantic key(`#pr:<n>:review:<head>` 모양; `#comment:<id>` 키는 유지)도 풀려 같은 head의 요청이 다시 들어올 수 있다. 다만 리뷰 게시(`github.review` op)의 기록(`stages.review_published`)은 행의 상태나 `head_sha`와 관계없이 그 head를 요청한 것으로 친다. 게시 뒤 push가 이벤트를 취소했거나, head 조회가 실패해 `head_sha`가 비어 있는 댓글 리뷰여도 리뷰는 이미 GitHub에 있다. `duplicate`로 답하기 전에도 다른 head를 리뷰 중인 이벤트는 `cancelled`로 끝내므로, 이전에 리뷰된 head로 돌아온 push 뒤에도 오래된 head의 리뷰가 계속 돌지 않는다. 확인과 삽입은 `Store.enqueue_in`의 한 SQLite 쓰기 트랜잭션이다. krema#76에서 Draft일 때 댓글로 받은 리뷰가 끝난 뒤 `ready_for_review` webhook이 같은 head를 다시 리뷰했는데, 댓글 리뷰도 시작할 때 head를 기록하므로 이제 이 webhook은 `duplicate`다. `@haechibot review` 댓글은 명시적 재요청이라 항상 큐에 들어간다.
+- 시작 시 게시 기록 우선: 자동 요청의 `begin`은 PR head를 조회하기 전에 다른 행의 `stages.review_published`가 자기 head인지 먼저 본다. 맞으면 `already_reviewed`로 끝내므로, GitHub가 head 조회에 실패해도 같은 head를 다시 리뷰하지 않는다.
+- head별 게시 1회: 자동 요청(댓글 없음)의 `github.review`는 POST 전에 PR 리뷰 목록(delivery marker 확인과 같은 목록)에서 리뷰 App이 같은 `commit_id`로 남긴 리뷰를 찾는다. 있으면 게시하지 않고 그 리뷰를 이 이벤트의 `review_published`로 기록한 뒤 marker가 이미 있을 때와 같은 응답(`created: false`)을 돌려준다. 그래서 POST는 GitHub에 반영됐는데 응답만 잃은 리뷰가 push로 취소되고 같은 head가 다시 요청돼도 두 번 게시하지 않는다. 댓글 요청은 지금처럼 게시한다.
+
+### 열린 PR 리뷰 스윕
+
+2026-10-02 06:18 bridge 재시작 동안 온 webhook은 다시 오지 않았고, 관리 PR이 아닌 cc-lb#902·#892의 head는 끝내 리뷰되지 않았다. 전에는 60초 reconciliation이 `prs`에 있는 관리 PR의 head만 리뷰 요청했다. 이제 그 경로는 없애고, dispatcher 스레드의 주기 작업(`reconcile_due_prs`)이 bridge 시작 직후와 이후 `REVIEW_SWEEP_SECONDS`(600초)마다 관리 여부와 관계없이 모든 열린 PR을 훑는다.
+
+- 범위: 리뷰 App(`haechibot`)이 설정되어 있을 때만 돈다(없으면 push도 리뷰를 요청하지 않는다). 리뷰 App 설치 저장소(`GET /installation/repositories`) 중 registry가 받는 저장소의 열린 PR(`state=open`)을 100개씩, 최대 `REVIEW_SWEEP_MAX_PAGES`(10) 페이지 읽는다. 한도에 닿으면 경고를 남긴다.
+- 후보: Draft가 아니고 head commit(committer date)이 `REVIEW_SWEEP_MAX_AGE_SECONDS`(14일) 안인 PR. PR `updated_at`이 14일보다 오래되면 head commit도 오래되었으므로 commit을 읽지 않고 건너뛴다.
+- 진행 중이면 건드리지 않는다: PR에 비종결(`accepted`/`dispatching`/`dispatched`) 이벤트가 있으면(head가 아직 기록되지 않은 댓글 리뷰, repair 포함) 건너뛰고, 관리 PR은 연결된 이슈의 비종결 이벤트도 본다(연결 이슈는 `prs` 행 또는, 아직 추적되지 않은 PR이면 `hapi-issue-<n>` branch 이름으로 찾는다). `prs.active_delivery`는 repair가 `needs_attention`으로 멈춘 뒤에도 남으므로 보지 않는다.
+- live head: 큐에 넣는 쓰기 트랜잭션 안에서 PR을 다시 읽어 닫혔거나 Draft가 되었거나 head가 바뀌었으면 넣지 않는다. 새 head는 그 webhook이나 다음 스윕이 처리한다. 같은 트랜잭션의 로컬 확인과 삽입은 동시에 온 webhook과 섞이지 않고, 이벤트는 webhook과 같은 모양이다(delivery id만 매번 새 `pr-review-sweep-<uuid>`: 리뷰되지 않은 head의 재요청이 이전 행의 delivery id와 충돌하지 않도록).
+- 한도: 스윕 한 번에 모든 저장소를 통틀어 `REVIEW_SWEEP_MAX_ENQUEUES`(10)개까지 넣는다. 한 저장소나 PR의 GitHub 오류는 경고만 남기고 다음으로 넘어가며, 스윕 오류는 dispatcher로 올라가지 않는다.
+- 멈춘 리뷰는 자동 재시도하지 않는다: `needs_attention`으로 멈춘 리뷰도 그 head를 요청한 것으로 친다. 같은 원인으로 다시 실패할 리뷰를 10분마다 다시 돌리지 않기 위해서다. 사람이 `@haechibot review`로 재요청하면 멈춘 리뷰를 `superseded`로 끝내고 다시 리뷰한다.
+- 남은 경계: 오래된 head의 webhook이 늦게(재전송 등) 도착하면 그 요청이 더 새 head의 대기 리뷰를 합친 뒤 살아남을 수 있다. 살아남은 요청은 시작할 때 현재 head가 요청된 적 없으면 그 head로 옮겨 붙어 리뷰하므로 리뷰가 빠지지는 않는다. 현재 head가 이미 요청된 head면 `head_moved`로 끝나고, 이미 요청된 적 있는 head의 늦은 webhook 자체는 head별 자동 리뷰 1회로 버려진다.
 
 ### 알려진 제한
 
