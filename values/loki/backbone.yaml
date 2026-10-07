@@ -24,17 +24,32 @@ loki:
     reject_old_samples: true
     reject_old_samples_max_age: 336h # 14d
     creation_grace_period: 10m # clock skew tolerance between clusters
-  chunk_store_config:
-    chunk_cache_config:
-      embedded_cache:
-        enabled: true
-        max_size_mb: 128
+    ## 1 replica x querier.max_concurrent 4: 8 keeps every worker busy while
+    ## bounding the splits one query queues (the 128 default queued Drilldown
+    ## requests for minutes behind a long scan on 2026-10-07). No byte cap:
+    ## bytes predict cost poorly and Grafana's 120s timeout already bounds it.
+    tsdb_max_query_parallelism: 8
+    max_query_parallelism: 8
   query_range:
+    ## Caches metric and filter-query results for extents older than
+    ## max_cache_freshness_per_query (10m). Lines arriving later than that
+    ## (Alloy retry backlog) can be hidden from a repeated query for up to ~2h;
+    ## send `Cache-Control: no-cache` or restart loki-0 to bypass. The
+    ## index-stats/volume/series/labels caches inherit this size.
+    cache_results: true
     results_cache:
       cache:
         embedded_cache:
           enabled: true
-          max_size_mb: 64
+          max_size_mb: 32
+  ingester:
+    wal:
+      ## 5m default rewrites ~6 MiB of in-memory state 288x/day onto the
+      ## raidz1 zvol; 15m cuts that to a third. Replay stays <15m of WAL.
+      checkpoint_duration: 15m
+      ## Default 4GB exceeds the 1Gi limit; replay flushes at 90% of this
+      ## instead of OOM-looping. Leaves headroom under GOMEMLIMIT 870MiB.
+      replay_memory_ceiling: 384MB
   compactor:
     retention_enabled: true
     delete_request_store: filesystem
@@ -68,7 +83,7 @@ singleBinary:
   resources:
     requests:
       cpu: 100m
-      memory: 224Mi
+      memory: 384Mi # 1.18x 14d P50 (325Mi)
     limits:
       memory: 1Gi
   # storage-loki-0 was created by democratic-csi and imported into
