@@ -80,6 +80,14 @@ alloy:
       loki.write "backbone" {
         endpoint {
           url = "http://loki-gateway.loki.svc.cluster.local/loki/api/v1/push"
+
+          // Retry 5xx, 429 and connection errors until Loki answers (0 = no retry
+          // limit) instead of dropping a batch after 10 retries (~4-8 min); the
+          // queue then back-pressures the tailers, so unsent lines stay in the
+          // kubelet log files. Retries are at most 30s apart. 4xx is still dropped.
+          min_backoff_period  = "1s"
+          max_backoff_period  = "30s"
+          max_backoff_retries = 0
         }
       }
 
