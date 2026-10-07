@@ -7,7 +7,7 @@ locals {
   # record resolves and the domain check passes; enforcing HTTPS before then
   # fails. Set to true in a follow-up change once the Pages settings report an
   # approved certificate for cc_lb_pages_cname, then apply again.
-  cc_lb_pages_https_enforced = false
+  cc_lb_pages_https_enforced = true
 }
 
 resource "github_repository" "cc_lb" {
