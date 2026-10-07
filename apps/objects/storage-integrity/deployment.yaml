@@ -34,6 +34,19 @@ spec:
       terminationGracePeriodSeconds: 30
       nodeSelector:
         kubernetes.io/arch: arm64
+      # Keep the NVMe/TCP initiator off the storage node. On rock5bp the
+      # volume is reached over loopback, and that path (target + zvol alone)
+      # did not reproduce #385 in 453 GiB; the corrupting runs had a remote
+      # initiator and the network in between.
+      affinity:
+        nodeAffinity:
+          requiredDuringSchedulingIgnoredDuringExecution:
+            nodeSelectorTerms:
+              - matchExpressions:
+                  - key: kubernetes.io/hostname
+                    operator: NotIn
+                    values:
+                      - rock5bp
       securityContext:
         runAsNonRoot: true
         runAsUser: 65532

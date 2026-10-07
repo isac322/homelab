@@ -22,7 +22,7 @@
 
 ### Canary
 
-- Deployment `prometheus/storage-canary` (1 replica, `Recreate`)
+- Deployment `prometheus/storage-canary` (1 replica, `Recreate`). rock5bp에는 두지 않는다. rock5bp에서는 volume이 loopback으로 연결되는데, 이 경로는 2026-10-07 실험에서 재현되지 않았다. 원격 initiator와 네트워크를 거치는 경로를 감시해야 한다.
 - Manifests: `apps/objects/storage-integrity/` (ArgoCD Application `argocd/apps/storage-integrity.yaml`)
 - Source: `tools/storage-canary/`
 - Image: `ghcr.io/isac322/storage-canary` (linux/arm64), `.github/workflows/storage-canary.yaml`가 빌드한다. Tag는 빌드한 commit SHA 앞 12자리이며 manifest는 `tag@sha256:digest`로 고정한다.
