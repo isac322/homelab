@@ -151,6 +151,11 @@ let
           - feature-gates=NodeSwap=true
           - kube-reserved=memory=${kubeReservedMemory}
           - eviction-hard=memory.available<100Mi,nodefs.available<5%,imagefs.available<5%
+        # PodGC deletes finished Pods above this count, evicted then oldest first
+        # (default 12500 never fires here). 20 keeps the 14-day Job Pod peak (14)
+        # and still clears Pods left by node shutdowns and evictions (peak 468).
+        kube-controller-manager-arg:
+          - terminated-pod-gc-threshold=20
       ''
     else
       ''

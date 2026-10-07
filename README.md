@@ -380,6 +380,8 @@ CNPG의 1800초와 Prometheus의 600초 종료 예산은 일반 reboot에 그대
 
 구성 적용 후 일반 재부팅은 `systemctl reboot`를 사용한다. 이 경로는 kubelet의 정상 Pod 종료 기회를 제공하지만 PDB eviction, 대체 Pod의 Ready 완료, 단일 replica 무중단, local PV 이동을 보장하지 않는다. 먼저 `n2p1`, `n2p2`에서 검증하고 control-plane/etcd node는 quorum을 위해 항상 한 번에 하나씩 재부팅한다. `reboot -f`와 `systemctl reboot --force`는 사용하지 않는다.
 
+K3s server(`rpi4`, `rpi5`, `rock5bp`)는 `kube-controller-manager-arg: terminated-pod-gc-threshold=20`으로 끝난 Pod를 정리한다(`nix/modules/linux/k3s-host.nix`). 기본값 12500에서는 재부팅·eviction으로 끝난 ReplicaSet Pod가 사라지지 않는다. PodGC는 20개를 넘는 만큼 evicted Pod부터, 그다음 오래된 순서로 지운다. 14일간 Job Pod 최대치는 14개였다. 이 값은 `/etc/rancher/k3s/config.yaml`에 들어가므로 해당 host의 다음 `homelab-host` rollout(activate가 K3s를 재시작)에서 적용된다. 그 전의 일반 재부팅은 기존 config로 다시 올라온다.
+
 ## Verification
 
 ```bash
