@@ -5,6 +5,11 @@ strategy:
   type: Recreate
 
 gateway:
+  # versitygw v1.8.0 can only log every request or none; Thanos block reads were
+  # ~700k lines/day. Request errors are kept as StatsD metrics (statsd-exporter
+  # sidecar below) instead: versitygw_failed_count{action,bucket,status}.
+  # [INTERNAL ERROR]/[PANIC] lines still go to stderr.
+  quiet: true
   backend:
     type: posix
     args: "/mnt/data"
@@ -32,3 +37,34 @@ resources:
     memory: 56Mi
   limits:
     memory: 384Mi
+
+extraEnv:
+  - name: VGW_METRICS_STATSD_SERVERS
+    value: "127.0.0.1:9125"
+  - name: VGW_METRICS_SERVICE_NAME
+    value: versitygw-hdd
+
+extraContainers:
+  - name: statsd-exporter
+    image: quay.io/prometheus/statsd-exporter:v0.31.0@sha256:1d5d341c4eb7abdd3445a3f85c3d498402b676ad29b4cf0421f5d280943871ab
+    args:
+      - --statsd.listen-udp=127.0.0.1:9125
+      - --statsd.listen-tcp=
+      - --web.listen-address=:9102
+    ports:
+      - name: metrics
+        containerPort: 9102
+    securityContext:
+      allowPrivilegeEscalation: false
+      readOnlyRootFilesystem: true
+      runAsNonRoot: true
+      runAsUser: 65534
+      capabilities:
+        drop: [ALL]
+    # Initial size for a new sidecar with no history; re-measure after 14d.
+    resources:
+      requests:
+        cpu: 5m
+        memory: 16Mi
+      limits:
+        memory: 64Mi
