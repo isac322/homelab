@@ -69,12 +69,20 @@ spec:
           ports:
             - name: registry
               containerPort: 5000
+          # 14-day working set: P50 18Mi, P99 46Mi. Concurrent layer pulls after
+          # node reboots and CI bursts drove anon + unreclaimed file pages past
+          # the old 64Mi/96Mi limits, so the observed max is an OOM-truncated
+          # lower bound (~97Mi). GOMEMLIMIT keeps the Go heap well under the
+          # limit and leaves headroom for page cache and socket buffers.
+          env:
+            - name: GOMEMLIMIT
+              value: 128MiB
           resources:
             requests:
               cpu: 10m
-              memory: 40Mi
+              memory: 24Mi
             limits:
-              memory: 64Mi
+              memory: 192Mi
           volumeMounts:
             - name: config
               mountPath: /etc/distribution
