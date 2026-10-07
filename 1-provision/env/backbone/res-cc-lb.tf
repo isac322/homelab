@@ -40,17 +40,36 @@ resource "github_repository" "cc_lb" {
   ]
   web_commit_signoff_required = false
 
-  security_and_analysis {
-    secret_scanning {
-      status = "enabled"
-    }
-    secret_scanning_push_protection {
-      status = "enabled"
-    }
-  }
-
   lifecycle {
     prevent_destroy = true
+  }
+}
+
+# Provider 6.13.0 updates security settings before repository visibility.
+# Enabling secret scanning while this repository is still private returns 422.
+# Apply both protections only after the public visibility change has completed.
+resource "terraform_data" "cc_lb_secret_scanning" {
+  triggers_replace = [
+    github_repository.cc_lb.id,
+    github_repository.cc_lb.visibility,
+  ]
+
+  depends_on = [github_repository.cc_lb]
+
+  provisioner "local-exec" {
+    command = <<-EOT
+      curl --fail --silent --show-error --output /dev/null -X PATCH \
+        -H "Authorization: Bearer $GITHUB_TOKEN" \
+        -H "Accept: application/vnd.github+json" \
+        -H "X-GitHub-Api-Version: 2022-11-28" \
+        "https://api.github.com/repos/isac322/$REPO" \
+        -d '{"security_and_analysis":{"secret_scanning":{"status":"enabled"},"secret_scanning_push_protection":{"status":"enabled"}}}'
+    EOT
+
+    environment = {
+      GITHUB_TOKEN = var.github_personal_access_token
+      REPO         = github_repository.cc_lb.name
+    }
   }
 }
 
