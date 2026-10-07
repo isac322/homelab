@@ -119,3 +119,25 @@ import {
   to = github_actions_repository_permissions.pillar_csi
   id = "pillar-csi"
 }
+
+# cc-lb predates Terraform. Pages and its DNS record do not exist yet;
+# create them instead of importing them.
+import {
+  to = github_repository.cc_lb
+  id = "cc-lb"
+}
+
+import {
+  to = github_repository_vulnerability_alerts.cc_lb
+  id = "cc-lb"
+}
+
+import {
+  to = github_repository_dependabot_security_updates.cc_lb
+  id = "cc-lb"
+}
+
+import {
+  to = github_actions_repository_permissions.cc_lb
+  id = "cc-lb"
+}
