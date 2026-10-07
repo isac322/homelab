@@ -356,6 +356,18 @@ n8n 실행 기록은 성공·실패 모두 저장하며 자동 정리하지 않�
 
 기존 Archon은 새 시스템 webhook 전환 검증 후 완전히 제거했다. 전용 코드·Kubernetes/ArgoCD 정의 19개, `archon` namespace와 두 PVC(20Gi+1Gi), rock5bp의 backing zvol, `archon.bhyoo.com`·`archon-webhook.bhyoo.com` DNS가 제거됐다. 재사용하는 GitHub App과 인증 경로는 `ironeater`로 이름을 바꿨다. GitHub의 기존 이슈·PR은 삭제하지 않았다.
 
+## GitHub Pages custom domain
+
+`1-provision/env/backbone`의 `res-cc-lb.tf`·`res-cc-lb-pages.tf`는 `isac322/cc-lb` 저장소 설정, `cc-lb.bhyoo.com` DNS-only CNAME, GitHub Pages(`build_type = "workflow"`)를 소유한다. 사이트 빌드·배포는 이 Terraform이 아니라 cc-lb 저장소의 별도 Pages workflow가 소유한다. 그 workflow는 저장소가 public이고 `master`에서 실행될 때만 Pages 설정·배포 단계를 실행하므로 공개 전에는 배포하지 않는다. Terraform 변경은 PR과 owner의 merge 승인을 거치고, 저장소를 public으로 바꾸는 첫 apply는 공개 전 선행 조건이 모두 끝난 뒤에만 실행한다.
+
+HTTPS 강제는 별도 apply로 나눈다. GitHub은 DNS가 전파되고 도메인 확인이 끝난 뒤에야 custom domain 인증서를 발급하므로, 인증서 없이 HTTPS를 강제하면 API가 실패한다.
+
+1. `local.cc_lb_pages_https_enforced = false` 상태로 apply해 저장소·DNS·Pages를 만든다. 이 단계에서 `terraform_data.cc_lb_pages_https`는 생성되지 않는다. Provider 6.13.0은 Pages 생성 시 빈 cname을 기록할 수 있다. 그 결과 다음 plan에 Pages `cname`을 `cc-lb.bhyoo.com`으로 설정하는 변경이 실제로 나타날 때만 그 plan을 한 번 더 apply한다. 변경이 없으면 추가 apply하지 않으며, 실패한 run은 원인 확인 없이 다시 실행하지 않는다.
+2. `GET /repos/isac322/cc-lb/pages`에서 `cname`이 `cc-lb.bhyoo.com`이고 `https_certificate.state`가 `approved`이며 `https_certificate.domains`에 같은 도메인이 있는지 확인한다.
+3. 확인이 끝나면 후속 PR에서 local을 `true`로 바꾸고 apply한다. 이 단계는 `cname`과 `https_enforced: true`를 한 번의 Pages PUT으로 보낸다. Provider는 `https_enforced`만 바꿀 때 cname을 지우기 때문이다.
+
+sleep·retry·실패 무시·fallback으로 인증서 대기를 대신하지 않는다. 2번 확인 조건을 만족하지 못하면 3번을 보류하고 차단 상태로 남긴다.
+
 ## Ansible ownership boundary
 
 Legacy host-management playbook은 `[ansible_managed]`만 target으로 삼는다. Commit까지
