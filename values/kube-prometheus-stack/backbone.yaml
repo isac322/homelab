@@ -712,6 +712,358 @@ grafana:
               labels:
                 managed_by: gitops
               isPaused: false
+
+            # Loki and Alloy: up is guarded by "any backbone target is up", so a
+            # Prometheus/Thanos gap (every series missing) does not page as an
+            # outage. kube-state-metrics shares node n2p1 with loki-0, so it
+            # cannot be the guard.
+            - uid: infra-loki-unavailable
+              title: Loki unavailable
+              condition: B
+              data:
+                - refId: A
+                  relativeTimeRange:
+                    from: 600
+                    to: 0
+                  datasourceUid: prometheus
+                  model:
+                    datasource:
+                      type: prometheus
+                      uid: prometheus
+                    editorMode: code
+                    expr: >-
+                      max(up{cluster="backbone", job="loki/loki"})
+                      or on() (vector(0) and on()
+                      count(up{cluster="backbone"} == 1))
+                    instant: true
+                    intervalMs: 60000
+                    legendFormat: __auto
+                    maxDataPoints: 43200
+                    range: false
+                    refId: A
+                - refId: B
+                  relativeTimeRange:
+                    from: 0
+                    to: 0
+                  datasourceUid: __expr__
+                  model:
+                    conditions:
+                      - evaluator:
+                          params:
+                            - 1
+                          type: lt
+                        operator:
+                          type: and
+                        query:
+                          params:
+                            - B
+                        reducer:
+                          params: []
+                          type: last
+                        type:
+                          type: query
+                    datasource:
+                      type: __expr__
+                      uid: __expr__
+                    expression: A
+                    intervalMs: 60000
+                    maxDataPoints: 43200
+                    refId: B
+                    type: threshold
+              noDataState: OK
+              execErrState: Error
+              for: 5m
+              annotations:
+                display_name: Loki 중단
+                target: loki/loki-0
+                current_value: '{{`{{ with $values.A }}{{ if gt .Value 0.0 }}정상{{ else }}수집 불가{{ end }}{{ else }}메트릭 없음{{ end }}`}}'
+                threshold: 5분간 Loki 메트릭 수집 실패
+                description: Alloy는 Loki가 복구될 때까지 30초 간격으로 계속 재시도하므로 보낸 로그는 버리지 않지만, 그동안 수집이 멈춰 kubelet 로그 회전(10Mi)이 지나간 로그는 유실됩니다(바쁜 Pod 기준 약 1시간). loki-0 Pod 상태, PVC(storage-loki-0) attach, 이벤트를 확인하세요. Loki가 멈춘 동안 Alloy를 재시작하지 마세요.
+                summary: Loki가 응답하지 않아 로그 수집이 중단되었습니다.
+              labels:
+                severity: critical
+                managed_by: gitops
+              isPaused: false
+            - uid: infra-alloy-unavailable
+              title: Alloy unavailable
+              condition: B
+              data:
+                - refId: A
+                  relativeTimeRange:
+                    from: 600
+                    to: 0
+                  datasourceUid: prometheus
+                  model:
+                    datasource:
+                      type: prometheus
+                      uid: prometheus
+                    editorMode: code
+                    expr: >-
+                      max(up{cluster="backbone", job="alloy"})
+                      or on() (vector(0) and on()
+                      count(up{cluster="backbone"} == 1))
+                    instant: true
+                    intervalMs: 60000
+                    legendFormat: __auto
+                    maxDataPoints: 43200
+                    range: false
+                    refId: A
+                - refId: B
+                  relativeTimeRange:
+                    from: 0
+                    to: 0
+                  datasourceUid: __expr__
+                  model:
+                    conditions:
+                      - evaluator:
+                          params:
+                            - 1
+                          type: lt
+                        operator:
+                          type: and
+                        query:
+                          params:
+                            - B
+                        reducer:
+                          params: []
+                          type: last
+                        type:
+                          type: query
+                    datasource:
+                      type: __expr__
+                      uid: __expr__
+                    expression: A
+                    intervalMs: 60000
+                    maxDataPoints: 43200
+                    refId: B
+                    type: threshold
+              noDataState: OK
+              execErrState: Error
+              for: 5m
+              annotations:
+                display_name: Alloy 로그 수집 중단
+                target: kube-system/alloy-0
+                current_value: '{{`{{ with $values.A }}{{ if gt .Value 0.0 }}정상{{ else }}수집 불가{{ end }}{{ else }}메트릭 없음{{ end }}`}}'
+                threshold: 5분간 Alloy 메트릭 수집 실패
+                description: Alloy가 멈추면 모든 Pod 로그 수집이 중단되고, 늦게 복구되면 kubelet 로그 회전(10Mi)이 지나간 로그는 유실됩니다. 재시작 시 메모리 큐에 있던 배치(최대 10MiB)도 사라집니다. alloy-0 Pod 상태, PVC(alloy-data-alloy-0) attach, 이벤트를 확인하세요.
+                summary: Alloy가 응답하지 않아 로그 수집이 중단되었습니다.
+              labels:
+                severity: critical
+                managed_by: gitops
+              isPaused: false
+            - uid: infra-loki-pvc-usage-high
+              title: Loki PVC usage high
+              condition: B
+              data:
+                - refId: A
+                  relativeTimeRange:
+                    from: 600
+                    to: 0
+                  datasourceUid: prometheus
+                  model:
+                    datasource:
+                      type: prometheus
+                      uid: prometheus
+                    editorMode: code
+                    expr: >-
+                      100 * max by (namespace, persistentvolumeclaim)
+                      (kubelet_volume_stats_used_bytes{cluster="backbone",
+                      namespace="loki", persistentvolumeclaim="storage-loki-0"}) /
+                      max by (namespace, persistentvolumeclaim)
+                      (kubelet_volume_stats_capacity_bytes{cluster="backbone",
+                      namespace="loki", persistentvolumeclaim="storage-loki-0"})
+                    instant: true
+                    intervalMs: 60000
+                    legendFormat: __auto
+                    maxDataPoints: 43200
+                    range: false
+                    refId: A
+                - refId: B
+                  relativeTimeRange:
+                    from: 0
+                    to: 0
+                  datasourceUid: __expr__
+                  model:
+                    conditions:
+                      - evaluator:
+                          params:
+                            - 80
+                          type: gt
+                        operator:
+                          type: and
+                        query:
+                          params:
+                            - B
+                        reducer:
+                          params: []
+                          type: last
+                        type:
+                          type: query
+                    datasource:
+                      type: __expr__
+                      uid: __expr__
+                    expression: A
+                    intervalMs: 60000
+                    maxDataPoints: 43200
+                    refId: B
+                    type: threshold
+              # OK: kubelet volume stats vanish while loki-0 is rescheduled.
+              noDataState: OK
+              execErrState: Error
+              for: 15m
+              annotations:
+                display_name: Loki 볼륨 사용률 높음
+                target: '{{`{{ $labels.namespace }}/{{ $labels.persistentvolumeclaim }}`}}'
+                current_value: '{{`{{ with $values.A }}{{ printf "%.1f%%" .Value }}{{ else }}값 없음{{ end }}`}}'
+                threshold: 80% 초과 상태가 15분간 지속됨
+                description: retention(8760h)과 compactor 상태를 확인하고, PVC 확장 또는 retention 축소를 검토하세요.
+                summary: Loki 저장 볼륨이 가득 차고 있습니다.
+              labels:
+                severity: warning
+                managed_by: gitops
+              isPaused: false
+            # increase() instead of the last-success timestamp: that gauge is 0 for
+            # ~10 min after every Loki restart.
+            - uid: infra-loki-retention-stalled
+              title: Loki compactor retention stalled
+              condition: B
+              data:
+                - refId: A
+                  relativeTimeRange:
+                    from: 10800
+                    to: 0
+                  datasourceUid: prometheus
+                  model:
+                    datasource:
+                      type: prometheus
+                      uid: prometheus
+                    editorMode: code
+                    expr: >-
+                      sum(increase(loki_compactor_apply_retention_operation_total{
+                      cluster="backbone", namespace="loki", status="success"}[3h]))
+                      or on() (vector(0) and on()
+                      max(up{cluster="backbone", job="loki/loki"} == 1))
+                    instant: true
+                    intervalMs: 60000
+                    legendFormat: __auto
+                    maxDataPoints: 43200
+                    range: false
+                    refId: A
+                - refId: B
+                  relativeTimeRange:
+                    from: 0
+                    to: 0
+                  datasourceUid: __expr__
+                  model:
+                    conditions:
+                      - evaluator:
+                          params:
+                            - 1
+                          type: lt
+                        operator:
+                          type: and
+                        query:
+                          params:
+                            - B
+                        reducer:
+                          params: []
+                          type: last
+                        type:
+                          type: query
+                    datasource:
+                      type: __expr__
+                      uid: __expr__
+                    expression: A
+                    intervalMs: 60000
+                    maxDataPoints: 43200
+                    refId: B
+                    type: threshold
+              # OK: Loki being down is reported by infra-loki-unavailable.
+              noDataState: OK
+              execErrState: Error
+              for: 30m
+              annotations:
+                display_name: Loki 보존 정책 정지
+                target: loki/loki-0 compactor
+                current_value: '{{`{{ with $values.A }}{{ printf "최근 3시간 성공 %.0f회" .Value }}{{ else }}값 없음{{ end }}`}}'
+                threshold: 3시간 동안 retention 성공 0회가 30분간 지속됨
+                description: loki-0 로그에서 compactor 오류를 확인하세요. retention이 멈추면 PVC 사용량이 계속 증가합니다.
+                summary: Loki compactor가 오래된 로그를 삭제하지 못하고 있습니다.
+              labels:
+                severity: warning
+                managed_by: gitops
+              isPaused: false
+            # Alloy is the only pusher. 5xx, 429 and -1 (connection error) responses
+            # are retried at most 30s apart with no retry limit (loki.write
+            # max_backoff_retries = 0), so a failure blocks all log shipping until
+            # it clears. Also covers loki-gateway outages while loki-0 is up.
+            - uid: infra-loki-push-failing
+              title: Alloy log push to Loki failing
+              condition: B
+              data:
+                - refId: A
+                  relativeTimeRange:
+                    from: 600
+                    to: 0
+                  datasourceUid: prometheus
+                  model:
+                    datasource:
+                      type: prometheus
+                      uid: prometheus
+                    editorMode: code
+                    expr: >-
+                      sum(increase(loki_write_request_duration_seconds_count{
+                      cluster="backbone", status_code=~"5..|429|-1"}[5m]))
+                      or on() vector(0)
+                    instant: true
+                    intervalMs: 60000
+                    legendFormat: __auto
+                    maxDataPoints: 43200
+                    range: false
+                    refId: A
+                - refId: B
+                  relativeTimeRange:
+                    from: 0
+                    to: 0
+                  datasourceUid: __expr__
+                  model:
+                    conditions:
+                      - evaluator:
+                          params:
+                            - 0
+                          type: gt
+                        operator:
+                          type: and
+                        query:
+                          params:
+                            - B
+                        reducer:
+                          params: []
+                          type: last
+                        type:
+                          type: query
+                    datasource:
+                      type: __expr__
+                      uid: __expr__
+                    expression: A
+                    intervalMs: 60000
+                    maxDataPoints: 43200
+                    refId: B
+                    type: threshold
+              noDataState: OK
+              execErrState: Error
+              for: 5m
+              annotations:
+                display_name: Loki 로그 전송 실패
+                target: alloy → loki-gateway
+                current_value: '{{`{{ with $values.A }}{{ printf "최근 5분 실패 %.0f건" .Value }}{{ else }}값 없음{{ end }}`}}'
+                threshold: 5xx/429/연결 오류가 5분 이상 지속됨
+                description: Alloy가 최대 30초 간격으로 무기한 재시도하는 동안 모든 로그 전송이 멈춥니다. 길어지면 kubelet 로그 회전(10Mi)으로 유실됩니다. loki-gateway, loki-0 상태와 Alloy 로그를 확인하세요. Loki가 멈춘 동안 Alloy를 재시작하지 마세요.
+                summary: Alloy가 Loki로 로그를 전송하지 못하고 있습니다.
+              labels:
+                severity: critical
+                managed_by: gitops
+              isPaused: false
     templates.yaml:
       apiVersion: 1
       templates:
@@ -898,6 +1250,12 @@ grafana:
       jsonData:
         timeout: 120
         maxLines: 5000
+        # /loki/api/v1/drilldown-limits skips the fake-auth middleware and
+        # returns 401 without a tenant header; every other route already
+        # forces tenant "fake" (auth_enabled: false).
+        httpHeaderName1: X-Scope-OrgID
+      secureJsonData:
+        httpHeaderValue1: fake
 
   dashboardProviders:
     dashboardproviders.yaml:
