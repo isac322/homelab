@@ -21,3 +21,13 @@ resource "cloudflare_dns_record" "cc_lb_github_pages_verification" {
   ttl     = 1
   comment = "GitHub Pages ownership verification for cc-lb.bhyoo.com (isac322)"
 }
+
+# Public DNS ownership challenge issued by Search Console for the Domain property.
+resource "cloudflare_dns_record" "cc_lb_google_site_verification" {
+  zone_id = var.cloudflare_main_zone_id
+  name    = local.cc_lb_pages_cname
+  content = "google-site-verification=IsgjwVQ48J1Dc6JEydyMc5umgjDC3bYXPTojSH_TYbQ"
+  type    = "TXT"
+  ttl     = 1
+  comment = "Google Search Console ownership verification for cc-lb.bhyoo.com"
+}

@@ -372,6 +372,8 @@ sleep·retry·실패 무시·fallback으로 인증서 대기를 대신하지 않
 
 계정 수준 GitHub Pages 도메인 확인은 개인 계정용 provider/API가 없어 승인된 경우에만 GitHub 계정 화면에서 요청·검증한다. `res-cc-lb-pages.tf`의 TXT 레코드는 그 화면이 발급한 공개 DNS 챌린지를 IaC로 관리하며, DNS 전파 확인 후 같은 계정에서 검증한다. 저장소 visibility·Pages cname·HTTPS 설정은 UI로 변경하지 않는다.
 
+Search Console의 cc-lb Domain 속성도 본인 계정에서 발급한 공개 TXT 챌린지를 같은 파일로 관리한다. Google 로그인·속성 확인·sitemap 제출은 승인된 계정으로 처리하며, Google Analytics 스크립트나 기존 GCP ADC 설정을 추가·변경하지 않는다.
+
 `res-cc-lb-web-analytics.tf`는 기존 `cloudflare.web_analytics` provider를 재사용해 cc-lb 사이트와 `PUBLIC_ANALYTICS_TOKEN` Actions 변수를 관리한다. 변수 값은 HTML에 공개되는 site beacon token이며 관리 API 자격증명이 아니다. DNS-only Pages 사이트는 자동 삽입을 사용하지 않고, 사이트 workflow가 public `master` 빌드에만 이 값을 전달한다.
 
 ## Ansible ownership boundary
