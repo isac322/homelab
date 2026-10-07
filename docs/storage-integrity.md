@@ -12,8 +12,9 @@
 지금까지 확인한 것:
 
 - lz4 압축은 필요조건이 아니다(`compression=off`에서도 발생).
-- rock5bp에서 zvol에 직접 쓴 900 GiB(zvol 450 GiB + 비-ZFS 450 GiB)에서는 0건이다. 따라서 storage target 경로가 주 의심 대상이다.
-- NIC와 원격 initiator는 필요조건이 아니다. Prometheus가 rock5bp에서 돌 때도 손상이 났다.
+- rock5bp에서 zvol에 직접 쓴 900 GiB(zvol 450 GiB + 비-ZFS 450 GiB, 2026-10-06)에서는 0건이다.
+- rock5bp 안에서 nvmet target을 loopback으로 거친 경로도 0건이다(2026-10-07, arm마다 약 453 GiB: zvol 직접, nvmet digest 없음, nvmet header·data digest 사용). digest 오류도 없었다. 10-05 A/B의 `compression=off` 발생률이면 nvmet arm에서 약 5건이 나와야 하고, 0건일 확률은 0.6%다.
+- 따라서 ZFS, nvmet target, rock5bp RAM/CPU만으로는 재현되지 않는다. 재현된 경로에만 있던 것은 원격 initiator(macmini 등)와 그 사이 네트워크(rock5bp의 vendor `r8125` NIC 포함)다. 3–5월 Prometheus가 rock5bp에 있을 때 난 손상은 iSCSI가 loopback으로 연결됐을 것이라는 추정에 기대고 있어 확인되지 않았다.
 
 아래 장치는 기존 구조를 바꾸지 않고 손상을 상시 탐지하고 증거를 남기기 위한 것이다.
 
@@ -182,6 +183,8 @@ Digest가 실제로 협상됐는지는 ICResp PDU의 `dgst` byte가 `0x3`(header
 - 끝나면 반드시 `teardown`을 실행한다.
 
 부하: 측정 시 arm당 약 12 MB/s였고 arm당 450 GiB에 약 10시간이 걸렸다. 실행 중에는 NAS HDD와 rock5bp `nvme0` 사용률을 지켜본다.
+
+2026-10-07 실행 결과: 세 arm 모두 약 453 GiB에서 0건, digest 오류 0건이었다. rock5bp 안의 target 경로만으로는 재현되지 않으므로 다음 실험은 initiator를 원격 노드(예: macmini)로 옮긴다. rock5bp에서 같은 방식으로 scratch zvol과 NQN을 export하되, 원격 노드에서 `/dev/nvme-fabrics`에 `traddr=<rock5bp IP>`로 연결한다. 한 arm은 digest 없이, 다른 arm은 `hdr_digest,data_digest`로 연결하고 같은 `storage-canary -mode run`을 원격 노드에서 돌린다. 해석은 같다. digest arm에서 `data digest error`가 나면 원격 initiator와 rock5bp 사이 네트워크·NIC 구간이고, digest 오류 없이 digest arm 데이터도 손상되면 initiator 쪽(digest 계산 이전)이다. 원격 노드의 digest 오류는 그 노드의 `dmesg`(`nvme_tcp`)와 rock5bp의 `dmesg`(`nvmet_tcp`) 양쪽에서 확인한다.
 
 ## 수정 후 확인
 
