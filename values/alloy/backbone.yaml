@@ -74,7 +74,35 @@ alloy:
 
       loki.source.kubernetes "pods" {
         targets    = discovery.relabel.pods.output
+        forward_to = [loki.process.pods.receiver]
+      }
+
+      loki.process "pods" {
         forward_to = [loki.write.backbone.receiver]
+
+        // Loki rejects entries older than reject_old_samples_max_age (336h) with
+        // HTTP 400; only kubelet re-sends of a container's last line reach this age.
+        stage.drop {
+          older_than          = "330h"
+          drop_counter_reason = "too_old"
+        }
+
+        // Label changes belong here, not in discovery.relabel: tailer positions are
+        // keyed by the discovery labels, so changing those re-reads every log.
+        stage.label_drop {
+          values = ["instance", "job"]
+        }
+
+        // descheduler CronJob runs (*/15, 3 successful runs kept): pod becomes
+        // structured metadata so each run does not create a new stream. Limited to
+        // descheduler: merged streams reject lines more than 1h behind the newest
+        // line (unordered_writes window), and the kept runs span only ~30 min.
+        stage.match {
+          selector = `{namespace="kube-system", pod=~"descheduler-[0-9]{8}-[a-z0-9]{5}"}`
+          stage.structured_metadata {
+            values = { pod = "" }
+          }
+        }
       }
 
       loki.write "backbone" {
