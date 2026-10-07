@@ -304,7 +304,7 @@
             assert builtins.elem "homelab-k3s.service" rock.systemd.services.homelab-pillar-firewall.before;
             assert lib.hasSuffix " apply"
               rock.systemd.services.homelab-pillar-firewall.serviceConfig.ExecReload;
-            assert builtins.length topology.requiredLinks == 35;
+            assert builtins.length topology.requiredLinks == 36;
             assert !(builtins.hasAttr "wg1" topology);
             assert gracefulShutdownConfigured;
             assert toString n2p1.environment.etc.${unattendedLogindPath}.source == "/dev/null";
