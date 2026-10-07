@@ -9,6 +9,10 @@
 - Verify significant behavioral changes and report exactly what was exercised.
 - **Ambiguity Guard**: If workload classification, tier assignment, or resource behavior is ambiguous or difficult to determine, an agent MUST NOT guess or make an arbitrary decision: it MUST stop and ask the user before editing.
 
+## Open Investigations
+
+- **Silent storage corruption ([#385](https://github.com/isac322/homelab/issues/385))**: When a task involves a `StorageIntegrity*` alert, `storage-canary`, Thanos/Prometheus block or chunk corruption, or data corruption on pillar-csi/rock5bp ZFS volumes, an agent MUST first read the "이어받기" section of `docs/storage-integrity.md` and continue from its current state. After new findings, the agent MUST comment them on #385 and update that section's current state.
+
 ## Kubernetes Resource Management
 
 These rules apply to every Kubernetes workload and every container in this repository, including sidecars, init containers, controllers, DaemonSets, Jobs, and operator-managed resources. Size each container independently. A product may contain workloads in different tiers; for example, an application can be Tier 3 while its database is Tier 2.

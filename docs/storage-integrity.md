@@ -18,6 +18,37 @@
 
 아래 장치는 기존 구조를 바꾸지 않고 손상을 상시 탐지하고 증거를 남기기 위한 것이다.
 
+## 이어받기 (어느 세션이든 여기서 시작)
+
+`StorageIntegrity*` 알림, Thanos/Prometheus 블록 손상, pillar-csi volume의 checksum 불일치를 보면 이 절부터 읽는다. #385의 최신 상태는 이 문서와 [#385 댓글](https://github.com/isac322/homelab/issues/385)에 있다.
+
+**현재 상태 (2026-10-07):** 원인 미확정.
+
+- 배제: ZFS(zvol 직접 쓰기), nvmet target, rock5bp RAM/CPU/DDR. 각각 rock5bp 안에서 약 450 GiB를 써서 0건이었다(위 "지금까지 확인한 것").
+- 남은 후보: 원격 initiator(Linux `nvme_tcp`)와 rock5bp 사이 네트워크. rock5bp의 vendor `r8125` NIC도 여기에 들어간다.
+- 다음 실험: initiator를 원격 노드에 두고 digest 없는 arm과 `hdr_digest,data_digest` arm을 함께 돌린다("원인 좁히기 실험" 끝 문단).
+- 상시 감시: `prometheus/storage-canary`가 rock5bp가 아닌 노드에서 `ssd-ha` volume에 하루 약 120 GiB를 쓰고 검증한다.
+
+**알림을 받으면 순서대로:**
+
+1. 커널 로그를 저장한다(아래 runbook 1). rock5bp의 journal은 nvmet 로그가 많아 약 6일 치만 남는다.
+2. Loki에서 `MISMATCH` 줄을 찾고(runbook 2) evidence를 꺼낸다(runbook 3).
+3. #385 signature와 비교한다(runbook 4). 같은 손상이면, 지금까지 나온 결론과 다른 점(node, digest 여부, 위치)이 무엇인지 본다.
+4. #385에 결과를 댓글로 남기고(runbook 5), 결론이 바뀌면 이 절의 "현재 상태"를 고친다.
+
+**접근 방법:**
+
+| 대상 | 방법 |
+|---|---|
+| Cluster | `kubectl --context homelab-backbone` |
+| Node SSH | `nix eval --raw .#topology.nodes.<host>.sshTarget`가 주는 `bhyoo@<IP>`(rock5bp `192.168.219.6`, rpi5 `.5`, rpi4 `.7`, macmini `.8`, n2p1 `.3`, n2p2 `.4`). Hostname은 해석되지 않는다. |
+| Prometheus/Thanos | `kubectl --context homelab-backbone get --raw "/api/v1/namespaces/prometheus/services/thanos-query:9090/proxy/api/v1/query?query=<urlencoded>"`. Port-forward는 rock5bp kubelet이 불안정할 때 끊긴다. |
+| Loki | `kubectl --context homelab-backbone get --raw "/api/v1/namespaces/loki/services/loki:3100/proxy/loki/api/v1/query_range?query=<urlencoded>&since=24h"` |
+| Canary evidence | PVC `prometheus/storage-canary`의 `/data/evidence` (runbook 3) |
+| 실험 script | rock5bp에서 `tools/storage-canary/zvol-path-experiment.sh` ("원인 좁히기 실험") |
+
+rock5bp는 NAS 상태를 가진 storage node다. 운영 volume, ZFS 설정, nvmet port를 바꾸거나 module을 reload하는 일은 사용자 승인 없이 하지 않는다. 실험은 scratch zvol `hot-data/t385-*`와 NQN `nqn.2026-10.com.example:t385-*`로만 한다.
+
 ## 탐지 장치
 
 ### Canary
@@ -80,15 +111,19 @@ PrometheusRule `prometheus/storage-integrity`(`apps/objects/storage-integrity/pr
 
 ## 손상이 잡혔을 때 (runbook)
 
-### 1. rock5bp kernel log 즉시 확보
+### 1. kernel log 즉시 확보
 
-Node kernel log는 Loki로 가지 않고(Alloy는 pod log만 수집) `dmesg`는 ring buffer라 금방 덮어써진다. 가장 먼저 저장한다.
+Node kernel log는 Loki로 가지 않는다(Alloy는 pod log만 수집). Node journal은 영구 저장이지만 크기 제한으로 오래된 것부터 지워진다. rock5bp는 nvmet 로그가 많아 2026-10-07 기준 약 6일 치만 남았다. rock5bp(target)와 canary pod가 있던 node(initiator, Loki 줄의 `node` label) 둘 다 저장한다. `journalctl -k`는 현재 boot만 보므로 `_TRANSPORT=kernel`을 쓴다.
 
 ```bash
-ssh rock5bp 'sudo dmesg -T' > rock5bp-dmesg-$(date -u +%Y%m%dT%H%M%SZ).log
+since="2026-10-07 09:00"  # 불일치 시각 2시간 전, KST
+for t in 192.168.219.6 <initiator IP>; do
+  ssh -o BatchMode=yes bhyoo@$t "sudo journalctl _TRANSPORT=kernel --since '$since' --no-pager -o short-iso" \
+    > "kernel-$t-$(date -u +%Y%m%dT%H%M%SZ).log" </dev/null
+done
 ```
 
-불일치 시각 전후의 nvmet, nvme-tcp, ZFS, block layer 메시지를 본다.
+불일치 시각 전후의 `nvmet`, `nvme_tcp`/`nvme`, `r8125`/`eth0`, ZFS, block layer 메시지를 본다. 특히 `digest error`, controller reset·reconnect, NIC link 변화를 찾는다.
 
 ### 2. 로그로 요약 확인
 

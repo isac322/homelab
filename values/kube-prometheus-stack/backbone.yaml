@@ -707,7 +707,7 @@ grafana:
                 target: '{{`{{ $labels.alertname }}{{ with $labels.arm }} · {{ . }}{{ end }}{{ with $labels.pod }} · {{ . }}{{ end }}`}}'
                 current_value: '{{`severity={{ $labels.severity }}, firing`}}'
                 threshold: Prometheus StorageIntegrity* 규칙이 firing 상태임
-                description: storage-integrity PrometheusRule이 발행한 알림을 전달합니다. 데이터가 조용히 손상되었을 수 있습니다. storage-canary 로그(msg=MISMATCH)와 /data/evidence 증거, Thanos/Prometheus 로그의 손상 블록을 확인하고 docs/storage-integrity.md 런북을 따르세요.
+                description: 데이터가 조용히 손상되었을 수 있습니다(isac322/homelab#385). 커널 로그가 며칠 안에 지워지므로 바로 확인하세요. 에이전트에게는 이 메시지를 그대로 전달하면 docs/storage-integrity.md의 "이어받기" 절부터 분석을 이어갑니다. https://github.com/isac322/homelab/blob/master/docs/storage-integrity.md
                 summary: 스토리지 데이터 무결성(손상 의심) 알림이 발생했습니다.
               labels:
                 managed_by: gitops
