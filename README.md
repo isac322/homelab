@@ -374,6 +374,8 @@ sleep·retry·실패 무시·fallback으로 인증서 대기를 대신하지 않
 
 Search Console의 cc-lb Domain 속성도 본인 계정에서 발급한 공개 TXT 챌린지를 같은 파일로 관리한다. Google 로그인·속성 확인·sitemap 제출은 승인된 계정으로 처리하며, Google Analytics 스크립트나 기존 GCP ADC 설정을 추가·변경하지 않는다.
 
+Bing에서 Search Console Domain 속성 가져오기가 바로 제공되지 않으면 등록된 같은 사이트의 CNAME 확인 방식을 쓴다. `res-cc-lb-pages.tf`는 Bing 화면이 발급한 상대 alias를 cc-lb 사이트 호스트 아래에 DNS-only CNAME으로 관리한다. 적용 후 공개 DNS가 `verify.bing.com`으로 해석되는지 확인한 뒤 같은 본인 계정에서 Verify하고 sitemap을 제출한다.
+
 `res-cc-lb-web-analytics.tf`는 기존 `cloudflare.web_analytics` provider를 재사용해 cc-lb 사이트와 `PUBLIC_ANALYTICS_TOKEN` Actions 변수를 관리한다. 변수 값은 HTML에 공개되는 site beacon token이며 관리 API 자격증명이 아니다. DNS-only Pages 사이트는 자동 삽입을 사용하지 않고, 사이트 workflow가 public `master` 빌드에만 이 값을 전달한다.
 
 `res-cc-lb-ruleset.tf`는 기본 브랜치에 걸린 기존 `default` ruleset(id `17108968`)을 import해 관리한다. 대상(`~DEFAULT_BRANCH`), `active` 적용, 삭제·non-fast-forward 금지, strict 상태 검사, 생성 시 미적용(`do_not_enforce_on_create`), bypass actor 없음은 기존 설정 그대로 유지하고 required status check 이름만 현재 CI job에 맞춘다. GitHub Actions(app id `15368`) 검사는 `fmt`, `cargo-deny`, `nextest-cov`, `clippy (sqlite)`, `clippy (postgres)`, `e2e`, `promtool`, `guard crate versions`, `positioning metadata parity`, `verify server release artifacts`이고, 리뷰 App(app id `5118831`)의 `issue-agent/review`도 필수다. 예전 검사와의 대응은 다음과 같다. `audit-redaction-lint`는 `fmt`에, `nextest`·`cargo-llvm-cov`·`Postgres integration`은 `nextest-cov`에 합쳐졌고, `matrix`는 `e2e`로 이름이 바뀌었으며, 예전 musl `verify` workflow는 제거됐다. `verify server release artifacts`는 일반 PR에서 skip되며 GitHub은 skip된 필수 검사를 통과로 본다. CI job 이름을 바꾸는 cc-lb 변경은 이 파일의 context도 같은 변경 주기에 갱신해야 하며, 그렇지 않으면 이후 PR의 merge가 막힌다.
