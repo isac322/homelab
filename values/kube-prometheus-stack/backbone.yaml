@@ -13,6 +13,15 @@ nameOverride: shared
 alertmanager:
   enabled: false
 
+## No Alertmanager: Prometheus alerts reach Telegram through the Grafana
+## infra-prometheus-alerts-forwarded rule, so the Alertmanager rule group and
+## the "not connected to Alertmanagers" alert are noise.
+defaultRules:
+  rules:
+    alertmanager: false
+  disabled:
+    PrometheusNotConnectedToAlertmanagers: true
+
 ## Using default values from https://github.com/grafana/helm-charts/blob/main/charts/grafana/values.yaml
 ##
 grafana:
@@ -588,9 +597,11 @@ grafana:
                       type: prometheus
                       uid: prometheus
                     editorMode: code
+                    # Grafana replaces alertname with the rule title, so the
+                    # Prometheus name is kept in source_alertname.
                     expr: >-
-                      ALERTS{cluster="backbone", alertname=~"Pillar.*",
-                      alertstate="firing"}
+                      label_replace(ALERTS{cluster="backbone", alertname=~"Pillar.*",
+                      alertstate="firing"}, "source_alertname", "$1", "alertname", "(.+)")
                     instant: true
                     intervalMs: 60000
                     legendFormat: __auto
@@ -633,7 +644,7 @@ grafana:
               for: 1m
               annotations:
                 display_name: pillar-csi 스토리지 풀 알림
-                target: '{{`{{ $labels.alertname }}{{ with $labels.name }} · {{ . }}{{ end }}`}}'
+                target: '{{`{{ $labels.source_alertname }}{{ with $labels.name }} · {{ . }}{{ end }}`}}'
                 current_value: '{{`severity={{ $labels.severity }}, firing`}}'
                 threshold: Prometheus Pillar* 규칙이 firing 상태임
                 description: pillar-csi PrometheusRule이 발행한 알림을 전달합니다. 스토리지 노드에서 `zfs list -o name,used,avail -r <pool>/k8s`로 가용 공간을 확인하고, 사용하지 않는 볼륨(PVC)을 삭제하거나 thick 예약을 줄이세요.
@@ -659,9 +670,11 @@ grafana:
                       type: prometheus
                       uid: prometheus
                     editorMode: code
+                    # Grafana replaces alertname with the rule title, so the
+                    # Prometheus name is kept in source_alertname.
                     expr: >-
-                      ALERTS{cluster="backbone", alertname=~"StorageIntegrity.*",
-                      alertstate="firing"}
+                      label_replace(ALERTS{cluster="backbone", alertname=~"StorageIntegrity.*",
+                      alertstate="firing"}, "source_alertname", "$1", "alertname", "(.+)")
                     instant: true
                     intervalMs: 60000
                     legendFormat: __auto
@@ -704,11 +717,92 @@ grafana:
               for: 1m
               annotations:
                 display_name: 스토리지 무결성 알림
-                target: '{{`{{ $labels.alertname }}{{ with $labels.arm }} · {{ . }}{{ end }}{{ with $labels.pod }} · {{ . }}{{ end }}`}}'
+                target: '{{`{{ $labels.source_alertname }}{{ with $labels.arm }} · {{ . }}{{ end }}{{ with $labels.pod }} · {{ . }}{{ end }}`}}'
                 current_value: '{{`severity={{ $labels.severity }}, firing`}}'
                 threshold: Prometheus StorageIntegrity* 규칙이 firing 상태임
                 description: 데이터가 조용히 손상되었을 수 있습니다(isac322/homelab#385). 커널 로그가 며칠 안에 지워지므로 바로 확인하세요. 에이전트에게는 이 메시지를 그대로 전달하면 docs/storage-integrity.md의 "이어받기" 절부터 분석을 이어갑니다. https://github.com/isac322/homelab/blob/master/docs/storage-integrity.md
                 summary: 스토리지 데이터 무결성(손상 의심) 알림이 발생했습니다.
+              labels:
+                managed_by: gitops
+              isPaused: false
+
+            # Forwards every other Prometheus alert (kube-prometheus-stack
+            # defaultRules, CNPG, etcd, ...) to Telegram; there is no
+            # Alertmanager. Excluded names: Watchdog/InfoInhibitor are always
+            # firing by design; PrometheusNotConnectedToAlertmanagers is expected
+            # without Alertmanager; Pillar*/StorageIntegrity* have the dedicated
+            # forwarders above; KubePodCrashLooping, NodeMemoryHighUtilization and
+            # NodeFilesystemAlmostOutOfSpace duplicate infra-pod-restarting,
+            # infra-node-memory-high and infra-node-filesystem-high; the
+            # Kube*Overcommit alerts flap (71 firing episodes in 14d).
+            # Grafana replaces the query's alertname with this rule's title, so
+            # the Prometheus name is copied to source_alertname first.
+            - uid: infra-prometheus-alerts-forwarded
+              title: Prometheus alert (forwarded)
+              condition: B
+              data:
+                - refId: A
+                  relativeTimeRange:
+                    from: 300
+                    to: 0
+                  datasourceUid: prometheus
+                  model:
+                    datasource:
+                      type: prometheus
+                      uid: prometheus
+                    editorMode: code
+                    expr: >-
+                      label_replace(ALERTS{cluster="backbone", alertstate="firing",
+                      severity=~"critical|warning",
+                      alertname!~"Watchdog|InfoInhibitor|PrometheusNotConnectedToAlertmanagers|Pillar.*|StorageIntegrity.*|KubePodCrashLooping|NodeMemoryHighUtilization|NodeFilesystemAlmostOutOfSpace|KubeMemoryOvercommit|KubeCPUOvercommit"},
+                      "source_alertname", "$1", "alertname", "(.+)")
+                    instant: true
+                    intervalMs: 60000
+                    legendFormat: __auto
+                    maxDataPoints: 43200
+                    range: false
+                    refId: A
+                - refId: B
+                  relativeTimeRange:
+                    from: 0
+                    to: 0
+                  datasourceUid: __expr__
+                  model:
+                    conditions:
+                      - evaluator:
+                          params:
+                            - 0
+                          type: gt
+                        operator:
+                          type: and
+                        query:
+                          params:
+                            - B
+                        reducer:
+                          params: []
+                          type: last
+                        type:
+                          type: query
+                    datasource:
+                      type: __expr__
+                      uid: __expr__
+                    expression: A
+                    intervalMs: 60000
+                    maxDataPoints: 43200
+                    refId: B
+                    type: threshold
+              # OK (not NoData): a missing ALERTS series means no forwarded alert
+              # is firing, so the steady state must not emit a DatasourceNoData notification.
+              noDataState: OK
+              execErrState: Error
+              for: 1m
+              annotations:
+                display_name: '{{`Prometheus 알림 · {{ $labels.source_alertname }}`}}'
+                target: '{{`{{ $labels.source_alertname }}{{ with $labels.namespace }} · {{ . }}{{ end }}{{ with $labels.job }} · {{ . }}{{ end }}{{ with $labels.pod }} · {{ . }}{{ end }}`}}'
+                current_value: '{{`severity={{ $labels.severity }}, firing`}}'
+                threshold: Prometheus 규칙의 for 조건을 넘겨 firing 상태임
+                description: '{{`Prometheus 규칙 {{ $labels.source_alertname }}이 발행한 알림을 전달합니다. 규칙 설명과 런북은 https://prometheus.bhyoo.com/alerts 에서 확인하세요.`}}'
+                summary: Prometheus 알림이 발생했습니다.
               labels:
                 managed_by: gitops
               isPaused: false
@@ -1139,6 +1233,53 @@ grafana:
   grafana.ini:
     date_formats:
       default_timezone: Asia/Seoul
+    # Literal URL: without it Grafana builds http://grafana.bhyoo.com:3000/
+    # links (Telegram GeneratorURL/SilenceURL), which the HTTPS-only gateway
+    # does not serve.
+    server:
+      root_url: https://grafana.bhyoo.com/
+    # TLS terminates at the gateway, so browsers only ever see HTTPS.
+    security:
+      cookie_secure: true
+      disable_gravatar: true
+    analytics:
+      reporting_enabled: false
+      check_for_updates: false
+      check_for_plugin_updates: false
+      feedback_links_enabled: false
+    snapshots:
+      external_enabled: false
+    # Quiet the two noisiest info loggers without hiding ngalert state lines.
+    log:
+      filters: 'plugin.prometheus:warn plugins.update.checker:warn'
+    # WAL mode avoids the SQLITE_BUSY "database is locked" write contention.
+    database:
+      wal: true
+
+  # Dashboards, rules, datasources and contact points are provisioned from
+  # git; the PVC keeps alert instance state, the notification log, silences
+  # and state-history annotations across restarts, so firing alerts are not
+  # re-sent on every rollout.
+  persistence:
+    enabled: true
+    type: pvc
+    storageClassName: ssd-ha
+    accessModes:
+      - ReadWriteOnce
+    size: 2Gi
+  # The volume is RWO, so the old pod must stop before the new one starts.
+  # maxSurge 0 does that with one replica; switching type to Recreate would
+  # fail server-side apply because the API server keeps the defaulted
+  # rollingUpdate block.
+  deploymentStrategy:
+    type: RollingUpdate
+    rollingUpdate:
+      maxSurge: 0
+      maxUnavailable: 1
+  # The pod's fsGroup 472 already makes the new volume writable; the chart's
+  # chown init container would add a busybox image pinned only by tag.
+  initChownData:
+    enabled: false
 
   ## Timezone for the default dashboards
   ## Other options are: browser or a specific timezone, i.e. Europe/Luxembourg
@@ -1276,10 +1417,6 @@ grafana:
         gnetId: 1860
         revision: 42
         datasource: Prometheus
-      traefik:
-        gnetId: 17346
-        revision: 9
-        datasource: Prometheus
       argocd:
         gnetId: 19993
         revision: 7
@@ -1300,10 +1437,6 @@ grafana:
         gnetId: 23969
         revision: 1
         datasource: Prometheus
-      valkey:
-        gnetId: 763
-        revision: 6
-        datasource: Prometheus
       thanos-query-frontend:
         url: https://raw.githubusercontent.com/thanos-io/thanos/main/examples/dashboards/query-frontend.json
         datasource: Prometheus
@@ -1316,6 +1449,14 @@ grafana:
       thanos-store:
         url: https://raw.githubusercontent.com/thanos-io/thanos/main/examples/dashboards/store.json
         datasource: Prometheus
+
+## Only Linux nodes run node-exporter; skip the AIX/Darwin dashboards.
+nodeExporter:
+  operatingSystems:
+    aix:
+      enabled: false
+    darwin:
+      enabled: false
 
 ## In K3s, apiserver /metrics exposes kubelet metrics (single binary).
 ## Drop only kubelet-specific metrics (already scraped via kubelet job).
@@ -1352,6 +1493,63 @@ kubelet:
   serviceMonitor:
     attachMetadata:
       node: true
+
+    # up is synthetic, so the scrapeClass metricRelabelings never label it
+    # with cluster and KubeletDown's "unless on (cluster)" join always fires.
+    # Setting this key replaces the chart default, so its metrics_path
+    # relabeling is repeated here.
+    relabelings:
+      - action: replace
+        sourceLabels: [__metrics_path__]
+        targetLabel: metrics_path
+      - action: replace
+        targetLabel: cluster
+        replacement: backbone
+
+    cAdvisorInterval: 30s
+    # Chart defaults (91.8.2) copied verbatim because setting this key replaces
+    # them; re-sync on chart upgrades. The last rule drops cAdvisor series that
+    # no loaded rule or provisioned dashboard reads.
+    cAdvisorMetricRelabelings:
+      # Drop less useful container CPU metrics.
+      - sourceLabels: [__name__]
+        action: drop
+        regex: 'container_cpu_(cfs_throttled_seconds_total|load_average_10s|system_seconds_total|user_seconds_total)'
+      # Drop less useful container / always zero filesystem metrics.
+      - sourceLabels: [__name__]
+        action: drop
+        regex: 'container_fs_(io_current|io_time_seconds_total|io_time_weighted_seconds_total|reads_merged_total|sector_reads_total|sector_writes_total|writes_merged_total)'
+      # Drop less useful / always zero container memory metrics.
+      - sourceLabels: [__name__]
+        action: drop
+        regex: 'container_memory_(mapped_file|swap)'
+      # Drop less useful container process metrics.
+      - sourceLabels: [__name__]
+        action: drop
+        regex: 'container_(file_descriptors|tasks_state|threads_max)'
+      # Drop container_memory_failures_total{scope="hierarchy"} metrics,
+      # we only need the container scope.
+      - sourceLabels: [__name__, scope]
+        action: drop
+        regex: 'container_memory_failures_total;hierarchy'
+      # Drop container_network_... metrics that match various interfaces that
+      # correspond to CNI and similar interfaces. This avoids capturing network
+      # metrics for host network containers.
+      - sourceLabels: [__name__, interface]
+        action: drop
+        regex: 'container_network_.*;(cali|cilium|cni|lxc|nodelocaldns|tunl).*'
+      # Drop container spec metrics that overlap with kube-state-metrics.
+      - sourceLabels: [__name__]
+        action: drop
+        regex: 'container_spec.*'
+      # Drop cgroup metrics with no pod.
+      - sourceLabels: [id, pod]
+        action: drop
+        regex: '.+;'
+      # Local addition: unused by every rule and dashboard.
+      - sourceLabels: [__name__]
+        action: drop
+        regex: 'container_(blkio_device_usage_total|memory_failures_total|last_seen|memory_kernel_usage|health_state|cpu_load_d_average_10s|memory_max_usage_bytes|memory_failcnt)'
 
     ## In K3s, kubelet /metrics exposes all control-plane metrics (single binary).
     ## Drop non-kubelet metrics to avoid duplication with apiserver/scheduler/proxy scrapes.
@@ -1502,6 +1700,18 @@ prometheus:
           namespace: ingress-ctrl
           sectionName: https
 
+  # Expose and scrape the Thanos sidecar so the Thanos/Sidecar dashboard has
+  # data. Its queries select job=~".*thanos-sidecar.*", so the job label is
+  # pinned instead of using the generated Service name.
+  thanosService:
+    enabled: true
+  thanosServiceMonitor:
+    enabled: true
+    relabelings:
+      - targetLabel: job
+        replacement: thanos-sidecar
+        action: replace
+
   prometheusSpec:
     podMonitorSelectorNilUsesHelmValues: false
     serviceMonitorSelectorNilUsesHelmValues: false
@@ -1524,9 +1734,9 @@ prometheus:
     externalLabels:
       cluster: backbone
 
-    ## enable --web.enable-remote-write-receiver flag on prometheus-server
-    ##
-    enableRemoteWriteReceiver: true
+    ## Disabled: 0 remote-write requests in 14d, and the receiver is
+    ## unauthenticated and reachable over the WireGuard overlay.
+    enableRemoteWriteReceiver: false
 
     ## How long to retain metrics
     ##
@@ -1549,7 +1759,8 @@ prometheus:
     ## Allow out-of-order/out-of-bounds samples ingested into Prometheus for a specified duration
     ## See https://prometheus.io/docs/prometheus/latest/configuration/configuration/#tsdb
     tsdb:
-      ## Allow delayed remote-write samples to arrive after transient network partitions
+      ## Only absorbs cAdvisor samples with explicit timestamps that arrive
+      ## late during kubelet flaps; remote-write is disabled.
       outOfOrderTimeWindow: 1h
 
     ## Resource limits & requests
@@ -1568,6 +1779,11 @@ prometheus:
                   operator: In
                   values:
                     - rock5bp
+    # Sized on RSS, not working set: the working set also counts TSDB page
+    # cache, which fills whatever the limit leaves free and is reclaimed under
+    # pressure. 14d container_memory_rss: P50 1255Mi, P99 1508Mi, max 1614Mi;
+    # Go heap max 1563Mi. Request ~1.22x RSS P50. The limit stays well above
+    # RSS so mmapped TSDB chunks can stay cached (GOMEMLIMIT is 0.9x limit).
     resources:
       requests:
         cpu: 250m
