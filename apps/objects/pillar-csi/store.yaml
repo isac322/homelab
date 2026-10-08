@@ -69,3 +69,8 @@ spec:
       # their filesystems shut down.
       ctrlLossTmo: 1200
       reconnectDelay: 5
+      # CRC32C header and data digests on every NVMe/TCP PDU, so corruption on
+      # the transport path is detected instead of landing on the zvol
+      # (homelab#385). Applies to a volume from its next ControllerPublish.
+      hdrDigest: true
+      dataDigest: true
