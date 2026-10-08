@@ -141,3 +141,8 @@ import {
   to = github_actions_repository_permissions.cc_lb
   id = "cc-lb"
 }
+
+import {
+  to = github_repository_ruleset.cc_lb_default
+  id = "cc-lb:17108968"
+}
