@@ -22,12 +22,16 @@
 
 `StorageIntegrity*` 알림, Thanos/Prometheus 블록 손상, pillar-csi volume의 checksum 불일치를 보면 이 절부터 읽는다. #385의 최신 상태는 이 문서와 [#385 댓글](https://github.com/isac322/homelab/issues/385)에 있다.
 
-**현재 상태 (2026-10-07):** 원인 미확정.
+**현재 상태 (2026-10-08):** 원인 미확정. 손상은 rock5bp NIC(RTL8125B + out-of-tree `r8125`) 수신 쪽에서 생긴다고 가장 강하게 의심한다.
 
-- 배제: ZFS(zvol 직접 쓰기), nvmet target, rock5bp RAM/CPU/DDR. 각각 rock5bp 안에서 약 450 GiB를 써서 0건이었다(위 "지금까지 확인한 것").
-- 남은 후보: 원격 initiator(Linux `nvme_tcp`)와 rock5bp 사이 네트워크. rock5bp의 vendor `r8125` NIC도 여기에 들어간다.
-- 다음 실험: initiator를 원격 노드에 두고 digest 없는 arm과 `hdr_digest,data_digest` arm을 함께 돌린다("원인 좁히기 실험" 끝 문단).
-- 상시 감시: `prometheus/storage-canary`가 rock5bp가 아닌 노드에서 `ssd-ha` volume에 하루 약 120 GiB를 쓰고 검증한다.
+- 2026-10-08 06:00 KST: iSCSI(rpi5 `iscsi_tcp` → rock5bp LIO → `nas` HDD zvol) 경로에서도 같은 손상이 났다. versitygw가 받을 때 계산한 CRC64가 원본과 같았으므로 손상은 그 뒤에 생겼다. pool, 프로토콜, initiator가 달라도 같은 모양이다.
+- 모든 사건은 TCP checksum으로는 잡히지 않는 형태다. 짝수 바이트 이동이고 빠지는 바이트와 채워지는 바이트가 모두 0이다. 그래서 checksum이 손상 뒤에 계산되거나 검사되는 구간(수신 NIC 내부, 또는 FCS를 다시 계산하는 스위치)이 의심된다. 반대로 checksum 검사 뒤에서 생기는 손상(ZFS, target 코드, DMA 이후 메모리)이라면 다른 모양도 살아남아야 한다.
+- 배제(코드·증거 확인): ZFS 2.4.1 zvol 경로, LIO·nvmet target과 6.1.84 TCP·GRO 경로(사건과 맞는 stable 수정 없음, vendor delta 없음), initiator 소프트웨어, 송신 NIC 3종, 케이블·PHY(FCS 오류 0), PCIe 링크(LCRC·RASDES 카운터 0), arm64 DMA 코드, Cilium BPF, 온도·전원.
+- 근거가 약해 남은 것: 스위치 내부 메모리, rock5bp DDR(ECC 없음). 둘 다 rock5bp 안 실험에서 0건이라 가능성은 낮다.
+- 가장 유력: RTL8125B 수신 경로. 발생률이 `r8125` 버전만 바뀐 2026-07-04에 50–150배 떨어졌다. 수신 ring(256칸)은 시간당 약 540번 바닥나고 `rx_mac_error`도 난다. 그러나 이 모양을 만드는 driver 코드는 찾지 못했다.
+- 조치: pillar-csi NVMe/TCP는 header·data digest를 켰다(#411). iSCSI(democratic-csi `hdd-ha-xfs`, versitygw-hdd)는 아직 digest가 없어 보호되지 않는다.
+- 다음 실험(승인 필요): (1) 원격 initiator에서 digest 켠 arm과 끈 arm을 함께 돌려 digest 오류가 나는지 본다. (2) rock5bp `r8125`를 in-tree `r8169`로 바꾸고 같은 부하를 준다. (3) 스위치를 빼고 직결한다.
+- 상시 감시: `prometheus/storage-canary`가 rock5bp가 아닌 노드에서 `ssd-ha` volume에 하루 약 120 GiB를 쓰고 검증한다. NVMe/TCP digest가 켜진 뒤에는 canary 대신 digest 오류(`dmesg`의 `digest error`)로 드러날 수 있다.
 
 **알림을 받으면 순서대로:**
 
