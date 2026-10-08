@@ -31,3 +31,15 @@ resource "cloudflare_dns_record" "cc_lb_google_site_verification" {
   ttl     = 1
   comment = "Google Search Console ownership verification for cc-lb.bhyoo.com"
 }
+
+# Bing issues a relative alias label for the registered cc-lb site.
+# Keep the public ownership proof under that hostname, not the zone apex.
+resource "cloudflare_dns_record" "cc_lb_bing_verification" {
+  zone_id = var.cloudflare_main_zone_id
+  name    = "92fd7881cdd0b3de3ba7cb4466447323.${local.cc_lb_pages_cname}"
+  content = "verify.bing.com"
+  type    = "CNAME"
+  ttl     = 1
+  proxied = false
+  comment = "Bing Webmaster Tools ownership verification for cc-lb.bhyoo.com"
+}
