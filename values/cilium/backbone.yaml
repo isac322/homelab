@@ -127,8 +127,11 @@ hubble:
       - tcp
       - flow
       - httpV2:exemplars=true;labelsContext=source_ip,source_namespace,source_workload,destination_ip,destination_namespace,destination_workload,traffic_direction
+    # 30s like the global scrape interval: no dashboard or rule reads hubble
+    # metrics at sub-30s resolution.
     serviceMonitor:
       enabled: true
+      interval: "30s"
   relay:
     enabled: true
     replicas: 1
@@ -206,6 +209,9 @@ prometheus:
   serviceMonitor:
     enabled: true
     trustCRDsExist: true    # ServiceMonitor CRD 사전 체크 우회 (이미 설치됨)
+    # 30s like the global scrape interval: no dashboard or rule reads
+    # cilium-agent metrics at sub-30s resolution.
+    interval: "30s"
 
 # ─── 명시적 비활성 (기본값에 의존하지 않고 의도 명확화) ───
 

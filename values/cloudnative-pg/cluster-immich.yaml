@@ -48,6 +48,10 @@ cluster:
         - CNPGClusterLogicalReplicationErrors
         - CNPGClusterLogicalReplicationStoppedCritical
         - CNPGClusterLogicalReplicationStopped
+        # instances: 1 by design, so a standby can never exist and these
+        # two alerts would always fire.
+        - CNPGClusterHACritical
+        - CNPGClusterHAWarning
 
 backups:
   enabled: true

@@ -6,6 +6,8 @@ image:
   registry: quay.io
   repository: thanos/thanos
   tag: v0.42.4
+  # Same digest as the kube-prometheus-stack sidecar image.
+  digest: sha256:b567818fe608067eb0f1d7c2c4fe361e7ad83c8a256234c97685f1d0bf670cc8
 
 metrics:
   enabled: true
@@ -22,16 +24,17 @@ query:
   replicaCount: 1
   stores:
     - dnssrv+_grpc._tcp.prometheus-operated.prometheus.svc.cluster.local
-  replicaLabels:
+  replicaLabel:
     - prometheus_replica
   extraFlags:
     - --query.auto-downsampling
+  # 14d working set: P50 40Mi; heavy-query peak 471Mi.
   resources:
     requests:
       cpu: 50m
-      memory: 96Mi
+      memory: 48Mi
     limits:
-      memory: 512Mi
+      memory: 576Mi
 
 queryFrontend:
   enabled: true
@@ -45,12 +48,14 @@ queryFrontend:
     - --cache-compression-type=snappy
     - --query-range.response-cache-config={"type":"in-memory","config":{"max-size":"256MB","max-item-size":"10MB","validity":"6h"}}
     - --labels.response-cache-config={"type":"in-memory","config":{"max-size":"32MB","max-item-size":"1MB","validity":"6h"}}
+  # 14d working set: P50 32Mi. The limit leaves room for the in-memory caches
+  # above (256MB range + 32MB labels) to fill plus Go heap headroom.
   resources:
     requests:
       cpu: 10m
-      memory: 56Mi
+      memory: 40Mi
     limits:
-      memory: 512Mi
+      memory: 640Mi
 
 storegateway:
   enabled: true
@@ -68,12 +73,14 @@ storegateway:
                 operator: In
                 values:
                   - rock5bp
+  # 14d working set: P50 377Mi, P99 694Mi, peak 935Mi (initial sync on
+  # 2026-10-01).
   resources:
     requests:
       cpu: 30m
-      memory: 1280Mi
+      memory: 448Mi
     limits:
-      memory: 4Gi
+      memory: 1152Mi
   # data-thanos-storegateway-0 was created by democratic-csi and imported
   # into pillar-csi in place on 2026-10-01.
   persistence:
@@ -102,15 +109,15 @@ compactor:
                 operator: In
                 values:
                   - macmini
+  # 14d working set: P50 41Mi, compaction peak 1667Mi. The backlog is cleared
+  # (no pending compactions, not halted), so the 2-core catch-up limit is gone;
+  # the CPU limit is the approved Thanos compactor exception.
   resources:
     requests:
       cpu: 120m
-      memory: 200Mi
-    # Temporary: the compactor halted from 2026-03 to 2026-10 and must catch
-    # up on months of blocks; at 256Mi/500m it stalled or crawled through the
-    # backlog. Resize from the observed peak once the backlog is cleared.
+      memory: 48Mi
     limits:
-      cpu: "2"
+      cpu: 500m
       memory: 2Gi
   # Created by democratic-csi and imported into pillar-csi in place on
   # 2026-10-01. A 2-week compaction downloads its source blocks (~15GiB here)

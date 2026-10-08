@@ -56,6 +56,7 @@ let
     ${lib.optionalString k3s "-A HOMELAB_TCP -s ${localNetwork} -p tcp --dport 9100 -j ACCEPT\n-A HOMELAB_TCP -s ${podNetwork} -p tcp --dport 9100 -j ACCEPT"}
     ${lib.optionalString k3s "-A HOMELAB_TCP -s ${localNetwork} -p tcp --dport 4240 -j ACCEPT\n-A HOMELAB_TCP -s ${localNetwork} -p tcp --dport 4244:4245 -j ACCEPT\n-A HOMELAB_TCP -s ${podNetwork} -p tcp --dport 4244:4245 -j ACCEPT\n-A HOMELAB_TCP -s ${localNetwork} -p tcp --dport 9962 -j ACCEPT\n-A HOMELAB_TCP -s ${podNetwork} -p tcp --dport 9962 -j ACCEPT\n-A HOMELAB_TCP -s ${localNetwork} -p tcp --dport 9965 -j ACCEPT\n-A HOMELAB_TCP -s ${podNetwork} -p tcp --dport 9965 -j ACCEPT"}
     ${lib.optionalString server "-A HOMELAB_TCP -s ${localNetwork} -p tcp --dport 2379:2381 -j ACCEPT"}
+    ${lib.optionalString server "-A HOMELAB_TCP -s ${podNetwork} -p tcp --dport 2381 -j ACCEPT"}
     ${lib.optionalString hostConfig.iscsiServer "-A HOMELAB_TCP -s ${localNetwork} -p tcp --dport 3260 -j ACCEPT"}
     ${lib.concatMapStringsSep "\n" (
       source: "-A HOMELAB_TCP -s ${source} -p tcp --dport 445 -j ACCEPT"
