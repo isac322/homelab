@@ -598,10 +598,14 @@ grafana:
                       uid: prometheus
                     editorMode: code
                     # Grafana replaces alertname with the rule title, so the
-                    # Prometheus name is kept in source_alertname.
+                    # Prometheus name is kept in source_alertname. The `or`
+                    # sentinel (value 0, never firing) is present whenever
+                    # Prometheus is up, so an empty result means Prometheus is
+                    # unreachable, not "no alerts" (see noDataState).
                     expr: >-
                       label_replace(ALERTS{cluster="backbone", alertname=~"Pillar.*",
                       alertstate="firing"}, "source_alertname", "$1", "alertname", "(.+)")
+                      or on() (0 * max(up{job="shared-prometheus"}))
                     instant: true
                     intervalMs: 60000
                     legendFormat: __auto
@@ -637,10 +641,11 @@ grafana:
                     maxDataPoints: 43200
                     refId: B
                     type: threshold
-              # OK (not NoData): a missing ALERTS series means no Pillar alert is firing,
-              # so the steady state must not emit a DatasourceNoData notification.
-              noDataState: OK
-              execErrState: Error
+              # KeepLast: the query is empty only while Prometheus (and its
+              # sidecar) is unreachable; keep the forwarded alerts as they were
+              # instead of resolving them all and re-firing them on recovery.
+              noDataState: KeepLast
+              execErrState: KeepLast
               for: 1m
               annotations:
                 display_name: pillar-csi 스토리지 풀 알림
@@ -671,10 +676,14 @@ grafana:
                       uid: prometheus
                     editorMode: code
                     # Grafana replaces alertname with the rule title, so the
-                    # Prometheus name is kept in source_alertname.
+                    # Prometheus name is kept in source_alertname. The `or`
+                    # sentinel (value 0, never firing) is present whenever
+                    # Prometheus is up, so an empty result means Prometheus is
+                    # unreachable, not "no alerts" (see noDataState).
                     expr: >-
                       label_replace(ALERTS{cluster="backbone", alertname=~"StorageIntegrity.*",
                       alertstate="firing"}, "source_alertname", "$1", "alertname", "(.+)")
+                      or on() (0 * max(up{job="shared-prometheus"}))
                     instant: true
                     intervalMs: 60000
                     legendFormat: __auto
@@ -710,10 +719,11 @@ grafana:
                     maxDataPoints: 43200
                     refId: B
                     type: threshold
-              # OK (not NoData): a missing ALERTS series means no StorageIntegrity alert
-              # is firing, so the steady state must not emit a DatasourceNoData notification.
-              noDataState: OK
-              execErrState: Error
+              # KeepLast: the query is empty only while Prometheus (and its
+              # sidecar) is unreachable; keep the forwarded alerts as they were
+              # instead of resolving them all and re-firing them on recovery.
+              noDataState: KeepLast
+              execErrState: KeepLast
               for: 1m
               annotations:
                 display_name: 스토리지 무결성 알림
@@ -736,7 +746,8 @@ grafana:
             # infra-node-memory-high and infra-node-filesystem-high; the
             # Kube*Overcommit alerts flap (71 firing episodes in 14d).
             # Grafana replaces the query's alertname with this rule's title, so
-            # the Prometheus name is copied to source_alertname first.
+            # the Prometheus name is copied to source_alertname first. The `or`
+            # sentinel works as in infra-pillar-pool-alerts.
             - uid: infra-prometheus-alerts-forwarded
               title: Prometheus alert (forwarded)
               condition: B
@@ -756,6 +767,7 @@ grafana:
                       severity=~"critical|warning",
                       alertname!~"Watchdog|InfoInhibitor|PrometheusNotConnectedToAlertmanagers|Pillar.*|StorageIntegrity.*|KubePodCrashLooping|NodeMemoryHighUtilization|NodeFilesystemAlmostOutOfSpace|KubeMemoryOvercommit|KubeCPUOvercommit"},
                       "source_alertname", "$1", "alertname", "(.+)")
+                      or on() (0 * max(up{job="shared-prometheus"}))
                     instant: true
                     intervalMs: 60000
                     legendFormat: __auto
@@ -791,17 +803,16 @@ grafana:
                     maxDataPoints: 43200
                     refId: B
                     type: threshold
-              # OK (not NoData): a missing ALERTS series means no forwarded alert
-              # is firing, so the steady state must not emit a DatasourceNoData notification.
-              noDataState: OK
-              execErrState: Error
+              # KeepLast: see infra-pillar-pool-alerts.
+              noDataState: KeepLast
+              execErrState: KeepLast
               for: 1m
               annotations:
                 display_name: '{{`Prometheus 알림 · {{ $labels.source_alertname }}`}}'
                 target: '{{`{{ $labels.source_alertname }}{{ with $labels.namespace }} · {{ . }}{{ end }}{{ with $labels.job }} · {{ . }}{{ end }}{{ with $labels.pod }} · {{ . }}{{ end }}`}}'
                 current_value: '{{`severity={{ $labels.severity }}, firing`}}'
                 threshold: Prometheus 규칙의 for 조건을 넘겨 firing 상태임
-                description: '{{`Prometheus 규칙 {{ $labels.source_alertname }}이 발행한 알림을 전달합니다. 규칙 설명과 런북은 https://prometheus.bhyoo.com/alerts 에서 확인하세요.`}}'
+                description: '{{`Prometheus 규칙 {{ $labels.source_alertname }}이 발행한 알림을 전달합니다. 규칙 설명과 런북: https://prometheus.bhyoo.com/alerts?search={{ $labels.source_alertname }}`}}'
                 summary: Prometheus 알림이 발생했습니다.
               labels:
                 managed_by: gitops
@@ -1321,9 +1332,11 @@ grafana:
   resources:
     requests:
       cpu: 150m
-      memory: 384Mi
+      # 14d working set P50 293Mi, P99 418Mi, max 465Mi (AGENTS.md: request
+      # 1.20x P50, limit 1.24x max; the old 480Mi limit was 1.03x max).
+      memory: 352Mi
     limits:
-      memory: 480Mi
+      memory: 576Mi
   downloadDashboards:
     resources:
       requests:
@@ -1381,6 +1394,13 @@ grafana:
         httpMethod: POST
         timeInterval: 30s
         timeout: 120
+        # Lets Grafana use the Thanos-specific API behaviour.
+        prometheusType: Thanos
+        # Auto-refreshing dashboards re-query only the newest part of the
+        # range; 10m overlap re-reads samples that land late (OOO window 1h,
+        # but in practice only cAdvisor during kubelet flaps).
+        incrementalQuerying: true
+        incrementalQueryOverlapWindow: 10m
     - name: Loki
       uid: loki
       type: loki
@@ -1585,9 +1605,12 @@ kube-state-metrics:
   resources:
     requests:
       cpu: 15m
-      memory: 72Mi
+      # Since 2026-10-04 the daily P50 is 83-86Mi (raw 14d max 117Mi), so the
+      # older 35Mi regime is ignored. AGENTS.md: request 1.22x P50, limit
+      # 1.23x max (the old 120Mi limit was 0.98x max).
+      memory: 104Mi
     limits:
-      memory: 120Mi
+      memory: 144Mi
 
   # PillarStore.status.capacity is the freshest capacity view reachable on
   # the pod network (the controller syncs it from the agent every ~30s).

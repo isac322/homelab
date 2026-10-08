@@ -150,6 +150,10 @@ monitoring:
     enabled: false
   serviceMonitor:
     enabled: true
+    # The chart's 15s exists for its 1m-rate recording rules, which are
+    # disabled above; no rule in this repo reads Loki metrics over a window
+    # under 5m.
+    interval: 30s
 
 # Chart 13.x defaults abort_if_cluster_join_fails=true for memberlist; combined
 # with a headless Service that filters NotReady endpoints, a single-replica
