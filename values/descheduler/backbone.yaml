@@ -1,4 +1,8 @@
 schedule: "*/15 * * * *"
+# Delete finished Jobs after 1 day. failedJobsHistoryLimit alone keeps the last
+# failed Job until a newer one fails, so KubeJobFailed fired for 165 days
+# after a single failure on 2026-04-25.
+ttlSecondsAfterFinished: 86400
 
 deschedulerPolicy:
   metricsCollector:
