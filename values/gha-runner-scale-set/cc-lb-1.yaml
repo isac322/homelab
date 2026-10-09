@@ -11,12 +11,10 @@ controllerServiceAccount:
 
 containerMode:
   type: kubernetes
-  kubernetesModeWorkVolumeClaim:
-    accessModes: ["ReadWriteOnce"]
-    storageClassName: local-path
-    resources:
-      requests:
-        storage: 10Gi
+  # The work volume is the `work` entry under template.spec.volumes below; the
+  # chart renders a user-defined `work` volume verbatim, while
+  # kubernetesModeWorkVolumeClaim lands only under volumeClaimTemplate.spec and
+  # cannot carry the pillar-csi annotations.
 
 # cargo-deny and other rustc-install jobs.
 # No maxRunners: ARC omits the cap and scales with the GitHub queue.
@@ -37,6 +35,29 @@ template:
                     - macmini
                     - rock5bp
     volumes:
+      # Thick zvol on pillar-csi `ssd-single` (rock5bp `fast` pool) attached over
+      # NVMe/TCP, replacing local-path: local-path consumed the node rootfs with
+      # no size enforcement, and on 2026-10-09 concurrent cargo builds pushed
+      # rock5bp nodefs to DiskPressure and evicted job pods. 96Gi covers observed
+      # 22-91GiB per job (kubelet_volume_stats_used_bytes, 30d); thick
+      # reservations cap live volumes at ~6 on ~587GiB pool-free, so a queue
+      # storm parks extra runners as Pending instead of draining the pool.
+      # lz4 + default 8K volblocksize; mkfs -K skips the discard pass.
+      - name: work
+        ephemeral:
+          volumeClaimTemplate:
+            metadata:
+              annotations:
+                pillar-csi.bhyoo.com/backend: |
+                  zfs: {properties: {compression: lz4}}
+                pillar-csi.bhyoo.com/filesystem: |
+                  mkfsOptions: ["-K"]
+            spec:
+              accessModes: ["ReadWriteOnce"]
+              storageClassName: ssd-single
+              resources:
+                requests:
+                  storage: 96Gi
       - name: workflow-pod-templates
         configMap:
           name: workflow-pod-templates
