@@ -10,8 +10,11 @@
 # allocatable) for these jobs. This list must match each scale set's runner
 # affinity because job pods share the runner's ReadWriteOnce work volume.
 # cpu limits bound the worst case (2026-10-04 an unbounded cargo clippy pod
-# drove rock5bp to load 48); requests stay small so job pods schedule next to
-# their runner pod.
+# drove rock5bp to load 48). Requests are explicitly zero: the hook pins job
+# pods to the runner's node via nodeName, bypassing the scheduler, and the
+# runner pod's own requests already reserve the job's budget. Non-zero
+# requests were double-counted and made kubelet reject the pod with
+# OutOfmemory on a fully reserved node (2026-10-09).
 # Add a `$<service>` entry here whenever a cc-lb workflow adds a service.
 # The hook never copies the runner container's env into the job container, so
 # every `$job` entry must load the same sccache-s3 Secret the runner uses;
@@ -42,16 +45,16 @@ data:
                 optional: true
           resources:
             requests:
-              cpu: 200m
-              memory: 512Mi
+              cpu: "0"
+              memory: "0"
             limits:
               cpu: "4"
               memory: 6Gi
         - name: $postgres
           resources:
             requests:
-              cpu: 100m
-              memory: 256Mi
+              cpu: "0"
+              memory: "0"
             limits:
               cpu: "2"
               memory: 2Gi
@@ -75,16 +78,16 @@ data:
                 optional: true
           resources:
             requests:
-              cpu: 200m
-              memory: 512Mi
+              cpu: "0"
+              memory: "0"
             limits:
               cpu: "2"
               memory: 4Gi
         - name: $postgres
           resources:
             requests:
-              cpu: 100m
-              memory: 256Mi
+              cpu: "0"
+              memory: "0"
             limits:
               cpu: "2"
               memory: 2Gi
@@ -108,16 +111,16 @@ data:
                 optional: true
           resources:
             requests:
-              cpu: 100m
-              memory: 256Mi
+              cpu: "0"
+              memory: "0"
             limits:
               cpu: "1"
               memory: 2Gi
         - name: $postgres
           resources:
             requests:
-              cpu: 100m
-              memory: 256Mi
+              cpu: "0"
+              memory: "0"
             limits:
               cpu: "1"
               memory: 1Gi
@@ -141,16 +144,16 @@ data:
                 optional: true
           resources:
             requests:
-              cpu: 100m
-              memory: 256Mi
+              cpu: "0"
+              memory: "0"
             limits:
               cpu: "1"
               memory: 2Gi
         - name: $postgres
           resources:
             requests:
-              cpu: 100m
-              memory: 256Mi
+              cpu: "0"
+              memory: "0"
             limits:
               cpu: "1"
               memory: 1Gi
