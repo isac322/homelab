@@ -9,7 +9,7 @@ controllers:
     containers:
       main:
         image:
-          tag: v3.2.4@sha256:d317916b28090c33eb36b308464ea391f8b7df1d850fcfea227a39ec879718c2
+          tag: v3.3.1@sha256:db996e352359771c6a3db121a0ed8761516b22f727fc092a0f46dcfef82c1bc1
         env:
           REDIS_HOSTNAME: '{{ printf "%s-valkey" .Release.Name }}'
           # Add the env vars to connect to your database here.
@@ -214,9 +214,15 @@ server:
       enabled: true
       type: hostPath
       hostPath: /usr/lib/aarch64-linux-gnu/libwayland-server.so.0
-    # media.js is a verbatim copy of immich v3.2.2 dist/utils/media.js with only
-    # the tonemap range/peak strings changed. It is valid ONLY for the server version
-    # pinned at line 12 (v3.2.2). Regenerate this ConfigMap whenever that tag is bumped.
+    # These files are verbatim copies of immich v3.3.1 server dist JS with only the
+    # local RKMPP/OpenCL tonemap and frame-cropping deltas applied (see the
+    # media-patch-configmap.yaml commit history and the PR #30022 port). They are
+    # valid ONLY for the server image tag pinned in this values file (v3.3.1).
+    # To regenerate: extract the six dist files from
+    # ghcr.io/immich-app/immich-server:<tag> (docker create --platform linux/arm64
+    # + docker cp), apply the local delta via git merge-file (base = old upstream
+    # tag, theirs = previous patched copies), node --check each file, then re-embed
+    # in apps/objects/immich/media-patch-configmap.yaml.
     patch-media:
       enabled: true
       type: configMap
@@ -249,10 +255,13 @@ machine-learning:
         main:
           image:
             repository: ghcr.io/isac322/immich-machine-learning
-            # Keep in sync with persistence.patched-models.volumeSpec.image.reference
-            tag: v3.2.4-rknn@sha256:a61aa0d745a8a0cc1d5bb3afcf63ab9a1446bc8811fa4069a8e458e93b18b50f
+            tag: v3.3.1-rknn@sha256:8d859332aa0bfdcd7262706de4c4a3b410cb012fa5921731902d8ef6d87a9e30
           env:
             MACHINE_LEARNING_RKNN_THREADS: 3
+            # Upstream v2 models fold the XLM-R position-id CumSum away at export
+            # time, so nllb-clip textual loads on librknnrt without locally
+            # patched models.
+            MACHINE_LEARNING_MODEL_REVISION: v2
           securityContext:
             appArmorProfile:
               type: Unconfined
@@ -297,23 +306,6 @@ machine-learning:
         main:
           main:
             - {}
-    patched-models:
-      enabled: true
-      type: custom
-      volumeSpec:
-        image:
-          # Keep tag in sync with controllers.main.containers.main.image.tag above
-          reference: ghcr.io/isac322/immich-patched-models:v3.2.4-rknn@sha256:97656c6e21541a0e469c28cc5be8931ece993f8ac9042a20a8864b082912219f
-          pullPolicy: IfNotPresent
-      advancedMounts:
-        main:
-          main:
-            - path: /cache/clip/nllb-clip-large-siglip__mrl/textual/rknpu
-              subPath: clip/nllb-clip-large-siglip__mrl/textual/rknpu
-              readOnly: true
-            - path: /cache/clip/nllb-clip-large-siglip__mrl/visual/rknpu
-              subPath: clip/nllb-clip-large-siglip__mrl/visual/rknpu
-              readOnly: true
     rk-drivers:
       enabled: true
       type: hostPath
