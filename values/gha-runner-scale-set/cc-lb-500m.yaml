@@ -34,6 +34,12 @@ template:
                   values:
                     - macmini
                     - rock5bp
+    # The ssd-single xfs root is root:root 0755; fsGroup 123 (the runner
+    # image's `docker` group, which includes uid 1001 `runner`) makes kubelet
+    # hand the work volume to the runner. local-path dirs were 0777.
+    securityContext:
+      fsGroup: 123
+      fsGroupChangePolicy: OnRootMismatch
     volumes:
       # Thick zvol on pillar-csi `ssd-single` (rock5bp `fast` pool) attached over
       # NVMe/TCP, replacing local-path: local-path consumed the node rootfs with
