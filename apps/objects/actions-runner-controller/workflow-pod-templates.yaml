@@ -13,6 +13,9 @@
 # drove rock5bp to load 48); requests stay small so job pods schedule next to
 # their runner pod.
 # Add a `$<service>` entry here whenever a cc-lb workflow adds a service.
+# The hook never copies the runner container's env into the job container, so
+# every `$job` entry must load the same sccache-s3 Secret the runner uses;
+# otherwise sccache in `container:` jobs falls back to an empty local cache.
 apiVersion: v1
 kind: ConfigMap
 metadata:
@@ -33,6 +36,10 @@ data:
                       - rock5bp
       containers:
         - name: $job
+          envFrom:
+            - secretRef:
+                name: sccache-s3
+                optional: true
           resources:
             requests:
               cpu: 200m
@@ -62,6 +69,10 @@ data:
                       - rock5bp
       containers:
         - name: $job
+          envFrom:
+            - secretRef:
+                name: sccache-s3
+                optional: true
           resources:
             requests:
               cpu: 200m
@@ -91,6 +102,10 @@ data:
                       - rock5bp
       containers:
         - name: $job
+          envFrom:
+            - secretRef:
+                name: sccache-s3
+                optional: true
           resources:
             requests:
               cpu: 100m
@@ -120,6 +135,10 @@ data:
                       - rock5bp
       containers:
         - name: $job
+          envFrom:
+            - secretRef:
+                name: sccache-s3
+                optional: true
           resources:
             requests:
               cpu: 100m
