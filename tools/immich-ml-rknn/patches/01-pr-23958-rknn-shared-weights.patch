@@ -1,0 +1,744 @@
+diff --git a/machine-learning/Dockerfile b/machine-learning/Dockerfile
+index 0220899a8..5aa0b2259 100644
+--- a/machine-learning/Dockerfile
++++ b/machine-learning/Dockerfile
+@@ -144,11 +144,12 @@ COPY --from=builder-armnn \
+ FROM python:3.12-slim-trixie@sha256:78387bc3881b8273120a12ebe6c1ab22b018ccc2c9adf565ae1ac9b536e184ea AS prod-rknn
+ 
+ # renovate: datasource=github-tags depName=airockchip/rknn-toolkit2
+-ARG RKNN_TOOLKIT_VERSION="v2.3.0"
++ARG RKNN_TOOLKIT_VERSION="v2.3.2"
+ 
+ ENV MACHINE_LEARNING_MODEL_ARENA=false
+ 
+-ADD --chmod=644 --checksum=sha256:73993ed4b440460825f21611731564503cc1d5a0c123746477da6cd574f34885 "https://github.com/airockchip/rknn-toolkit2/raw/refs/tags/${RKNN_TOOLKIT_VERSION}/rknpu2/runtime/Linux/librknn_api/aarch64/librknnrt.so" /usr/lib/
++ADD --chmod=644 --checksum=sha256:d31fc19c85b85f6091b2bd0f6af9d962d5264a4e410bfb536402ec92bac738e8 "https://github.com/airockchip/rknn-toolkit2/raw/refs/tags/${RKNN_TOOLKIT_VERSION}/rknpu2/runtime/Linux/librknn_api/aarch64/librknnrt.so" /usr/lib/
++ADD --chmod=644 --checksum=sha256:c48e11a6f41b451a5fd1e4ad774ea60252d3d94f78bee9b21ea3d21b21deba9a "https://github.com/airockchip/rknn-toolkit2/raw/refs/tags/${RKNN_TOOLKIT_VERSION}/rknpu2/runtime/Linux/librknn_api/include/rknn_api.h" /usr/include/
+ 
+ FROM python:3.13-slim-trixie@sha256:9d2e5553305c7c7b0097999bb17187c69b921ccd6bc9d40e4bb5ebe652c00285 AS mimalloc
+ RUN echo "deb http://deb.debian.org/debian trixie-backports main" > /etc/apt/sources.list.d/backports.list && \
+@@ -187,6 +188,24 @@ COPY --from=builder /opt/venv /opt/venv
+ COPY scripts/healthcheck.py .
+ COPY immich_ml immich_ml
+ 
++# the shared-weight context pool is compiled against the venv's python, then the toolchain is dropped
++RUN if [ "$DEVICE" = "rknn" ]; then \
++        set -e && \
++        apt-get update && \
++        apt-get install -y --no-install-recommends g++ libc6-dev && \
++        cd immich_ml/sessions/rknn/native && \
++        PATH=/opt/venv/bin:$PATH \
++        RKNN_HEADER=/usr/include/rknn_api.h \
++        RKNN_LIBRARY=/usr/lib/librknnrt.so \
++        ./build-cross.sh && \
++        apt-get purge -y --auto-remove \
++            g++ \
++            libc6-dev && \
++        apt-get clean && \
++        rm -rf /var/lib/apt/lists/* && \
++        rm /usr/include/rknn_api.h; \
++    fi
++
+ ARG BUILD_ID
+ ARG BUILD_IMAGE
+ ARG BUILD_SOURCE_REF
+diff --git a/machine-learning/immich_ml/sessions/rknn/__init__.py b/machine-learning/immich_ml/sessions/rknn/__init__.py
+index ee0ef901a..3af72b1e7 100644
+--- a/machine-learning/immich_ml/sessions/rknn/__init__.py
++++ b/machine-learning/immich_ml/sessions/rknn/__init__.py
+@@ -11,7 +11,7 @@ from numpy.typing import NDArray
+ from immich_ml.config import log, settings
+ from immich_ml.schemas import ModelInput, ModelTensor, SessionNode, Shape
+ 
+-from .rknnpool import RknnNode, RknnPoolExecutor, is_available, native_outputs, soc_name
++from .rknnpool import RknnNode, RknnPoolExecutor, is_available, soc_name
+ 
+ is_available = is_available and settings.rknn
+ model_prefix = Path("rknpu") / soc_name if is_available and soc_name is not None else None
+@@ -21,10 +21,10 @@ def model_path(model_dir: Path, variant: str = "") -> Path:
+     return (model_dir / model_prefix if model_prefix else model_dir) / variant / "model.rknn"
+ 
+ 
+-def run_inference(rknn_lite: Any, inputs: list[ModelTensor], data_format: str | None) -> list[NDArray[np.float32]]:
+-    rknn_lite.rknn_runtime.set_inputs(inputs, None, data_format)
+-    rknn_lite.rknn_runtime.run(False)
+-    return native_outputs(rknn_lite)
++def run_inference(rknn_pool: Any, inputs: list[ModelTensor], data_format: str | None) -> list[NDArray[np.float32]]:
++    # the outputs keep the precision the NPU computed them in, which RKNNLite would widen to fp32 on the CPU
++    outputs: list[NDArray[np.float32]] = rknn_pool.infer(inputs, data_format)
++    return outputs
+ 
+ 
+ def input_layout(compiled: tuple[int, ...], array: ModelTensor) -> str | None:
+diff --git a/machine-learning/immich_ml/sessions/rknn/native/__init__.py b/machine-learning/immich_ml/sessions/rknn/native/__init__.py
+new file mode 100644
+index 000000000..c1623422d
+--- /dev/null
++++ b/machine-learning/immich_ml/sessions/rknn/native/__init__.py
+@@ -0,0 +1 @@
++"""The shared-weight RKNN context pool, compiled from rknn_pool.cpp by build-cross.sh."""
+diff --git a/machine-learning/immich_ml/sessions/rknn/native/build-cross.sh b/machine-learning/immich_ml/sessions/rknn/native/build-cross.sh
+new file mode 100755
+index 000000000..e90dd06d6
+--- /dev/null
++++ b/machine-learning/immich_ml/sessions/rknn/native/build-cross.sh
+@@ -0,0 +1,64 @@
++#!/usr/bin/env bash
++set -euo pipefail
++
++SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
++SRC_FILE="${SCRIPT_DIR}/rknn_pool.cpp"
++CXX="${CXX:-g++}"
++
++RKNN_HEADER="${RKNN_HEADER:-/usr/include/rknn_api.h}"
++RKNN_LIBRARY="${RKNN_LIBRARY:-/usr/lib/librknnrt.so}"
++RKNN_OUTPUT_DIR="${RKNN_OUTPUT_DIR:-$SCRIPT_DIR}"
++
++if [[ $# -ge 1 ]]; then
++    RKNN_HEADER="$1"
++fi
++if [[ $# -ge 2 ]]; then
++    RKNN_LIBRARY="$2"
++fi
++if [[ $# -ge 3 ]]; then
++    RKNN_OUTPUT_DIR="$3"
++fi
++
++for file in "$SRC_FILE" "$RKNN_HEADER" "$RKNN_LIBRARY"; do
++    if [[ ! -f "$file" ]]; then
++        echo "Missing required file: $file" >&2
++        exit 1
++    fi
++done
++
++if ! command -v python3 >/dev/null 2>&1; then
++    echo "python3 is required to determine include paths." >&2
++    exit 1
++fi
++
++read -r -a PYBIND_FLAGS <<<"$(python3 -m pybind11 --includes)"
++EXT_SUFFIX="$(python3 - <<'PY'
++import sysconfig
++print(sysconfig.get_config_var("EXT_SUFFIX") or ".so")
++PY
++)"
++
++INCLUDE_DIR="$(dirname "$(realpath "$RKNN_HEADER")")"
++LIB_DIR="$(dirname "$(realpath "$RKNN_LIBRARY")")"
++LIB_BASE="$(basename "$RKNN_LIBRARY")"
++LIB_NAME="${LIB_BASE#lib}"
++LIB_NAME="${LIB_NAME%%.so*}"
++
++mkdir -p "$RKNN_OUTPUT_DIR"
++OUTPUT_PATH="${RKNN_OUTPUT_DIR}/rknn_pool${EXT_SUFFIX}"
++
++echo "[build-cross] Building ${OUTPUT_PATH}"
++
++"$CXX" "$SRC_FILE" \
++    -shared -o "$OUTPUT_PATH" \
++    -O3 -DNDEBUG -std=c++17 -fPIC \
++    -Wall -Wextra -Wno-unused-parameter \
++    -D_DEFAULT_SOURCE -D_GNU_SOURCE \
++    -Wl,-z,relro,-z,now \
++    -Wl,-rpath,"\$ORIGIN" -Wl,-rpath,"\$ORIGIN/." \
++    "${PYBIND_FLAGS[@]}" \
++    -I "$INCLUDE_DIR" \
++    -L"$LIB_DIR" -l"$LIB_NAME" \
++    -ldl -lpthread
++
++echo "[build-cross] Done."
+diff --git a/machine-learning/immich_ml/sessions/rknn/native/rknn_pool.cpp b/machine-learning/immich_ml/sessions/rknn/native/rknn_pool.cpp
+new file mode 100644
+index 000000000..c88af47ab
+--- /dev/null
++++ b/machine-learning/immich_ml/sessions/rknn/native/rknn_pool.cpp
+@@ -0,0 +1,406 @@
++// Shared-weight RKNN context pool exposed to Python through pybind11.
++//
++// One context is initialised from the model file and every further worker is a
++// rknn_dup_context() of it, so the weights are loaded into memory once no matter
++// how many contexts run in parallel. Each inference leases an idle context, so
++// two threads never drive the same context at once.
++//
++// The behaviour mirrors what RKNNLite did for immich_ml.sessions.rknn:
++// - inputs and outputs are described by RKNN_QUERY_INPUT_ATTR/OUTPUT_ATTR as compiled
++// - data_format ("nchw"/"nhwc", default "nhwc") labels the layout of 4D input buffers;
++//   a buffer in the other layout than the binary wants is transposed on the host
++// - dynamic-shape binaries get rknn_set_input_shapes() from the fed buffers
++// - outputs keep the precision the NPU computed them in (fp32 or fp16), shaped by
++//   RKNN_QUERY_CURRENT_OUTPUT_ATTR for dynamic-shape binaries
++// - the custom string embedded by the exporter is readable
++
++#include <pybind11/numpy.h>
++#include <pybind11/pybind11.h>
++#include <pybind11/stl.h>
++
++#include <algorithm>
++#include <cctype>
++#include <condition_variable>
++#include <cstring>
++#include <mutex>
++#include <optional>
++#include <stdexcept>
++#include <string>
++#include <utility>
++#include <vector>
++
++#include "rknn_api.h"
++
++namespace py = pybind11;
++
++namespace {
++
++std::runtime_error rknn_error(const std::string& what, int ret) {
++    return std::runtime_error(what + " failed, error code: " + std::to_string(ret));
++}
++
++py::tuple dims_tuple(const rknn_tensor_attr& attr) {
++    py::tuple dims(attr.n_dims);
++    for (uint32_t d = 0; d < attr.n_dims; ++d) {
++        dims[d] = py::int_(attr.dims[d]);
++    }
++    return dims;
++}
++
++std::string tensor_name(const rknn_tensor_attr& attr) {
++    return std::string(attr.name, strnlen(attr.name, RKNN_MAX_NAME_LEN));
++}
++
++rknn_tensor_type input_type(const py::array& arr, size_t index) {
++    const py::dtype dtype = arr.dtype();
++    const char kind = dtype.kind();
++    const auto size = dtype.itemsize();
++    if (kind == 'f' && size == 4) return RKNN_TENSOR_FLOAT32;
++    if (kind == 'f' && size == 2) return RKNN_TENSOR_FLOAT16;
++    if (kind == 'u' && size == 1) return RKNN_TENSOR_UINT8;
++    if (kind == 'i' && size == 1) return RKNN_TENSOR_INT8;
++    if (kind == 'i' && size == 2) return RKNN_TENSOR_INT16;
++    if (kind == 'u' && size == 2) return RKNN_TENSOR_UINT16;
++    if (kind == 'i' && size == 4) return RKNN_TENSOR_INT32;
++    if (kind == 'u' && size == 4) return RKNN_TENSOR_UINT32;
++    if (kind == 'i' && size == 8) return RKNN_TENSOR_INT64;
++    if (kind == 'b' && size == 1) return RKNN_TENSOR_BOOL;
++    throw std::invalid_argument("Unsupported dtype " + py::str(dtype).cast<std::string>() + " for input " +
++                                std::to_string(index));
++}
++
++py::dtype output_dtype(const rknn_tensor_attr& attr) {
++    switch (attr.type) {
++        case RKNN_TENSOR_FLOAT32:
++            return py::dtype::of<float>();
++        case RKNN_TENSOR_FLOAT16:
++            return py::dtype("float16");
++        default:
++            throw std::runtime_error("Unsupported output tensor type " + std::to_string(attr.type) + " for output " +
++                                     std::to_string(attr.index));
++    }
++}
++
++rknn_tensor_format parse_format(const std::optional<std::string>& data_format) {
++    if (!data_format) return RKNN_TENSOR_NHWC;  // RKNNLite's default
++    std::string fmt = *data_format;
++    std::transform(fmt.begin(), fmt.end(), fmt.begin(), [](unsigned char c) { return std::tolower(c); });
++    if (fmt == "nchw") return RKNN_TENSOR_NCHW;
++    if (fmt == "nhwc") return RKNN_TENSOR_NHWC;
++    throw std::invalid_argument("Unsupported data format: " + *data_format);
++}
++
++struct PreparedInputs {
++    std::vector<py::array> arrays;  // keeps the buffers alive while the GIL is released
++    std::vector<rknn_input> tensors;
++    std::vector<std::vector<uint32_t>> shapes;
++};
++
++struct Context {
++    rknn_context ctx = 0;
++    std::vector<std::vector<uint32_t>> applied_shapes;  // last shapes given to rknn_set_input_shapes
++};
++
++}  // namespace
++
++class NativeRKNNExecutor {
++   public:
++    NativeRKNNExecutor(const std::string& model_path, int num_workers) {
++        if (num_workers < 1) throw std::invalid_argument("num_workers must be >= 1");
++        try {
++            Context master;
++            int ret = rknn_init(&master.ctx, const_cast<char*>(model_path.c_str()), 0, 0, nullptr);
++            if (ret != RKNN_SUCC) throw rknn_error("rknn_init of " + model_path, ret);
++            contexts_.push_back(std::move(master));
++            query_model(contexts_.front().ctx);
++            for (int i = 1; i < num_workers; ++i) {
++                Context child;
++                ret = rknn_dup_context(&contexts_.front().ctx, &child.ctx);
++                if (ret != RKNN_SUCC) throw rknn_error("rknn_dup_context", ret);
++                contexts_.push_back(std::move(child));
++            }
++        } catch (...) {
++            destroy_contexts();
++            throw;
++        }
++        busy_.assign(contexts_.size(), false);
++    }
++
++    ~NativeRKNNExecutor() { destroy_contexts(); }
++
++    NativeRKNNExecutor(const NativeRKNNExecutor&) = delete;
++    NativeRKNNExecutor& operator=(const NativeRKNNExecutor&) = delete;
++
++    py::list inputs() const { return nodes(input_attrs_); }
++
++    py::list outputs() const { return nodes(output_attrs_); }
++
++    const std::string& custom_string() const { return custom_string_; }
++
++    bool is_dynamic() const { return is_dynamic_; }
++
++    size_t num_workers() const { return contexts_.size(); }
++
++    void set_core_mask(int mask) {
++        std::unique_lock<std::mutex> lock(mutex_);
++        idle_.wait(lock, [&] { return released_ || std::none_of(busy_.begin(), busy_.end(), [](bool b) { return b; }); });
++        if (released_) throw std::runtime_error("RKNN executor is released");
++        for (auto& c : contexts_) {
++            const int ret = rknn_set_core_mask(c.ctx, static_cast<rknn_core_mask>(mask));
++            if (ret != RKNN_SUCC) throw rknn_error("rknn_set_core_mask", ret);
++        }
++    }
++
++    py::list infer(const py::sequence& inputs, const std::optional<std::string>& data_format) {
++        PreparedInputs prepared = prepare_inputs(inputs, parse_format(data_format));
++        py::list result(io_num_.n_output);
++        {
++            py::gil_scoped_release nogil;
++            Lease lease(*this);
++            Context& c = lease.context();
++            if (is_dynamic_ && c.applied_shapes != prepared.shapes) {
++                set_input_shapes(c, prepared.shapes);
++            }
++            int ret = rknn_inputs_set(c.ctx, io_num_.n_input, prepared.tensors.data());
++            if (ret != RKNN_SUCC) throw rknn_error("rknn_inputs_set", ret);
++            ret = rknn_run(c.ctx, nullptr);
++            if (ret != RKNN_SUCC) throw rknn_error("rknn_run", ret);
++            collect_outputs(c, result);
++        }
++        return result;
++    }
++
++    void release() {
++        std::unique_lock<std::mutex> lock(mutex_);
++        released_ = true;
++        idle_.notify_all();
++        idle_.wait(lock, [&] { return std::none_of(busy_.begin(), busy_.end(), [](bool b) { return b; }); });
++        destroy_contexts();
++    }
++
++   private:
++    class Lease {
++       public:
++        explicit Lease(NativeRKNNExecutor& owner) : owner_(owner), index_(owner.acquire()) {}
++        ~Lease() { owner_.give_back(index_); }
++        Lease(const Lease&) = delete;
++        Lease& operator=(const Lease&) = delete;
++        Context& context() { return owner_.contexts_[index_]; }
++
++       private:
++        NativeRKNNExecutor& owner_;
++        size_t index_;
++    };
++
++    size_t acquire() {
++        std::unique_lock<std::mutex> lock(mutex_);
++        size_t index = 0;
++        idle_.wait(lock, [&] {
++            if (released_) return true;
++            for (size_t attempt = 0; attempt < busy_.size(); ++attempt) {
++                index = (next_ + attempt) % busy_.size();
++                if (!busy_[index]) return true;
++            }
++            return false;
++        });
++        if (released_) throw std::runtime_error("RKNN executor is released");
++        busy_[index] = true;
++        next_ = (index + 1) % busy_.size();
++        return index;
++    }
++
++    void give_back(size_t index) {
++        {
++            std::lock_guard<std::mutex> lock(mutex_);
++            busy_[index] = false;
++        }
++        idle_.notify_all();
++    }
++
++    void query_model(rknn_context ctx) {
++        int ret = rknn_query(ctx, RKNN_QUERY_IN_OUT_NUM, &io_num_, sizeof(io_num_));
++        if (ret != RKNN_SUCC) throw rknn_error("rknn_query IN_OUT_NUM", ret);
++
++        input_attrs_.resize(io_num_.n_input);
++        for (uint32_t i = 0; i < io_num_.n_input; ++i) {
++            rknn_tensor_attr attr{};
++            attr.index = i;
++            ret = rknn_query(ctx, RKNN_QUERY_INPUT_ATTR, &attr, sizeof(attr));
++            if (ret != RKNN_SUCC) throw rknn_error("rknn_query INPUT_ATTR", ret);
++            input_attrs_[i] = attr;
++        }
++
++        output_attrs_.resize(io_num_.n_output);
++        for (uint32_t i = 0; i < io_num_.n_output; ++i) {
++            rknn_tensor_attr attr{};
++            attr.index = i;
++            ret = rknn_query(ctx, RKNN_QUERY_OUTPUT_ATTR, &attr, sizeof(attr));
++            if (ret != RKNN_SUCC) throw rknn_error("rknn_query OUTPUT_ATTR", ret);
++            output_attrs_[i] = attr;
++        }
++
++        rknn_custom_string custom{};
++        if (rknn_query(ctx, RKNN_QUERY_CUSTOM_STRING, &custom, sizeof(custom)) == RKNN_SUCC) {
++            custom_string_.assign(custom.string, strnlen(custom.string, sizeof(custom.string)));
++        }
++
++        // a static binary either fails this query or reports no shapes
++        for (uint32_t i = 0; i < io_num_.n_input; ++i) {
++            rknn_input_range range{};
++            range.index = i;
++            if (rknn_query(ctx, RKNN_QUERY_INPUT_DYNAMIC_RANGE, &range, sizeof(range)) == RKNN_SUCC &&
++                range.shape_number > 0) {
++                is_dynamic_ = true;
++            }
++        }
++    }
++
++    static py::list nodes(const std::vector<rknn_tensor_attr>& attrs) {
++        py::list result;
++        for (const auto& attr : attrs) {
++            result.append(py::make_tuple(tensor_name(attr), dims_tuple(attr)));
++        }
++        return result;
++    }
++
++    PreparedInputs prepare_inputs(const py::sequence& inputs, rknn_tensor_format requested) const {
++        if (static_cast<uint32_t>(py::len(inputs)) != io_num_.n_input) {
++            throw std::invalid_argument("Expected " + std::to_string(io_num_.n_input) + " inputs, got " +
++                                        std::to_string(py::len(inputs)));
++        }
++        PreparedInputs prepared;
++        prepared.arrays.reserve(io_num_.n_input);
++        prepared.tensors.resize(io_num_.n_input);
++        prepared.shapes.resize(io_num_.n_input);
++        for (uint32_t i = 0; i < io_num_.n_input; ++i) {
++            const rknn_tensor_attr& attr = input_attrs_[i];
++            py::array arr = py::array::ensure(inputs[i]);
++            if (!arr) throw std::invalid_argument("Input " + std::to_string(i) + " is not an array");
++            rknn_tensor_format fmt = requested;
++            const bool layout_known = attr.fmt == RKNN_TENSOR_NHWC || attr.fmt == RKNN_TENSOR_NCHW;
++            if (arr.ndim() == 4 && layout_known && fmt != attr.fmt) {
++                // like RKNNLite, hand the runtime the layout the binary was compiled for
++                const py::tuple axes = attr.fmt == RKNN_TENSOR_NHWC ? py::make_tuple(0, 2, 3, 1) : py::make_tuple(0, 3, 1, 2);
++                arr = py::array::ensure(arr.attr("transpose")(axes));
++                fmt = attr.fmt;
++            }
++            arr = py::array::ensure(arr, py::array::c_style);
++            if (!arr) throw std::runtime_error("Could not make input " + std::to_string(i) + " contiguous");
++            if (arr.ndim() > RKNN_MAX_DIMS) throw std::invalid_argument("Input " + std::to_string(i) + " has too many dims");
++
++            rknn_input& tensor = prepared.tensors[i];
++            tensor = rknn_input{};
++            tensor.index = i;
++            tensor.buf = const_cast<void*>(arr.data());
++            tensor.size = static_cast<uint32_t>(arr.nbytes());
++            tensor.pass_through = 0;
++            tensor.type = input_type(arr, i);
++            tensor.fmt = fmt;
++
++            auto& shape = prepared.shapes[i];
++            shape.reserve(arr.ndim());
++            for (py::ssize_t d = 0; d < arr.ndim(); ++d) {
++                shape.push_back(static_cast<uint32_t>(arr.shape(d)));
++            }
++            prepared.arrays.push_back(std::move(arr));
++        }
++        return prepared;
++    }
++
++    void set_input_shapes(Context& c, const std::vector<std::vector<uint32_t>>& shapes) const {
++        std::vector<rknn_tensor_attr> attrs = input_attrs_;
++        for (uint32_t i = 0; i < io_num_.n_input; ++i) {
++            attrs[i].n_dims = static_cast<uint32_t>(shapes[i].size());
++            std::fill(std::begin(attrs[i].dims), std::end(attrs[i].dims), 0);
++            std::copy(shapes[i].begin(), shapes[i].end(), attrs[i].dims);
++        }
++        c.applied_shapes.clear();
++        const int ret = rknn_set_input_shapes(c.ctx, io_num_.n_input, attrs.data());
++        if (ret != RKNN_SUCC) throw rknn_error("rknn_set_input_shapes", ret);
++        c.applied_shapes = shapes;
++    }
++
++    // runs without the GIL; takes it only to build the result arrays
++    void collect_outputs(Context& c, py::list& result) const {
++        std::vector<rknn_output> outs(io_num_.n_output);
++        for (uint32_t i = 0; i < io_num_.n_output; ++i) {
++            outs[i] = rknn_output{};
++            outs[i].index = i;
++            outs[i].want_float = 0;  // keep the precision the NPU computed in
++            outs[i].is_prealloc = 0;
++        }
++        int ret = rknn_outputs_get(c.ctx, io_num_.n_output, outs.data(), nullptr);
++        if (ret != RKNN_SUCC) throw rknn_error("rknn_outputs_get", ret);
++        struct OutputsRelease {
++            rknn_context ctx;
++            std::vector<rknn_output>& outs;
++            ~OutputsRelease() { rknn_outputs_release(ctx, static_cast<uint32_t>(outs.size()), outs.data()); }
++        } outputs_release{c.ctx, outs};
++
++        // a dynamic binary reports the shape it last produced through CURRENT_OUTPUT_ATTR
++        const rknn_query_cmd query = is_dynamic_ ? RKNN_QUERY_CURRENT_OUTPUT_ATTR : RKNN_QUERY_OUTPUT_ATTR;
++        std::vector<rknn_tensor_attr> attrs(io_num_.n_output);
++        for (uint32_t i = 0; i < io_num_.n_output; ++i) {
++            attrs[i] = rknn_tensor_attr{};
++            attrs[i].index = outs[i].index;
++            ret = rknn_query(c.ctx, query, &attrs[i], sizeof(attrs[i]));
++            if (ret != RKNN_SUCC) throw rknn_error("rknn_query output attr", ret);
++        }
++
++        py::gil_scoped_acquire gil;
++        for (uint32_t i = 0; i < io_num_.n_output; ++i) {
++            const py::dtype dtype = output_dtype(attrs[i]);
++            std::vector<py::ssize_t> shape(attrs[i].dims, attrs[i].dims + attrs[i].n_dims);
++            py::array arr(dtype, shape);
++            const size_t nbytes = static_cast<size_t>(arr.nbytes());
++            if (nbytes != outs[i].size) {
++                throw std::runtime_error("Output " + std::to_string(i) + " holds " + std::to_string(outs[i].size) +
++                                         " bytes, its shape needs " + std::to_string(nbytes));
++            }
++            std::memcpy(arr.mutable_data(), outs[i].buf, nbytes);
++            result[i] = std::move(arr);
++        }
++    }
++
++    void destroy_contexts() {
++        // duplicates share the first context's weights, so destroy them before it
++        for (auto it = contexts_.rbegin(); it != contexts_.rend(); ++it) {
++            if (it->ctx) rknn_destroy(it->ctx);
++            it->ctx = 0;
++        }
++        contexts_.clear();
++        busy_.clear();
++    }
++
++    rknn_input_output_num io_num_{};
++    std::vector<rknn_tensor_attr> input_attrs_;
++    std::vector<rknn_tensor_attr> output_attrs_;
++    std::string custom_string_;
++    bool is_dynamic_ = false;
++
++    std::vector<Context> contexts_;
++    std::vector<bool> busy_;
++    size_t next_ = 0;
++    bool released_ = false;
++    std::mutex mutex_;
++    std::condition_variable idle_;
++};
++
++PYBIND11_MODULE(rknn_pool, m) {
++    m.attr("NPU_CORE_AUTO") = static_cast<int>(RKNN_NPU_CORE_AUTO);
++    py::class_<NativeRKNNExecutor>(m, "NativeRKNNExecutor")
++        .def(py::init<const std::string&, int>(), py::arg("model_path"), py::arg("num_workers") = 1,
++             "Load the model once and duplicate its context num_workers - 1 times, sharing the weights.")
++        .def_property_readonly("inputs", &NativeRKNNExecutor::inputs, "(name, dims) of each input as compiled")
++        .def_property_readonly("outputs", &NativeRKNNExecutor::outputs, "(name, dims) of each output as compiled")
++        .def_property_readonly("custom_string", &NativeRKNNExecutor::custom_string,
++                               "The custom string the exporter embedded in the binary")
++        .def_property_readonly("is_dynamic", &NativeRKNNExecutor::is_dynamic)
++        .def_property_readonly("num_workers", &NativeRKNNExecutor::num_workers)
++        .def("set_core_mask", &NativeRKNNExecutor::set_core_mask, py::arg("mask"),
++             py::call_guard<py::gil_scoped_release>(), "Set the NPU core mask of every context.")
++        .def("infer", &NativeRKNNExecutor::infer, py::arg("inputs"), py::arg("data_format") = py::none(),
++             "Run inference on an idle context; returns the outputs in the precision the NPU computed them in.")
++        .def("release", &NativeRKNNExecutor::release, py::call_guard<py::gil_scoped_release>(),
++             "Wait for running inferences and destroy every context.");
++}
+diff --git a/machine-learning/immich_ml/sessions/rknn/rknnpool.py b/machine-learning/immich_ml/sessions/rknn/rknnpool.py
+index cf4844334..449cefe8e 100644
+--- a/machine-learning/immich_ml/sessions/rknn/rknnpool.py
++++ b/machine-learning/immich_ml/sessions/rknn/rknnpool.py
+@@ -1,9 +1,6 @@
+-# This code is from leafqycc/rknn-multi-threaded
++# The thread pool shape is from leafqycc/rknn-multi-threaded
+ # Following Apache License 2.0
+ 
+-import ctypes
+-import logging
+-import threading
+ from concurrent.futures import ThreadPoolExecutor
+ from pathlib import Path
+ from typing import Any, Callable, NamedTuple
+@@ -32,7 +29,8 @@ def get_soc(device_tree_path: Path | str) -> str | None:
+ soc_name = None
+ is_available = False
+ try:
+-    from rknnlite.api import RKNNLite, rknn_runtime
++    # compiled from native/rknn_pool.cpp when the image is built with DEVICE=rknn
++    from .native.rknn_pool import NPU_CORE_AUTO, NativeRKNNExecutor
+ 
+     soc_name = get_soc("/proc/device-tree/compatible")
+     is_available = soc_name is not None
+@@ -45,95 +43,14 @@ class RknnNode(NamedTuple):
+     shape: tuple[int, ...]
+ 
+ 
+-_CUSTOM_STRING_QUERY = 7  # RKNN_QUERY_CUSTOM_STRING
+-# RKNN_QUERY_OUTPUT_ATTR, and RKNN_QUERY_CURRENT_OUTPUT_ATTR for the shape a dynamic binary last produced
+-_OUTPUT_QUERY, _CURRENT_OUTPUT_QUERY = 2, 15
+-_DTYPES = {0: np.float32, 1: np.float16}  # rknn_tensor_type
+-
+-
+-class _CustomString(ctypes.Structure):
+-    _fields_ = [("string", ctypes.c_char * 1024)]
+-
+-
+-class _TensorAttr(ctypes.Structure):  # rknn_tensor_attr
+-    _fields_ = [
+-        ("index", ctypes.c_uint32),
+-        ("n_dims", ctypes.c_uint32),
+-        ("dims", ctypes.c_uint32 * 16),
+-        ("name", ctypes.c_char * 256),
+-        ("n_elems", ctypes.c_uint32),
+-        ("size", ctypes.c_uint32),
+-        ("fmt", ctypes.c_int),
+-        ("type", ctypes.c_int),
+-        ("qnt_type", ctypes.c_int),
+-        ("fl", ctypes.c_int8),
+-        ("zp", ctypes.c_int32),
+-        ("scale", ctypes.c_float),
+-        ("w_stride", ctypes.c_uint32),
+-        ("size_with_stride", ctypes.c_uint32),
+-        ("pass_through", ctypes.c_uint8),
+-        ("h_stride", ctypes.c_uint32),
+-    ]
+-
+-
+-def native_outputs(rknn_lite: "RKNNLite") -> list[NDArray[Any]]:
+-    """The outputs in the precision the NPU computed them in, which RKNNLite would widen to fp32 on the CPU."""
+-    runtime: Any = rknn_lite.rknn_runtime
+-    count = runtime.get_in_out_num()[1]
+-    buffers = (rknn_runtime.RKNNOutput * count)()
+-    for index, buffer in enumerate(buffers):
+-        buffer.index = index
+-    if runtime.lib.rknn_outputs_get(runtime.context, count, buffers, None) != 0:
+-        raise RuntimeError("RKNN inference failed!")
+-    query = _CURRENT_OUTPUT_QUERY if runtime.is_dynamic_shape else _OUTPUT_QUERY
+-    outputs = []
+-    for buffer in buffers:
+-        attr = _TensorAttr(index=buffer.index)
+-        runtime.lib.rknn_query(runtime.context, query, ctypes.byref(attr), ctypes.sizeof(attr))
+-        data = ctypes.cast(buffer.buf, ctypes.POINTER(ctypes.c_char * buffer.size)).contents
+-        outputs.append(np.frombuffer(data, _DTYPES[attr.type]).reshape(attr.dims[: attr.n_dims]).copy())
+-    runtime.lib.rknn_outputs_release(runtime.context, count, buffers)
+-    return outputs
+-
+-
+-def tensor_nodes(rknn_lite: "RKNNLite") -> tuple[list[RknnNode], list[RknnNode]]:
+-    runtime = rknn_lite.rknn_runtime
+-    n_inputs, n_outputs = runtime.get_in_out_num()
+-
+-    def node(index: int, is_output: bool) -> RknnNode:
+-        attr = runtime.get_tensor_attr(index, is_output=is_output)
+-        return RknnNode(attr.name.decode(), tuple(attr.dims[: attr.n_dims]))
+-
+-    return [node(i, False) for i in range(n_inputs)], [node(i, True) for i in range(n_outputs)]
+-
+-
+-def custom_string(rknn_lite: "RKNNLite") -> str:
+-    runtime: Any = rknn_lite.rknn_runtime
+-    buffer = _CustomString()
+-    # rknnlite declares argtypes on the shared handle, so pass plain values and let ctypes convert
+-    runtime.lib.rknn_query(runtime.context, _CUSTOM_STRING_QUERY, ctypes.byref(buffer), ctypes.sizeof(buffer))
+-    declared: str = buffer.string.decode()
+-    return declared
+-
+-
+-def init_rknn(model_path: str) -> "RKNNLite":
++def init_rknn(model_path: str, workers: int) -> Any:
++    """One context loaded from the binary plus workers - 1 duplicates of it that share its weights."""
+     if not is_available:
+         raise RuntimeError("rknn is not available!")
+-    rknn_lite = RKNNLite()
+-    rknn_lite.rknn_log.logger.setLevel(logging.ERROR)
+-    ret = rknn_lite.load_rknn(model_path)
+-    if ret != 0:
+-        raise RuntimeError("Failed to load RKNN model")
+-
++    executor = NativeRKNNExecutor(model_path, num_workers=workers)
+     if soc_name in RKNN_COREMASK_SUPPORTED_SOCS:
+-        ret = rknn_lite.init_runtime(core_mask=RKNNLite.NPU_CORE_AUTO)
+-    else:
+-        ret = rknn_lite.init_runtime()  # Please do not set this parameter on other platforms.
+-
+-    if ret != 0:
+-        raise RuntimeError("Failed to initialize RKNN runtime environment")
+-
+-    return rknn_lite
++        executor.set_core_mask(NPU_CORE_AUTO)  # Please do not set this parameter on other platforms.
++    return executor
+ 
+ 
+ class RknnPoolExecutor:
+@@ -141,29 +58,29 @@ class RknnPoolExecutor:
+         self,
+         model_path: str,
+         tpes: int,
+-        func: Callable[["RKNNLite", list[ModelTensor], str | None], list[NDArray[np.float32]]],
++        func: Callable[[Any, list[ModelTensor], str | None], list[NDArray[np.float32]]],
+     ) -> None:
+         self.tpes = tpes
+-        self.rknn_pool = [init_rknn(model_path) for _ in range(tpes)]
+-        self.inputs, self.outputs = tensor_nodes(self.rknn_pool[0])
+-        self.custom_string = custom_string(self.rknn_pool[0])
++        self.rknn_pool = init_rknn(model_path, tpes)
++        self.inputs = [RknnNode(name, tuple(dims)) for name, dims in self.rknn_pool.inputs]
++        self.outputs = [RknnNode(name, tuple(dims)) for name, dims in self.rknn_pool.outputs]
++        self.custom_string: str = self.rknn_pool.custom_string
+         self.pool = ThreadPoolExecutor(max_workers=tpes)
+         self.func = func
+-        self.num = 0
+-        self.lock = threading.Lock()
++        self.released = False  # last, so __del__ leaves a half-built pool to the native destructor
+ 
+     def run(self, inputs: list[ModelTensor], data_format: str | None) -> list[NDArray[np.float32]]:
+-        with self.lock:
+-            idx = self.num % self.tpes
+-            self.num += 1
+-
+-        fut = self.pool.submit(self.func, self.rknn_pool[idx], inputs, data_format)
++        # the native pool hands each call an idle context, so concurrent calls never share one
++        fut = self.pool.submit(self.func, self.rknn_pool, inputs, data_format)
+         return fut.result()
+ 
+     def release(self) -> None:
++        if self.released:
++            return
++        self.released = True
+         self.pool.shutdown()
+-        for rknn_lite in self.rknn_pool:
+-            rknn_lite.release()
++        self.rknn_pool.release()
+ 
+     def __del__(self) -> None:
+-        self.release()
++        if not getattr(self, "released", True):
++            self.release()
+diff --git a/machine-learning/pyproject.toml b/machine-learning/pyproject.toml
+index a227c2959..02ba2802d 100644
+--- a/machine-learning/pyproject.toml
++++ b/machine-learning/pyproject.toml
+@@ -56,7 +56,7 @@ cuda = [
+ ]
+ openvino = ["onnxruntime-openvino>=1.24.1,<2"]
+ armnn = ["onnxruntime>=1.23.2,<2"]
+-rknn = ["onnxruntime>=1.23.2,<2", "rknn-toolkit-lite2>=2.3.0,<3"]
++rknn = ["onnxruntime>=1.23.2,<2", "pybind11>=2.12,<4"]
+ rocm = ["onnxruntime-migraphx>=1.23.2,<2"]
+ 
+ [tool.uv]
