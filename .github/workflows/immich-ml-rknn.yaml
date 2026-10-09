@@ -1,0 +1,283 @@
+name: Immich ML (RKNN)
+
+# Rebuilds the Immich machine-learning `prod-rknn` image with upstream
+# immich-app/immich#23958 (shared RKNN weights across NPU threads) and
+# local fixups from tools/immich-ml-rknn/patches applied on top, and
+# publishes it as ghcr.io/isac322/immich-machine-learning:<immich_tag>-rknn.
+#
+# - daily schedule: resolves the latest stable Immich release and asks the
+#   GHCR registry whether `<version>-rknn` already has a manifest
+#   - 200 → already published, the workflow exits without building
+#   - 404 → shallow-clones Immich at that tag, applies the patch series,
+#     builds on a native arm64 runner and pushes
+#   - anything else → the check job fails loudly instead of guessing
+# - push to master touching tools/immich-ml-rknn/** or this file: same
+#   check, so a refreshed patch immediately retries an unpublished version
+#   (an already-published tag is never rebuilt by a push)
+#
+# Manual trigger via workflow_dispatch can target a specific Immich tag
+# (immich_version) and/or rebuild an already-published tag (force=true).
+#
+# See tools/immich-ml-rknn/README.md for the patch list and the refresh
+# procedure when a patch no longer applies to a new Immich release.
+
+on:
+  schedule:
+    # 04:00 UTC daily (≈ 13:00 KST)
+    - cron: '0 4 * * *'
+
+  workflow_dispatch:
+    inputs:
+      immich_version:
+        description: 'Immich tag to build (e.g. v3.3.1). Empty = latest stable release'
+        required: false
+        type: string
+        default: ''
+      force:
+        description: 'Rebuild even if the image tag is already published'
+        type: boolean
+        default: false
+
+  push:
+    branches:
+      - master
+    paths:
+      - tools/immich-ml-rknn/**
+      - .github/workflows/immich-ml-rknn.yaml
+
+# Schedule, push and dispatch runs must never build + push the same tag
+# concurrently; queue them instead of cancelling an in-flight push.
+concurrency:
+  group: immich-ml-rknn
+  cancel-in-progress: false
+
+permissions:
+  contents: read
+
+env:
+  REGISTRY: ghcr.io
+  IMAGE_REPO: isac322/immich-machine-learning
+  PATCH_DIR: tools/immich-ml-rknn/patches
+
+jobs:
+  check:
+    name: Check for unpublished Immich release
+    runs-on: ubuntu-latest
+    outputs:
+      should_build: ${{ steps.check.outputs.should_build }}
+      version: ${{ steps.check.outputs.version }}
+      tag: ${{ steps.check.outputs.tag }}
+    steps:
+      - name: Resolve Immich version and query GHCR for the image tag
+        id: check
+        env:
+          GH_TOKEN: ${{ github.token }}
+          INPUT_VERSION: ${{ github.event.inputs.immich_version }}
+          FORCE: ${{ github.event.inputs.force }}
+        # language=Bash
+        run: |
+          set -euo pipefail
+
+          if [ -n "${INPUT_VERSION:-}" ]; then
+            VERSION="$INPUT_VERSION"
+            # Manual input: must at least be a valid git ref / docker tag.
+            if ! [[ "$VERSION" =~ ^[A-Za-z0-9][A-Za-z0-9._-]*$ ]]; then
+              echo "::error::immich_version '$VERSION' is not a valid tag name"
+              exit 1
+            fi
+          else
+            VERSION=$(gh api repos/immich-app/immich/releases/latest --jq .tag_name)
+            if [ -z "$VERSION" ] || [ "$VERSION" = "null" ]; then
+              echo "::error::Could not resolve the latest Immich release tag"
+              exit 1
+            fi
+            if ! [[ "$VERSION" =~ ^v[0-9]+\.[0-9]+\.[0-9]+$ ]]; then
+              echo "::error::Latest Immich release tag '$VERSION' is not vX.Y.Z"
+              exit 1
+            fi
+          fi
+          TAG="${VERSION}-rknn"
+          echo "Immich version: $VERSION"
+          echo "Image tag     : $REGISTRY/$IMAGE_REPO:$TAG"
+          {
+            echo "version=$VERSION"
+            echo "tag=$TAG"
+          } >> "$GITHUB_OUTPUT"
+
+          if [ "${FORCE:-false}" = "true" ]; then
+            echo "Force rebuild requested via workflow_dispatch"
+            echo "should_build=true" >> "$GITHUB_OUTPUT"
+            exit 0
+          fi
+
+          # Ask the registry itself, not the GitHub packages REST API: the
+          # package is public, so an anonymous pull token works regardless
+          # of which repository owns the package.
+          TOKEN=$(curl -fsS "https://$REGISTRY/token?scope=repository:$IMAGE_REPO:pull" | jq -r .token)
+          if [ -z "$TOKEN" ] || [ "$TOKEN" = "null" ]; then
+            echo "::error::Could not obtain an anonymous pull token for $REGISTRY/$IMAGE_REPO"
+            exit 1
+          fi
+
+          # curl prints 000 on connection failure; treat it like any other
+          # unexpected status below.
+          STATUS=$(curl -s -o /dev/null -w '%{http_code}' -I \
+            -H "Authorization: Bearer $TOKEN" \
+            -H 'Accept: application/vnd.oci.image.index.v1+json, application/vnd.oci.image.manifest.v1+json, application/vnd.docker.distribution.manifest.v2+json, application/vnd.docker.distribution.manifest.list.v2+json' \
+            "https://$REGISTRY/v2/$IMAGE_REPO/manifests/$TAG" || true)
+
+          case "$STATUS" in
+            200)
+              echo "$REGISTRY/$IMAGE_REPO:$TAG already published - skipping build"
+              echo "should_build=false" >> "$GITHUB_OUTPUT"
+              ;;
+            404)
+              echo "$REGISTRY/$IMAGE_REPO:$TAG not published - will build"
+              echo "should_build=true" >> "$GITHUB_OUTPUT"
+              ;;
+            *)
+              echo "::error::Unexpected HTTP status '$STATUS' while checking $REGISTRY/$IMAGE_REPO:$TAG; refusing to guess"
+              exit 1
+              ;;
+          esac
+
+  build:
+    name: Build & push prod-rknn (arm64)
+    needs: check
+    if: needs.check.outputs.should_build == 'true'
+    runs-on: ubuntu-24.04-arm
+    timeout-minutes: 90
+    permissions:
+      contents: read
+      packages: write
+    env:
+      VERSION: ${{ needs.check.outputs.version }}
+      TAG: ${{ needs.check.outputs.tag }}
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v7.0.1
+        with:
+          path: homelab
+
+      - name: Clone Immich at target version
+        # language=Bash
+        run: |
+          set -euo pipefail
+          git clone --depth 1 --branch "$VERSION" https://github.com/immich-app/immich.git immich
+          git -C immich log -1 --oneline
+
+      - name: Apply patches in order
+        working-directory: immich
+        # language=Bash
+        run: |
+          set -euo pipefail
+          shopt -s nullglob
+          PATCHES=( "$GITHUB_WORKSPACE/homelab/$PATCH_DIR"/*.patch )
+          if [ ${#PATCHES[@]} -eq 0 ]; then
+            echo "::error::No patches found in $PATCH_DIR"
+            exit 1
+          fi
+          # Glob expansion is already sorted; patches are numbered.
+          for PATCH in "${PATCHES[@]}"; do
+            NAME=$(basename "$PATCH")
+            echo "::group::Applying $NAME"
+            if ! git apply --check "$PATCH"; then
+              echo "::endgroup::"
+              echo "::error::Patch $NAME does not apply to Immich $VERSION. Refresh it following tools/immich-ml-rknn/README.md"
+              exit 1
+            fi
+            git apply "$PATCH"
+            echo "::endgroup::"
+          done
+          git status --short
+
+      - name: Detect lockfile refresh and upstream uv version
+        id: uv
+        working-directory: immich/machine-learning
+        # language=Bash
+        run: |
+          set -euo pipefail
+          if git diff --quiet -- pyproject.toml uv.lock; then
+            echo "Patches did not touch pyproject.toml/uv.lock - no lock refresh"
+            echo "lock_refresh=false" >> "$GITHUB_OUTPUT"
+            exit 0
+          fi
+          # Lock with the same uv the upstream Dockerfile pins, so the lock
+          # format matches what `uv sync --frozen` expects in the build.
+          UV_VERSIONS=$(grep -oE 'COPY --from=ghcr\.io/astral-sh/uv:[^@[:space:]]+@sha256:' Dockerfile \
+            | sed -E 's|.*astral-sh/uv:([^@]+)@sha256:|\1|' | sort -u || true)
+          if [ -z "$UV_VERSIONS" ]; then
+            echo "::error::No 'COPY --from=ghcr.io/astral-sh/uv:<ver>@sha256:' line in machine-learning/Dockerfile"
+            exit 1
+          fi
+          if [ "$(printf '%s\n' "$UV_VERSIONS" | wc -l)" -ne 1 ]; then
+            echo "::error::Dockerfile pins multiple uv versions: ${UV_VERSIONS//$'\n'/ }"
+            exit 1
+          fi
+          echo "Upstream uv version: $UV_VERSIONS"
+          {
+            echo "lock_refresh=true"
+            echo "uv_version=$UV_VERSIONS"
+          } >> "$GITHUB_OUTPUT"
+
+      - name: Install uv
+        if: steps.uv.outputs.lock_refresh == 'true'
+        uses: astral-sh/setup-uv@v10.2.0
+        with:
+          version: ${{ steps.uv.outputs.uv_version }}
+          enable-cache: false
+
+      - name: Refresh uv.lock against patched pyproject.toml
+        if: steps.uv.outputs.lock_refresh == 'true'
+        working-directory: immich/machine-learning
+        # language=Bash
+        run: |
+          set -euo pipefail
+          uv lock --no-progress
+          git diff --stat -- uv.lock
+
+      - name: Set up Docker Buildx
+        uses: docker/setup-buildx-action@v4.4.1
+
+      - name: Login to GHCR
+        uses: docker/login-action@v4.6.0
+        with:
+          registry: ${{ env.REGISTRY }}
+          username: ${{ github.actor }}
+          password: ${{ secrets.GITHUB_TOKEN }}
+
+      - name: Build and push
+        id: build
+        uses: docker/build-push-action@v7.4.0
+        with:
+          context: ./immich/machine-learning
+          file: ./immich/machine-learning/Dockerfile
+          target: prod
+          platforms: linux/arm64
+          build-args: |
+            DEVICE=rknn
+          push: true
+          provenance: false
+          tags: ${{ env.REGISTRY }}/${{ env.IMAGE_REPO }}:${{ needs.check.outputs.tag }}
+          cache-from: type=registry,ref=${{ env.REGISTRY }}/${{ env.IMAGE_REPO }}:buildcache
+          cache-to: type=registry,ref=${{ env.REGISTRY }}/${{ env.IMAGE_REPO }}:buildcache,mode=max
+          labels: |
+            org.opencontainers.image.source=${{ github.server_url }}/${{ github.repository }}
+            org.opencontainers.image.description=Immich machine-learning RKNN variant with PR #23958 (shared NPU weights) applied
+            org.opencontainers.image.licenses=AGPL-3.0
+            io.bhyoo.immich.upstream-version=${{ needs.check.outputs.version }}
+            io.bhyoo.immich.patch=pr-23958-rknn-shared-weights
+
+      - name: Summary
+        env:
+          DIGEST: ${{ steps.build.outputs.digest }}
+        # language=Bash
+        run: |
+          set -euo pipefail
+          {
+            echo "## Built image"
+            echo
+            echo "- Image: \`$REGISTRY/$IMAGE_REPO:$TAG\`"
+            echo "- Digest: \`$DIGEST\`"
+            echo "- Immich: \`$VERSION\`"
+          } >> "$GITHUB_STEP_SUMMARY"
