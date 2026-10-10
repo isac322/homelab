@@ -301,7 +301,8 @@ machine-learning:
   persistence:
     cache:
       enabled: true
-      type: emptyDir
+      type: persistentVolumeClaim
+      existingClaim: immich-machine-learning-cache
       advancedMounts:
         main:
           main:
