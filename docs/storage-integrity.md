@@ -22,7 +22,7 @@
 
 `StorageIntegrity*` 알림, Thanos/Prometheus 블록 손상, pillar-csi volume의 checksum 불일치를 보면 이 절부터 읽는다. #385의 최신 상태는 이 문서와 [#385 댓글](https://github.com/isac322/homelab/issues/385)에 있다.
 
-**현재 상태 (2026-10-11):** 원인은 rock5bp의 NIC(RTL8125B, RK3588 PCIe) 수신 경로로 좁혀졌다. 2026-10-08..11 factorial 실험(driver on/off, Relaxed Ordering, rx checksum, 손실 유도, 수신자 교체)으로 확인했다.
+**현재 상태 (2026-10-11):** 원인은 rock5bp의 NIC(RTL8125B, RK3588 PCIe) 수신 경로로 좁혀졌다. 2026-10-08..11 factorial 실험(driver 교체 r8125/r8169, Relaxed Ordering, rx checksum, 손실 유도, 수신자 교체)으로 확인했다.
 
 - 손상 모양: full-size(1514바이트) frame의 마지막 10바이트(payload 1448바이트의 마지막 부분)가 같은 stream의 다른 데이터로 채워지고 TCP checksum이 달라진다("tail splice"). AF_PACKET 포착에서 이 모양이 우세했고(r8169 86개 중 14, r8125 12개 중 8) 세 sender 모두에서 나왔다.
 - driver 무관: out-of-tree `r8125` 9.014.01과 in-tree `r8169`(6.1) 둘 다에서 나온다. PCIe Relaxed Ordering도 무관하다(꺼도 발생). 수신자를 macmini로 바꾸면 1503 GiB에 0건이므로 sender·스위치·공통 경로는 아니고 rock5bp 수신 경로 특정이다.
@@ -31,7 +31,7 @@
 - Application까지 새는 것은 checksum-neutral 손상뿐으로 실측 100 GiB당 약 0.07–0.2다. 캠페인의 baseline 사건은 우연히 checksum이 유지된 10바이트 복사 2건과, checksum이 보존되는 짝수 바이트 shift(±2/4/6, 0 padding으로 이동) 8건이다. Shift 사건이 같은 기제인지는 미확증이다.
 - 배제·불요(코드·증거 확인): ZFS 2.4.1 zvol 경로·ZFS 압축, nvme-tcp/nvmet-tcp와 LIO target 코드·DKMS patch, 6.1.84 TCP·GRO 경로, initiator 소프트웨어, 송신 측(macmini 수신자는 rock5bp sender 포함 같은 sender에서 clean), 케이블·PHY(FCS 오류 0), PCIe 링크(LCRC·RASDES 카운터 0)·Relaxed Ordering, arm64 DMA 코드, Cilium BPF, 온도·전원, rock5bp CPU/DRAM copy(9.7 TiB 검사 0건), TCP 손실 복구(1% 유도 손실에서 0건).
 - 기제 추정 [INFERENCE]: RTL8125B + RK3588 PCIe의 non-coherent DMA에서 frame의 마지막 DMA write가 처리 시점에 CPU에 보이지 않는다. 2026-10-05 사건의 "정확히 256×1448바이트 전 데이터 복사"는 ring 한 바퀴 전 같은 RX buffer의 stale byte와 일치한다.
-- 조치: pillar-csi v0.5.4부터 모든 pillar volume이 NVMe/TCP header·data digest를 쓴다. 캠페인 중 digest error 2건(실험 arm n1 1건, 본번 volume 1건 — rpi5 host, controller reset 후 write 재시도됨)을 잡았다. iSCSI(democratic-csi `hdd-ha-xfs`, versitygw-hdd-data)는 여전히 digest가 없다. TLS와 S3 SigV4 streaming도 본문 손상을 잡는다.
+- 조치: pillar-csi v0.5.4부터 모든 pillar volume이 NVMe/TCP header·data digest를 쓴다. 캠페인 중 digest error 2건(실험 arm n1 1건, 운영 volume 1건 — rpi5 host, controller reset 후 write 재시도됨)을 잡았다. iSCSI(democratic-csi `hdd-ha-xfs`, versitygw-hdd-data)는 여전히 digest가 없다. TLS와 S3 SigV4 streaming도 본문 손상을 잡는다.
 - 주의: rock5bp에서 r8169를 쓸 때 rx checksum을 끄지 않는다. r8169는 checksum이 꺼지면 모든 packet을 CHECKSUM_UNNECESSARY로 표시해 kernel이 아무것도 검증하지 않고, 실험에서 손상이 100 GiB당 약 282건으로 application까지 도달했다.
 - 다음 실험(승인 필요): hardware isolation — PCIe MPS/MRRS 변경, PCIe Gen1 강제, RX buffer alignment 변경, 다른 NIC(USB 또는 M.2 i226) 장착.
 - 상시 감시: `prometheus/storage-canary`가 rock5bp가 아닌 노드에서 `ssd-ha` volume에 하루 약 120 GiB를 쓰고 검증한다. Digest가 켜진 지금은 canary mismatch보다 `dmesg`의 `digest error`가 먼저 드러날 가능성이 크다.
@@ -233,7 +233,7 @@ Digest가 실제로 협상됐는지는 ICResp PDU의 `dgst` byte가 `0x3`(header
 
 2026-10-07 실행 결과: 세 arm 모두 약 453 GiB에서 0건, digest 오류 0건이었다. rock5bp 안의 target 경로만으로는 재현되지 않으므로 다음 실험은 initiator를 원격 노드(예: macmini)로 옮긴다. rock5bp에서 같은 방식으로 scratch zvol과 NQN을 export하되, 원격 노드에서 `/dev/nvme-fabrics`에 `traddr=<rock5bp IP>`로 연결한다. 한 arm은 digest 없이, 다른 arm은 `hdr_digest,data_digest`로 연결하고 같은 `storage-canary -mode run`을 원격 노드에서 돌린다. 해석은 같다. digest arm에서 `data digest error`가 나면 원격 initiator와 rock5bp 사이 네트워크·NIC 구간이고, digest 오류 없이 digest arm 데이터도 손상되면 initiator 쪽(digest 계산 이전)이다. 원격 노드의 digest 오류는 그 노드의 `dmesg`(`nvme_tcp`)와 rock5bp의 `dmesg`(`nvmet_tcp`) 양쪽에서 확인한다.
 
-이후 2026-10-08..11에 이 원격 접근 방식을 넓힌 factorial 캠페인이 손상을 rock5bp NIC 수신 경로로 좁혔다. 원격 NVMe/TCP arm(cell마다 sub-arm당 약 55 GiB)은 0건이었고, digest는 실험 arm에서 1건·본번 volume에서 1건을 잡았다. 결과와 측정 방법은 "이어받기"의 현재 상태를 본다.
+이후 2026-10-08..11에 이 원격 접근 방식을 넓힌 factorial 캠페인이 손상을 rock5bp NIC 수신 경로로 좁혔다. 원격 NVMe/TCP arm(cell마다 sub-arm당 약 55 GiB)은 0건이었고, digest는 실험 arm에서 1건·운영 volume에서 1건을 잡았다. 결과와 측정 방법은 "이어받기"의 현재 상태를 본다.
 
 ## 수정 후 확인
 
