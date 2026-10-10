@@ -11,3 +11,22 @@ spec:
     requests:
       storage: 1536Gi
   storageClassName: hdd-ha-local
+---
+# Immich ML model cache. HF revision v2 RKNN downloads are ~12 GiB for
+# nllb-clip alone (every Rockchip SoC variant plus safetensors). On emptyDir
+# they were re-downloaded after every pod restart and filled rock5bp's root
+# disk; the cache is re-downloadable, so a single-replica volume is enough.
+apiVersion: v1
+kind: PersistentVolumeClaim
+metadata:
+  name: immich-machine-learning-cache
+  annotations:
+    pillar-csi.bhyoo.com/backend: |
+      zfs: {properties: {refreservation: none}}
+spec:
+  accessModes:
+    - ReadWriteOnce
+  storageClassName: ssd-single
+  resources:
+    requests:
+      storage: 40Gi
