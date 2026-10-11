@@ -86,6 +86,15 @@ service:
   # -- NodePort for the service (if applicable).
   #  nodePort:
 
+httpRoute:
+  enabled: true
+  parentRefs:
+    - name: bhyoo-gateway
+      namespace: ingress-ctrl
+      sectionName: https
+  hostnames:
+    - jellyfin.bhyoo.com
+
 # -- Resource requests and limits for the Jellyfin container.
 resources:
   requests:
