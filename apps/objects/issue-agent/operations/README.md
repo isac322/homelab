@@ -10,7 +10,7 @@ publisher, and the privileged `dockerd` sidecar) runs in `issue-agent-runner`.
 | `issue-agent-records` | Read-only query/export of records for people and external readers | None. Needs `pods/exec` in both namespaces |
 | `issue-agent-backup` | Consistent online backup of the record stores. This is a **private operator artifact**: never give it to agents or external readers | Snapshot temp files next to each database, removed afterwards. Needs `pods/exec` in both namespaces |
 | `issue-agent-runner-home-migrate` | One-time copy of the runner home into `issue-agent-runner` during the namespace cutover | `status` is read-only. `migrate` patches the old PV, creates and deletes two scratch pods, writes the new home claim, and deletes runner pods that never started. `cleanup` deletes the scratch pods |
-| `issue-agent-docker-smoke` | Checks the pod-local Docker daemon from inside the runner container | Builds and runs containers on the privileged daemon; keeps an artifact directory under `/tmp` |
+| `issue-agent-docker-smoke` | Checks the pod-local Docker daemon from inside the runner container; `--policy` also checks its authorization policy | Builds and runs containers on the privileged daemon; keeps an artifact directory under `/tmp/issue-agent` |
 
 `issue-agent-records` and `issue-agent-backup` read hub, bridge, and n8n from
 `--namespace` (default `issue-agent`) and the runner from `--runner-namespace`
@@ -234,21 +234,49 @@ the runner container:
 kubectl --context homelab-backbone -n issue-agent-runner exec deploy/issue-agent-runner -c runner -- \
   /opt/issue-agent/bin/docker-smoke
 kubectl --context homelab-backbone -n issue-agent-runner exec deploy/issue-agent-runner -c runner -- \
+  /opt/issue-agent/bin/docker-smoke --policy
+kubectl --context homelab-backbone -n issue-agent-runner exec deploy/issue-agent-runner -c runner -- \
   /opt/issue-agent/bin/docker-smoke --krema-worktree /home/agent/checkouts/<krema-worktree>
 ```
 
 The script requires `DOCKER_HOST=unix://…` and UID 1000. It prints the daemon version
 and cgroup driver, then builds an image from a digest-pinned `busybox` fixture with a
 build context under `ISSUE_AGENT_CHECKOUTS`. It runs that image as `1000:1000` with the
-context bind-mounted read-only and an artifact directory under `/tmp` bind-mounted
-writable, and compares the SHA-256 of the input across the image, the bind mount, and
-the artifact. With `--krema-worktree` it then runs Krema's
+context bind-mounted read-only and an artifact directory under `/tmp/issue-agent`
+bind-mounted writable, and compares the SHA-256 of the input across the image, the bind
+mount, and the artifact. With `--krema-worktree` it then runs Krema's
 `tests/appium/run-e2e.sh test_smoke.py test_03_preview.py` from that worktree and
-writes its artifacts under the same directory. The daemon only sees
-`/home/agent/checkouts` and `/tmp`, so the worktree must be under checkouts.
+writes its artifacts under the same directory. The daemon's policy only allows bind
+sources below `/home/agent/checkouts` and `/tmp/issue-agent`, so the worktree must be
+under checkouts.
+
+`--policy` (combinable with `--krema-worktree`) asserts the daemon's Docker policy
+after the round trip. Each denial must carry the plugin's own message
+(`authorization denied by plugin issue-agent-authz`), so an unrelated error does not
+count as a pass:
+
+- denied: `--privileged`, `--cap-add SYS_ADMIN`, `--network host`, `--pid host`,
+  `-v /:/host`, `-v /run/issue-agent-docker:/s`, `--device /dev/sda`,
+  `--security-opt seccomp=unconfined`, a `local` volume with `o=bind,device=/`,
+  `docker plugin disable`, `exec --privileged`, `--volumes-from` and `docker update`;
+- refused by the BuildKit entitlements (not the plugin): `docker build --allow
+  network.host` of a `RUN --network=host` Dockerfile;
+- allowed: `--device /dev/dri`, which must expose exactly the curated `card0` and
+  `renderD128` inside the container.
+
+The policy itself is the dockerd sidecar's legacy authorization plugin
+(`runner/authz`, socket `/run/docker/plugins/issue-agent-authz.sock` inside the
+sidecar only). `dockerd-start` starts it before `dockerd` and refuses to start the
+daemon without it; if it dies later, every API call fails and the liveness probe
+restarts the sidecar. `/etc/docker/daemon.json` in the dockerd image disables the
+BuildKit `network-host`, `device` and `security-insecure` entitlements. A failing
+`--policy` run means the deployed dockerd image is missing the plugin or the
+entitlements; do not hand Docker work to agents until it passes.
 
 Side effects: the fixture image stays in the Docker data claim as cache, the tagged
-image and the build context are removed on exit, and the artifact directory (0700)
-stays in the pod's `/tmp` emptyDir until the pod restarts. Krema's harness builds and
-runs its own container on the same daemon. The script reads no Secret and does not
-touch GitHub, but the daemon is privileged: anything it runs has node-root reach.
+image, the build contexts, the `--policy` probe container and any probe volume are
+removed on exit, and the artifact directory (0700) stays in the pod's `/tmp` emptyDir
+until the pod restarts. Krema's harness builds and runs its own container on the same
+daemon. The script reads no Secret and does not touch GitHub. The daemon is
+privileged; the authorization policy limits what API clients can ask it to run, but a
+policy gap still means node-root reach.

@@ -27,7 +27,10 @@ mkdir -p "$HAPI_HOME" "$CODEX_HOME" "$ISSUE_AGENT_CHECKOUTS"
 
 # Native Codex state (sessions, archived_sessions, history) persists in CODEX_HOME.
 # Only the provider config and the image-versioned global instructions are replaced.
-install -m 600 "$provider_config" "$CODEX_HOME/config.toml"
+# The provider config is installed through codex-untrust, under the lock the
+# publisher's /checkout also takes when it adds untrusted project entries.
+codex_untrust=/opt/issue-agent/bin/codex-untrust
+"$codex_untrust" --install "$provider_config"
 if [[ -e "$CODEX_HOME/AGENTS.override.md" ]]; then
   fail "$CODEX_HOME/AGENTS.override.md would replace the common Issue Agent instructions; remove it deliberately."
 fi
@@ -38,6 +41,9 @@ install -m 644 /opt/issue-agent/profile/AGENTS.md "$CODEX_HOME/AGENTS.md"
 # from the clone's local HEAD, so fast-forward every existing clone. Agents never
 # commit on the default branch, so when upstream rewrote its history (force-push)
 # the base clone is reset to it; worktree branches and their commits are kept.
+# Every clone and its worktrees are marked untrusted for Codex, so a repository's
+# own .codex/ layer never loads (and Codex never auto-trusts it); the reinstalled
+# config above dropped the previous entries.
 shopt -s nullglob
 for checkout in "$ISSUE_AGENT_CHECKOUTS"/*/*; do
   [[ -d "$checkout" && ! -L "$checkout" ]] || continue
@@ -47,6 +53,7 @@ for checkout in "$ISSUE_AGENT_CHECKOUTS"/*/*; do
   origin="https://github.com/$repository.git"
   [[ "$(git -C "$checkout" rev-parse --show-toplevel)" == "$checkout" ]] || fail "$checkout is not a repository root"
   [[ "$(git -C "$checkout" remote get-url origin)" == "$origin" ]] || fail "$checkout origin is not $origin"
+  "$codex_untrust" "$checkout"
 
   git -C "$checkout" fetch --quiet --prune origin
   git -C "$checkout" remote set-head origin --auto >/dev/null

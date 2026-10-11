@@ -172,6 +172,22 @@ mutation($threadId: ID!) {
 
 MAX_DISPATCH_ATTEMPTS = 8
 MAX_ACTIVE_EVENTS = 5  # events in n8n at once, across every repository
+# pr_review events in n8n at once (each runs a high-effort agent turn with sub-agents; runner memory is sized
+# for this many, see apps/objects/issue-agent-runner/deployment-runner.yaml). Issue and repair events still
+# dispatch past capped reviews.
+MAX_ACTIVE_REVIEWS = 2
+# Transient park classes (set only by the bridge or n8n, never from agent text). A parked pr_review event of
+# such a class is re-queued automatically after AUTO_RETRY_BACKOFF[auto_retries], at most AUTO_RETRY_LIMIT
+# times; `stale_dispatch` only once (its cause is unobservable: a runner, hub, n8n or bridge restart).
+TRANSIENT_PARK_CLASSES = ("bridge_unreachable", "hub_5xx", "hub_unreachable", "stale_dispatch")
+AUTO_RETRY_LIMIT = 3
+AUTO_RETRY_BACKOFF = (600.0, 1800.0, 5400.0)
+STALE_DISPATCH_RETRY_LIMIT = 1
+# n8n transport failures reaching the bridge (n8n error workflow `error.message`), by failed node.
+_N8N_BRIDGE_NODES = ("Ensure session", "Send step to agent", "Check turn", "Submit review", "Finish reviewed")
+_N8N_TRANSPORT_ERROR_RE = re.compile(
+    r"The service refused the connection.*|connect ECONN(?:REFUSED|RESET) .*|socket hang up|read ECONNRESET"
+    r"|getaddrinfo EAI_AGAIN .*|timeout of \d+ms exceeded", re.DOTALL)
 DISPATCH_BACKOFF = 60.0
 STALE_SECONDS = 6 * 3600.0
 SPAWN_SETTLE_SECONDS = 300.0
@@ -465,7 +481,10 @@ CREATE TABLE IF NOT EXISTS {name} (
     attention_pending INTEGER NOT NULL DEFAULT 0,
     attention_node  TEXT,
     trusted         INTEGER,
-    pr_number       INTEGER
+    pr_number       INTEGER,
+    park_class      TEXT,
+    auto_retries    INTEGER NOT NULL DEFAULT 0,
+    auto_retry_at   REAL
 )"""
 # Columns added to ``events`` after the v2 kinds; ALTER TABLE ADD COLUMN keeps existing rows.
 EVENT_COLUMNS = (
@@ -473,6 +492,9 @@ EVENT_COLUMNS = (
     ("attention_node", "TEXT"),
     ("trusted", "INTEGER"),  # 1/0 collaborator verdict at intake; NULL for events recorded before it existed
     ("pr_number", "INTEGER"),
+    ("park_class", "TEXT"),  # transient failure class of an auto-retry-armed park (TRANSIENT_PARK_CLASSES)
+    ("auto_retries", "INTEGER NOT NULL DEFAULT 0"),  # automatic re-queues of this event so far
+    ("auto_retry_at", "REAL"),  # when the dispatcher re-queues an armed park; NULL when not armed
 )
 ISSUES_DDL = """
 CREATE TABLE IF NOT EXISTS {name} (
@@ -710,8 +732,10 @@ class Store:
         # running automatic reviews of other heads (a push back to a reviewed head makes the review started for
         # the newer head stale), and `_begin_review_head` ends pending ones. A running review carrying a
         # `review` comment keeps running: it reviews the live head, and this request queues nothing to replace
-        # it. A `review` comment always queues.
+        # it. A `review` comment always queues, and so does a re-review after a no-change repair
+        # (``Bridge._queue_rereview``: its own semantic key admits it once per head).
         if ev["kind"] == "pr_review" and ev.get("comment_id") is None and ev.get("head_sha") \
+                and not ev.get("rereview") \
                 and self.head_review_exists(conn, ev["repo"], int(ev["issue_number"]), ev["head_sha"]):
             self._cancel_outdated_review(conn, ev, now, automatic_only=True)
             return "duplicate"
@@ -754,6 +778,14 @@ class Store:
             " OR json_extract(stages, '$.review_published.sha') = ?) LIMIT 1",
             (repo, number, head, head),
         ).fetchone() is not None
+
+    def review_head(self, delivery_id: str) -> str | None:
+        """The head a review this delivery published is about: its recorded ``review_published`` SHA, else the
+        event's head (the review landed but its POST reply was lost before the record); None for an unknown
+        delivery."""
+        rows = self.query("SELECT COALESCE(json_extract(stages, '$.review_published.sha'), head_sha) AS sha"
+                          " FROM events WHERE delivery_id = ?", (delivery_id,))
+        return rows[0]["sha"] if rows else None
 
     @staticmethod
     def _fold_review_requests(conn: sqlite3.Connection, ev: dict[str, Any], now: float) -> None:
@@ -1026,11 +1058,27 @@ def http_json(method: str, url: str, *, headers: Mapping[str, str], body: Any = 
 
 
 class OpError(Exception):
-    def __init__(self, error: str, *, retryable: bool = False, needs_operator: bool = False):
+    def __init__(self, error: str, *, retryable: bool = False, needs_operator: bool = False,
+                 park_class: str | None = None):
         super().__init__(error)
         self.error = error
         self.retryable = retryable
         self.needs_operator = needs_operator
+        # A TRANSIENT_PARK_CLASSES member when the event this failure parks may be re-queued automatically.
+        self.park_class = park_class
+
+
+class HubTransportError(TransportError):
+    """A HAPI hub request that got no HTTP status: transient for review parks (``hub_unreachable``)."""
+
+    park_class = "hub_unreachable"
+
+
+def hub_park_class(status: int) -> str | None:
+    """Park class of a failed HAPI hub HTTP exchange: 5xx answers and missing answers (status 0) are transient."""
+    if status >= 500:
+        return "hub_5xx"
+    return "hub_unreachable" if status == 0 else None
 
 
 class Hapi:
@@ -1052,12 +1100,13 @@ class Hapi:
             status, data = http_json("POST", self.base_url + "/api/auth", headers={},
                                      body={"accessToken": access}, timeout=self.timeout)
         except TransportError as exc:
-            raise OpError(f"hapi auth transport: {exc}", retryable=True) from None
+            raise OpError(f"hapi auth transport: {exc}", retryable=True, park_class="hub_unreachable") from None
         if status == 401:
             raise OpError("hapi access token rejected", needs_operator=True)
         token = data.get("token") if isinstance(data, dict) else None
         if status != 200 or not isinstance(token, str) or not token:
-            raise OpError(f"hapi auth failed: HTTP {status}", retryable=status >= 500)
+            raise OpError(f"hapi auth failed: HTTP {status}", retryable=status >= 500,
+                          park_class=hub_park_class(status))
         return token
 
     def request(self, method: str, path: str, body: Any = None, query: Mapping[str, Any] | None = None,
@@ -1070,8 +1119,11 @@ class Hapi:
                 if self._jwt is None:
                     self._jwt = self._authenticate()
                 jwt = self._jwt
-            status, data = http_json(method, url, headers={"Authorization": f"Bearer {jwt}"}, body=body,
-                                     timeout=timeout or self.timeout)
+            try:
+                status, data = http_json(method, url, headers={"Authorization": f"Bearer {jwt}"}, body=body,
+                                         timeout=timeout or self.timeout)
+            except TransportError as exc:
+                raise HubTransportError(str(exc), not_sent=exc.not_sent) from None
             if status == 401 and attempt == 0:
                 # Middleware 401 means the request was not executed; re-exchange once.
                 with self._lock:
@@ -1260,17 +1312,27 @@ def _pull_request_issue_number(pr: Mapping[str, Any]) -> int | None:
     return None
 
 
-def _app_review_of(reviews: list[dict[str, Any]], login: str | None, sha: str) -> dict[str, Any] | None:
-    """The latest review ``login`` (the review App) published of commit ``sha``: GitHub lists reviews
-    oldest-first and the latest carries the verdict. Only reviews whose body carries the bridge's hidden
-    marker count; a reply-only review (an empty COMMENTED review GitHub records when a thread reply is
-    posted) is stamped with the head at that moment but reviewed nothing."""
-    if not login:
+# The hidden marker the bridge writes as the first line of every review it posts:
+# ``<!-- issue-agent:<delivery>:review:<reviewed sha> -->`` (reviews posted before the SHA was added lack it).
+_REVIEW_MARKER_RE = re.compile(
+    re.escape(BOT_MARKER_PREFIX) + r":([A-Za-z0-9-]{1,64}):review(?::([0-9a-f]{40}))? -->")
+
+
+def _review_marker(review: Mapping[str, Any]) -> tuple[str, str | None] | None:
+    """(delivery, reviewed SHA or None) of the bridge's marker on the review body's first line, else None.
+
+    Only the first line counts: the bridge writes ``f"{marker}\\n{body}"``, so agent or human text further
+    down can never pass for a marker."""
+    body = review.get("body")
+    if not isinstance(body, str):
         return None
-    return next((r for r in reversed(reviews)
-                 if r.get("commit_id") == sha and isinstance(r.get("user"), dict)
-                 and (r["user"].get("login") or "").casefold() == login.casefold()
-                 and BOT_MARKER_PREFIX in (r.get("body") or "")), None)
+    match = _REVIEW_MARKER_RE.fullmatch(body.split("\n", 1)[0].rstrip("\r"))
+    return (match.group(1), match.group(2)) if match else None
+
+
+def _authored_by(review: Mapping[str, Any], login: str | None) -> bool:
+    user = review.get("user")
+    return bool(login) and isinstance(user, dict) and (user.get("login") or "").casefold() == login.casefold()
 
 
 def _pr_signal(
@@ -1554,6 +1616,11 @@ def local_id_for(delivery_id: str, mode: str) -> str:
 
 
 CORRECTION_SUFFIX = "-fix"
+# Bridge-owned addition to the instructions of a step re-sent after its turn was lost (runner restart,
+# eviction, removed runner machine or an automatic retry of a parked review).
+LOST_TURN_NOTICE = ("\nThis step was interrupted (runner restart or eviction) and is being sent again. "
+                    "Do not reuse conclusions, environment observations or command results from before the "
+                    "interruption: re-check the pull request head SHA and tool availability, and redo your evidence.")
 
 
 def resend_local_id(delivery_id: str, mode: str, current: str) -> str:
@@ -1622,6 +1689,7 @@ _REVIEW_SCHEMA = """\
  "body":"English markdown <=60000 (review body per isac-pr-review comment-template; on re-review first section lists prior findings Closed/Open)",
  "comments":[{"path":"str","line":int>=1,"side":"RIGHT|LEFT","start_line":null | int < line,"body":"<=20000"}] (max 50, new inline findings; start_line null for a single-line comment, first line of the range for a multi-line one),
  "thread_replies":[{"comment_id":int (databaseId of any comment in an existing review thread),"body":"<=20000","resolve":bool}] (max 100),
+ "open_items":[strings <=200] (max 20; one item per maintainer decision, unrefuted P0-P2 concern or uncovered triggered lens that keeps the verdict from APPROVE; only with event COMMENT or REQUEST_CHANGES, may be empty),
  "summary":"<=2000",
  "blockers":[strings]}"""
 
@@ -1954,8 +2022,12 @@ def _review(v: dict[str, Any]) -> dict[str, Any]:
         replies.append({"comment_id": r["comment_id"], "body": _text(r["body"], 20000, "thread reply body"),
                         "resolve": r["resolve"]})
     _require(len({r["comment_id"] for r in replies}) == len(replies), "thread_replies repeat a comment_id")
+    items = _texts(v["open_items"], 200, 20, "open_items")
+    _require(not items or reviewed, "open_items requires status reviewed")
+    _require(not items or event in ("COMMENT", "REQUEST_CHANGES"),
+             "open_items requires event COMMENT or REQUEST_CHANGES")
     return {"status": status, "head_sha": head, "event": event, "body": body, "comments": findings,
-            "thread_replies": replies, "summary": _text(v["summary"], 2000, "summary"),
+            "thread_replies": replies, "open_items": items, "summary": _text(v["summary"], 2000, "summary"),
             "blockers": _texts(v["blockers"], 2000, 20, "blockers")}
 
 
@@ -1963,7 +2035,8 @@ RESULT_KEYS = {
     "triage": ("status", "verdict", "fault_domain", "duplicate_of", "labels", "comment", "next_action",
                "implementation_brief", "questions", "summary", "blockers", "security_advisory"),
     "implement": ("status", "pr", "issue_comment", "questions", "summary", "blockers", "local_checks"),
-    "review": ("status", "head_sha", "event", "body", "comments", "thread_replies", "summary", "blockers"),
+    "review": ("status", "head_sha", "event", "body", "comments", "thread_replies", "open_items", "summary",
+               "blockers"),
 }
 
 
@@ -2056,10 +2129,12 @@ class Bridge:
             result = fn(request)
         except OpError as exc:
             LOG.warning("op %s failed: %s", request["op"], exc.error)
-            return {"ok": False, "error": exc.error, "retryable": exc.retryable, "needs_operator": exc.needs_operator}
+            return {"ok": False, "error": exc.error, "retryable": exc.retryable, "needs_operator": exc.needs_operator,
+                    "park_class": exc.park_class}
         except TransportError as exc:
             LOG.warning("op %s transport failure: %s", request["op"], exc)
-            return {"ok": False, "error": f"transport: {exc}", "retryable": True, "needs_operator": False}
+            return {"ok": False, "error": f"transport: {exc}", "retryable": True, "needs_operator": False,
+                    "park_class": getattr(exc, "park_class", None)}  # HubTransportError only, never GitHub's
         return {"ok": True, **result}
 
     def _keyed_lock(self, key: Any) -> threading.Lock:
@@ -2246,21 +2321,115 @@ class Bridge:
         if ev["state"] == "needs_attention":
             raise OpError("event_terminal")
         detail = req.get("detail")
+        pr_number = ev["pr_number"] or self.store.issue(ev["repo"], ev["issue_number"])["pr_number"]
+        rereview = self._rereview_obligation(ev, outcome, pr_number)
         # The run's outcome is recorded first: nothing after this point can turn a finished run into a failure.
-        self.store.update_event(ev["delivery_id"], state="completed", outcome=outcome,
-                                detail=detail[:2000] if isinstance(detail, str) else None)
+        # A re-review the outcome owes is recorded in the same write, so a failure to queue it is retried
+        # (``drain_rereview``) rather than lost.
+        with self.store.tx() as conn:
+            stages = json.loads(conn.execute("SELECT stages FROM events WHERE seq = ?", (ev["seq"],)).fetchone()[0])
+            if rereview is not None:
+                stages["rereview_pending"] = rereview
+            conn.execute("UPDATE events SET state = 'completed', outcome = ?, detail = ?, stages = ?, updated_at = ?"
+                         " WHERE seq = ?", (outcome, detail[:2000] if isinstance(detail, str) else None,
+                                            json.dumps(stages), time.time(), ev["seq"]))
         self._archive_session(ev)
         self._clear_attention_label(ev["repo"], int(ev["issue_number"]))
-        pr_number = ev["pr_number"] or self.store.issue(ev["repo"], ev["issue_number"])["pr_number"]
         if pr_number:
             if ev["kind"] == "pr_repair":
                 self.store.release_pr_repair(ev["repo"], int(pr_number), ev["delivery_id"], success=True)
+            if rereview is not None:
+                self.drain_rereview(ev["delivery_id"])
             self.store.dirty_pr(ev["repo"], int(pr_number))
             try:
                 self.reconcile_pr(ev["repo"], int(pr_number))
             except (OpError, TransportError) as exc:
                 LOG.warning("post-turn PR reconciliation pending for %s#%s: %s", ev["repo"], pr_number, exc)
         return {"already": False}
+
+    def _rereview_obligation(self, ev: sqlite3.Row, outcome: str, pr_number: Any) -> dict[str, Any] | None:
+        """The re-review a finishing repair owes (v5 #2), from local evidence only: the repair the review App's
+        change request caused ended without a change (the agent answered the findings instead of pushing), so
+        the reviewer must weigh the answers on the same head. None when nothing is owed."""
+        reviewer = self.reviewer_login()
+        if ev["kind"] != "pr_repair" or outcome != "no_change" or not pr_number or self.review_github is None \
+                or not reviewer:
+            return None
+        snapshot = json.loads(ev["stages"] or "{}").get("repair_snapshot") or {}
+        requests = (snapshot.get("findings") or {}).get("change_requests") or []
+        if not any(isinstance(r, dict) and _authored_by(r, reviewer) for r in requests):
+            return None
+        head = (snapshot.get("state") or {}).get("head_sha") or ev["head_sha"]
+        if not isinstance(head, str) or not _SHA_RE.fullmatch(head):
+            return None
+        return {"pr_number": int(pr_number), "head": head, "next_at": 0}
+
+    def drain_rereview(self, delivery_id: str, now: float | None = None) -> str | None:
+        """Queue the re-review a completed repair owes (``stages.rereview_pending``) and drop the obligation once
+        it is queued or no longer needed; a transient failure keeps it for the dispatcher to retry after
+        DISPATCH_BACKOFF. Returns the enqueue outcome, None when nothing was queued."""
+        now = time.time() if now is None else now
+        ev = self.store.event(delivery_id)
+        pending = json.loads(ev["stages"] or "{}").get("rereview_pending") if ev is not None else None
+        if not isinstance(pending, dict) or float(pending.get("next_at") or 0) > now:
+            return None
+        try:
+            outcome = self._queue_rereview(ev, pending)
+        except (OpError, TransportError) as exc:
+            if isinstance(exc, TransportError) or exc.retryable:
+                LOG.warning("re-review owed by %s not queued yet (retrying): %s", delivery_id, exc)
+                self._set_rereview_pending(delivery_id, {**pending, "next_at": now + DISPATCH_BACKOFF})
+                return None
+            LOG.error("re-review owed by %s dropped: %s", delivery_id, exc)
+            outcome = None
+        self._set_rereview_pending(delivery_id, None)
+        return outcome
+
+    def _set_rereview_pending(self, delivery_id: str, pending: dict[str, Any] | None) -> None:
+        with self.store.tx() as conn:
+            row = conn.execute("SELECT stages FROM events WHERE delivery_id = ?", (delivery_id,)).fetchone()
+            if row is None:
+                return
+            stages = json.loads(row["stages"])
+            if pending is None:
+                stages.pop("rereview_pending", None)
+            else:
+                stages["rereview_pending"] = pending
+            conn.execute("UPDATE events SET stages = ?, updated_at = ? WHERE delivery_id = ?",
+                         (json.dumps(stages), time.time(), delivery_id))
+
+    def _queue_rereview(self, ev: sqlite3.Row, pending: Mapping[str, Any]) -> str | None:
+        """Queue the owed review of ``pending['head']`` while it is still the open pull request's head.
+
+        At most once per head: the request's semantic key ``<repo>#pr:<n>:rereview:<head>`` is unique. The
+        request is explicit (``_explicit_review``): it is not dropped as a repeat of the head, does not end or
+        retarget at begin, and posts a new review instead of reusing the one it re-checks. A moved head needs
+        nothing here; its push queues its own review. Repair streak and window limits bound the loop."""
+        pr_number, head = int(pending["pr_number"]), pending["head"]
+        cfg = self.registry().get(ev["repo"])
+        if cfg is None or self.review_github is None:
+            return None
+        live = self._get_pr(ev["repo"], pr_number, client=self.review_github)
+        if live.get("state") != "open" or live.get("draft") or (live.get("head") or {}).get("sha") != head:
+            return None
+        # Repair delivery ids are up to 58 characters; a digest keeps this one within _DELIVERY_RE's 64.
+        delivery = "pr-rereview-" + hashlib.sha256(ev["delivery_id"].encode()).hexdigest()[:48]
+        default_branch = ((live.get("base") or {}).get("repo") or {}).get("default_branch")
+        request = _pr_signal(cfg, delivery, self.config.github_bot_login or "issue-agent", default_branch, live,
+                             kind="pr_review", body=live.get("body") or "")
+        if isinstance(request, str):
+            return None
+        request["semantic_key"] = f"{ev['repo']}#pr:{pr_number}:rereview:{head}"
+        request["rereview"] = True
+        outcome = self.store.enqueue(request)
+        LOG.info("re-review of %s#%s at %s after a no-change repair: %s", ev["repo"], pr_number, head, outcome)
+        return outcome
+
+    @staticmethod
+    def _explicit_review(ev: sqlite3.Row) -> bool:
+        """A review someone asked for (a `review` comment, its own or folded into it) or a re-review after a
+        no-change repair: it reviews the live head even when the review App already reviewed it."""
+        return ev["comment_id"] is not None or ":rereview:" in (ev["semantic_key"] or "")
 
     def _clear_attention_label(self, repo: str, number: int) -> None:
         """A successful run clears the failure notice the bridge put on the subject, if it put one there.
@@ -2320,7 +2489,12 @@ class Bridge:
         detail = req.get("detail")
         detail = detail[:2000] if isinstance(detail, str) and detail.strip() else "workflow reported failure"
         node = req.get("node")
-        self.mark_attention(ev, detail, node[:200] if isinstance(node, str) and node.strip() else None)
+        # n8n forwards the class of the bridge error (or of its own exhausted transport loop); anything outside
+        # the closed enum is ignored, so the park stays operator-owned.
+        park_class = req.get("park_class")
+        park_class = park_class if park_class in TRANSIENT_PARK_CLASSES else None
+        self.mark_attention(ev, detail, node[:200] if isinstance(node, str) and node.strip() else None,
+                            park_class=park_class)
         if ev["kind"] == "pr_repair" and ev["pr_number"]:
             self.store.release_pr_repair(ev["repo"], int(ev["pr_number"]), ev["delivery_id"], success=False)
         return {}
@@ -2342,7 +2516,12 @@ class Bridge:
             return {"delivery_id": ev["delivery_id"], "already": True}
         node, error = req.get("node"), req.get("error")
         detail = error[:2000] if isinstance(error, str) and error.strip() else "n8n execution failed"
-        self.mark_attention(ev, detail, node[:200] if isinstance(node, str) and node.strip() else None)
+        # Only an n8n transport failure reaching the bridge is transient; any other node error (agent output
+        # handled by a Code node included) stays operator-owned.
+        transport = isinstance(node, str) and (node.startswith("Run agent session (") or node in _N8N_BRIDGE_NODES) \
+            and isinstance(error, str) and _N8N_TRANSPORT_ERROR_RE.fullmatch(error.strip()) is not None
+        self.mark_attention(ev, detail, node[:200] if isinstance(node, str) and node.strip() else None,
+                            park_class="bridge_unreachable" if transport else None)
         if ev["kind"] == "pr_repair" and ev["pr_number"]:
             self.store.release_pr_repair(ev["repo"], int(ev["pr_number"]), ev["delivery_id"], success=False)
         return {"delivery_id": ev["delivery_id"], "already": False}
@@ -2380,17 +2559,30 @@ class Bridge:
             lines += ["", footer]
         return "\n".join(lines)
 
-    def mark_attention(self, ev: sqlite3.Row, detail: str, node: str | None = None) -> None:
+    def mark_attention(self, ev: sqlite3.Row, detail: str, node: str | None = None, *,
+                       park_class: str | None = None) -> None:
         """Park the event, then make it visible on GitHub (``notify_attention``).
 
         Parking claims the retry slot (``next_attempt_at`` in the future) in the same write, so the
         dispatcher's pending-notice scan cannot pick the event up while this inline notice is in flight.
+
+        A ``pr_review`` park of a transient class (``TRANSIENT_PARK_CLASSES``) with a recorded head is armed for
+        an automatic retry (``Bridge.auto_retry_event``) after AUTO_RETRY_BACKOFF[auto_retries], while fewer than
+        AUTO_RETRY_LIMIT retries (STALE_DISPATCH_RETRY_LIMIT for ``stale_dispatch``) ran; any other park is
+        operator-owned and records no class.
         """
         if ev["state"] != "needs_attention":
+            retries = int(ev["auto_retries"] or 0)
+            limit = STALE_DISPATCH_RETRY_LIMIT if park_class == "stale_dispatch" else AUTO_RETRY_LIMIT
+            armed = ev["kind"] == "pr_review" and park_class in TRANSIENT_PARK_CLASSES and bool(ev["head_sha"]) \
+                and retries < limit
+            now = time.time()
             self.store.update_issue(ev["repo"], ev["issue_number"], blocked=1, detail=detail)
             self.store.update_event(ev["delivery_id"], state="needs_attention", detail=detail,
                                     attention_pending=1, attention_node=node,
-                                    next_attempt_at=time.time() + DISPATCH_BACKOFF)
+                                    next_attempt_at=now + DISPATCH_BACKOFF,
+                                    park_class=park_class if armed else None,
+                                    auto_retry_at=now + AUTO_RETRY_BACKOFF[retries] if armed else None)
         LOG.error("%s#%d event %s needs attention: %s", ev["repo"], ev["issue_number"], ev["delivery_id"], detail)
         self.notify_attention(ev["delivery_id"])
 
@@ -2432,6 +2624,12 @@ class Bridge:
                 done = False
             else:
                 self.store.update_issue(ev["repo"], ev["issue_number"], attention_label=1)
+            if ev["kind"] == "pr_review" and ev["head_sha"] and gh is not None:
+                try:
+                    self._review_error_status(ev)
+                except (OpError, TransportError) as exc:
+                    LOG.error("review error status for %s not set (will retry): %s", delivery_id, exc)
+                    done = False
             if done:
                 self.store.update_event(delivery_id, attention_pending=0)
             else:
@@ -2465,7 +2663,7 @@ class Bridge:
             # old one would make the stale sweep park the retried event again before n8n can begin it.
             self.store.update_event(ev["delivery_id"], state="accepted", stages=json.dumps(stages), attempts=0,
                                     next_attempt_at=0, detail=None, attention_pending=0, attention_node=None,
-                                    heartbeat_at=None, execution_id=None)
+                                    heartbeat_at=None, execution_id=None, park_class=None, auto_retry_at=None)
         self.store.update_issue(ev["repo"], ev["issue_number"], blocked=0, detail=None)
         return {}
 
@@ -2474,28 +2672,37 @@ class Bridge:
 
         Retryable lookup failures propagate, so the event stays parked rather than resuming on a stale turn.
         """
+        return self._answered_result(ev, turn)[0] == "answered"
+
+    def _answered_result(self, ev: sqlite3.Row, turn: sqlite3.Row) -> tuple[str, Any]:
+        """(state, raw result) of a sent turn, by session_turn's rule. States: 'answered' (raw is the result
+        line's value), 'unanswered' (handed to the agent, which is not working on it and left no result),
+        'busy' (the live agent is still thinking or waiting on a request), 'queued' (not yet handed to the agent,
+        or the hub cannot tell) and 'gone' (the session or our message is out of reach for good).
+
+        Retryable lookup failures propagate."""
         local_id = turn["local_id"]
         try:
             session = self._follow(ev["repo"], ev["issue_number"], turn["session_id"])
         except OpError as exc:
             if exc.retryable:
                 raise
-            return False  # session gone for good: nothing can be re-read, keep the turn as it is
+            return "gone", None  # session gone for good: nothing can be re-read, keep the turn as it is
         sid = session["id"]
         state = self._queued_state(sid, local_id)
         if state in ("queued", "indeterminate"):
-            return False
+            return "queued", None
         try:
             history = self._history_from(sid, local_id)
         except OpError as exc:
             if exc.retryable:
                 raise
-            return False  # our message is out of reach: nothing to re-read
+            return "gone", None  # our message is out of reach: nothing to re-read
         if history is None or not invoked(history[0]) and state != "invoked":
-            return False  # not yet handed to the agent: session_turn reports it as queued
+            return "queued", None  # not yet handed to the agent: session_turn reports it as queued
         alive = session.get("active") is not False
         if alive and (session.get("thinking") or (session.get("agentState") or {}).get("requests")):
-            return False
+            return "busy", None
         last_text: list[str] = []
         for m in history[1:]:
             if message_role(m) == "user" and m.get("localId") != local_id and invoked(m):
@@ -2503,7 +2710,109 @@ class Bridge:
             texts = assistant_texts(m)
             if texts:
                 last_text = texts
-        return find_result(last_text, local_id) is not None
+        raw = find_result(last_text, local_id)
+        return ("unanswered", None) if raw is None else ("answered", raw)
+
+    def _other_parked(self, ev: sqlite3.Row) -> bool:
+        return bool(self.store.query(
+            "SELECT 1 FROM events WHERE repo = ? AND issue_number = ? AND delivery_id != ?"
+            " AND state = 'needs_attention' LIMIT 1", (ev["repo"], ev["issue_number"], ev["delivery_id"])))
+
+    def _end_parked_review(self, ev: sqlite3.Row, outcome: str, detail: str) -> None:
+        """Complete an armed review park whose pull request moved on; the subject unblocks unless another
+        parked event still blocks it. 'pr_not_open' releases the head key (like ``_begin_review_head``), so the
+        head is reviewed again if the pull request reopens; a 'superseded' head stays requested."""
+        with self.store.tx() as conn:
+            conn.execute(
+                "UPDATE events SET state = 'completed', outcome = ?, detail = ?, attention_pending = 0,"
+                " park_class = NULL, auto_retry_at = NULL, semantic_key = CASE"
+                " WHEN ? = 'pr_not_open' AND semantic_key = repo || '#pr:' || issue_number || ':review:' || head_sha"
+                " THEN semantic_key || ':pr_not_open:' || delivery_id ELSE semantic_key END, updated_at = ?"
+                " WHERE delivery_id = ? AND state = 'needs_attention'",
+                (outcome, detail, outcome, time.time(), ev["delivery_id"]))
+        if not self._other_parked(ev):
+            self.store.update_issue(ev["repo"], ev["issue_number"], blocked=0, detail=None)
+
+    def auto_retry_event(self, delivery_id: str, now: float | None = None) -> str:
+        """Dispatcher: re-queue a transient ``pr_review`` park (``mark_attention`` armed it) once its backoff is due.
+
+        Only while the pull request is open, not a draft and still at the parked head, and no other event on it
+        is pending, running or parked; a GitHub read failure or a busy pull request waits DISPATCH_BACKOFF
+        without counting. A closed pull request ends the event 'pr_not_open', a moved head 'superseded' (the
+        push queued its own review). A sent turn is settled first:
+
+        * answered with a valid result for the live head: the turn keeps its localId, so the new execution's
+          session_send reports 'already' and session_turn collects that result for publication;
+        * answered with an invalid result: never retried automatically; the park becomes operator-owned;
+        * unanswered (or answered about another head): re-sent under a fresh localId with LOST_TURN_NOTICE;
+        * still running, queued or out of reach: left alone (session_turn and ensure_session handle it).
+
+        The same event is re-queued with its recorded stages (never a new event), and ``auto_retries`` counts it.
+        """
+        now = time.time() if now is None else now
+        ev = self.store.event(delivery_id)
+        if ev is None or ev["state"] != "needs_attention" or ev["kind"] != "pr_review" or not ev["park_class"]:
+            return "skipped"
+        repo, number = ev["repo"], int(ev["issue_number"])
+        if self.store.query(
+                "SELECT 1 FROM events WHERE repo = ? AND issue_number = ? AND delivery_id != ?"
+                " AND state IN ('accepted', 'dispatching', 'dispatched', 'needs_attention') LIMIT 1",
+                (repo, number, delivery_id)):
+            self.store.update_event(delivery_id, auto_retry_at=now + DISPATCH_BACKOFF)
+            return "waiting"
+        try:
+            live = self._get_pr(repo, number, client=self.review_github)
+        except (OpError, TransportError) as exc:
+            LOG.warning("automatic retry of %s waits: pull request read failed: %s", delivery_id, exc)
+            self.store.update_event(delivery_id, auto_retry_at=now + DISPATCH_BACKOFF)
+            return "waiting"
+        head = (live.get("head") or {}).get("sha")
+        if live.get("state") != "open" or live.get("draft"):
+            where = "a draft" if live.get("draft") else live.get("state")
+            self._end_parked_review(ev, "pr_not_open", f"pull request is {where} while the review was parked")
+            return "pr_not_open"
+        if head != ev["head_sha"]:
+            self._end_parked_review(ev, "superseded", f"head moved while parked: {ev['head_sha']} -> {head}")
+            return "superseded"
+        with self.session_lock:
+            # Same lock as session_send/session_turn/retry_event: nothing changes the turn in between.
+            ev = self.store.event(delivery_id)
+            if ev is None or ev["state"] != "needs_attention" or not ev["park_class"]:
+                return "skipped"
+            turn = self.store.turn(delivery_id)
+            if turn is not None and turn["state"] == "sent" and turn["mode"] in MODES:
+                try:
+                    state, raw = self._answered_result(ev, turn)
+                except (OpError, TransportError) as exc:
+                    LOG.warning("automatic retry of %s waits: turn lookup failed: %s", delivery_id, exc)
+                    self.store.update_event(delivery_id, auto_retry_at=now + DISPATCH_BACKOFF)
+                    return "waiting"
+                if state == "answered":
+                    result = validate_result(turn["mode"], raw, number)
+                    if isinstance(result, str):
+                        # Schema-invalid results are never retried automatically. The notice runs again so the
+                        # review status says an operator is needed.
+                        self.store.update_event(delivery_id, park_class=None, auto_retry_at=None,
+                                                attention_pending=1, next_attempt_at=0)
+                        return "operator"
+                    if result.get("head_sha") != head:
+                        state = "unanswered"  # a result about another head is never published for this one
+                if state == "unanswered":
+                    self.store.put_turn(delivery_id, turn["mode"],
+                                        resend_local_id(delivery_id, turn["mode"], turn["local_id"]),
+                                        turn["session_id"], "lost")
+            stages = json.loads(ev["stages"])
+            stages.pop("started", None)
+            retries = int(ev["auto_retries"] or 0) + 1
+            stages["auto_retry"] = {"n": retries, "at": now, "park_class": ev["park_class"]}
+            self.store.update_event(delivery_id, state="accepted", stages=json.dumps(stages), attempts=0,
+                                    next_attempt_at=0, detail=None, attention_pending=0, attention_node=None,
+                                    heartbeat_at=None, execution_id=None, auto_retries=retries, park_class=None,
+                                    auto_retry_at=None)
+        if not self._other_parked(ev):
+            self.store.update_issue(repo, number, blocked=0, detail=None)
+        LOG.info("%s#%d review %s re-queued automatically (retry %d)", repo, number, delivery_id, retries)
+        return "requeued"
 
     def op_unblock_issue(self, req: dict[str, Any]) -> dict[str, Any]:
         repo, number = req.get("repo"), _positive_int(req.get("issue_number"))
@@ -2521,7 +2830,8 @@ class Bridge:
             return None
         session = data.get("session") if isinstance(data, dict) else None
         if status != 200 or not isinstance(session, dict):
-            raise OpError(f"hapi session lookup HTTP {status}", retryable=status >= 500)
+            raise OpError(f"hapi session lookup HTTP {status}", retryable=status >= 500,
+                          park_class=hub_park_class(status))
         return session
 
     def _follow(self, repo: str, number: int, session_id: str) -> dict[str, Any]:
@@ -2558,7 +2868,7 @@ class Bridge:
         status, data = self.hapi.request("GET", "/api/machines")
         machines = data.get("machines") if isinstance(data, dict) else None
         if status != 200 or not isinstance(machines, list):
-            raise OpError(f"hapi machine list HTTP {status}", retryable=True)
+            raise OpError(f"hapi machine list HTTP {status}", retryable=True, park_class=hub_park_class(status))
         return {m["id"] for m in machines if isinstance(m, dict) and isinstance(m.get("id"), str)}
 
     @staticmethod
@@ -2597,7 +2907,7 @@ class Bridge:
         status, data = self.hapi.request("GET", "/api/sessions", query={"limit": 500, "order": "updatedAt"})
         sessions = data.get("sessions") if isinstance(data, dict) else None
         if status != 200 or not isinstance(sessions, list):
-            raise OpError(f"hapi session list HTTP {status}", retryable=True)
+            raise OpError(f"hapi session list HTTP {status}", retryable=True, park_class=hub_park_class(status))
         known = self._machine_ids()
         name_re = re.compile(rf"^{re.escape(worktree_name)}(?:-[0-9a-f]{{4}})*$")
         found = []
@@ -2616,16 +2926,18 @@ class Bridge:
         status, data = self.hapi.request("GET", "/api/machines")
         machines = data.get("machines") if isinstance(data, dict) else None
         if status != 200 or not isinstance(machines, list):
-            raise OpError(f"hapi machine list HTTP {status}", retryable=True)
+            raise OpError(f"hapi machine list HTTP {status}", retryable=True, park_class=hub_park_class(status))
         ids = [m["id"] for m in machines if isinstance(m, dict) and isinstance(m.get("id"), str)
                and m.get("active", True)]
         if cfg.machine_id:
             if cfg.machine_id not in ids:
-                raise OpError("configured runner machine is offline", retryable=True)
+                # A runner restart: transient, retried automatically for review parks.
+                raise OpError("configured runner machine is offline", retryable=True, park_class="hub_unreachable")
             return cfg.machine_id
         if len(ids) != 1:
+            # None online is a runner restart (transient); several online is a misconfiguration (operator).
             raise OpError(f"expected exactly one online runner, found {len(ids)}", retryable=not ids,
-                          needs_operator=bool(ids))
+                          needs_operator=bool(ids), park_class=None if ids else "hub_unreachable")
         return ids[0]
 
     def op_ensure_session(self, req: dict[str, Any]) -> dict[str, Any]:
@@ -2672,13 +2984,16 @@ class Bridge:
             current = self._follow(repo, number, sid)
             if current.get("active"):
                 return current
-            raise OpError("session resume outcome unknown", needs_operator=True) from None
+            # Still an operator park for n8n, but a review park of this class is retried automatically later.
+            raise OpError("session resume outcome unknown", needs_operator=True,
+                          park_class="hub_unreachable") from None
         code = data.get("code") if isinstance(data, dict) else None
         if status == 503:
-            raise OpError(f"resume failed: {code or 'hub unavailable'}", retryable=True)
+            raise OpError(f"resume failed: {code or 'hub unavailable'}", retryable=True, park_class="hub_5xx")
         new_id = data.get("sessionId") if isinstance(data, dict) else None
         if status != 200 or data.get("type") != "success" or not isinstance(new_id, str) or not new_id:
-            raise OpError(f"resume failed: HTTP {status} {code or ''}".strip(), needs_operator=True)
+            raise OpError(f"resume failed: HTTP {status} {code or ''}".strip(), needs_operator=True,
+                          park_class="hub_5xx" if status >= 500 else None)
         return self._follow(repo, number, new_id)
 
     def _checkout(self, cfg: RepoConfig) -> None:
@@ -2709,7 +3024,7 @@ class Bridge:
         except TransportError as exc:
             if exc.not_sent:
                 self.store.update_issue(repo, number, session_state="none", pending_at=None)
-            raise OpError(f"spawn outcome unknown: {exc}", retryable=True) from None
+            raise OpError(f"spawn outcome unknown: {exc}", retryable=True, park_class="hub_unreachable") from None
         if status == 200 and isinstance(data, dict) and data.get("type") == "success" \
                 and isinstance(data.get("sessionId"), str) and data["sessionId"]:
             session = self._follow(repo, number, data["sessionId"])
@@ -2718,18 +3033,19 @@ class Bridge:
                     "branch": issue["branch"], "resumed": False}
         if status >= 500 and not (isinstance(data, dict) and data.get("code") == "no_machine_online"):
             # The runner may still have acted; keep 'pending' so recovery inspects the hub.
-            raise OpError(f"spawn HTTP {status}", retryable=True)
+            raise OpError(f"spawn HTTP {status}", retryable=True, park_class=hub_park_class(status))
         self.store.update_issue(repo, number, session_state="none", pending_at=None)
         message = data.get("message") or data.get("error") if isinstance(data, dict) else None
         raise OpError(f"spawn rejected: HTTP {status} {message or ''}".strip(),
-                      retryable=status == 503, needs_operator=status != 503)
+                      retryable=status == 503, needs_operator=status != 503, park_class=hub_park_class(status))
 
     def _queued_state(self, session_id: str, local_id: str) -> str:
         status, data = self.hapi.request(
             "POST", f"/api/sessions/{urllib.parse.quote(session_id, safe='')}/messages/queued-state",
             body={"localIds": [local_id]})
         if status != 200 or not isinstance(data, dict):
-            raise OpError(f"queued-state HTTP {status}", retryable=status >= 500 or status == 0)
+            raise OpError(f"queued-state HTTP {status}", retryable=status >= 500 or status == 0,
+                          park_class=hub_park_class(status))
         if local_id in (data.get("indeterminateLocalIds") or []):
             return "indeterminate"
         if local_id in (data.get("queuedLocalIds") or []):
@@ -2752,7 +3068,7 @@ class Bridge:
             messages = data.get("messages") if isinstance(data, dict) else None
             page = data.get("page") if isinstance(data, dict) else None
             if status != 200 or not isinstance(messages, list) or not isinstance(page, dict):
-                raise OpError(f"message history HTTP {status}", retryable=True)
+                raise OpError(f"message history HTTP {status}", retryable=True, park_class=hub_park_class(status))
             for m in messages:
                 if isinstance(m, dict) and isinstance(m.get("id"), str):
                     by_id[m["id"]] = m  # latest pages repeat pinned queued rows
@@ -2925,6 +3241,10 @@ class Bridge:
                     self.store.put_turn(delivery, mode, local_id, turn["session_id"], "sent")
                     return {"delivery": "already", "session_id": turn["session_id"], "local_id": local_id,
                             "mode": mode}
+            if local_id != local_id_for(delivery, mode):
+                # A re-send of a lost turn (state 'lost', or a 'sending' re-send that never landed): the agent must
+                # not trust anything from the interrupted run.
+                instructions += LOST_TURN_NOTICE
             text = build_message(ev, mode, issue["branch"], default_branch, instructions, context, local_id)
             self.store.put_turn(delivery, mode, local_id, session_id, "sending")
             path = f"/api/sessions/{urllib.parse.quote(session_id, safe='')}/messages"
@@ -2934,7 +3254,8 @@ class Bridge:
             except TransportError as exc:
                 if exc.not_sent:
                     self._unsend(delivery, mode, local_id, session_id)
-                    raise OpError(f"message not sent: {exc}", retryable=True) from None
+                    raise OpError(f"message not sent: {exc}", retryable=True,
+                                  park_class="hub_unreachable") from None
                 status, data = 0, None
             if status == 200 and isinstance(data, dict) and data.get("ok") is True:
                 self.store.put_turn(delivery, mode, local_id, session_id, "sent")
@@ -2950,7 +3271,8 @@ class Bridge:
                 return {"delivery": "sent", "session_id": session_id, "local_id": local_id, "mode": mode}
             if found == "indeterminate":
                 raise OpError("hub reports message delivery indeterminate", needs_operator=True)
-            raise OpError(f"message delivery unconfirmed (HTTP {status})", retryable=True)
+            raise OpError(f"message delivery unconfirmed (HTTP {status})", retryable=True,
+                          park_class=hub_park_class(status))
 
     def _unsend(self, delivery: str, mode: str, local_id: str, session_id: str) -> None:
         """Forget a send that provably did not land. A re-send keeps its fresh localId (back to 'lost'): the original
@@ -3041,13 +3363,15 @@ class Bridge:
                     "text": build_correction(ev, mode, error, fix_id), "localId": fix_id, "deliveryMode": "queue"})
             except TransportError as exc:
                 if exc.not_sent:
-                    raise OpError(f"correction not sent: {exc}", retryable=True) from None
+                    raise OpError(f"correction not sent: {exc}", retryable=True,
+                                  park_class="hub_unreachable") from None
                 status, data = 0, None
             if not (status == 200 and isinstance(data, dict) and data.get("ok") is True):
                 if 400 <= status < 500:
                     return self._attention(f"invalid agent result: {error}; correction rejected: HTTP {status}")
                 if self._delivery(session_id, fix_id) != "present":
-                    raise OpError(f"correction delivery unconfirmed (HTTP {status})", retryable=True)
+                    raise OpError(f"correction delivery unconfirmed (HTTP {status})", retryable=True,
+                                  park_class=hub_park_class(status))
         LOG.info("%s#%s event %s: asked the agent to correct its %s result: %s",
                  ev["repo"], ev["issue_number"], ev["delivery_id"], mode, error)
         self.store.put_turn(ev["delivery_id"], mode, fix_id, session_id, "sent")
@@ -3405,6 +3729,26 @@ class Bridge:
         """Login that submits reviews: the review App when configured, else the issue App."""
         return self.config.github_review_bot_login if self.review_github is not None else self.config.github_bot_login
 
+    def _review_head_of(self, review: Mapping[str, Any]) -> str | None:
+        """The head one of our reviews is about: the SHA in its marker, else (a marker written before the SHA was
+        added) the head this bridge recorded for its delivery. None when neither exists — never GitHub's
+        ``commit_id``, which a rebase restamps onto a head the review never read."""
+        marker = _review_marker(review)
+        if marker is None:
+            return None
+        delivery, sha = marker
+        return sha if sha is not None else self.store.review_head(delivery)
+
+    def _own_review_of(self, reviews: list[dict[str, Any]], login: str | None, sha: str) -> dict[str, Any] | None:
+        """The latest review ``login`` (the review App) published about head ``sha`` (``_review_head_of``):
+        GitHub lists reviews oldest-first and the latest carries the verdict. Only reviews whose first line is
+        the bridge's marker count; a reply-only review (an empty COMMENTED review GitHub records when a thread
+        reply is posted) is stamped with the head at that moment but reviewed nothing."""
+        if not login:
+            return None
+        return next((r for r in reversed(reviews)
+                     if _authored_by(r, login) and self._review_head_of(r) == sha), None)
+
     def _begin_review_head(self, ev: sqlite3.Row) -> str:
         """Record the head a starting review checks out, so a push to another head cancels it.
 
@@ -3417,9 +3761,14 @@ class Bridge:
         head (a folded or cancelled request never produced a review, so the newer head still gets its one
         review). A retargeted row moves its head key (``repo#pr:<n>:review:<head>``) along, or releases it
         when another row holds the new one; `#comment:<id>` keys stay. Best effort: on a failed read the
-        event keeps the head of its latest request."""
+        event keeps the head of its latest request.
+
+        A re-review after a no-change repair counts as explicit. An automatically retried park
+        (``auto_retry_event``) is never retargeted: its turn or collected result is about the parked head, so a
+        moved head ends it 'head_moved' whatever started it."""
         repo, number = ev["repo"], int(ev["pr_number"] or ev["issue_number"])
-        explicit = ev["comment_id"] is not None or ev["head_sha"] is None
+        explicit = self._explicit_review(ev) or ev["head_sha"] is None
+        auto_retried = "auto_retry" in json.loads(ev["stages"] or "{}")
         now = time.time()
         # An automatic request ends 'already_reviewed' when another request already published a review of the
         # head it is about to review — e.g. a push cancelled a run whose review POST landed before this row
@@ -3459,7 +3808,11 @@ class Bridge:
             if conn.execute("SELECT 1 FROM events WHERE seq = ? AND state IN ('dispatching', 'dispatched')",
                             (ev["seq"],)).fetchone() is None:
                 return "terminal"
-            if not explicit:
+            ended, outcome, detail = False, "", ""
+            if auto_retried and head != ev["head_sha"]:
+                ended, outcome = True, "head_moved"
+                detail = f"pull request head moved from {ev['head_sha']} to {head} while the review was parked"
+            elif not explicit:
                 # The sweep reads the pull request outside its write, and closing or turning it draft queues
                 # no event, so a request may outlive the state that raised it.
                 if live.get("state") != "open" or live.get("draft"):
@@ -3475,17 +3828,17 @@ class Bridge:
                     ended = Store.head_review_exists(conn, repo, number, head)
                     outcome = "head_moved"
                     detail = f"pull request head moved from {ev['head_sha']} to {head}, which was already requested"
-                if ended:
-                    conn.execute(
-                        "UPDATE events SET state = 'completed', outcome = ?, detail = ?, semantic_key = CASE"
-                        " WHEN semantic_key = repo || '#pr:' || issue_number || ':review:' || head_sha"
-                        " THEN semantic_key || ':' || ? || ':' || delivery_id ELSE semantic_key END, updated_at = ?"
-                        " WHERE seq = ?",
-                        (outcome, detail, outcome, now, ev["seq"]),
-                    )
-                    return "terminal"
-                if head == ev["head_sha"]:
-                    return "started"
+            if ended:
+                conn.execute(
+                    "UPDATE events SET state = 'completed', outcome = ?, detail = ?, semantic_key = CASE"
+                    " WHEN semantic_key = repo || '#pr:' || issue_number || ':review:' || head_sha"
+                    " THEN semantic_key || ':' || ? || ':' || delivery_id ELSE semantic_key END, updated_at = ?"
+                    " WHERE seq = ?",
+                    (outcome, detail, outcome, now, ev["seq"]),
+                )
+                return "terminal"
+            if head == ev["head_sha"]:
+                return "started"
             key = ev["semantic_key"]
             if ev["head_sha"] is not None and key == f"{repo}#pr:{number}:review:{ev['head_sha']}":
                 key = f"{repo}#pr:{number}:review:{head}"
@@ -3500,12 +3853,20 @@ class Bridge:
         ev = self._event(req)
         if subject_of(ev["kind"]) != "pull_request":
             raise OpError("github.review applies to pull request events")
-        repo, number, delivery = ev["repo"], int(ev["issue_number"]), ev["delivery_id"]
+        number, delivery = int(ev["issue_number"]), ev["delivery_id"]
         result = validate_result("review", req.get("result"), number)
         if isinstance(result, str):
             raise OpError(f"invalid review result: {result}")
         if result["status"] != "reviewed":
             raise OpError("review result status is not reviewed")
+        # One publication per delivery at a time: an n8n retry fired while the first request still runs must see
+        # its marker, so the reviews list, the marker check, the POST, the record and the status are one
+        # critical section (blocking: the second caller then reuses the first one's review).
+        with self._keyed_lock(("github-review", delivery)):
+            return self._publish_review(ev, result)
+
+    def _publish_review(self, ev: sqlite3.Row, result: dict[str, Any]) -> dict[str, Any]:
+        repo, number, delivery = ev["repo"], int(ev["issue_number"]), ev["delivery_id"]
         gh = self.review_github
         pr = self._get_pr(repo, number, client=gh)
         head = (pr.get("head") or {}).get("sha")
@@ -3517,14 +3878,18 @@ class Bridge:
         reviewer = self.reviewer_login()
         reviews = self._paged(f"/repos/{repo}/pulls/{number}/reviews", MAX_IDEMPOTENCY_PAGES, strict=True,
                               client=gh)
-        marker = f"{BOT_MARKER_PREFIX}:{delivery}:review -->"
-        existing = next((r for r in reviews if marker in (r.get("body") or "")), None)
+        marker = f"{BOT_MARKER_PREFIX}:{delivery}:review:{reviewed} -->"
+        # This delivery's own review (a retried POST whose reply was lost): posted by the reviewer, its marker names
+        # this delivery, and it is about this head — the marker's SHA, or for a marker written before the SHA was
+        # added, the head this bridge recorded for the delivery. A delivery retargeted since then posts anew.
+        existing = next((r for r in reviews if _authored_by(r, reviewer) and (m := _review_marker(r)) is not None
+                         and m[0] == delivery and self._review_head_of(r) == reviewed), None)
         reused = False
-        if existing is None and ev["comment_id"] is None:
+        if existing is None and not self._explicit_review(ev):
             # An automatic request does not post a second review of a head the review App already reviewed:
             # this delivery may be retrying a POST whose reply was lost after the review landed. That review
             # belongs to another run, which posted its own thread replies, so this run posts and resolves none.
-            existing = _app_review_of(reviews, reviewer, reviewed)
+            existing = self._own_review_of(reviews, reviewer, reviewed)
             reused = existing is not None
 
         replies: list[int] = []
@@ -3556,12 +3921,13 @@ class Bridge:
 
         if existing is not None:
             submitted = REVIEW_STATE_EVENTS.get(existing.get("state"), existing.get("state"))
-            self._review_published(delivery, reviewed)
-            return {"review_id": existing.get("id"), "html_url": existing.get("html_url"),
-                    "event_submitted": submitted, "replies": replies, "resolved": resolved,
-                    "created": False, "stale": stale,
-                    "commit_status": None if stale else self._review_status(repo, head, submitted,
-                                                                            existing.get("html_url"))}
+            out = {"review_id": existing.get("id"), "html_url": existing.get("html_url"),
+                   "event_submitted": submitted, "replies": replies, "resolved": resolved,
+                   "created": False, "stale": stale,
+                   "commit_status": self._record_verdict(repo, delivery, reviewed, head, submitted,
+                                                         existing.get("html_url"))}
+            out["decision_comment"] = None if stale else self._decision_comment(repo, number, reviewed, result)
+            return out
         event, body = result["event"], result["body"]
         author = ((pr.get("user") or {}).get("login") or "").casefold()
         if event != "COMMENT" and reviewer and author == reviewer:
@@ -3602,16 +3968,65 @@ class Bridge:
             findings = f"\n\n{findings_section(result['comments'])}" if result["comments"] else ""
             posted = self._comment(repo, number, f"{delivery}:review",
                                    f"**Verdict: {event}**\n\n{body}{findings}{tail}", client=gh)
-            self._review_published(delivery, reviewed)
+            self._record_verdict(repo, delivery, reviewed, head, None, None)
             return {"review_id": None, "html_url": posted["url"], "event_submitted": "COMMENT",
                     "replies": replies, "resolved": resolved, "created": posted["created"], "stale": True,
                     "inline_folded": bool(result["comments"]), "commit_status": None}
         if status != 200 or not isinstance(data, dict):
             raise OpError(f"github review HTTP {status}", retryable=status >= 500 or status == 429)
-        self._review_published(delivery, reviewed)
-        return {"review_id": data.get("id"), "html_url": data.get("html_url"), "event_submitted": event,
-                "replies": replies, "resolved": resolved, "created": True, "inline_folded": folded, "stale": stale,
-                "commit_status": None if stale else self._review_status(repo, head, event, data.get("html_url"))}
+        out = {"review_id": data.get("id"), "html_url": data.get("html_url"), "event_submitted": event,
+               "replies": replies, "resolved": resolved, "created": True, "inline_folded": folded, "stale": stale,
+               "commit_status": self._record_verdict(repo, delivery, reviewed, head, event, data.get("html_url"))}
+        out["decision_comment"] = None if stale else self._decision_comment(repo, number, reviewed, result)
+        return out
+
+    def _record_verdict(self, repo: str, delivery: str, reviewed: str, head: Any, event: str | None,
+                        target_url: Any) -> dict[str, Any] | None:
+        """Record that ``delivery`` published a review of ``reviewed`` and, when that is the live ``head``, mirror
+        ``event`` as its review status. One critical section per (repo, reviewed head), shared with
+        ``_review_error_status``: a parked run's error status either lands before this verdict (which then
+        overwrites it) or sees this record and is skipped — never after it."""
+        with self._keyed_lock(("review-status", repo, reviewed)):
+            self._review_published(delivery, reviewed)
+            if event is None or head != reviewed:
+                return None
+            return self._review_status(repo, head, event, target_url, reviewed)
+
+    def _decision_comment(self, repo: str, number: int, reviewed: str, result: Mapping[str, Any]) -> str | None:
+        """When the agent's own verdict on the live head is COMMENT because of open items (maintainer decisions,
+        unrefuted P0-P2 concerns, uncovered lenses), mention the project owner (else the repository owner) once
+        per pull request and set of open items: merge stays blocked until a maintainer answers. A downgraded
+        APPROVE/REQUEST_CHANGES (the App's own pull request) or a stale review never posts one. Returns the
+        comment URL; a failure is retryable (the retried op reuses the review and posts the comment)."""
+        items = result.get("open_items") or []
+        reviewer = self.reviewer_login()
+        if result.get("event") != "COMMENT" or not items or self.review_github is None or not reviewer:
+            return None
+        normalised = sorted(" ".join(i.split()).casefold() for i in items)
+        digest = hashlib.sha256("\n".join(normalised).encode()).hexdigest()[:16]
+        try:
+            cfg = self.registry().get(repo)
+        except OpError:
+            cfg = None
+        owner = (cfg.project_owner if cfg else None) or repo.split("/", 1)[0]
+        command = review_command(reviewer)
+        lines = [
+            f"@{owner} the review of `{reviewed}` is **COMMENT**, not an approval: these items need a maintainer "
+            f"decision or answer. Merge stays blocked (`{self.config.review_status_context}` is not successful) "
+            "until they are resolved.",
+            "",
+            *(f"- {' '.join(i.split())}" for i in items),
+            "",
+            f"Reply on the pull request, then comment `{command}` to request another review."
+            if command else "Reply on the pull request, then request another review.",
+        ]
+        try:
+            posted = self._comment(repo, number, f"review-decision:{number}:{digest}", "\n".join(lines),
+                                   client=self.review_github)
+        except (OpError, TransportError) as exc:
+            raise OpError(f"review decision comment not posted: {getattr(exc, 'error', exc)}",
+                          retryable=True) from None
+        return posted["url"]
 
     def _review_published(self, delivery_id: str, sha: str) -> None:
         """Record that this event's review of ``sha`` reached GitHub (or already carried our marker). The
@@ -3627,19 +4042,43 @@ class Bridge:
             conn.execute("UPDATE events SET stages = ?, updated_at = ? WHERE delivery_id = ?",
                          (json.dumps(stages), time.time(), delivery_id))
 
-    def _review_status(self, repo: str, sha: str, event: str, target_url: Any) -> dict[str, Any] | None:
+    def _review_status(self, repo: str, sha: str, event: str, target_url: Any,
+                       reviewed: str) -> dict[str, Any] | None:
         """Mirror the submitted verdict as a commit status on the reviewed head (review App only).
 
+        Only for the head the review is about (``sha == reviewed``): a verdict never lands on another commit.
         Idempotent: the newest status for our context already carrying this verdict is left alone."""
-        gh = self.review_github
-        if gh is None:
+        if self.review_github is None or sha != reviewed:
             return None
-        context = self.config.review_status_context
         state = "success" if event == "APPROVE" else "failure"
         description = {"APPROVE": f"Approved by {self.config.github_review_bot_login}",
-                       "REQUEST_CHANGES": "Changes requested"}.get(event, "Not approved")[:140]
+                       "REQUEST_CHANGES": "Changes requested"}.get(event, "Not approved")
+        return self._set_review_status(repo, sha, state, description, target_url)
+
+    def _review_error_status(self, ev: sqlite3.Row) -> dict[str, Any] | None:
+        """``error`` review status on the head of a parked review, saying whether the bridge retries it, so the
+        head does not look pending forever. Never over a published verdict: once any request published a review
+        of this head, its status stands (a later publish overwrites this one in turn). The evidence check and the
+        write share ``_record_verdict``'s critical section, so a publication racing this park cannot land between
+        them."""
+        repo, number, head = ev["repo"], int(ev["pr_number"] or ev["issue_number"]), ev["head_sha"]
+        if self.review_github is None or not head:
+            return None
+        with self._keyed_lock(("review-status", repo, head)):
+            if self.store.query("SELECT 1 FROM events WHERE repo = ? AND kind = 'pr_review' AND issue_number = ?"
+                                " AND json_extract(stages, '$.review_published.sha') = ? LIMIT 1",
+                                (repo, number, head)):
+                return None
+            description = ("Review did not complete; retrying automatically" if ev["park_class"]
+                           else "Review did not complete; needs an operator")
+            return self._set_review_status(repo, head, "error", description, None)
+
+    def _set_review_status(self, repo: str, sha: str, state: str, description: str,
+                           target_url: Any) -> dict[str, Any]:
+        gh = self.review_github
+        context = self.config.review_status_context
         want = {"state": state, "target_url": target_url if isinstance(target_url, str) else None,
-                "description": description, "context": context}
+                "description": description[:140], "context": context}
         current = self._gh("GET", f"/repos/{repo}/commits/{sha}/statuses?per_page=100", client=gh)
         if not isinstance(current, list):
             raise OpError("github commit statuses: unexpected response", retryable=True)
@@ -3753,8 +4192,12 @@ class Bridge:
             author = (review.get("user") or {}).get("login")
             if author and review.get("state") in ("APPROVED", "CHANGES_REQUESTED", "DISMISSED"):
                 latest[author] = review
+        # A review carrying our marker is about the head its marker (or this bridge's record) names: GitHub moves
+        # a review's commit_id onto a rebased head, which our review never read. Other reviews keep commit_id.
+        reviewer = self.reviewer_login()
         requested = [r for r in latest.values() if r.get("state") == "CHANGES_REQUESTED"
-                     and r.get("commit_id") == state["head_sha"]]
+                     and ((self._review_head_of(r) if _authored_by(r, reviewer) and _review_marker(r) is not None
+                           else r.get("commit_id")) == state["head_sha"])]
         # The reviewer's own commit status mirrors its verdict, which already counts as a change request.
         review_context = self.config.review_status_context
         failed = [c for c in state["checks"]
@@ -4030,12 +4473,13 @@ class Bridge:
         with self.store.tx() as conn:
             if self._sweep_blocked(conn, repo, number, head):
                 return False
-        # No local record: the review App's review of this commit on this pull request shows a review this
-        # state never recorded (a dependabot rebase moves the App's review onto the new head; pillar-csi#162).
-        # The review status is not consulted: it is scoped to the commit, so another pull request with the
-        # same head (a different base) would hide this one's missing review.
+        # No local record: a review App review whose marker names this head shows a review this state never
+        # recorded. GitHub's commit_id is not trusted: a dependabot rebase moves the App's review of the old
+        # head onto the new one (pillar-csi#162), which then still gets its own review. The review status is
+        # not consulted: it is scoped to the commit, so another pull request with the same head (a different
+        # base) would hide this one's missing review.
         reviews = self._paged(f"/repos/{repo}/pulls/{number}/reviews", MAX_IDEMPOTENCY_PAGES, client=gh)
-        if _app_review_of(reviews, self.reviewer_login(), head) is not None:
+        if self._own_review_of(reviews, self.reviewer_login(), head) is not None:
             return False
         commit = self._gh("GET", f"/repos/{repo}/commits/{head}", client=gh)
         committed = _github_time(((commit.get("commit") or {}).get("committer") or {}).get("date")
@@ -4261,12 +4705,28 @@ class Dispatcher:
         """
         now = time.time() if now is None else now
         self.bridge.reconcile_due_prs(now)
+        # Re-reviews completed repairs still owe (a transient failure kept the obligation; see op_finish).
+        for ev in self.store.query(
+            "SELECT delivery_id FROM events WHERE kind = 'pr_repair' AND state = 'completed'"
+            " AND json_extract(stages, '$.rereview_pending') IS NOT NULL ORDER BY seq"
+        ):
+            self.bridge.drain_rereview(ev["delivery_id"], now)
         for ev in self.store.query(
             "SELECT delivery_id FROM events WHERE state = 'needs_attention' AND attention_pending = 1"
             " AND next_attempt_at <= ? ORDER BY seq",
             (now,),
         ):
             self.bridge.notify_attention(ev["delivery_id"])
+        # Transient review parks whose notice is out and whose backoff is due (``mark_attention`` armed them).
+        for ev in self.store.query(
+            "SELECT delivery_id FROM events WHERE state = 'needs_attention' AND kind = 'pr_review'"
+            " AND attention_pending = 0 AND park_class IS NOT NULL AND auto_retry_at <= ? ORDER BY seq",
+            (now,),
+        ):
+            try:
+                self.bridge.auto_retry_event(ev["delivery_id"], now)
+            except (OpError, TransportError) as exc:
+                LOG.warning("automatic retry of %s failed (next tick retries): %s", ev["delivery_id"], exc)
         for ev in self.store.query(
             "SELECT delivery_id FROM events WHERE outcome = 'cancelled'"
             " AND json_extract(stages, '$.cancelled.archive') = 1 ORDER BY seq"
@@ -4276,7 +4736,9 @@ class Dispatcher:
             "SELECT * FROM events WHERE state = 'dispatched' AND COALESCE(heartbeat_at, 0) < ?",
             (now - STALE_SECONDS,),
         ):
-            self.bridge.mark_attention(ev, "workflow made no progress for this event (stale dispatch)")
+            # The cause (runner, hub, n8n or bridge restart) is not observable here: retried once whatever it was.
+            self.bridge.mark_attention(ev, "workflow made no progress for this event (stale dispatch)",
+                                       park_class="stale_dispatch")
         with self.store.tx() as conn:
             active = conn.execute(
                 "SELECT COUNT(*) FROM events WHERE state IN ('dispatching', 'dispatched')"
@@ -4299,8 +4761,11 @@ class Dispatcher:
                     "   JOIN events repair ON repair.delivery_id = r.active_delivery"
                     "   WHERE r.repo = e.repo AND r.pr_number = e.issue_number"
                     "   AND repair.state IN ('accepted', 'dispatching', 'dispatched')))"
+                    # Review turns are capped separately (runner memory); other kinds still pass capped reviews.
+                    " AND (e.kind != 'pr_review' OR (SELECT COUNT(*) FROM events r WHERE r.kind = 'pr_review'"
+                    "   AND r.state IN ('dispatching', 'dispatched')) < ?)"
                     " ORDER BY e.seq LIMIT 1",
-                    (now,),
+                    (now, MAX_ACTIVE_REVIEWS),
                 ).fetchone()
                 if ev is None:
                     return "busy" if active else "idle"

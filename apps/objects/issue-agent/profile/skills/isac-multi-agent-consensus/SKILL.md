@@ -65,7 +65,7 @@ MAC-04와 MAC-06은 폐기했고 번호는 재사용하지 않는다(`references
 - **MAC-19** 리뷰 라운드의 판정 어휘는 하나의 닫힌 집합만 쓴다.
   - 라운드 판정: `GREEN`(blocking finding 0, 근거 첨부) 또는 `BLOCKING`(finding 목록).
   - finding: 심각도 `P0`–`P3`, file:line이나 관측 가능한 실패, 최소 수정안. `P0`/`P1`이 blocking이다. 여러 리뷰어가 같은 finding을 내면 한 번만 센다.
-  - PR이 대상이면 `PR-ready: true|false`를 함께 낸다.
+  - PR이 대상이어도 리뷰 판정에 `PR-ready`를 내지 않고 CI·check 상태를 판정 근거로 쓰지 않는다. CI 통과는 머지 게이트(`isac-issue-to-pr` I2P-52 등)가 따로 소유한다. 이 자동화의 `review` 모드가 게시하는 PR 리뷰(`isac-pr-review`)는 MAC-19의 blocking 기준을 쓰지 않는다: 심각도 보정(PR이 들여온 근거 있는 `P2` 정확성·보안 결함도 blocking), 반박되지 않은 의심의 처리, 이벤트(`APPROVE`/`COMMENT`/`REQUEST_CHANGES`) 판정은 `isac-pr-review`와 그 `references/review-dimensions.md`가 소유한다. 그 밖의 리뷰 라운드(우리 작업물의 독립 리뷰, 다른 스킬이 부르는 판정 리뷰)는 이 규칙을 그대로 쓴다.
   - 모호한 요약, 조건부 승인, 빈 칭찬은 판정으로 인정하지 않는다. 심각도 정의는 `references/defaults.md`에 있다.
 - **MAC-20** `GREEN`은 판정한 상태(head SHA, 배포 digest 등)에만 유효하다. 대상이 바뀌면 다시 판정한다. PR 리뷰 요청·재요청과 무효화 규칙은 전역 PR 리뷰 가드가 소유한다.
 

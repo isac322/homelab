@@ -3,6 +3,10 @@
 # unattended runner cannot give, and not removable from user config layers.
 # The context-mode hooks route large tool output into its sandbox and block
 # raw fetches; the codegraph hook indexes the session worktree.
+#
+# Only these managed hooks run; hooks from user or project layers (a
+# repository's .codex/) are ignored.
+allow_managed_hooks_only = true
 
 [features]
 hooks = true
@@ -46,3 +50,23 @@ command = "/etc/codex/hooks/context-mode userpromptsubmit"
 [[hooks.Stop.hooks]]
 type = "command"
 command = "/etc/codex/hooks/context-mode stop"
+
+# MCP server allowlist, matched by server name and absolute command path. A
+# server missing here, or whose command or arguments differ, is not started,
+# whichever layer declares it. Environment variables cannot be constrained, so
+# this is defence in depth; untrusted project roots (codex-untrust) keep a
+# repository's .codex/config.toml from loading at all.
+[mcp_servers.context-mode.identity]
+command = { executable = "/usr/local/bin/context-mode", args = [] }
+
+[mcp_servers.codegraph.identity]
+command = { executable = "/usr/local/bin/codegraph", args = [
+  { match = "exact", value = "serve" },
+  { match = "exact", value = "--mcp" },
+] }
+
+# Injected by HAPI per thread (change_title, list_peers). Its command is the
+# runner's own compiled binary (process.argv[0] of /usr/local/bin/hapi); the
+# arguments vary per session, so only the executable is pinned.
+[mcp_servers.hapi.identity]
+command = "/usr/local/bin/hapi"

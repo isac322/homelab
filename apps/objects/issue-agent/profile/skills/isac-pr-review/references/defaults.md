@@ -4,7 +4,7 @@
 
 ## 리뷰어 관점 (PR 리뷰 프리셋)
 
-변경이 크면 correctness, security, tests 관점 리뷰어를 나눠 병렬로 돌린다. 역할 분리, 구성 규모, 수정 → 재리뷰 루프와 GREEN 조건은 `isac-multi-agent-consensus`를 따른다. GitHub 쓰기는 에이전트가 하지 않고, n8n이 ReviewResult를 받아 한다.
+트리거된 렌즈(SKILL.md PRR-43, `references/review-dimensions.md` §10)는 기본값이 아니라 필수다. 여기서 바꿀 수 있는 것은 그 위의 구성이다: 트리거가 없어도 변경이 크면 security, performance 렌즈를 더해 병렬로 돌리고, 렌즈마다 반박용 challenger를 따로 둔다(PRR-50). 역할 분리, 구성 규모, 수정 → 재리뷰 루프는 `isac-multi-agent-consensus`를 따르고, 이 자동화의 PR 리뷰에서 이벤트 판정(APPROVE 조건 포함)은 SKILL.md PRR-56을 따른다. GitHub 쓰기는 에이전트가 하지 않고, n8n이 ReviewResult를 받아 한다.
 
 ## claim 판정 어휘
 
@@ -15,7 +15,7 @@ PR 주장을 claim별로 판정할 때 `issue-validation`의 판정 토큰을 �
 
 ## 게시
 
-- 재리뷰는 새 ReviewResult로 내고, `ReviewResult.body` 첫 섹션에 이전 finding의 Closed/Open을 둔다. 이전 봇 스레드마다 `ReviewResult.thread_replies`를 낸다. 현재 head에 대한 리뷰는 하나다.
+- 재리뷰는 새 ReviewResult로 내고, `ReviewResult.body` 첫 섹션에 이전 finding의 Closed/Open을 둔다. 이전 봇 스레드마다 `ReviewResult.thread_replies`를 낸다. 현재 head에 대한 리뷰는 하나다. `open_items`는 상태가 그대로인 항목의 문구를 바꾸지 않는다(bridge 결정 요청 코멘트가 같은 집합에 다시 게시되지 않게).
 - PR 수정 때문에 PR이 하는 일과 제목이 달라졌으면 고칠 제목을 `ReviewResult.body`에 제안한다. 리뷰어는 PR을 편집하지 않는다(PRR-03).
 
 ## 사용자 보고 형식 (`ReviewResult.summary`)

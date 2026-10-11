@@ -20,6 +20,10 @@ mirror, and pushed from that mirror. The GitHub token is passed only through
 `git -c http.extraHeader=...` on the command line; it is never written to any
 config file and never logged. /cleanup runs no git at all: it removes a
 worktree, its branch ref and Codex rollouts with plain file operations.
+
+/checkout also marks the checkout and its worktrees untrusted for Codex
+(codex-untrust) on every call, so a session never loads the repository's own
+.codex/ layer.
 """
 
 from __future__ import annotations
@@ -53,6 +57,8 @@ GITHUB_API = "https://api.github.com"
 MAX_BODY = 16 * 1024
 CLONE_TIMEOUT = 1800
 GIT_TIMEOUT = 600
+UNTRUST = "/opt/issue-agent/bin/codex-untrust"
+UNTRUST_TIMEOUT = 60
 
 REPO_RE = re.compile(r"^[A-Za-z0-9_.-]+/[A-Za-z0-9_.-]+$")
 BRANCH_RE = re.compile(r"^hapi-issue-[0-9]+$")
@@ -186,6 +192,29 @@ def ensure_mirror(repo: str) -> str:
     return mirror
 
 
+def untrust_checkout(path: str) -> None:
+    """Mark the checkout and its HAPI worktrees untrusted in CODEX_HOME before any session starts there.
+
+    Codex auto-trusts an unlisted repository root at thread start and then
+    loads the repository's own .codex/ layer; an explicit untrusted entry
+    prevents both. Fails the request rather than spawn into a trusted root.
+    """
+    try:
+        result = subprocess.run(
+            [UNTRUST, path],
+            env={"PATH": git_env()["PATH"], "CODEX_HOME": CODEX_HOME, "LANG": "C.UTF-8"},
+            stdin=subprocess.DEVNULL,
+            capture_output=True,
+            text=True,
+            timeout=UNTRUST_TIMEOUT,
+            check=False,
+        )
+    except subprocess.TimeoutExpired:
+        raise PublisherError(HTTPStatus.GATEWAY_TIMEOUT, "untrust_timeout", f"codex-untrust exceeded {UNTRUST_TIMEOUT}s") from None
+    if result.returncode != 0:
+        raise PublisherError(HTTPStatus.INTERNAL_SERVER_ERROR, "untrust_failed", (result.stderr or "").strip()[-2000:])
+
+
 def do_checkout(repo: str) -> dict:
     token = read_secret(PUSH_TOKEN_FILE, "push token")
     info = github_repo(repo, token)
@@ -193,8 +222,17 @@ def do_checkout(repo: str) -> dict:
     if not isinstance(default_branch, str) or not default_branch:
         raise PublisherError(HTTPStatus.BAD_GATEWAY, "github_error", "repository has no default_branch")
     path = checkout_path(repo)
+    created = clone_checkout(repo, path, token)
+    # Every call, not only the first clone: the bridge checks out before each
+    # spawn, and the bootstrap's reinstalled config dropped earlier entries.
+    untrust_checkout(path)
+    return {"path": path, "created": created, "default_branch": default_branch}
+
+
+def clone_checkout(repo: str, path: str, token: str) -> bool:
+    """Clone ``repo`` into ``path`` unless it exists; True when this call cloned it."""
     if os.path.lexists(path):
-        return {"path": path, "created": False, "default_branch": default_branch}
+        return False
 
     owner_dir = os.path.dirname(path)
     os.makedirs(owner_dir, mode=0o700, exist_ok=True)
@@ -211,12 +249,12 @@ def do_checkout(repo: str) -> dict:
         if result.returncode != 0:
             raise PublisherError(HTTPStatus.BAD_GATEWAY, "clone_failed", result.stderr)
         if os.path.lexists(path):
-            return {"path": path, "created": False, "default_branch": default_branch}
+            return False
         os.rename(target, path)
     finally:
         shutil.rmtree(staging, ignore_errors=True)
     log.info("cloned %s into %s", repo, path)
-    return {"path": path, "created": True, "default_branch": default_branch}
+    return True
 
 
 def fetch_branch(repo: str, branch: str) -> str:

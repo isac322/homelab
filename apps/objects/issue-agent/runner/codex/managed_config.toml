@@ -1,0 +1,39 @@
+# Codex managed config layer (/etc/codex/managed_config.toml, Codex 0.160.0
+# CODEX_MANAGED_CONFIG_SYSTEM_PATH). A regular config layer, but the highest
+# in precedence: it overrides session flags, a repository's .codex/config.toml,
+# the user config the bootstrap installs and the system config.
+
+# Every mode (triage, implement, followup, review), including sub-agents.
+model_reasoning_effort = "high"
+
+[agents]
+default_subagent_reasoning_effort = "high"
+# Spawned sub-agent threads open at once per session (default 6). Runner memory
+# is sized for this together with the bridge's MAX_ACTIVE_REVIEWS.
+max_threads = 3
+
+# spawn_agent must not lower a sub-agent's effort below the default above
+# (Codex 0.160.0 core/src/agent/child_config.rs prefers an explicit spawn
+# argument over default_subagent_reasoning_effort).
+[features.multi_agent_v2]
+expose_spawn_agent_model_overrides = false
+
+# Agent shells get only the non-secret runner environment. Applied in order:
+# inherit, default excludes (*KEY*, *SECRET*, *TOKEN*), exclude, set, then
+# include_only (case-insensitive globs); Codex adds CODEX_THREAD_ID afterwards.
+# Dropped on purpose: CLI_API_TOKEN, OPENAI_API_KEY, HAPI_*,
+# ISSUE_AGENT_PROVIDER_DIR, KUBERNETES_*, PWD, SHLVL. MCP servers are not
+# affected; they get their variables through env_vars in config.toml.
+[shell_environment_policy]
+inherit = "all"
+ignore_default_excludes = false
+include_only = [
+  "HOME", "PATH", "SHELL", "USER", "LOGNAME", "LANG", "LC_ALL", "LC_CTYPE", "TERM", "TMPDIR", "TZ", "HOSTNAME",
+  "DOCKER_HOST", "GH_CONFIG_DIR", "GH_PROMPT_DISABLED", "GH_NO_UPDATE_NOTIFIER",
+  "GIT_CONFIG_SYSTEM", "GIT_TERMINAL_PROMPT",
+  "GIT_AUTHOR_NAME", "GIT_AUTHOR_EMAIL", "GIT_COMMITTER_NAME", "GIT_COMMITTER_EMAIL",
+  "ISSUE_AGENT_CHECKOUTS", "CODEX_HOME",
+  "CARGO_HOME", "RUSTUP_HOME", "RUSTC_WRAPPER", "CARGO_BUILD_JOBS", "GOMAXPROCS",
+  "SCCACHE_DIR", "SCCACHE_CACHE_SIZE", "CMAKE_C_COMPILER_LAUNCHER", "CMAKE_CXX_COMPILER_LAUNCHER",
+  "CODEGRAPH_NO_DOWNLOAD", "NODE_VERSION", "YARN_VERSION",
+]
