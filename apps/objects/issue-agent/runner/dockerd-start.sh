@@ -72,6 +72,16 @@ rmdir /sys/fs/cgroup/.issue-agent-write-test
 /opt/issue-agent/bin/native-dri-prepare ||
   fail 'cannot project the native DRM pair onto /dev/dri'
 
+# Defence in depth behind the device cgroup and the authz device allowlist:
+# drop every host block device the privileged runtime created in this
+# container's own /dev tmpfs (never the node's). dockerd uses the overlayfs
+# snapshotter and needs none. -xdev keeps the walk off the /dev/dri projection
+# and the other /dev submounts.
+find /dev -xdev -type b -exec rm -f {} + ||
+  fail 'cannot remove host block devices from /dev'
+[ -z "$(find /dev -xdev -type b)" ] ||
+  fail 'host block devices remain under /dev'
+
 # Precreate the checkouts dir inside the shared home PVC. Kubelet auto-creates
 # a missing subPath directory but as root:root; chown here (non-recursive) so
 # the runner (uid/gid 1000) keeps writing it.
@@ -83,6 +93,24 @@ chown 1000:1000 "$CHECKOUTS" && chmod 0700 "$CHECKOUTS" ||
 
 mkdir -p "$SOCKDIR"
 rm -f "$SOCK" # stale socket inode from a previous daemon run
+
+# Docker API authorization (legacy plugin, runner/authz). Started here, after
+# any re-exec above, so its view of bind sources is dockerd's mount namespace.
+# Its socket lives in this container's own /run, which no other container
+# mounts. dockerd fails every request while the plugin is unreachable, so a
+# missing or dead plugin fails closed.
+AUTHZ_SOCK=/run/docker/plugins/issue-agent-authz.sock
+mkdir -p /run/docker/plugins
+rm -f "$AUTHZ_SOCK"
+/opt/issue-agent/bin/issue-agent-authz --socket "$AUTHZ_SOCK" &
+AUTHZ_PID=$!
+i=0
+until [ -S "$AUTHZ_SOCK" ]; do
+  kill -0 "$AUTHZ_PID" 2>/dev/null || fail 'authz plugin exited during startup'
+  i=$((i + 1))
+  [ "$i" -le 50 ] || fail 'authz plugin did not create its socket within 10s'
+  sleep 0.2
+done
 
 # Keep Docker's DinD mount setup and PID-1 reaping, but bypass the stock
 # dockerd-entrypoint: it probes iptables and may switch to legacy iptables or
@@ -97,10 +125,16 @@ rm -f "$SOCK" # stale socket inode from a previous daemon run
 # --cgroup-parent=/issue-agent-docker: with the cgroupfs driver and the
 #   private cgroup namespace above, child cgroups land under the container's
 #   own cgroup root, inside the pod memory limit.
+# --authorization-plugin=issue-agent-authz: every API request is checked by
+#   the plugin started above (discovered via /run/docker/plugins).
+# --config-file=/etc/docker/daemon.json: BuildKit entitlements network-host,
+#   device and security-insecure are disabled (Dockerfile.dockerd).
 exec /usr/local/bin/dind docker-init -- dockerd \
   --host="unix://$SOCK" \
   --group=1000 \
   --firewall-backend=iptables \
   --ip6tables=false \
   --exec-opt native.cgroupdriver=cgroupfs \
-  --cgroup-parent=/issue-agent-docker
+  --cgroup-parent=/issue-agent-docker \
+  --authorization-plugin=issue-agent-authz \
+  --config-file=/etc/docker/daemon.json

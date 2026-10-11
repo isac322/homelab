@@ -3,6 +3,18 @@
 # Build context: apps/objects/issue-agent (see .dockerignore). linux/arm64 only.
 # No credentials are baked in and the sidecar mounts none.
 
+# issue-agent-authz: the Docker authorization plugin (runner/authz). Go 1.27.1
+# matches Dockerfile.runner's GO_VERSION. Pinned by OCI index digest of
+# golang:1.27.1-alpine3.24. The table tests gate the build; the binary is
+# static (CGO_ENABLED=0) so it runs on the dind image's musl userland.
+FROM --platform=$BUILDPLATFORM golang:1.27.1-alpine3.24@sha256:8a5910f31396cd4d89662f56c68b3ae31d374308270a1c3bd96672ee5ed43414 AS authz
+ARG TARGETOS TARGETARCH
+WORKDIR /src
+COPY runner/authz/ ./
+RUN go test ./... \
+    && CGO_ENABLED=0 GOOS=$TARGETOS GOARCH=$TARGETARCH \
+       go build -trimpath -ldflags='-s -w' -o /out/issue-agent-authz .
+
 # docker:29.8.2-dind (linux/arm64); matches the runner image's docker:29.8.2-cli.
 FROM docker:29.8.2-dind@sha256:7dcdfc4a20246236f558175182ccace1eb15a41bd3eb119dd2284f393498b7c1
 
@@ -20,6 +32,15 @@ RUN install -d -m 0755 /opt/issue-agent/bin
 COPY --chmod=0755 runner/dockerd-start.sh /opt/issue-agent/bin/dockerd-start
 COPY --chmod=0755 runner/dockerd-probe.sh /opt/issue-agent/bin/dockerd-probe
 COPY --chmod=0755 runner/native-dri-prepare.sh /opt/issue-agent/bin/native-dri-prepare
+COPY --chmod=0755 --from=authz /out/issue-agent-authz /opt/issue-agent/bin/issue-agent-authz
+
+# BuildKit RUN steps never pass through the authorization plugin (they travel
+# as /grpc and /session streams), so the daemon's builder entitlements must
+# refuse `--allow network.host`, `--allow device` and `security.insecure`.
+# Keys: moby docker-v29.8.2 daemon/config/builder.go BuilderEntitlements.
+# Fail the build if this dockerd rejects the file.
+COPY --chmod=0644 runner/docker-daemon.json /etc/docker/daemon.json
+RUN dockerd --validate --config-file=/etc/docker/daemon.json
 
 ENTRYPOINT ["/opt/issue-agent/bin/dockerd-start"]
 CMD []

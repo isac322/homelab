@@ -1,0 +1,9 @@
+{
+  "builder": {
+    "entitlements": {
+      "network-host": false,
+      "device": false,
+      "security-insecure": false
+    }
+  }
+}

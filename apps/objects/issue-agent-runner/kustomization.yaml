@@ -10,6 +10,15 @@ resources:
   - secret-store.yaml
   - external-secret-shared.yaml
   - external-secret-provider.yaml
+  - external-secret-model-proxy.yaml
   - external-secret-github.yaml
   - deployment-runner.yaml
   - service.yaml
+# Hashed names roll the runner pod whenever either file changes.
+configMapGenerator:
+  - name: issue-agent-model-proxy-config
+    files:
+      - model-proxy/Caddyfile
+  - name: issue-agent-provider-config
+    files:
+      - provider-config/config.toml
