@@ -318,7 +318,7 @@ docker buildx build --builder orbstack --platform linux/arm64 \
 - tag: Runner는 `<HAPI 버전>-codex<Codex 버전>-<YYYYMMDD>-<목적>`(예: `0.30.7-codex0.160.0-20261003-resolved-head`), dockerd는 `<Docker 버전>-<YYYYMMDD>-<목적>`(예: `29.8.2-20261002-native-drm-iptables-nft`)이다.
 - push 뒤 받은 digest를 `apps/objects/issue-agent-runner/deployment-runner.yaml`에 `<tag>@sha256:<digest>`로 고정한다. runner와 publisher는 같은 Runner 이미지를 쓰므로 두 곳을 함께 바꾼다. tag만으로 배포하지 않는다.
 - `Dockerfile.dockerd`는 authz plugin을 digest로 고정한 Go builder stage에서 `go test` 뒤 정적 빌드하고 `daemon.json`을 검증한다. Docker smoke script는 Runner 이미지에 들어 있으므로 smoke를 바꾸면 Runner 이미지도 다시 빌드한다.
-- 2026-10-11 변경의 rollout 순서: bridge(dispatch 중인 이벤트가 없을 때) → n8n(재시작 뒤 bootstrap log 확인) → dockerd 이미지 → Runner 이미지(스킬·지침, Codex 설정, `codex-untrust`, smoke) → Runner manifest(digest, 모델 키 proxy, 메모리)를 dispatch 중인 이벤트가 없을 때 Argo sync 한 번. 모델 provider 변경과 key env 제거는 하나의 되돌릴 수 있는 commit으로 내고, 기존 provider ExternalSecret은 proxy 확인이 끝날 때까지 rollback 경로로 둔다.
+- 2026-10-11 변경의 rollout 순서: bridge(dispatch 중인 이벤트가 없을 때) → n8n(재시작 뒤 bootstrap log 확인) → dockerd 이미지 → Runner 이미지(스킬·지침, Codex 설정, `codex-untrust`, smoke) → Runner manifest(digest, 모델 키 proxy, 메모리)를 dispatch 중인 이벤트가 없을 때 Argo sync 한 번. 실제로는 Docker 정책·모델 키 proxy·메모리를 먼저(#423), 나머지를 다음에(#425) 배포했다. proxy 확인 뒤 기존 `issue-agent-provider` ExternalSecret은 지웠다.
 
 ### 관리자 계정
 
@@ -514,13 +514,13 @@ Runner namespace의 읽기 토큰에는 기존 `contents`·`issues`·`pull_reque
 
 - [x] `test_bridge.py`, authz plugin `go test`, 두 app의 Kustomize dry-run, n8n JSON 파싱, shell script `bash -n`이 통과한다.
 - [x] 배포 전 offline 확인: 현재 Runner 이미지에 새 `/etc/codex/` 파일을 얹고, MCP 서버 `evil`과 `developer_instructions`를 넣은 `.codex/config.toml`이 있는 scratch 저장소를 untrusted로 등록하면 `codex mcp list --json`에 context-mode·codegraph만 있고 `evil`이 없다. git worktree 경로에서도 Codex가 그 project root를 untrusted로 본다.
-- [ ] 비밀 `/proc` 검사: Runner 컨테이너의 모든 프로세스 `/proc/<pid>/environ`에서 `OPENAI_API_KEY`가 0건이고, 에이전트 셸 환경에 `CLI_API_TOKEN`·`HAPI_*`·`OPENAI_API_KEY`가 없다.
-- [ ] Runner에서 `codex mcp list`가 context-mode·codegraph를 보이고, 실제 세션의 `ctx_execute`로 `docker version`과 `gh api` 대상 읽기가 성공한다(`env_vars`).
-- [ ] `/opt/issue-agent/bin/docker-smoke --policy`가 `--privileged` 거절, `/` bind 거절, `docker build --allow network.host` 거절, `--device /dev/dri` 허용을 보이고, `--krema-worktree` smoke도 통과한다. dockerd 컨테이너 `/dev`에 host block device가 없다.
-- [ ] 모델 키 proxy: triage 턴 하나를 먼저 proxy로 끝까지 실행한 뒤 리뷰 턴을 돌린다. 그 뒤에 기존 provider ExternalSecret을 정리한다.
-- [ ] triage 턴 하나와 review 턴 하나가 effort `high`(HAPI `state_5.threads`의 세션 metadata)로 돌고, 리뷰의 하위 에이전트도 `high`이며, `change_title`(hapi MCP)이 동작한다.
-- [ ] chaos test: 시험 리뷰 중 bridge를 3분 동안 0 replica로 줄여도 리뷰가 정확히 하나 게시되고 park가 남지 않는다. n8n bootstrap log에 `CONFLICT`가 없다.
-- [ ] 리뷰 본문 첫 줄 marker에 리뷰한 SHA가 있고, marker SHA가 현재 head가 아닌 리뷰로는 `issue-agent/review=success`가 남지 않는다.
+- [x] 비밀 `/proc` 검사: Runner 컨테이너의 모든 프로세스 `/proc/<pid>/environ`에서 `OPENAI_API_KEY`가 0건이고, 에이전트 셸 환경에 `CLI_API_TOKEN`·`HAPI_*`·`OPENAI_API_KEY`가 없다.
+- [x] Runner에서 `codex mcp list`가 context-mode·codegraph를 보이고, 실제 세션의 `ctx_execute`로 `docker version`과 `gh api` 대상 읽기가 성공한다(`env_vars`).
+- [ ] `/opt/issue-agent/bin/docker-smoke --policy`가 `--privileged` 거절, `/` bind 거절, `docker build --allow network.host` 거절, `--device /dev/dri` 허용을 보이고, `--krema-worktree` smoke도 통과한다. dockerd 컨테이너 `/dev`에 host block device가 없다. (`--policy`와 block device 0건은 확인했고 `--krema-worktree` smoke는 아직 돌리지 않았다.)
+- [x] 모델 키 proxy: 운영 Runner의 Codex 턴(자가 점검 `codex exec` 2회, krema#95 리뷰 1회)이 proxy로 끝까지 실행됐고, 그 뒤 기존 provider ExternalSecret을 지웠다.
+- [ ] triage 턴 하나와 review 턴 하나가 effort `high`(HAPI `state_5.threads`의 세션 metadata)로 돌고, 리뷰의 하위 에이전트도 `high`이며, `change_title`(hapi MCP)이 동작한다. (review 본 스레드와 하위 에이전트의 `high`는 확인했고 triage 턴과 `change_title`은 아직 확인하지 않았다.)
+- [x] chaos test: krema#95 리뷰 실행 중 bridge Pod를 55초 간격으로 세 번 지워(약 3분) 재시작시켜도 리뷰가 정확히 하나 게시되고 이벤트는 park 없이 `completed`로 끝났다. n8n bootstrap log에 `CONFLICT`가 없다.
+- [x] 리뷰 본문 첫 줄 marker에 리뷰한 SHA가 있고(`…:review:bf0db2d2…`), 그 head의 `issue-agent/review` status가 새 판정(failure)으로 바뀌었다. marker SHA가 현재 head가 아닌 리뷰로 success가 남지 않는 경우는 `test_bridge.py`로 확인했다.
 - [ ] 일시적 `park_class`로 멈춘 리뷰가 10·30·90분 backoff로 최대 3회(`stale_dispatch`는 1회) 자동 재시도되고, 멈춘 동안 status는 `error`다.
 - [ ] 에이전트 자신의 COMMENT에 `open_items`가 있으면 decision 댓글이 한 번만 남고, 같은 항목 집합의 새 head에서는 다시 남지 않는다.
 - [x] Runner가 메모리 요청 2560Mi·제한 5Gi, dockerd 요청 160Mi로 Ready이고, 배포 직전 node·클러스터 메모리 요청 비율을 다시 계산했다.
@@ -530,6 +530,7 @@ Runner namespace의 읽기 토큰에는 기존 `contents`·`issues`·`pull_reque
 
 - 1단계(#423) 배포 뒤 운영 Runner에서 확인: 모든 프로세스 environ에 `OPENAI_API_KEY` 0건, 키 파일은 runner 컨테이너에 없음, proxy 경유 `/v1/models` 200·허용 목록 밖 path 403. Docker 정책은 `--privileged`·`/` bind·`--cap-add`·`build --allow network.host`를 거절하고 `--network none` 실행·`--device /dev/dri`·일반 build를 허용했다. `trusted`로 표시한 scratch 저장소의 `.codex/config.toml` MCP 서버도 requirements 허용 목록 때문에 `disabled_reason: requirements`로 꺼진다.
 - 과거 head 재현 리뷰(로컬, GitHub 쓰기 없음, 리뷰 시점 이후 데이터를 숨긴 gh shim, 새 Runner 이미지·authz dind·model proxy): kwin-mcp #90·#92·#93·#95·#97 head(0848f633·db6fb8a3·6cae93c4·70803378·f1fd4ef4) 각 3회에서 결함 있는 head를 APPROVE한 실행은 0회였다(같은 head에서 이전 봇의 판정은 5개 모두 GREEN). 사람이 찾은 P1·P2 13개 중 13개를 과반 실행에서 찾았고(cycle 1 9/13 → cycle 2 11/13 → cycle 3 12/13 → cycle 4 13/13), 규칙 도출에 쓰지 않은 #94·#96·#98(7f72f219)에서도 f17·f22·f27(P1)을 찾았다. 사람이 승인한 head(#98 fdcbe63c, #93 bea98be3)는 오탐 0건이고, 지적은 소스로 확인한 실제·개연 결함이었다. 남은 변동: f01(락 해제 틈의 reap)은 lifecycle lens를 모듈별로 나눈 실행에서만 잡혀 2/3, #92 f08은 4회 중 3회다.
+- 2단계(#425) 배포 뒤 운영 Runner에서 확인: `/etc/codex/managed_config.toml` 적용, 모든 checkout이 untrusted, `codex mcp list`는 context-mode·codegraph만 켜짐, `docker-smoke --policy` 통과, dockerd `/dev`의 block device 0건, 자가 점검 `codex exec` 턴의 셸에서 `CLI_API_TOKEN`·`HAPI_*`·`OPENAI_API_KEY` 0건이고 키 파일 없음, `ctx_execute`로 `docker version`(29.8.2)과 `gh api` 성공, 스레드 effort `high`. krema#95를 `@haechibot review`로 다시 리뷰하게 한 실제 실행은 이전 봇이 APPROVE한 같은 head에서, changed file 목록을 줄 단위로 넘기고 `strip()`하는 detector 때문에 끝 공백이나 개행이 든 파일 이름이 suite를 건너뛰게 만드는 P2를 컨테이너 probe로 재현해 REQUEST_CHANGES를 냈다.
 
 ### 현재 실행 증거
 

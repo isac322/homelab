@@ -9,7 +9,6 @@ resources:
   - pvc.yaml
   - secret-store.yaml
   - external-secret-shared.yaml
-  - external-secret-provider.yaml
   - external-secret-model-proxy.yaml
   - external-secret-github.yaml
   - deployment-runner.yaml
