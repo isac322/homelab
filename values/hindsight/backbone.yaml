@@ -1,7 +1,7 @@
 # Hindsight — AI Agent Memory Server
 
 api:
-  replicaCount: 1
+  replicaCount: 0
   image:
     tag: "0.10.2-slim@sha256:3c7b54a7e7dc92c3ad6a6b874aa9b3e96603b2c6fc4b215d9890a93578d2de99"
   resources:
@@ -62,7 +62,7 @@ api:
 
 controlPlane:
   enabled: true
-  replicaCount: 1
+  replicaCount: 0
   image:
     tag: "0.10.2@sha256:f6e3802e558a0c57feff84d52dfc276d0a841bc21de114629a90444eadc5a3f3"
   resources:
