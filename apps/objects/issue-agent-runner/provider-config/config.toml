@@ -1,0 +1,9 @@
+model_provider = "issue-agent"
+
+# No key here or in the runner: the model-proxy sidecar on loopback adds the
+# Authorization header, so Codex sends none (no env_key, no OpenAI auth).
+[model_providers.issue-agent]
+name = "Issue Agent provider"
+base_url = "http://127.0.0.1:8317/v1"
+wire_api = "responses"
+requires_openai_auth = false

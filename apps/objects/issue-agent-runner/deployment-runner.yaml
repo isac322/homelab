@@ -35,7 +35,7 @@ spec:
         # from falling back to the upstream entrypoint's TCP listener.
         - name: dockerd
           restartPolicy: Always
-          image: ghcr.io/isac322/issue-agent-dockerd:29.8.2-20261002-native-drm-iptables-nft@sha256:a8f929099c85a8adc7abdd24fe27add12bcb5e32ebfe4dee27ea240725caa310
+          image: ghcr.io/isac322/issue-agent-dockerd:29.8.2-20261011-authz@sha256:68d1bcb667f134116bcb203445b219046e7560ede6eb1e1c58c76a5b9fc90ef3
           command:
             - /opt/issue-agent/bin/dockerd-start
           env:
@@ -60,7 +60,7 @@ spec:
           resources:
             requests:
               cpu: 10m
-              memory: 80Mi
+              memory: 160Mi
             limits:
               memory: 8Gi
           securityContext:
@@ -88,6 +88,83 @@ spec:
               mountPath: /run/issue-agent-dri/card0
             - name: dri-render128
               mountPath: /run/issue-agent-dri/renderD128
+        # Model proxy: the only container holding the provider key. Codex in
+        # the runner reaches the provider through http://127.0.0.1:8317/v1
+        # without credentials; Caddy adds the Authorization header from a file
+        # mounted only here and forwards just the Codex model endpoints
+        # (model-proxy/Caddyfile). Bound to loopback, so other pods and Docker
+        # containers cannot use it; exec probes for the same reason. Its own
+        # uid, never 1000. The official binary carries the file capability
+        # cap_net_bind_service, so exec fails unless that capability stays in
+        # the bounding set, even though 8317 needs none.
+        - name: model-proxy
+          restartPolicy: Always
+          image: docker.io/library/caddy:2.11.7-alpine@sha256:d8542f48d34a9cf4e4c11a478865229840e87e4c96ea3f439101f31a5d35f75f
+          command:
+            - caddy
+            - run
+            - --config
+            - /etc/caddy/Caddyfile
+            - --adapter
+            - caddyfile
+          env:
+            - name: XDG_DATA_HOME
+              value: /tmp
+            - name: XDG_CONFIG_HOME
+              value: /tmp
+            - name: MODEL_UPSTREAM
+              valueFrom:
+                secretKeyRef:
+                  name: issue-agent-model-proxy
+                  key: MODEL_UPSTREAM
+          startupProbe:
+            exec:
+              command:
+                - wget
+                - -q
+                - -O
+                - /dev/null
+                - http://127.0.0.1:8317/healthz
+            periodSeconds: 2
+            timeoutSeconds: 5
+            failureThreshold: 30
+          livenessProbe:
+            exec:
+              command:
+                - wget
+                - -q
+                - -O
+                - /dev/null
+                - http://127.0.0.1:8317/healthz
+            periodSeconds: 30
+            timeoutSeconds: 5
+            failureThreshold: 3
+          resources:
+            requests:
+              cpu: 5m
+              memory: 24Mi
+            limits:
+              memory: 128Mi
+          securityContext:
+            runAsNonRoot: true
+            runAsUser: 65532
+            runAsGroup: 65532
+            allowPrivilegeEscalation: false
+            readOnlyRootFilesystem: true
+            capabilities:
+              drop:
+                - ALL
+              add:
+                - NET_BIND_SERVICE
+          volumeMounts:
+            - name: model-proxy-key
+              mountPath: /run/issue-agent/model-proxy
+              readOnly: true
+            - name: model-proxy-config
+              mountPath: /etc/caddy
+              readOnly: true
+            - name: model-proxy-tmp
+              mountPath: /tmp
       affinity:
         nodeAffinity:
           requiredDuringSchedulingIgnoredDuringExecution:
@@ -137,11 +214,6 @@ spec:
                 secretKeyRef:
                   name: issue-agent-hapi-auth
                   key: CLI_API_TOKEN
-            - name: OPENAI_API_KEY
-              valueFrom:
-                secretKeyRef:
-                  name: issue-agent-provider
-                  key: OPENAI_API_KEY
           startupProbe:
             exec:
               command:
@@ -159,9 +231,9 @@ spec:
           resources:
             requests:
               cpu: 100m
-              memory: 640Mi
+              memory: 2560Mi
             limits:
-              memory: 4Gi
+              memory: 5Gi
           securityContext:
             allowPrivilegeEscalation: false
             capabilities:
@@ -195,6 +267,8 @@ spec:
               readOnly: true
         # The only container holding the contents:write token. Called by the
         # bridge only; the runner container cannot read either of its secrets.
+        # Same image as the runner; /checkout also marks the checkout and its
+        # worktrees untrusted in CODEX_HOME (codex-untrust).
         - name: publisher
           image: ghcr.io/isac322/issue-agent-runner:0.30.7-codex0.160.0-20261003-resolved-head@sha256:b3fec6ac3a234edf00509087e9d1ed2692caa034952c801b7e87469b8716219a
           command:
@@ -268,10 +342,12 @@ spec:
           secret:
             secretName: issue-agent-github-read
             defaultMode: 0440
+        # Provider config without credentials (provider-config/config.toml);
+        # the bootstrap installs it as $CODEX_HOME/config.toml.
         - name: provider
-          secret:
-            secretName: issue-agent-provider
-            defaultMode: 0440
+          configMap:
+            name: issue-agent-provider-config
+            defaultMode: 0444
         - name: push
           secret:
             secretName: issue-agent-github-push
@@ -309,3 +385,19 @@ spec:
           hostPath:
             path: /dev/dri/renderD128
             type: CharDevice
+        # Provider key, mounted only by model-proxy (uid 65532, which reads it
+        # through the pod fsGroup); the runner never mounts it.
+        - name: model-proxy-key
+          secret:
+            secretName: issue-agent-model-proxy
+            items:
+              - key: OPENAI_API_KEY
+                path: OPENAI_API_KEY
+            defaultMode: 0440
+        - name: model-proxy-config
+          configMap:
+            name: issue-agent-model-proxy-config
+            defaultMode: 0444
+        - name: model-proxy-tmp
+          emptyDir:
+            sizeLimit: 16Mi

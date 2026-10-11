@@ -1,0 +1,53 @@
+# Model proxy (native sidecar `model-proxy` in deployment-runner.yaml). Codex
+# talks to http://127.0.0.1:8317/v1 without credentials; this proxy replaces
+# any Authorization header with the provider key, read per request from a file
+# that only this container mounts, so a rotated key applies without a reload.
+# Loopback only: other pods and Docker containers cannot reach it.
+#
+# Only the endpoints Codex uses are forwarded (Responses stream, model list,
+# memories summaries); everything else is 403. Every timeout below is longer
+# than Codex's stream idle timeout (300s), so Codex, not the proxy, decides
+# when a silent stream is dead; flush_interval -1 streams SSE unbuffered.
+{
+	admin off
+	auto_https off
+	persist_config off
+	servers {
+		timeouts {
+			read_body 10m
+			read_header 10m
+			idle 10m
+		}
+	}
+}
+
+http://127.0.0.1:8317 {
+	bind 127.0.0.1
+
+	handle /healthz {
+		respond "ok" 200
+	}
+
+	@model {
+		method GET POST
+		path /v1/responses /v1/responses/* /v1/models /v1/models/* /v1/memories /v1/memories/*
+	}
+	handle @model {
+		reverse_proxy {$MODEL_UPSTREAM} {
+			header_up Host {upstream_hostport}
+			header_up Authorization "Bearer {file./run/issue-agent/model-proxy/OPENAI_API_KEY}"
+			header_up -Cookie
+			flush_interval -1
+			transport http {
+				dial_timeout 10s
+				response_header_timeout 10m
+				read_timeout 10m
+				write_timeout 10m
+			}
+		}
+	}
+
+	handle {
+		respond "forbidden" 403
+	}
+}
