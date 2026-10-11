@@ -185,8 +185,8 @@ persistence:
     size: 50Gi
     # -- Custom annotations to be added to the PVC
     annotations: {}
-    # -- If undefined (the default) or set to null, no storageClassName spec is set, choosing the default provisioner.
-    storageClass: ssd-ha-cnpg
+    # -- Ignored while existingClaim is set; jellyfin-config-thin is ssd-ha-retain.
+    storageClass: ssd-ha-retain
     ## -- Use an existing PVC for this mount
     existingClaim: 'jellyfin-config-thin'
   media:
@@ -196,6 +196,19 @@ persistence:
     type: hostPath
     # -- Path on the host node for media storage, only used if type is 'hostPath'.
     hostPath: "/mnt/data/media"
+  # Jellyfin cache (/cache, JELLYFIN_CACHE_DIR from the image): image resize
+  # cache, transcode temp, etc. On emptyDir it was lost on every pod restart,
+  # so browsing re-read artwork from the sleeping media HDD. The cache is
+  # rebuildable, so a single-replica volume is enough.
+  cache:
+    enabled: true
+    type: pvc
+    accessMode: ReadWriteOnce
+    size: 10Gi
+    annotations:
+      pillar-csi.bhyoo.com/backend: |
+        zfs: {properties: {refreservation: none}}
+    storageClass: ssd-single
 
 # -- Configuration for metrics collection and monitoring
 metrics:
