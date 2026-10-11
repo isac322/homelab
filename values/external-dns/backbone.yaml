@@ -33,6 +33,5 @@ provider:
 
 extraArgs:
   - --service-type-filter=LoadBalancer
-  - --gateway-name=bhyoo-gateway
   - --gateway-namespace=ingress-ctrl
   - --annotation-prefix=external-dns.alpha.kubernetes.io/

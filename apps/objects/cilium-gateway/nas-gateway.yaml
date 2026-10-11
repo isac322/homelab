@@ -1,0 +1,29 @@
+# Gateway for workloads on the NAS node (rock5bp). Entering on the node that
+# holds the pod and its media avoids a cross-node hop; bhyoo-gateway excludes
+# rock5bp so this Gateway owns its :443.
+# The wildcard certificate is issued through bhyoo-gateway's cert-manager
+# annotations; this Gateway only references the same Secret.
+apiVersion: gateway.networking.k8s.io/v1
+kind: Gateway
+metadata:
+  name: nas-gateway
+  namespace: ingress-ctrl
+spec:
+  gatewayClassName: cilium
+  infrastructure:
+    annotations:
+      io.cilium.nodeipam/match-node-labels: "kubernetes.io/hostname=rock5bp"
+  listeners:
+    - name: https
+      port: 443
+      protocol: HTTPS
+      hostname: "*.bhyoo.com"
+      tls:
+        mode: Terminate
+        certificateRefs:
+          - group: ''
+            kind: Secret
+            name: wildcard-bhyoo-com-tls
+      allowedRoutes:
+        namespaces:
+          from: All

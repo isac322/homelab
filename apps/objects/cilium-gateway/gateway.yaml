@@ -11,7 +11,9 @@ spec:
   gatewayClassName: cilium
   infrastructure:
     annotations:
-      io.cilium.nodeipam/match-node-labels: "homelab.bhyoo.com/cilium-envoy=true"
+      # rock5bp's :443 belongs to nas-gateway; two LB Services cannot share
+      # the same node IP and port.
+      io.cilium.nodeipam/match-node-labels: "homelab.bhyoo.com/cilium-envoy=true,kubernetes.io/hostname!=rock5bp"
   listeners:
     - name: https
       port: 443

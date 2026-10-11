@@ -88,12 +88,10 @@ service:
 
 httpRoute:
   enabled: true
-  annotations:
-    # Jellyfin is pinned to rock5bp; entering the gateway on any other node
-    # adds a cross-node hop that cut measured stream throughput by 30–70%.
-    external-dns.alpha.kubernetes.io/target: 10.222.0.4
   parentRefs:
-    - name: bhyoo-gateway
+    # nas-gateway listens only on rock5bp, where Jellyfin and its media live,
+    # so streams skip the cross-node hop through other gateway nodes.
+    - name: nas-gateway
       namespace: ingress-ctrl
       sectionName: https
   hostnames:
