@@ -51,6 +51,7 @@
             ./nix/modules/linux/wireguard.nix
             ./nix/modules/linux/k3s-host.nix
             ./nix/modules/linux/nvme-tcp-dkms.nix
+            ./nix/modules/linux/irq-affinity.nix
           ]
           ++ lib.optional (builtins.pathExists hostModule) hostModule;
           specialArgs = {
@@ -187,9 +188,14 @@
               projectServiceOwnershipIsMinimal = lib.all (
                 hostName:
                 let
-                  expected =
+                  # attrNames order.
+                  expected = lib.sort lib.lessThan (
                     lib.optional (linuxHosts.${hostName}.k3sRole != null) "homelab-k3s"
-                    ++ lib.optional (hostName == "rock5bp") "homelab-pillar-firewall";
+                    ++ lib.optionals (hostName == "rock5bp") [
+                      "homelab-irq-affinity"
+                      "homelab-pillar-firewall"
+                    ]
+                  );
                 in
                 projectServices self.systemConfigs.${hostName}.config == expected
                 && projectServices self.systemConfigs."${hostName}-commit".config == expected
@@ -304,6 +310,23 @@
             assert builtins.elem "homelab-k3s.service" rock.systemd.services.homelab-pillar-firewall.before;
             assert lib.hasSuffix " apply"
               rock.systemd.services.homelab-pillar-firewall.serviceConfig.ExecReload;
+            # #385: rock5bp's RX path corrupts frames far less when eth0 IRQs run on
+            # the A55 cluster; the pin follows NIC re-probes and irqbalance stays off.
+            assert rock.homelab.irqAffinity.interface == "eth0";
+            assert
+              rock.homelab.irqAffinity.cpus == [
+                0
+                1
+                2
+                3
+              ];
+            assert
+              rock.systemd.services.homelab-irq-affinity.bindsTo == [ "sys-subsystem-net-devices-eth0.device" ];
+            assert builtins.elem "sys-subsystem-net-devices-eth0.device"
+              rock.systemd.services.homelab-irq-affinity.wantedBy;
+            assert lib.hasSuffix " apply" rock.systemd.services.homelab-irq-affinity.serviceConfig.ExecReload;
+            assert builtins.elem "irqbalance.service" rock.systemd.maskedUnits;
+            assert !(builtins.elem "irqbalance.service" rpi5.systemd.maskedUnits);
             assert builtins.length topology.requiredLinks == 36;
             assert !(builtins.hasAttr "wg1" topology);
             assert gracefulShutdownConfigured;

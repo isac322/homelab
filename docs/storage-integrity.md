@@ -32,6 +32,7 @@
 - 배제·불요(코드·증거 확인): ZFS 2.4.1 zvol 경로·ZFS 압축, nvme-tcp/nvmet-tcp와 LIO target 코드·DKMS patch, 6.1.84 TCP·GRO 경로, initiator 소프트웨어, 송신 측(macmini 수신자는 rock5bp sender 포함 같은 sender에서 clean), 케이블·PHY(FCS 오류 0), PCIe 링크(LCRC·RASDES 카운터 0)·Relaxed Ordering, arm64 DMA 코드, Cilium BPF, 온도·전원, rock5bp CPU/DRAM copy(9.7 TiB 검사 0건), TCP 손실 복구(1% 유도 손실에서 0건).
 - 기제 추정 [INFERENCE]: RTL8125B + RK3588 PCIe의 non-coherent DMA에서 frame의 마지막 DMA write가 처리 시점에 CPU에 보이지 않는다. 2026-10-05 사건의 "정확히 256×1448바이트 전 데이터 복사"는 ring 한 바퀴 전 같은 RX buffer의 stale byte와 일치한다.
 - 조치: pillar-csi v0.5.4부터 모든 pillar volume이 NVMe/TCP header·data digest를 쓴다. 캠페인 중 digest error 2건(실험 arm n1 1건, 운영 volume 1건 — rpi5 host, controller reset 후 write 재시도됨)을 잡았다. iSCSI(democratic-csi `hdd-ha-xfs`, versitygw-hdd-data)는 여전히 digest가 없다. TLS와 S3 SigV4 streaming도 본문 손상을 잡는다.
+- 완화: rock5bp의 `eth0` IRQ 전부를 A55 cluster(cpu0-3)에 고정한다. 4회 약 161 GiB에서 tail splice가 약 200분의 1로 줄었다. 설치·검증·rollback은 아래 "eth0 IRQ 고정 (rock5bp)" 절.
 - 주의: rock5bp에서 r8169를 쓸 때 rx checksum을 끄지 않는다. r8169는 checksum이 꺼지면 모든 packet을 CHECKSUM_UNNECESSARY로 표시해 kernel이 아무것도 검증하지 않고, 실험에서 손상이 100 GiB당 약 282건으로 application까지 도달했다.
 - 다음 실험(승인 필요): hardware isolation — PCIe MPS/MRRS 변경, PCIe Gen1 강제, RX buffer alignment 변경, 다른 NIC(USB 또는 M.2 i226) 장착.
 - 상시 감시: `prometheus/storage-canary`가 rock5bp가 아닌 노드에서 `ssd-ha` volume에 하루 약 120 GiB를 쓰고 검증한다. Digest가 켜진 지금은 canary mismatch보다 `dmesg`의 `digest error`가 먼저 드러날 가능성이 크다.
@@ -60,6 +61,75 @@
 | 실험 script | rock5bp에서 `tools/storage-canary/zvol-path-experiment.sh` ("원인 좁히기 실험") |
 
 rock5bp는 NAS 상태를 가진 storage node다. 운영 volume, ZFS 설정, nvmet port를 바꾸거나 module을 reload하는 일은 사용자 승인 없이 하지 않는다. 실험은 전용 scratch zvol·NQN·iptables rule(comment 표기)로만 하고 끝나면 지운다(이전: `hot-data/t385-*`·`nqn.2026-10.com.example:t385-*`, #385 캠페인: `fast/exp385-*`·`nqn.2026-10.io.exp385:*`·comment `exp385-armT`).
+
+## eth0 IRQ 고정 (rock5bp)
+
+**이유:** [#385](https://github.com/isac322/homelab/issues/385) 2026-10-11 캠페인에서 RX IRQ와 NAPI가 A76 core(cpu4-7)에서 돌 때 수신 frame의 tail이 stale로 남는 일이 많았다(baseline 약 4–12건/GiB, 대부분 conntrack INVALID로 버려지고 드물게 checksum-neutral 손상이 application까지 샌다). `eth0` IRQ 32개를 모두 cpu0-3(A55, mask `0f`)에 고정하면 4회 약 161 GiB에서 약 200분의 1로 줄었다. 기본 mask `ff`에서는 GIC-ITS가 affinity를 쓸 때나 boot 때 고른 CPU에 따라 노출이 달라진다(RSS RX vector `eth0-0..3` = IRQ 191-194). 원인을 고치는 것이 아니라 발생률을 낮추는 조치이므로 digest와 canary 감시는 그대로 둔다.
+
+**구현:** `nix/modules/linux/irq-affinity.nix`(`homelab.irqAffinity`, `nix/hosts/rock5bp.nix`에서 `eth0`, `[ 0 1 2 3 ]`)가 oneshot `homelab-irq-affinity.service`를 만든다.
+
+- `apply`: `/proc/interrupts`에서 이름이 `eth0` 또는 `eth0-*`인 IRQ를 찾는다. Driver(r8125)는 link를 열 때 IRQ를 요청하므로 최대 120초 기다린다. 각 `/proc/irq/<n>/smp_affinity_list`에 `0,1,2,3`을 쓰고 IRQ 집합이 안정될 때까지 반복한 뒤 `verify`를 실행한다.
+- `verify`: 모든 IRQ의 `smp_affinity_list`가 정확히 0-3이고 `effective_affinity_list`가 0-3 안에 있으며 `irqbalance` process가 없어야 한다. 아니면 IRQ별 오류를 journal(stderr)에 남기고 non-zero로 끝나 unit이 `failed`가 된다.
+- `reset`(`ExecStop`): 모든 `eth0` IRQ를 `/proc/irq/default_smp_affinity`(`ff`)로 되돌린다.
+- `WantedBy=multi-user.target sys-subsystem-net-devices-eth0.device`, `BindsTo=`/`After=sys-subsystem-net-devices-eth0.device`: NIC가 사라지면 unit이 멈추고, 다시 probe되면 device unit이 다시 시작한다. 같은 device의 link down/up은 IRQ descriptor와 사용자가 쓴 affinity를 유지한다. `ExecReload`는 `apply`라 system-manager가 바뀐 unit을 reload로 갱신한다.
+- `irqbalance.service`는 mask한다(rock5bp에는 설치되어 있지 않다).
+
+**설치 (full activation 없이, reboot 없이):** firewall unit과 같은 `/usr/local/lib/systemd/system` interim 방식이다(README "Service ownership"). `/etc/systemd/system`에 직접 link를 만들지 않는다. exp385 harness의 `irq` arm이 돌고 있으면 먼저 끝낸다. `rev`는 review된 commit이다. Merge 전 PR branch commit이면 flake URL에 `&ref=<branch>`를 붙인다.
+
+```sh
+ssh bhyoo@192.168.219.6
+rev=<commit>
+sudo -n env PATH=/usr/local/sbin:/usr/local/bin:/usr/sbin:/usr/bin:/sbin:/bin rev="$rev" sh -euc '
+  unit=homelab-irq-affinity.service
+  root=/nix/var/nix/gcroots/homelab-irq-affinity-unit
+  dir=/usr/local/lib/systemd/system
+  /nix/var/nix/profiles/default/bin/nix --extra-experimental-features "nix-command flakes" --accept-flake-config \
+    build --out-link "$root" \
+    "git+https://github.com/isac322/homelab?rev=$rev#systemConfigs.rock5bp.config.systemd.units.\"$unit\".unit"
+  mkdir -p "$dir/sys-subsystem-net-devices-eth0.device.wants" "$dir/system-manager.target.wants"
+  ln -sfn "$(readlink -f "$root")/$unit" "$dir/$unit"
+  ln -sfn "../$unit" "$dir/sys-subsystem-net-devices-eth0.device.wants/$unit"
+  ln -sfn "../$unit" "$dir/system-manager.target.wants/$unit"
+  systemctl daemon-reload
+  systemctl start "$unit"
+'
+```
+
+첫 full activation 뒤 handoff는 README의 firewall 절차와 같다. State의 `.fileTree.files`에 `/etc/systemd/system/homelab-irq-affinity.service`, `/etc/systemd/system/sys-subsystem-net-devices-eth0.device.wants/homelab-irq-affinity.service`, `/etc/systemd/system/system-manager.target.wants/homelab-irq-affinity.service`가 있는지, `.services["homelab-irq-affinity.service"]`가 새 unit store path를 가리키는지, `FragmentPath`가 `/etc/systemd/system/homelab-irq-affinity.service`인지 확인하고, `systemctl reload homelab-irq-affinity.service`와 아래 `verify`가 성공한 뒤에만 `/usr/local` link 세 개를 지우고 `daemon-reload`한 다음 GC root를 지운다.
+
+**검증:**
+
+```sh
+systemctl is-active homelab-irq-affinity.service
+journalctl -u homelab-irq-affinity.service -b --no-pager   # "32 eth0 IRQs pinned to CPUs 0,1,2,3 (irq:effective 191:0 ...)"
+grep eth0 /proc/interrupts                                  # 새 interrupt 수가 CPU0-3 열에서만 늘어야 한다
+for i in $(awk '$NF ~ /^eth0(-|$)/ {sub(":", "", $1); print $1}' /proc/interrupts); do
+  echo "$i $(cat /proc/irq/$i/smp_affinity_list) $(cat /proc/irq/$i/effective_affinity_list)"
+done                                                        # 32줄, 모두 "<irq> 0-3 <0..3 중 하나>"
+"$(awk -F'[= ]' '/^ExecStart=/ {print $2}' "$(systemctl show -p FragmentPath --value homelab-irq-affinity.service)")" verify
+```
+
+효과 확인은 위 "숨은 손상률 측정"의 conntrack INVALID rate(100 GiB당)를 고정 전후로 비교한다.
+
+**Rollback (reboot 없이):** `systemctl stop`이 `ExecStop=reset`으로 IRQ를 기본 mask `ff`로 되돌린다. 그 뒤 GIC-ITS가 다시 CPU를 고르므로 A76에 놓일 수 있다.
+
+```sh
+# interim install 되돌리기
+sudo -n env PATH=/usr/local/sbin:/usr/local/bin:/usr/sbin:/usr/bin:/sbin:/bin sh -euc '
+  unit=homelab-irq-affinity.service
+  dir=/usr/local/lib/systemd/system
+  systemctl stop "$unit"
+  rm -f "$dir/$unit" "$dir/sys-subsystem-net-devices-eth0.device.wants/$unit" "$dir/system-manager.target.wants/$unit"
+  systemctl daemon-reload
+  rm -f /nix/var/nix/gcroots/homelab-irq-affinity-unit
+'
+# unit 없이 즉시 되돌리기(unit stop이 실패할 때)
+for i in $(awk '$NF ~ /^eth0(-|$)/ {sub(":", "", $1); print $1}' /proc/interrupts); do
+  echo ff | sudo -n tee /proc/irq/$i/smp_affinity >/dev/null
+done
+```
+
+Full activation 뒤에는 `nix/hosts/rock5bp.nix`에서 `homelab.irqAffinity.enable = false`로 새 generation을 activate한다. 그 사이 임시로 끄려면 `systemctl stop homelab-irq-affinity.service`만 해도 되지만 다음 boot, NIC re-probe, activation에서 다시 적용된다.
 
 ## 탐지 장치
 
