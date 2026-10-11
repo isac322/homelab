@@ -1,36 +1,57 @@
 #!/usr/bin/env bash
 # Exercise the runner's Unix-socket Docker daemon and shared bind-mount paths.
 # Run inside the runner. An optional Krema checkout exercises the real E2E harness.
+# --policy additionally asserts the daemon's authorization policy
+# (issue-agent-authz) and BuildKit entitlements.
 set -euo pipefail
 umask 077
 
 usage() {
-  printf 'Usage: issue-agent-docker-smoke [--krema-worktree ABSOLUTE_PATH]\n' >&2
+  printf 'Usage: issue-agent-docker-smoke [--policy] [--krema-worktree ABSOLUTE_PATH]\n' >&2
   exit 2
 }
 krema=''
-if [[ $# -gt 0 ]]; then
-  [[ $# -eq 2 && $1 == --krema-worktree ]] || usage
-  krema=$2
-  [[ $krema == /* && -f $krema/tests/appium/run-e2e.sh ]] || usage
-fi
+policy=0
+while [[ $# -gt 0 ]]; do
+  case $1 in
+    --policy) policy=1; shift ;;
+    --krema-worktree)
+      [[ $# -ge 2 && -z $krema ]] || usage
+      krema=$2
+      [[ $krema == /* && -f $krema/tests/appium/run-e2e.sh ]] || usage
+      shift 2
+      ;;
+    *) usage ;;
+  esac
+done
+docker() { /usr/local/bin/docker "$@"; }
 [[ ${DOCKER_HOST:-} == unix://* ]] || { echo 'DOCKER_HOST must select the dedicated Unix socket' >&2; exit 1; }
-[[ $(id -u) == 1000 ]] || { echo 'Run as the non-root runner user (UID 1000)' >&2; exit 1; }
+[[ $(/usr/bin/id -u) == 1000 ]] || { echo 'Run as the non-root runner user (UID 1000)' >&2; exit 1; }
 root=${ISSUE_AGENT_CHECKOUTS:?ISSUE_AGENT_CHECKOUTS must name the daemon-shared checkout directory}
 [[ $root == /* && -d $root ]] || usage
+# The daemon policy only allows bind sources below the checkouts directory and
+# /tmp/issue-agent (the shared /tmp emptyDir).
+scratch=/tmp/issue-agent
+/usr/bin/mkdir -p "$scratch"
 
 docker info --format 'Docker {{.ServerVersion}}, cgroup driver {{.CgroupDriver}}'
-context=$(mktemp -d "$root/.docker-smoke.XXXXXX")
-artifacts=$(mktemp -d "${TMPDIR:-/tmp}/issue-agent-docker-smoke.XXXXXX")
-image="issue-agent-docker-smoke:smoke-$(basename "$context")"
+context=$(/usr/bin/mktemp -d "$root/.docker-smoke.XXXXXX")
+artifacts=$(/usr/bin/mktemp -d "$scratch/docker-smoke.XXXXXX")
+image="issue-agent-docker-smoke:smoke-$(/usr/bin/basename "$context")"
+policy_context=''
+policy_container=''
+policy_volume=''
 cleanup() {
+  [[ -z $policy_container ]] || docker rm -f "$policy_container" >/dev/null 2>&1 || true
+  [[ -z $policy_volume ]] || docker volume rm "$policy_volume" >/dev/null 2>&1 || true
   docker image rm "$image" >/dev/null 2>&1 || true
-  rm -rf -- "$context"
+  /usr/bin/rm -rf -- "$context"
+  [[ -z $policy_context ]] || /usr/bin/rm -rf -- "$policy_context"
 }
 trap cleanup EXIT
 
 fixture=busybox:1.37.0@sha256:bdf57e528e45e4433820e045b29b4597825a1c9e38353532d90a01445013f82e
-printf 'Docker smoke input: %s\n' "$(basename "$context")" >"$context/input"
+printf 'Docker smoke input: %s\n' "$(/usr/bin/basename "$context")" >"$context/input"
 printf 'FROM %s\nCOPY --chown=1000:1000 input /built-input\n' "$fixture" >"$context/Dockerfile"
 docker build --tag "$image" "$context"
 # Both bind paths must exist in the daemon's namespace, with the same contents
@@ -43,14 +64,79 @@ docker run --rm --user 1000:1000 \
     cmp /built-input /source/input
     sha256sum /source/input | cut -d " " -f1 > /artifacts/input.sha256
   '
-expected=$(sha256sum "$context/input")
+expected=$(/usr/bin/sha256sum "$context/input")
 [[ $(<"$artifacts/input.sha256") == "${expected%% *}" ]] || { echo 'Artifact bind-mount round trip failed' >&2; exit 1; }
 printf 'Image build and non-root bind-mount round trip passed. Artifacts: %s\n' "$artifacts"
+
+if ((policy)); then
+  failures=0
+  # A denial must come from the authorization plugin itself, not from an
+  # unrelated error (missing image, bad flag).
+  expect_denied() {
+    local what=$1 out
+    shift
+    if out=$("$@" 2>&1); then
+      printf 'FAIL: %s was allowed\n' "$what" >&2
+      failures=$((failures + 1))
+    elif [[ $out == *'authorization denied by plugin issue-agent-authz'* ]]; then
+      printf 'denied as expected: %s\n' "$what"
+    else
+      printf 'FAIL: %s failed without a policy denial:\n%s\n' "$what" "$out" >&2
+      failures=$((failures + 1))
+    fi
+  }
+
+  expect_denied '--privileged' docker run --rm --privileged "$image" true
+  expect_denied '--cap-add SYS_ADMIN' docker run --rm --cap-add SYS_ADMIN "$image" true
+  expect_denied '--network host' docker run --rm --network host "$image" true
+  expect_denied '--pid host' docker run --rm --pid host "$image" true
+  expect_denied 'bind of /' docker run --rm -v /:/host "$image" true
+  expect_denied 'bind of the Docker socket directory' docker run --rm -v /run/issue-agent-docker:/s "$image" true
+  expect_denied '--device /dev/sda' docker run --rm --device /dev/sda "$image" true
+  expect_denied '--security-opt seccomp=unconfined' docker run --rm --security-opt seccomp=unconfined "$image" true
+  policy_volume="issue-agent-smoke-$(/usr/bin/basename "$context")"
+  expect_denied 'host-path volume (local driver o=bind)' \
+    docker volume create --opt type=none --opt o=bind --opt device=/ "$policy_volume"
+  expect_denied 'docker plugin disable' docker plugin disable issue-agent-authz
+
+  policy_container=$(docker run -d --rm "$image" sleep 300)
+  expect_denied 'exec --privileged' docker exec --privileged "$policy_container" true
+  expect_denied '--volumes-from' docker run --rm --volumes-from "$policy_container" "$image" true
+  expect_denied 'container update' docker update --memory 64m "$policy_container"
+  docker rm -f "$policy_container" >/dev/null
+  policy_container=''
+
+  # BuildKit RUN steps bypass the plugin; the daemon's builder entitlements
+  # must refuse the network.host grant.
+  policy_context=$(/usr/bin/mktemp -d "$root/.docker-smoke-policy.XXXXXX")
+  printf 'FROM %s\nRUN --network=host true\n' "$image" >"$policy_context/Dockerfile"
+  if out=$(docker build --allow network.host --no-cache "$policy_context" 2>&1); then
+    printf 'FAIL: docker build --allow network.host was allowed\n' >&2
+    failures=$((failures + 1))
+  elif [[ $out == *network.host*'not allowed'* ]]; then
+    printf 'denied as expected: docker build --allow network.host\n'
+  else
+    printf 'FAIL: docker build --allow network.host failed without an entitlement refusal:\n%s\n' "$out" >&2
+    failures=$((failures + 1))
+  fi
+
+  # The curated DRI pair stays usable (Krema's harness passes the directory).
+  if dri=$(docker run --rm --device /dev/dri "$image" ls /dev/dri 2>&1) &&
+    [[ $'\n'$dri$'\n' == *$'\ncard0\n'* && $'\n'$dri$'\n' == *$'\nrenderD128\n'* ]]; then
+    printf 'allowed as expected: --device /dev/dri (%s)\n' "$(printf '%s' "$dri" | /usr/bin/tr '\n' ' ')"
+  else
+    printf 'FAIL: --device /dev/dri was not usable:\n%s\n' "$dri" >&2
+    failures=$((failures + 1))
+  fi
+
+  ((failures == 0)) || { printf 'Docker policy smoke: %d failure(s)\n' "$failures" >&2; exit 1; }
+  printf 'Docker policy smoke passed.\n'
+fi
 
 if [[ -n $krema ]]; then
   # No fixed wait or AT-SPI-only substitute: the preview suite requires actual
   # capture and live thumbnail rendering in its KWin session, which renders
   # with Mesa's software rasterizer on the node's native DRM nodes.
   cd "$krema"
-  KREMA_E2E_ARTIFACTS="$artifacts/krema" sh tests/appium/run-e2e.sh test_smoke.py test_03_preview.py
+  KREMA_E2E_ARTIFACTS="$artifacts/krema" /bin/sh tests/appium/run-e2e.sh test_smoke.py test_03_preview.py
 fi

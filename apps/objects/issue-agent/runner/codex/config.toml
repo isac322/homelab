@@ -1,11 +1,32 @@
 # Codex system config layer (/etc/codex/config.toml). The bootstrap replaces
 # $CODEX_HOME/config.toml with the provider config on every start, so the MCP
-# servers every session needs live here, versioned with the image.
+# servers every session needs live here, versioned with the image. Reasoning
+# effort, sub-agent fan-out and the agent shell environment are pinned in
+# managed_config.toml, which outranks every other layer.
+#
+# Codex starts stdio MCP servers with only its default variables (HOME LOGNAME
+# PATH SHELL USER LANG LC_ALL TERM TMPDIR TZ; rmcp-client DEFAULT_ENV_VARS,
+# 0.160.0) plus the names listed in env_vars. Commands run through ctx_* need
+# the same non-secret runner environment the agent shell gets, so context-mode
+# receives the managed_config.toml include_only names that are not defaults.
+# Never list secrets (OPENAI_API_KEY, CLI_API_TOKEN, HAPI_*) or
+# ISSUE_AGENT_PROVIDER_DIR. Every server must also match the identity allowlist
+# in requirements.toml.
 
 [mcp_servers.context-mode]
 command = "/usr/local/bin/context-mode"
 startup_timeout_sec = 30
 default_tools_approval_mode = "approve"
+env_vars = [
+  "LC_CTYPE", "HOSTNAME",
+  "DOCKER_HOST", "GH_CONFIG_DIR", "GH_PROMPT_DISABLED", "GH_NO_UPDATE_NOTIFIER",
+  "GIT_CONFIG_SYSTEM", "GIT_TERMINAL_PROMPT",
+  "GIT_AUTHOR_NAME", "GIT_AUTHOR_EMAIL", "GIT_COMMITTER_NAME", "GIT_COMMITTER_EMAIL",
+  "ISSUE_AGENT_CHECKOUTS", "CODEX_HOME",
+  "CARGO_HOME", "RUSTUP_HOME", "RUSTC_WRAPPER", "CARGO_BUILD_JOBS", "GOMAXPROCS",
+  "SCCACHE_DIR", "SCCACHE_CACHE_SIZE", "CMAKE_C_COMPILER_LAUNCHER", "CMAKE_CXX_COMPILER_LAUNCHER",
+  "CODEGRAPH_NO_DOWNLOAD", "NODE_VERSION", "YARN_VERSION",
+]
 
 [mcp_servers.context-mode.env]
 CONTEXT_MODE_PLATFORM = "codex"
@@ -15,3 +36,4 @@ command = "/usr/local/bin/codegraph"
 args = ["serve", "--mcp"]
 startup_timeout_sec = 30
 default_tools_approval_mode = "approve"
+env_vars = ["CODEGRAPH_NO_DOWNLOAD"]

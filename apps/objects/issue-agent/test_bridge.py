@@ -17,7 +17,7 @@ import threading
 import time
 import unittest
 import urllib.parse
-from typing import Any
+from typing import Any, Callable
 from unittest.mock import patch
 
 sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
@@ -72,6 +72,9 @@ class Fake:
         self.label_delete_status = 200  # DELETE issue label answers this instead of removing when not 200
         # (entered, release): the next issue-comment POST signals ``entered`` and waits for ``release``
         self.comment_gate: tuple[threading.Event, threading.Event] | None = None
+        # (method, path) -> (entered, release): the next such request signals ``entered`` and waits for ``release``
+        # (one-shot, outside the lock like ``comment_gate``)
+        self.gates: dict[tuple[str, str], tuple[threading.Event, threading.Event]] = {}
         self.prs: dict[int, dict[str, Any]] = {}  # pull requests of REPO
         self.repo_prs: dict[str, dict[int, dict[str, Any]]] = {}  # pull requests of other repositories
         self.installation_repos: list[str] = []  # GET /installation/repositories
@@ -227,6 +230,7 @@ class Fake:
                     gate = None
                     if method == "POST" and "/issues/" in parsed.path and parsed.path.endswith("/comments"):
                         gate, fake.comment_gate = fake.comment_gate, None
+                    gate = fake.gates.pop((method, parsed.path), None) or gate
                 if gate is not None:  # held outside the lock so concurrent requests are still served
                     gate[0].set()
                     gate[1].wait(10)
@@ -659,12 +663,25 @@ IMPLEMENT_OK: dict[str, Any] = {
 REVIEW_OK: dict[str, Any] = {
     "status": "reviewed", "head_sha": SHA_A, "event": "REQUEST_CHANGES", "body": "Needs work",
     "comments": [{"path": "a.py", "line": 3, "side": "RIGHT", "start_line": None, "body": "bug here"}],
-    "thread_replies": [], "summary": "reviewed", "blockers": [],
+    "thread_replies": [], "open_items": [], "summary": "reviewed", "blockers": [],
 }
 
 
 def variant(base: dict[str, Any], **changes: Any) -> dict[str, Any]:
     return json.loads(json.dumps({**base, **changes}))
+
+
+def insert_review_row(store: bridge.Store, delivery: str, number: int, head: str, *, published: str | None = None,
+                      state: str = "completed", outcome: str | None = "reviewed") -> None:
+    """A finished review request recorded by this bridge (``published``: the head its review was posted for)."""
+    stages = {"review_published": {"sha": published, "at": 0}} if published else {}
+    with store.tx() as conn:
+        conn.execute(
+            "INSERT INTO events (delivery_id, semantic_key, repo, kind, issue_number, pr_number, head_sha, actor,"
+            " title, body, state, outcome, stages, received_at, updated_at)"
+            " VALUES (?, ?, ?, 'pr_review', ?, ?, ?, 'someone', 't', '', ?, ?, ?, 0, 0)",
+            (delivery, f"{REPO}#pr:{number}:review:{head}:{delivery}", REPO, number, number, head, state, outcome,
+             json.dumps(stages)))
 
 
 class BridgeTestCase(unittest.TestCase):
@@ -1522,6 +1539,108 @@ class PrRepairTests(BridgeTestCase):
         self.assertIsNone(self.store.pr_state(REPO, 144)["active_delivery"])
         self.assertEqual(self.repair_delivery(), delivery)
 
+    def our_change_request(self, head: str, *, commit_id: str | None = None, delivery: str = "r0") -> dict:
+        return {"id": 1, "state": "CHANGES_REQUESTED", "commit_id": commit_id or head, "user": {"login": REVIEWER},
+                "body": f"{bridge.BOT_MARKER_PREFIX}:{delivery}:review:{head} -->\nFix the boundary."}
+
+    def test_restamped_bot_change_request_is_not_a_repair_blocker(self) -> None:
+        # A rebase restamps our CHANGES_REQUESTED review of A onto B; it never read B, so B has no change request.
+        self.use_reviewer_app()
+        pr = self.managed_pr(merge_state="BLOCKED")
+        pr["head"]["sha"] = SHA_B
+        self.fake.reviews = [self.our_change_request(SHA_A, commit_id=SHA_B)]
+        self.assertEqual(self.bridge.reconcile_pr(REPO, 144), "waiting")
+        self.assertEqual(self.repair_count(), 0)
+        # A review written before the marker carried a head resolves through this bridge's record of its delivery.
+        insert_review_row(self.store, "r1", 144, SHA_A, published=SHA_A)
+        self.fake.reviews = [{**self.our_change_request(SHA_A, commit_id=SHA_B),
+                              "body": f"{bridge.BOT_MARKER_PREFIX}:r1:review -->\nFix the boundary."}]
+        self.assertEqual(self.bridge.reconcile_pr(REPO, 144), "waiting")
+        # On the head it was written for, the same review still asks for a repair.
+        pr["head"]["sha"] = SHA_A
+        self.fake.reviews[0]["commit_id"] = SHA_A
+        self.assertEqual(self.bridge.reconcile_pr(REPO, 144), "queued")
+
+    def test_no_change_repair_of_our_change_request_queues_one_rereview_of_the_same_head(self) -> None:
+        # v5 #2: the repair answered the findings instead of pushing ("prove or fix" with a proof in the thread);
+        # the reviewer must weigh that answer on the same head instead of leaving its change request standing.
+        self.use_reviewer_app()
+        self.managed_pr(merge_state="BLOCKED")
+        self.fake.reviews = [self.our_change_request(SHA_A)]
+        self.assertEqual(self.bridge.reconcile_pr(REPO, 144), "queued")
+        self.assertEqual(self.dispatcher.tick(), "dispatched")
+        repair = self.repair_delivery()
+        self.assertEqual(self.op("begin", repair, attempt=1)["status"], "started")
+        self.assertTrue(self.op("finish", repair, outcome="no_change")["ok"])
+        [rereview] = self.store.query("SELECT * FROM events WHERE kind = 'pr_review'")
+        self.assertEqual((rereview["issue_number"], rereview["head_sha"], rereview["state"], rereview["semantic_key"]),
+                         (144, SHA_A, "accepted", f"{REPO}#pr:144:rereview:{SHA_A}"))
+        self.assertTrue(rereview["delivery_id"].startswith("pr-rereview-"))
+        self.assertNotIn("rereview_pending", json.loads(self.store.event(repair)["stages"]))  # obligation met
+        # At most once per head, whichever repair asks again.
+        again = dict(self.store.event(repair), delivery_id="pr-repair-another")
+        self.assertEqual(self.bridge._queue_rereview(again, {"pr_number": 144, "head": SHA_A}), "duplicate")
+        # It is explicit: it starts although the head already has our review, and posts a new review instead of
+        # reusing the change request it re-checks.
+        self.assertEqual(self.dispatcher.tick(), "dispatched")
+        self.assertEqual(self.fake.dispatched[-1][1]["delivery_id"], rereview["delivery_id"])
+        self.assertEqual(self.op("begin", rereview["delivery_id"], attempt=1)["status"], "started")
+        published = self.op("github.review", rereview["delivery_id"],
+                            result=variant(REVIEW_OK, event="APPROVE", comments=[]))
+        self.assertEqual((published["created"], published["event_submitted"]), (True, "APPROVE"))
+        self.assertEqual(self.fake.review_posts[-1]["commit_id"], SHA_A)
+
+    def test_a_rereview_that_failed_to_queue_is_retried_until_queued(self) -> None:
+        # A transient GitHub read failure right after finish must not drop the re-review the repair owes.
+        self.use_reviewer_app()
+        self.managed_pr(merge_state="BLOCKED")
+        self.fake.reviews = [self.our_change_request(SHA_A)]
+        self.assertEqual(self.bridge.reconcile_pr(REPO, 144), "queued")
+        self.assertEqual(self.dispatcher.tick(), "dispatched")
+        repair = self.repair_delivery()
+        self.assertEqual(self.op("begin", repair, attempt=1)["status"], "started")
+        with patch.object(self.bridge, "_get_pr", side_effect=bridge.OpError("github pull request HTTP 502",
+                                                                             retryable=True)):
+            self.assertTrue(self.op("finish", repair, outcome="no_change")["ok"])
+        self.assertEqual(self.store.query("SELECT * FROM events WHERE kind = 'pr_review'"), [])
+        pending = json.loads(self.store.event(repair)["stages"])["rereview_pending"]
+        self.assertEqual((pending["pr_number"], pending["head"]), (144, SHA_A))
+        self.assertEqual(self.op("finish", repair, outcome="no_change")["already"], True)  # finish stays done
+        self.dispatcher.tick(pending["next_at"] - 1)  # not before the backoff
+        self.assertEqual(self.store.query("SELECT * FROM events WHERE kind = 'pr_review'"), [])
+        self.dispatcher.tick(pending["next_at"] + 1)
+        [rereview] = self.store.query("SELECT * FROM events WHERE kind = 'pr_review'")
+        self.assertEqual((rereview["head_sha"], rereview["semantic_key"]), (SHA_A, f"{REPO}#pr:144:rereview:{SHA_A}"))
+        self.assertNotIn("rereview_pending", json.loads(self.store.event(repair)["stages"]))
+
+    def test_an_owed_rereview_is_dropped_once_the_head_moved(self) -> None:
+        self.use_reviewer_app()
+        pr = self.managed_pr(merge_state="BLOCKED")
+        self.fake.reviews = [self.our_change_request(SHA_A)]
+        self.assertEqual(self.bridge.reconcile_pr(REPO, 144), "queued")
+        self.assertEqual(self.dispatcher.tick(), "dispatched")
+        repair = self.repair_delivery()
+        self.assertEqual(self.op("begin", repair, attempt=1)["status"], "started")
+        with patch.object(self.bridge, "_get_pr", side_effect=bridge.TransportError("reset", not_sent=False)):
+            self.assertTrue(self.op("finish", repair, outcome="no_change")["ok"])
+        pr["head"]["sha"] = SHA_B  # the push queues its own review
+        self.assertIsNone(self.bridge.drain_rereview(repair, time.time() + bridge.DISPATCH_BACKOFF + 1))
+        self.assertNotIn("rereview_pending", json.loads(self.store.event(repair)["stages"]))
+        self.assertEqual(self.store.query("SELECT * FROM events WHERE kind = 'pr_review'"), [])
+
+    def test_no_change_repair_without_our_change_request_queues_no_rereview(self) -> None:
+        self.use_reviewer_app()
+        self.managed_pr(merge_state="BLOCKED")
+        self.fake.checks[SHA_A] = [{"name": "build", "status": "COMPLETED", "conclusion": "FAILURE"}]
+        self.fake.reviews = [{"id": 1, "state": "CHANGES_REQUESTED", "commit_id": SHA_A,
+                              "user": {"login": "maintainer"}, "body": "Fix the boundary."}]
+        self.assertEqual(self.bridge.reconcile_pr(REPO, 144), "queued")
+        self.assertEqual(self.dispatcher.tick(), "dispatched")
+        repair = self.repair_delivery()
+        self.assertEqual(self.op("begin", repair, attempt=1)["status"], "started")
+        self.assertTrue(self.op("finish", repair, outcome="no_change")["ok"])
+        self.assertEqual(self.store.query("SELECT * FROM events WHERE kind = 'pr_review'"), [])
+
     def test_repair_send_delivers_the_evidence_begin_gated_on(self) -> None:
         self.managed_pr(merge_state="BLOCKED")
         self.fake.checks[SHA_A] = [{"name": "begin-check", "status": "COMPLETED", "conclusion": "FAILURE"}]
@@ -1899,6 +2018,9 @@ class DispatchTests(BridgeTestCase):
         self.assertEqual(self.dispatcher.tick(later), "idle")
         self.assertEqual(self.events(), [("d1", "needs_attention"), ("c1", "accepted")])
         self.assertEqual(self.fake.labels[7], [NEEDS])
+        # Only review parks are retried automatically; an issue event's stale dispatch waits for an operator.
+        parked = self.store.event("d1")
+        self.assertEqual((parked["park_class"], parked["auto_retry_at"]), (None, None))
         self.assertEqual(self.op("begin", "d1", attempt=1)["status"], "terminal")
         self.assertTrue(self.op("retry_event", "d1")["ok"])
         self.assertEqual(self.dispatcher.tick(later + 10), "dispatched")
@@ -1907,6 +2029,36 @@ class DispatchTests(BridgeTestCase):
         self.assertEqual(self.dispatcher.tick(later + 20), "busy")
         self.assertEqual(self.events(), [("d1", "dispatched"), ("c1", "accepted")])
         self.assertEqual(self.op("begin", "d1", attempt=1)["status"], "started")
+
+    def queue_reviews(self, *numbers: int) -> None:
+        for n in numbers:
+            self.fake.add_pr(n)
+            self.assertEqual(self.deliver(pr_payload(n), event="pull_request", delivery=f"r{n}").outcome, "queued")
+
+    def test_reviews_are_capped_while_issue_events_still_dispatch(self) -> None:
+        self.queue_reviews(12, 13, 14)
+        self.deliver(issue_payload(30), delivery="i30")
+        for _ in range(3):
+            self.assertEqual(self.dispatcher.tick(), "dispatched")
+        # The third review waits for a review slot; the issue queued after it is not held up.
+        self.assertEqual([body["delivery_id"] for _, body in self.fake.dispatched], ["r12", "r13", "i30"])
+        self.assertEqual(bridge.MAX_ACTIVE_REVIEWS, 2)
+        self.assertEqual(self.dispatcher.tick(), "busy")
+        self.assertEqual(self.store.event("r14")["state"], "accepted")
+        self.assertEqual(self.op("begin", "r12", attempt=1)["status"], "started")
+        self.assertTrue(self.op("finish", "r12", outcome="reviewed")["ok"])
+        self.assertEqual(self.dispatcher.tick(), "dispatched")
+        self.assertEqual(self.fake.dispatched[-1][1]["delivery_id"], "r14")
+
+    def test_a_dispatching_review_over_the_cap_keeps_its_slot(self) -> None:
+        # The cap only gates picking a new review: one already holding a slot (POST outcome unknown) is re-sent.
+        self.queue_reviews(12, 13, 14)
+        self.assertEqual(self.dispatcher.tick(), "dispatched")
+        self.assertEqual(self.dispatcher.tick(), "dispatched")
+        self.assertEqual(self.dispatcher.tick(), "busy")
+        self.store.update_event("r14", state="dispatching", next_attempt_at=0)
+        self.assertEqual(self.dispatcher.tick(), "dispatched")
+        self.assertEqual([body["delivery_id"] for _, body in self.fake.dispatched], ["r12", "r13", "r14"])
 
     def test_review_request_supersedes_parked_review_and_runs(self) -> None:
         # Live cc-lb#890: the attention notice told the user to comment `@bulgasaribot review`, but the queued
@@ -2127,8 +2279,10 @@ class ReviewSweepTests(BridgeTestCase):
         self.fake.add_pr(100, ref="feature", sha=SHA_A)
         self.fake.add_pr(101, ref="feature-backport", sha=SHA_A)
         self.fake.statuses[SHA_A] = [{"context": bridge.DEFAULT_REVIEW_STATUS_CONTEXT, "state": "success"}]
+        # #100's review names head A in its marker (C1''): a legacy marker of an unknown delivery names no head.
         self.fake.reviews = [{"id": 1, "state": "APPROVED", "commit_id": SHA_A, "pull": 100,
-                              "body": f"{bridge.BOT_MARKER_PREFIX}:d0:review -->\nok", "user": {"login": REVIEWER}}]
+                              "body": f"{bridge.BOT_MARKER_PREFIX}:d0:review:{SHA_A} -->\nok",
+                              "user": {"login": REVIEWER}}]
         self.assertEqual(self.sweep(), 1)
         self.assertEqual(self.reviews(), [(REPO, 101, SHA_A, "accepted")])
 
@@ -2220,16 +2374,64 @@ class ReviewSweepTests(BridgeTestCase):
                          " VALUES (?, ?, 'pull_request', 0)", (REPO, number))
         return f"x{number}"
 
-    def test_a_review_app_review_of_the_head_without_a_local_record_skips_it(self) -> None:
-        # pillar-csi#162: a dependabot rebase moved the App's APPROVED review onto the new head, which has no
-        # review status and no local row; reviewing it again would only repeat that verdict.
+    def test_a_review_app_review_restamped_onto_the_head_without_a_local_record_does_not_skip_it(self) -> None:
+        # pillar-csi#162 (flipped by C1''): a dependabot rebase moved the App's APPROVED review onto the new head.
+        # Its marker predates the reviewed-head SHA and no local row names its head, so GitHub's commit_id is
+        # all that ties it to this head: it is not trusted, and the head gets its own review.
         self.fake.add_pr(12, ref="feature")
         self.fake.reviews = [{"id": 1, "state": "APPROVED", "commit_id": SHA_A, "user": {"login": REVIEWER},
                               "body": f"{bridge.BOT_MARKER_PREFIX}:d0:review -->\nok"}]
-        self.assertEqual(self.sweep(), 0)
-        self.fake.reviews = [{"id": 1, "state": "APPROVED", "commit_id": SHA_A, "user": {"login": "maintainer"},
-                              "body": f"{bridge.BOT_MARKER_PREFIX}:d0:review -->\nok"}]
         self.assertEqual(self.sweep(), 1)
+        self.assertEqual(self.reviews(), [(REPO, 12, SHA_A, "accepted")])
+
+    def test_the_marker_sha_decides_what_our_review_is_about_without_local_state(self) -> None:
+        # #12's review of A was restamped onto B by a rebase: B is unreviewed. #13's review names its head A.
+        self.fake.add_pr(12, ref="feature", sha=SHA_B)
+        self.fake.add_pr(13, ref="other", sha=SHA_A)
+        marker = f"{bridge.BOT_MARKER_PREFIX}:d0:review:{SHA_A} -->"
+        self.fake.reviews = [
+            {"id": 1, "state": "APPROVED", "commit_id": SHA_B, "pull": 12, "user": {"login": REVIEWER},
+             "body": f"{marker}\nok"},
+            {"id": 2, "state": "APPROVED", "commit_id": SHA_B, "pull": 13, "user": {"login": REVIEWER},
+             "body": f"{marker}\nok"},
+        ]
+        self.assertEqual(self.sweep(), 1)
+        self.assertEqual(self.reviews(), [(REPO, 12, SHA_B, "accepted")])
+
+    def test_a_marker_below_the_first_line_is_not_trusted(self) -> None:
+        # The agent's (or a quoted) review text can carry a marker; only the bridge writes the first line.
+        self.fake.add_pr(12, ref="feature")
+        self.fake.reviews = [{"id": 1, "state": "APPROVED", "commit_id": SHA_A, "user": {"login": REVIEWER},
+                              "body": f"LGTM\n{bridge.BOT_MARKER_PREFIX}:d0:review:{SHA_A} -->"}]
+        self.assertEqual(self.sweep(), 1)
+
+    def test_a_maintainer_review_carrying_our_marker_never_counts(self) -> None:
+        self.fake.add_pr(12, ref="feature")
+        self.fake.reviews = [{"id": 1, "state": "APPROVED", "commit_id": SHA_A, "user": {"login": "maintainer"},
+                              "body": f"{bridge.BOT_MARKER_PREFIX}:d0:review:{SHA_A} -->\nok"}]
+        self.assertEqual(self.sweep(), 1)
+
+    def test_a_restamped_review_of_an_older_head_does_not_satisfy_the_new_head(self) -> None:
+        # #94: our review of A was restamped onto B (commit_id B); B must get its own review and verdict status.
+        pr = self.fake.add_pr(12, ref="feature")
+        self.assertEqual(self.sweep(), 1)
+        first = self._review_delivery()
+        self.assertEqual(self.dispatcher.tick(), "dispatched")
+        self.assertEqual(self.op("begin", first, attempt=1)["status"], "started")
+        self.assertTrue(self.op("github.review", first, result=REVIEW_OK)["ok"])
+        self.assertTrue(self.op("finish", first, outcome="reviewed")["ok"])
+        pr["head"]["sha"] = SHA_B
+        self.fake.reviews[-1]["commit_id"] = SHA_B
+        self.assertEqual(self.sweep(), 1)
+        second = self._review_delivery()
+        self.assertEqual(self.store.event(second)["head_sha"], SHA_B)
+        self.assertEqual(self.dispatcher.tick(), "dispatched")
+        self.assertEqual(self.op("begin", second, attempt=1)["status"], "started")
+        published = self.op("github.review", second, result=variant(REVIEW_OK, head_sha=SHA_B, event="APPROVE",
+                                                                    comments=[]))
+        self.assertEqual((published["created"], published["event_submitted"]), (True, "APPROVE"))
+        self.assertEqual(len(self.fake.review_posts), 2)
+        self.assertEqual(self.fake.statuses[SHA_B][0]["state"], "success")
 
     def test_a_parked_linked_issue_blocks_the_sweep(self) -> None:
         # A parked implementation or repair session may still be live, whether the link comes from `prs` or
@@ -2603,10 +2805,10 @@ class ReviewSweepTests(BridgeTestCase):
         self.started_review(12, "p1")
         self.fake.reviews = [
             {"id": 7, "html_url": f"https://github.com/{REPO}/pull/12#r7", "state": "CHANGES_REQUESTED",
-             "body": f"{bridge.BOT_MARKER_PREFIX}:d0:review -->\nFix the boundary.", "commit_id": SHA_A,
+             "body": f"{bridge.BOT_MARKER_PREFIX}:d0:review:{SHA_A} -->\nFix the boundary.", "commit_id": SHA_A,
              "user": {"login": REVIEWER}},
             {"id": 8, "html_url": f"https://github.com/{REPO}/pull/12#r8", "state": "APPROVED",
-             "body": f"{bridge.BOT_MARKER_PREFIX}:d1:review -->\nLooks good.", "commit_id": SHA_A,
+             "body": f"{bridge.BOT_MARKER_PREFIX}:d1:review:{SHA_A} -->\nLooks good.", "commit_id": SHA_A,
              "user": {"login": REVIEWER}},
             # A later thread reply's empty review carries no verdict and is not reused.
             {"id": 9, "html_url": f"https://github.com/{REPO}/pull/12#r9", "state": "COMMENTED",
@@ -3348,11 +3550,23 @@ class TurnTests(BridgeTestCase):
         self.assertEqual((sent["delivery"], sent["session_id"], sent["local_id"]), ("sent", new_sid, retry_lid))
         self.assertEqual(self.send()["delivery"], "already")
         self.assertEqual([p["localId"] for p in self.fake.message_posts], [self.lid, retry_lid])
+        # The re-send tells the agent not to trust anything from the interrupted run (C6); the first send did not.
+        self.assertNotIn(bridge.LOST_TURN_NOTICE, self.fake.message_posts[0]["text"])
+        self.assertIn(bridge.LOST_TURN_NOTICE, self.fake.message_posts[1]["text"])
         self.assertEqual(self.op("session_turn")["state"], "queued")
         self.fake.invoke(new_sid, retry_lid)
         self.fake.codex(new_sid, "message", message=self.result_line(retry_lid))
         self.assertEqual(self.op("session_turn")["state"], "done")
         self.assertEqual(bridge.resend_local_id("d1", "implement", retry_lid), f"{self.lid}-r2")
+
+    def test_first_send_and_a_correction_carry_no_lost_turn_notice(self) -> None:
+        self.send()
+        self.fake.invoke(self.sid, self.lid)
+        self.say(self.result_line(status="ready"))  # schema-invalid: ready needs a pr
+        self.assertEqual(self.op("session_turn")["state"], "running")
+        texts = [p["text"] for p in self.fake.message_posts]
+        self.assertEqual(len(texts), 2)
+        self.assertFalse(any("This step was interrupted" in t for t in texts))
 
     def test_rejected_resend_of_a_lost_turn_keeps_the_fresh_local_id(self) -> None:
         self.send()
@@ -3516,6 +3730,28 @@ class ResultValidationTests(unittest.TestCase):
         reply = {"comment_id": 5, "body": "done", "resolve": "yes"}
         self.assertInvalid("review", variant(REVIEW_OK, thread_replies=[reply]), "resolve")
 
+    def test_open_items_only_accompany_a_comment_or_change_request(self) -> None:
+        items = ["Maintainer decision: keep the SELinux fallback?"]
+        for event in ("COMMENT", "REQUEST_CHANGES"):
+            result = bridge.validate_result("review", variant(REVIEW_OK, event=event, open_items=items), 12)
+            self.assertEqual(result["open_items"], items)
+        self.assertInvalid("review", variant(REVIEW_OK, event="APPROVE", open_items=items), "open_items requires")
+        blocked = variant(REVIEW_OK, status="blocked", head_sha=None, event=None, open_items=items)
+        self.assertInvalid("review", blocked, "open_items requires status reviewed")
+        # An informational COMMENT (e.g. superseded advice) may list none; the key itself is required.
+        self.assertEqual(bridge.validate_result("review", variant(REVIEW_OK, event="COMMENT"), 12)["open_items"], [])
+        missing = {k: v for k, v in REVIEW_OK.items() if k != "open_items"}
+        self.assertInvalid("review", missing, "open_items")
+
+    def test_open_items_limits(self) -> None:
+        comment = variant(REVIEW_OK, event="COMMENT")
+        self.assertEqual(bridge.validate_result("review", variant(comment, open_items=["x" * 200] * 20), 12)
+                         ["open_items"], ["x" * 200] * 20)
+        self.assertInvalid("review", variant(comment, open_items=["x"] * 21), "at most 20")
+        self.assertInvalid("review", variant(comment, open_items=["x" * 201]), "exceeds 200")
+        self.assertInvalid("review", variant(comment, open_items=["  "]), "empty")
+        self.assertInvalid("review", variant(comment, open_items="decide"), "open_items must be a list")
+
 
 class GitHubOpsTests(BridgeTestCase):
     def test_comment_is_idempotent_by_marker(self) -> None:
@@ -3618,7 +3854,7 @@ class PullRequestOpsTests(BridgeTestCase):
         self.assertEqual((first["created"], first["event_submitted"]), (True, "REQUEST_CHANGES"))
         post = self.fake.review_posts[0]
         self.assertEqual((post["commit_id"], post["event"]), (SHA_A, "REQUEST_CHANGES"))
-        self.assertTrue(post["body"].startswith("<!-- issue-agent:p1:review -->"))
+        self.assertTrue(post["body"].startswith(f"<!-- issue-agent:p1:review:{SHA_A} -->\n"))
         self.assertTrue(post["body"].endswith(bridge.review_footer(BOT, pushes_reviewed=False)))
         self.assertEqual(post["comments"], [{"path": "a.py", "line": 3, "side": "RIGHT", "body": "bug here"}])
         again = self.op("github.review", "p1", result=REVIEW_OK)
@@ -3883,6 +4119,542 @@ class PullRequestOpsTests(BridgeTestCase):
         self.assertEqual((result["error"], result["retryable"]), ("non_fast_forward", False))
 
 
+DECISION: dict[str, Any] = variant(REVIEW_OK, event="COMMENT", comments=[], open_items=[
+    "Maintainer decision: keep the SELinux fallback?", "Unrefuted P1: a.py:3 races the cleanup"])
+
+
+class ReviewGateTests(BridgeTestCase):
+    """Review publication and recovery with the review App: C1''/C2' publication, C3'' automatic retries of
+    transient review parks, C4 error status, C7' decision comment."""
+
+    def setUp(self) -> None:
+        super().setUp()
+        self.use_reviewer_app()
+
+    def review_turn(self, number: int = 12, delivery: str = "p1", **pr: Any) -> tuple[str, str]:
+        self.started_review(number, delivery, **pr)
+        sid = self.op("ensure_session", delivery)["session_id"]
+        self.assertEqual(self.send_review(delivery)["delivery"], "sent")
+        return sid, bridge.local_id_for(delivery, "review")
+
+    def send_review(self, delivery: str = "p1") -> dict:
+        return self.op("session_send", delivery, mode="review", instructions="Review it.")
+
+    def answer(self, sid: str, lid: str, result: dict[str, Any]) -> None:
+        self.fake.invoke(sid, lid)
+        self.fake.codex(sid, "message", message=f"done.\n{bridge.RESULT_TAG} {lid} {json.dumps(result)}")
+
+    def park(self, delivery: str = "p1", *, node: str = "Submit review",
+             park_class: str | None = "bridge_unreachable") -> sqlite3.Row:
+        failed = self.op("fail", delivery, node=node, detail=f"{node}: transport failure", park_class=park_class)
+        self.assertTrue(failed["ok"], failed)
+        return self.store.event(delivery)
+
+    def come_due(self, delivery: str = "p1") -> None:
+        self.store.update_event(delivery, auto_retry_at=0)
+
+    def latest_status(self, sha: str = SHA_A) -> tuple[str, str]:
+        latest = self.fake.statuses[sha][0]
+        return latest["state"], latest["description"]
+
+    def decision_comments(self, number: int = 12) -> list[str]:
+        return [c["body"] for c in self.fake.comments.get(number, []) if ":review-decision:" in c["body"]]
+
+    # -- C1''/C2': publication ---------------------------------------------------
+
+    def lock_requested(self, name: str, after: threading.Event) -> tuple[threading.Event, Any]:
+        """(event, patcher): ``event`` is set once any thread asks for a ``name`` keyed lock after ``after``."""
+        requested = threading.Event()
+        original = self.bridge._keyed_lock
+
+        def keyed_lock(key: Any) -> threading.Lock:
+            if isinstance(key, tuple) and key[0] == name and after.is_set():
+                requested.set()
+            return original(key)
+
+        return requested, patch.object(self.bridge, "_keyed_lock", side_effect=keyed_lock)
+
+    def test_concurrent_review_submissions_post_once(self) -> None:
+        # An n8n engine retry fires while the first request is still posting: both must end with one review.
+        self.started_review(12, "p1")
+        entered, release = threading.Event(), threading.Event()
+        self.fake.gates[("POST", f"/repos/{REPO}/pulls/12/reviews")] = (entered, release)
+        second_blocked, patcher = self.lock_requested("github-review", entered)
+        results: dict[str, dict] = {}
+
+        def publish(name: str) -> None:
+            try:
+                results[name] = self.op("github.review", "p1", result=REVIEW_OK)
+            finally:
+                second_blocked.set()  # without the lock the second request runs to the end instead of waiting
+
+        with patcher:
+            first = threading.Thread(target=publish, args=("first",))
+            first.start()
+            self.assertTrue(entered.wait(10))  # the first POST is in flight
+            second = threading.Thread(target=publish, args=("second",))
+            second.start()
+            self.assertTrue(second_blocked.wait(10))
+            release.set()
+            first.join(10)
+            second.join(10)
+        self.assertEqual(len(self.fake.review_posts), 1)
+        self.assertTrue(all(r["ok"] for r in results.values()), results)
+        self.assertEqual((results["first"]["created"], results["second"]["created"]), (True, False))
+        self.assertEqual(results["first"]["review_id"], results["second"]["review_id"])
+
+    def test_a_park_racing_a_publication_never_leaves_error_over_the_verdict(self) -> None:
+        # The park's guard passes before the review is recorded, then the publication records and sets its verdict
+        # while the park's error status is still in flight: the verdict must be the last status on the head.
+        self.started_review(12, "p1")
+        review_entered, review_release = threading.Event(), threading.Event()
+        status_entered, status_release = threading.Event(), threading.Event()
+        self.fake.gates[("POST", f"/repos/{REPO}/pulls/12/reviews")] = (review_entered, review_release)
+        self.fake.gates[("POST", f"/repos/{REPO}/statuses/{SHA_A}")] = (status_entered, status_release)
+        verdict_waiting, patcher = self.lock_requested("review-status", status_entered)
+        results: list[dict] = []
+
+        def publish() -> None:
+            try:
+                results.append(self.op("github.review", "p1", result=variant(REVIEW_OK, event="APPROVE",
+                                                                             comments=[])))
+            finally:
+                verdict_waiting.set()
+
+        with patcher:
+            publication = threading.Thread(target=publish)
+            publication.start()
+            self.assertTrue(review_entered.wait(10))
+            park = threading.Thread(target=lambda: self.op("fail", "p1", node="Finish reviewed", detail="x",
+                                                           park_class="bridge_unreachable"))
+            park.start()
+            self.assertTrue(status_entered.wait(10))  # the park's error status passed its guard
+            review_release.set()
+            self.assertTrue(verdict_waiting.wait(10))
+            status_release.set()
+            publication.join(10)
+            park.join(10)
+        self.assertTrue(results and results[0]["ok"], results)
+        self.assertEqual(self.latest_status()[0], "success")
+
+    def test_a_legacy_marker_of_this_delivery_is_not_reused_for_another_head(self) -> None:
+        # p1 reviewed A before markers named the head, then was retargeted to B: its result for B must be posted,
+        # not answered with A's approval. A maintainer's review carrying our marker never counts either.
+        self.started_review(12, "p1")
+        self.bridge._review_published("p1", SHA_A)
+        legacy = {"id": 1, "state": "APPROVED", "commit_id": SHA_A, "pull": 12, "user": {"login": REVIEWER},
+                  "body": f"{bridge.BOT_MARKER_PREFIX}:p1:review -->\nok"}
+        self.fake.reviews = [legacy]
+        # For the head this bridge recorded for the delivery, the legacy review still answers a retried POST.
+        reused = self.op("github.review", "p1", result=REVIEW_OK)
+        self.assertEqual((reused["created"], reused["review_id"], len(self.fake.review_posts)), (False, 1, 0))
+        self.fake.prs[12]["head"]["sha"] = SHA_B
+        self.store.update_event("p1", head_sha=SHA_B)
+        self.fake.reviews = [legacy, {"id": 2, "state": "APPROVED", "commit_id": SHA_B, "pull": 12,
+                                      "user": {"login": "maintainer"},
+                                      "body": f"{bridge.BOT_MARKER_PREFIX}:p1:review:{SHA_B} -->\nok"}]
+        published = self.op("github.review", "p1", result=variant(REVIEW_OK, head_sha=SHA_B))
+        self.assertEqual((published["created"], published["event_submitted"]), (True, "REQUEST_CHANGES"))
+        self.assertEqual(len(self.fake.review_posts), 1)
+        self.assertEqual(self.latest_status(SHA_B), ("failure", "Changes requested"))
+
+    def test_hub_failures_are_classified_at_the_hapi_boundary_and_github_failures_are_not(self) -> None:
+        sid, lid = self.review_turn()
+        original = bridge.http_json
+
+        def failing(fail: Callable[[str, str], tuple[int, Any] | None]) -> Callable[..., tuple[int, Any]]:
+            def http_json(method: str, url: str, **kw: Any) -> tuple[int, Any]:
+                answer = fail(method, url)
+                return original(method, url, **kw) if answer is None else answer
+            return http_json
+
+        def machines_503(method: str, url: str) -> tuple[int, Any] | None:
+            return (503, {"error": "busy"}) if url.endswith("/api/machines") else None
+
+        def queued_state_unreachable(method: str, url: str) -> tuple[int, Any] | None:
+            if url.endswith("/messages/queued-state"):
+                raise bridge.TransportError("connection reset", not_sent=False)
+            return None
+
+        def github_unreachable(method: str, url: str) -> tuple[int, Any] | None:
+            if method == "GET" and url.endswith(f"/repos/{REPO}/pulls/12"):
+                raise bridge.TransportError("connection reset", not_sent=False)
+            return None
+
+        self.store.update_issue(REPO, 12, session_state="none")  # Ensure session looks the session up again
+        with patch.object(bridge, "http_json", side_effect=failing(machines_503)):
+            ensured = self.op("ensure_session", "p1")
+        self.assertEqual((ensured["ok"], ensured["retryable"], ensured["park_class"]), (False, True, "hub_5xx"))
+        # A runner restart (no online runner, or the configured one offline) is transient; several online runners
+        # are a misconfiguration and stay operator-owned.
+        cfg = self.bridge.registry().get(REPO)
+        machines = self.fake.machines
+        for online, configured, expected in (([], None, "hub_unreachable"),
+                                             ([{"id": "m2", "active": True}], "m1", "hub_unreachable"),
+                                             ([{"id": "m1", "active": True}, {"id": "m2", "active": True}], None,
+                                              None)):
+            with self.subTest(online=online, configured=configured):
+                self.fake.machines = online
+                with self.assertRaises(bridge.OpError) as ctx:
+                    self.bridge._machine(dataclasses.replace(cfg, machine_id=configured))
+                self.assertEqual(ctx.exception.park_class, expected)
+        self.fake.machines = machines
+        self.store.update_issue(REPO, 12, session_state="ready", session_id=sid)
+        self.fake.invoke(sid, lid)
+        with patch.object(bridge, "http_json", side_effect=failing(queued_state_unreachable)):
+            checked = self.op("session_turn", "p1", mode="review")
+        self.assertEqual((checked["ok"], checked["retryable"], checked["park_class"]),
+                         (False, True, "hub_unreachable"))
+        with patch.object(bridge, "http_json", side_effect=failing(github_unreachable)):
+            submitted = self.op("github.review", "p1", result=REVIEW_OK)
+        self.assertEqual((submitted["ok"], submitted["retryable"], submitted["park_class"]), (False, True, None))
+        # n8n forwards an exhausted hub loop's class to `fail`, which arms the automatic retry.
+        self.assertEqual(self.park(node="Check turn", park_class=checked["park_class"])["park_class"],
+                         "hub_unreachable")
+
+    def test_review_status_is_never_set_for_another_head_than_the_reviewed_one(self) -> None:
+        self.assertIsNone(self.bridge._review_status(REPO, SHA_B, "APPROVE", None, SHA_A))
+        self.assertEqual(self.fake.status_posts, [])
+
+    # -- C3'': automatic retry of transient review parks ------------------------
+
+    def test_transient_review_park_is_requeued_after_backoff(self) -> None:
+        self.started_review(12, "p1")
+        parked = self.park(node="Ensure session", park_class="hub_5xx")
+        self.assertEqual((parked["state"], parked["park_class"], parked["auto_retries"]),
+                         ("needs_attention", "hub_5xx", 0))
+        self.assertAlmostEqual(parked["auto_retry_at"] - time.time(), bridge.AUTO_RETRY_BACKOFF[0], delta=30)
+        self.assertEqual(self.store.issue(REPO, 12)["blocked"], 1)
+        self.assertEqual(self.dispatcher.tick(), "idle")  # not before the backoff
+        self.assertEqual(self.store.event("p1")["state"], "needs_attention")
+        self.assertEqual(self.dispatcher.tick(parked["auto_retry_at"] + 1), "dispatched")
+        ev = self.store.event("p1")
+        self.assertEqual((ev["state"], ev["auto_retries"], ev["park_class"], ev["auto_retry_at"]),
+                         ("dispatched", 1, None, None))  # n8n accepted the re-dispatch
+        self.assertEqual(json.loads(ev["stages"])["auto_retry"]["n"], 1)
+        self.assertEqual(self.store.issue(REPO, 12)["blocked"], 0)
+        self.assertEqual([body["delivery_id"] for _, body in self.fake.dispatched], ["p1", "p1"])
+        self.assertEqual(self.op("begin", "p1", attempt=1)["status"], "started")
+
+    def test_non_transient_or_unclassified_park_is_never_auto_retried(self) -> None:
+        self.started_review(12, "p1")
+        parked = self.park(park_class="model_proxy")  # not in the closed enum: ignored
+        self.assertEqual((parked["park_class"], parked["auto_retry_at"]), (None, None))
+        self.assertEqual(self.latest_status(), ("error", "Review did not complete; needs an operator"))
+        self.started(30, "d1")  # only review parks are retried automatically
+        self.assertTrue(self.op("fail", "d1", detail="Ensure session: hub", park_class="hub_5xx")["ok"])
+        self.assertIsNone(self.store.event("d1")["park_class"])
+        self.assertEqual(self.dispatcher.tick(time.time() + 10 ** 6), "idle")
+        self.assertEqual(self.events(), [("p1", "needs_attention"), ("d1", "needs_attention")])
+
+    def test_auto_retry_stops_after_three_attempts_and_the_status_says_so(self) -> None:
+        self.started_review(12, "p1")
+        for n in range(bridge.AUTO_RETRY_LIMIT):
+            parked = self.park(node="Ensure session", park_class="hub_unreachable")
+            self.assertEqual((parked["park_class"], parked["auto_retries"]), ("hub_unreachable", n))
+            self.assertAlmostEqual(parked["auto_retry_at"] - time.time(), bridge.AUTO_RETRY_BACKOFF[n], delta=30)
+            self.assertEqual(self.latest_status(), ("error", "Review did not complete; retrying automatically"))
+            self.come_due()
+            self.assertEqual(self.dispatcher.tick(), "dispatched")
+            self.assertEqual(self.op("begin", "p1", attempt=1)["status"], "started")
+        parked = self.park(node="Ensure session", park_class="hub_unreachable")
+        self.assertEqual((parked["auto_retries"], parked["park_class"], parked["auto_retry_at"]),
+                         (bridge.AUTO_RETRY_LIMIT, None, None))
+        self.assertEqual(self.latest_status(), ("error", "Review did not complete; needs an operator"))
+        self.come_due()
+        self.assertEqual(self.dispatcher.tick(), "idle")
+        self.assertEqual(self.store.event("p1")["state"], "needs_attention")
+        # One status per description, and one attention notice for the delivery.
+        self.assertEqual(len([sha for sha, _ in self.fake.status_posts if sha == SHA_A]), 2)
+        self.assertEqual(len(self.fake.comments[12]), 1)
+
+    def test_auto_retry_of_answered_turn_publishes_the_collected_result_without_resend(self) -> None:
+        sid, lid = self.review_turn()
+        self.answer(sid, lid, REVIEW_OK)
+        self.assertEqual(self.op("session_turn", "p1", mode="review")["state"], "done")
+        self.park(node="Submit review", park_class="bridge_unreachable")
+        self.come_due()
+        self.assertEqual(self.dispatcher.tick(), "dispatched")
+        self.assertEqual(self.store.turn("p1", "review")["local_id"], lid)
+        self.assertEqual(self.op("begin", "p1", attempt=1)["status"], "started")
+        self.assertEqual(self.op("ensure_session", "p1")["session_id"], sid)
+        self.assertEqual(self.send_review()["delivery"], "already")
+        done = self.op("session_turn", "p1", mode="review")
+        self.assertEqual((done["state"], done["result"]["head_sha"]), ("done", SHA_A))
+        published = self.op("github.review", "p1", result=done["result"])
+        self.assertTrue(published["created"], published)
+        self.assertEqual(len(self.fake.message_posts), 1)
+        # The verdict replaces the error status of the parked run.
+        self.assertEqual(self.latest_status(), ("failure", "Changes requested"))
+        self.assertTrue(self.op("finish", "p1", outcome="reviewed")["ok"])
+        self.assertEqual(self.fake.labels[12], [])
+
+    def test_auto_retry_with_schema_invalid_answer_goes_to_operator(self) -> None:
+        sid, lid = self.review_turn()
+        self.answer(sid, lid, variant(REVIEW_OK, event="MERGE"))
+        self.park(node="Check turn", park_class="bridge_unreachable")
+        self.come_due()
+        self.assertEqual(self.dispatcher.tick(), "idle")
+        ev = self.store.event("p1")
+        self.assertEqual((ev["state"], ev["park_class"], ev["auto_retry_at"], ev["auto_retries"]),
+                         ("needs_attention", None, None, 0))
+        self.assertEqual(self.dispatcher.tick(), "idle")  # the notice runs again and the status follows
+        self.assertEqual(self.latest_status(), ("error", "Review did not complete; needs an operator"))
+        self.assertEqual(self.store.turn("p1", "review")["local_id"], lid)
+        self.assertEqual(len(self.fake.message_posts), 1)
+
+    def test_auto_retry_head_moved_or_pr_closed_completes_instead_of_retrying(self) -> None:
+        self.started_review(12, "p1")
+        self.park(node="Ensure session", park_class="hub_5xx")
+        self.fake.prs[12]["head"]["sha"] = SHA_B  # the push queued its own review
+        self.come_due()
+        self.assertEqual(self.dispatcher.tick(), "idle")
+        ev = self.store.event("p1")
+        self.assertEqual((ev["state"], ev["outcome"], ev["auto_retries"]), ("completed", "superseded", 0))
+        self.assertEqual(self.store.issue(REPO, 12)["blocked"], 0)
+        self.started_review(13, "p2")
+        self.park("p2", node="Ensure session", park_class="hub_5xx")
+        self.fake.prs[13]["state"] = "closed"
+        self.come_due("p2")
+        self.assertEqual(self.dispatcher.tick(), "idle")
+        ev = self.store.event("p2")
+        self.assertEqual((ev["state"], ev["outcome"]), ("completed", "pr_not_open"))
+        self.assertEqual(self.store.issue(REPO, 13)["blocked"], 0)
+        self.assertEqual(len(self.fake.dispatched), 2)
+
+    def test_auto_retried_event_never_retargets_at_begin(self) -> None:
+        # Its turn (or collected result) is about the parked head, so a head pushed meanwhile ends it instead.
+        self.started_review(12, "p1")
+        self.park(node="Ensure session", park_class="hub_5xx")
+        self.come_due()
+        self.assertEqual(self.dispatcher.tick(), "dispatched")
+        self.fake.prs[12]["head"]["sha"] = SHA_B
+        self.assertEqual(self.op("begin", "p1", attempt=1)["status"], "terminal")
+        ev = self.store.event("p1")
+        self.assertEqual((ev["state"], ev["outcome"], ev["head_sha"]), ("completed", "head_moved", SHA_A))
+
+    def test_fail_execution_classifies_n8n_transport_errors_only(self) -> None:
+        cases = [
+            ("p1", 12, "Submit review", "The service refused the connection - perhaps it is offline",
+             "bridge_unreachable"),
+            ("p2", 13, "Run agent session (review)", "connect ECONNREFUSED 10.43.0.7:8080", "bridge_unreachable"),
+            # A Code node handling agent output, or transport words inside other text, stays operator-owned.
+            ("p3", 14, "Parse review result", "socket hang up", None),
+            ("p4", 15, "Submit review", "agent wrote: socket hang up", None),
+        ]
+        for delivery, number, node, error, expected in cases:
+            with self.subTest(node=node, error=error):
+                self.started_review(number, delivery)
+                failed = self.bridge.handle({"op": "fail_execution", "execution_id": f"ex-{delivery}",
+                                             "node": node, "error": error})
+                self.assertTrue(failed["ok"], failed)
+                self.assertEqual(self.store.event(delivery)["park_class"], expected)
+
+    def test_resume_failures_carry_hub_park_classes(self) -> None:
+        sid, _ = self.review_turn()
+        self.fake.sessions[sid]["active"] = False
+        original = self.bridge.hapi.request
+
+        def resume(answer: Callable[[], tuple[int, Any]]) -> Callable[..., tuple[int, Any]]:
+            def request(method: str, path: str, **kw: Any) -> tuple[int, Any]:
+                return answer() if path.endswith("/resume") else original(method, path, **kw)
+            return request
+
+        def unreachable() -> tuple[int, Any]:
+            raise bridge.TransportError("connection reset", not_sent=False)
+
+        with patch.object(self.bridge.hapi, "request", side_effect=resume(lambda: (500, {"code": "internal"}))):
+            failed = self.op("ensure_session", "p1")
+        self.assertEqual((failed["ok"], failed["retryable"], failed["needs_operator"], failed["park_class"]),
+                         (False, False, True, "hub_5xx"))
+        with patch.object(self.bridge.hapi, "request", side_effect=resume(unreachable)):
+            unknown = self.op("ensure_session", "p1")
+        self.assertEqual((unknown["needs_operator"], unknown["park_class"]), (True, "hub_unreachable"))
+        # Errors without a class say so explicitly in the envelope.
+        self.assertIsNone(self.op("session_turn", "p9")["park_class"])
+        # n8n forwards the class to `fail`, which arms the automatic retry.
+        self.assertEqual(self.park(node="Ensure session", park_class=unknown["park_class"])["park_class"],
+                         "hub_unreachable")
+
+    def test_auto_retry_marks_an_unanswered_turn_lost_and_the_resend_carries_the_notice(self) -> None:
+        sid, lid = self.review_turn()
+        self.fake.invoke(sid, lid)
+        self.fake.codex(sid, "message", message="checking out the head...")  # the agent stopped without a result
+        self.park(node="Check turn", park_class="bridge_unreachable")
+        self.come_due()
+        self.assertEqual(self.dispatcher.tick(), "dispatched")
+        turn = self.store.turn("p1", "review")
+        self.assertEqual((turn["state"], turn["local_id"]), ("lost", f"{lid}-r1"))
+        self.assertEqual(self.op("begin", "p1", attempt=1)["status"], "started")
+        self.assertEqual(self.op("ensure_session", "p1")["session_id"], sid)
+        sent = self.send_review()
+        self.assertEqual((sent["delivery"], sent["local_id"]), ("sent", f"{lid}-r1"))
+        self.assertIn(bridge.LOST_TURN_NOTICE, self.fake.message_posts[-1]["text"])
+        self.assertNotIn(bridge.LOST_TURN_NOTICE, self.fake.message_posts[0]["text"])
+
+    def test_auto_retry_leaves_a_turn_the_agent_is_still_working_on(self) -> None:
+        sid, lid = self.review_turn()
+        self.fake.invoke(sid, lid)
+        self.fake.sessions[sid]["thinking"] = True
+        self.park(node="Check turn", park_class="bridge_unreachable")
+        self.come_due()
+        self.assertEqual(self.dispatcher.tick(), "dispatched")
+        turn = self.store.turn("p1", "review")
+        self.assertEqual((turn["state"], turn["local_id"]), ("sent", lid))
+        self.assertEqual(self.op("begin", "p1", attempt=1)["status"], "started")
+        self.assertEqual(self.send_review()["delivery"], "already")
+        self.assertEqual(len(self.fake.message_posts), 1)
+
+    def test_a_collected_result_about_another_head_is_resent_instead_of_published(self) -> None:
+        sid, lid = self.review_turn()
+        self.answer(sid, lid, variant(REVIEW_OK, head_sha=SHA_B))  # the PR head is still A
+        self.park(node="Submit review", park_class="bridge_unreachable")
+        self.come_due()
+        self.assertEqual(self.dispatcher.tick(), "dispatched")
+        turn = self.store.turn("p1", "review")
+        self.assertEqual((turn["state"], turn["local_id"]), ("lost", f"{lid}-r1"))
+
+    def test_stale_review_dispatch_is_retried_once(self) -> None:
+        self.started_review(12, "p1")
+        self.assertEqual(self.dispatcher.tick(time.time() + bridge.STALE_SECONDS + 10), "idle")
+        parked = self.store.event("p1")
+        self.assertEqual((parked["state"], parked["park_class"]), ("needs_attention", "stale_dispatch"))
+        self.assertEqual(self.dispatcher.tick(parked["auto_retry_at"] + 1), "dispatched")
+        self.assertEqual(self.op("begin", "p1", attempt=1)["status"], "started")
+        self.dispatcher.tick(time.time() + bridge.STALE_SECONDS + 10)
+        reparked = self.store.event("p1")
+        self.assertEqual((reparked["state"], reparked["auto_retries"], reparked["park_class"]),
+                         ("needs_attention", 1, None))
+
+    def test_auto_retry_waits_while_another_event_on_the_pull_request_is_open(self) -> None:
+        self.started_review(12, "p1")
+        self.park(node="Ensure session", park_class="hub_5xx")
+        with self.store.tx() as conn:
+            conn.execute("INSERT INTO events (delivery_id, semantic_key, repo, kind, issue_number, actor, title, body,"
+                         " state, received_at, updated_at) VALUES ('x12', 'x12', ?, 'issue_comment', 12, 'someone',"
+                         " 't', '', 'needs_attention', 0, 0)", (REPO,))
+        now = time.time()
+        self.assertEqual(self.bridge.auto_retry_event("p1", now), "waiting")
+        ev = self.store.event("p1")
+        self.assertEqual((ev["state"], ev["auto_retries"], ev["park_class"]), ("needs_attention", 0, "hub_5xx"))
+        self.assertAlmostEqual(ev["auto_retry_at"], now + bridge.DISPATCH_BACKOFF, delta=1)
+        # A failed pull request read waits the same way, without counting.
+        self.store.update_event("x12", state="completed", outcome="replied")
+        with patch.object(self.bridge, "_get_pr", side_effect=bridge.OpError("github pull request HTTP 502",
+                                                                             retryable=True)):
+            self.assertEqual(self.bridge.auto_retry_event("p1", now), "waiting")
+        self.assertEqual(self.store.event("p1")["auto_retries"], 0)
+        self.assertEqual(self.bridge.auto_retry_event("p1", now), "requeued")
+        self.assertEqual(self.store.issue(REPO, 12)["blocked"], 0)
+
+    def test_auto_retry_after_runner_home_replacement_resends_on_a_new_session(self) -> None:
+        sid, lid = self.review_turn()
+        self.fake.invoke(sid, lid)
+        self.fake.sessions[sid]["active"] = False
+        self.fake.sessions[sid]["metadata"]["machineId"] = "m-old"
+        self.park(node="Ensure session", park_class="hub_5xx")
+        self.come_due()
+        self.assertEqual(self.dispatcher.tick(), "dispatched")
+        self.assertEqual(self.op("begin", "p1", attempt=1)["status"], "started")
+        new_sid = self.op("ensure_session", "p1")["session_id"]
+        self.assertNotEqual(new_sid, sid)
+        sent = self.send_review()
+        self.assertEqual((sent["delivery"], sent["session_id"], sent["local_id"]), ("sent", new_sid, f"{lid}-r1"))
+        self.assertIn(bridge.LOST_TURN_NOTICE, self.fake.message_posts[-1]["text"])
+
+    # -- C4: error status ----------------------------------------------------------
+
+    def test_parked_review_sets_error_status_once_and_a_publish_overwrites_it(self) -> None:
+        self.started_review(12, "p1")
+        self.park(node="Ensure session", park_class="hub_5xx")
+        self.assertEqual(self.latest_status(), ("error", "Review did not complete; retrying automatically"))
+        # A repeated notice (e.g. the error workflow on the parked execution) does not post it again.
+        self.store.update_event("p1", attention_pending=1, next_attempt_at=0)
+        self.dispatcher.tick()
+        self.assertEqual(len(self.fake.status_posts), 1)
+        self.assertTrue(self.op("retry_event", "p1")["ok"])
+        self.assertEqual(self.dispatcher.tick(), "dispatched")
+        self.assertEqual(self.op("begin", "p1", attempt=1)["status"], "started")
+        self.assertTrue(self.op("github.review", "p1", result=variant(REVIEW_OK, event="APPROVE", comments=[]))["ok"])
+        self.assertEqual(self.latest_status()[0], "success")
+
+    def test_error_status_never_overwrites_a_published_verdict(self) -> None:
+        self.started_review(12, "p1")
+        self.assertTrue(self.op("github.review", "p1", result=REVIEW_OK)["ok"])
+        self.park(node="Finish reviewed", park_class="bridge_unreachable")
+        self.assertEqual([s["state"] for s in self.fake.statuses[SHA_A]], ["failure"])
+
+    def test_issue_parks_set_no_review_status(self) -> None:
+        self.started(30, "d1")
+        self.assertTrue(self.op("fail", "d1", detail="boom")["ok"])
+        self.assertEqual(self.fake.status_posts, [])
+
+    # -- C7': decision comment -----------------------------------------------------
+
+    def test_comment_verdict_posts_one_decision_comment_mentioning_the_owner(self) -> None:
+        self.started_review(12, "p1")
+        published = self.op("github.review", "p1", result=DECISION)
+        self.assertTrue(published["ok"], published)
+        [body] = self.decision_comments()
+        self.assertTrue(body.startswith("<!-- issue-agent:review-decision:12:"))
+        self.assertIn("@isac322", body)  # no project_owner configured: the repository owner
+        for item in DECISION["open_items"]:
+            self.assertIn(f"- {item}", body)
+        self.assertIn("`@haechibot review`", body)
+        self.assertEqual(published["decision_comment"], self.fake.comments[12][-1]["html_url"])
+        again = self.op("github.review", "p1", result=DECISION)
+        self.assertEqual((again["created"], len(self.decision_comments()), len(self.fake.review_posts)), (False, 1, 1))
+
+    def test_the_same_open_items_on_a_new_head_post_nothing_and_new_items_mention_the_project_owner(self) -> None:
+        self.started_review(12, "p1")
+        self.assertTrue(self.op("github.review", "p1", result=DECISION)["ok"])
+        self.assertTrue(self.op("finish", "p1", outcome="reviewed")["ok"])
+        pr = self.fake.prs[12]
+        pr["head"]["sha"] = SHA_B
+        push = pr_payload(12, action="synchronize", sha=SHA_B)
+        self.assertEqual(self.deliver(push, event="pull_request", delivery="s1").outcome, "queued")
+        self.assertEqual(self.dispatcher.tick(), "dispatched")
+        self.assertEqual(self.op("begin", "s1", attempt=1)["status"], "started")
+        # Same set, reordered and differently spaced/cased: normalised to the same marker.
+        same = variant(DECISION, head_sha=SHA_B, open_items=["unrefuted p1:  a.py:3 races the cleanup",
+                                                             "MAINTAINER decision: keep the SELinux fallback?"])
+        self.assertTrue(self.op("github.review", "s1", result=same)["ok"])
+        self.assertEqual(len(self.decision_comments()), 1)
+        self.write_registry({"defaults": {"agent": "codex"}, "repositories": {REPO: {"project_owner": "octo"}}})
+        changed = variant(same, open_items=["Maintainer decision: keep the SELinux fallback?"])
+        self.assertTrue(self.op("github.review", "s1", result=changed)["ok"])
+        comments = self.decision_comments()
+        self.assertEqual(len(comments), 2)
+        self.assertIn("@octo", comments[-1])
+
+    def test_decision_comment_failure_is_retryable_and_not_duplicated(self) -> None:
+        self.started_review(12, "p1")
+        self.fake.issue_writes_fail = True
+        failed = self.op("github.review", "p1", result=DECISION)
+        self.assertEqual((failed["ok"], failed["retryable"]), (False, True))
+        self.assertEqual(len(self.fake.review_posts), 1)
+        self.fake.issue_writes_fail = False
+        retried = self.op("github.review", "p1", result=DECISION)
+        self.assertEqual((retried["ok"], retried["created"]), (True, False))
+        self.assertEqual((len(self.fake.review_posts), len(self.decision_comments())), (1, 1))
+
+    def test_no_decision_comment_for_stale_downgraded_or_change_request_reviews(self) -> None:
+        # Stale: the head moved while the review ran, so the items are about a head nobody merges.
+        self.started_review(12, "p1")
+        self.fake.prs[12]["head"]["sha"] = SHA_B
+        self.assertTrue(self.op("github.review", "p1", result=DECISION)["stale"])
+        self.assertTrue(self.op("finish", "p1", outcome="reviewed")["ok"])
+        # The App's own pull request: a change request downgraded to COMMENT is not the agent's COMMENT.
+        self.started_review(13, "p2", author=REVIEWER)
+        downgraded = self.op("github.review", "p2", result=variant(DECISION, event="REQUEST_CHANGES"))
+        self.assertEqual(downgraded["event_submitted"], "COMMENT")
+        self.assertTrue(self.op("finish", "p2", outcome="reviewed")["ok"])
+        # A change request listing its open items blocks on its own; no decision is pending.
+        self.started_review(14, "p3")
+        self.assertTrue(self.op("github.review", "p3", result=variant(DECISION, event="REQUEST_CHANGES"))["ok"])
+        self.assertEqual([self.decision_comments(n) for n in (12, 13, 14)], [[], [], []])
+
+
 OLD_SCHEMA = """
 CREATE TABLE events (
     seq INTEGER PRIMARY KEY AUTOINCREMENT, delivery_id TEXT NOT NULL UNIQUE, semantic_key TEXT NOT NULL UNIQUE,
@@ -3932,6 +4704,8 @@ class MigrationTests(unittest.TestCase):
             store = bridge.Store(path)  # second start is a no-op
             ev = store.event("old1")
             self.assertEqual((ev["state"], ev["outcome"], ev["execution_id"]), ("completed", "implemented", None))
+            # Auto-retry columns arrive unarmed on rows recorded before they existed.
+            self.assertEqual((ev["park_class"], ev["auto_retries"], ev["auto_retry_at"]), (None, 0, None))
             issue = store.issue(REPO, 7)
             self.assertEqual((issue["session_id"], issue["phase"], issue["subject"], issue["pr_number"]),
                              ("s-old", "implementing", "issue", None))

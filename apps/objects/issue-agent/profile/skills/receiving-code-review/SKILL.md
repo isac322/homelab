@@ -13,6 +13,7 @@ description: Use in the GitHub issue automation's `followup` mode to evaluate a 
   - 6. Implement의 결과 → `hapi-issue-<n>` 브랜치의 로컬 커밋과 `status: "ready"`. 모든 변경을 커밋한 뒤 반환한다. 자동화가 브랜치 head를 push한다.
   - 구현 없이 답만 하는 경우 → `status: "no_change"`와 `issue_comment`.
   - 질문(2. Understand, 4. Verify the claim, Clarification needed, 막힌 cluster) → `questions`와 `issue_comment`, `status: "needs_info"`. 채팅으로 기다리지 않고 턴을 끝낸다.
+- 자동화의 리뷰 봇(`haechibot[bot]`)이 `REQUEST_CHANGES`로 남긴 "prove or fix" 의심(반박되지 않은 `P0`–`P2`)에서 Reject는 댓글만으로 하지 않는다. prove는 의심이 사실이라면 실패할 테스트나 probe를 브랜치에 커밋하는 것이고(4. Verify the claim의 재현을 커밋으로 남긴다), 그 테스트·probe가 실패하면 의심이 사실이므로 Accept/Adapt로 고친다. 어느 쪽이든 커밋이 생기므로 `status: "ready"`로 반환하고, 자동화가 새 head를 push하면 리뷰 봇이 다시 리뷰한다. 상세는 `isac-issue-to-pr`의 Automation adaptation에 있다.
 
 # Receiving Code Review
 

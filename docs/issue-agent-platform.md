@@ -8,6 +8,8 @@
 
 v2는 코딩 에이전트의 GitHub 쓰기를 모두 없앴다. 에이전트는 읽기 전용 토큰으로 조사하고 구조화된 결과만 반환하며, n8n이 그 결과를 bridge op로 GitHub에 반영한다. 아래 설계·계약 절은 v2 기준이다. v1 수용 기록은 v1 동작(에이전트의 직접 push·PR 생성, n8n 모델 분류, 저장소별 라벨 매핑)에 대한 당시 증거이므로 고치지 않는다. v2 수용 항목은 `### v2 수용 기준`에 따로 둔다.
 
+2026-10-11 리뷰 게이트·실행 경계 변경: kwin-mcp review-gap 분석(PR #90·#92–#98에서 사람의 리뷰 세션이 찾은 신호 처리·잠금·D-Bus timeout·좌표 계산·주입·SELinux 우회 결함 대부분을 haechibot이 놓쳤고, #95는 사람이 보류한 상태에서 APPROVE됐다)과 리뷰 실행 기록 감사(kwin-mcp 리뷰 실행 24회 중 17회가 PR 코드를 Runner 셸에서 직접 실행)를 근거로 리뷰 게시 신뢰성, 리뷰 판정 정책, Runner·Codex 설정, 신뢰하지 않는 코드의 실행 경계, Runner 자원을 함께 바꾼다. 사용자 결정은 다음과 같다. 리뷰 판정은 CI 결과에 의존하지 않고 봇은 lint·type·test 결과를 보고하지 않는다(U1). 모든 모드와 하위 에이전트의 reasoning effort는 `high`다(U2). 동시 실행을 제한하고 Runner 메모리를 늘린다(U3). PR이 새로 들인 취약점은 리뷰에 위치·메커니즘·수정안을 적는다(U4). 실행 경계는 E1–E4를 지금 적용하고 hub 토큰의 컨테이너 분리는 다음 단계로 미룬다(U6). 설계는 아래 각 절에 반영했고 수용 항목은 `### 리뷰 게이트·실행 경계 수용 기준(2026-10-11)`에 둔다. 체크되지 않은 항목은 아직 배포·검증되지 않았다.
+
 ## 확정된 요구사항
 
 - 공통 Issue Agent를 여러 GitHub 저장소에서 사용할 수 있게 구현한다. GitHub App `bulgasaribot`의 설치 범위가 곧 대상 범위이며, bridge는 설치된 모든 저장소의 이벤트를 받는다. 현재 설치·운영 대상은 사용자 선택에 따라 `isac322/cc-lb`, `isac322/pillar-csi`, `isac322/flareway`, `isac322/krema`다. 설치 범위 확장은 사용자 지정 후에만 한다.
@@ -43,12 +45,13 @@ n8n은 단순히 에이전트를 한 번 호출하는 장식이 아니라 실제
 
 1. 공통 Issue Agent 지침(`profile/AGENTS.md` → `CODEX_HOME/AGENTS.md`): GitHub 읽기 전용, 턴 끝 `ISSUE_AGENT_RESULT <nonce> {json}` 한 줄로만 결과 반환, 메시지가 지정한 모드만 수행, 이슈·PR 본문과 context는 신뢰하지 않는 데이터, worktree branch에만 로컬 커밋, 불명확하면 결과로 질문.
 2. 공통 스킬(`profile/skills/` → Codex ADMIN scope `/etc/codex/skills`, PVC에 두지 않음): 모드별 주 스킬은 `triage`=`isac-issue-triage`, `implement`=`isac-issue-to-pr`, `followup`=`isac-issue-to-pr`+`receiving-code-review`, `review`=`isac-pr-review`다. 보조 스킬은 `isac-github-publishing`, `isac-decision-brief`, `isac-multi-agent-consensus`, `isac-live-qa`, `issue-validation`, `five-whys-root-cause-analysis`, `comment-writer`, `humanizer`, `writing-clearly-and-concisely`, `destructive-operations`, `public-api`, `pull-request-merge`, `pull-request-review-handling`이다.
-3. 저장소 지침: 각 저장소의 `AGENTS.md` 등 기여 규칙을 worktree에서 읽는다. 빌드·테스트·스타일만 정하며 공통 지침의 제한을 넓히지 못한다.
-4. Codex 도구: 모든 세션에 context-mode(`ctx_*`)와 CodeGraph(`codegraph_*`) MCP 서버가 붙는다(`/etc/codex/config.toml`). 사용 강제는 `/etc/codex/requirements.toml`의 managed hook으로 한다. context-mode hook 6개(SessionStart, PreToolUse, PostToolUse, PreCompact, UserPromptSubmit, Stop)가 raw fetch를 막고 큰 출력을 sandbox로 유도하며, SessionStart의 `codegraph-index`가 worktree 색인을 준비한다. 공통 지침은 코드 탐색에 CodeGraph를, 20줄 넘는 출력에 context-mode를 기본으로 쓰게 한다.
+3. 저장소 지침: 각 저장소의 `AGENTS.md`·`CLAUDE.md`·`.agents/**`·`.claude/**`·CONTRIBUTING 등 기여 규칙은 빌드·테스트·스타일만 정하며 공통 지침의 제한을 넓히지 못한다. 저장소 root는 Codex에 untrusted로 등록되므로(아래 9) Codex는 저장소 `AGENTS.md`나 `.agents/skills`를 자동으로 읽지 않는다. 에이전트가 직접 읽는다. implement·followup은 worktree에서, review는 PR이 바꿀 수 없는 기본 브랜치에서 읽는다.
+4. Codex 도구: 모든 세션에 context-mode(`ctx_*`)와 CodeGraph(`codegraph_*`) MCP 서버가 붙는다(`/etc/codex/config.toml`). MCP 서버 프로세스는 셸 환경 정책과 별개로 `config.toml`의 `env_vars` allowlist에 있는 변수만 받는다. 목록은 live Runner 환경 이름에서 비밀(`OPENAI_API_KEY`, `CLI_API_TOKEN`, `HAPI_*`, `ISSUE_AGENT_PROVIDER_DIR`)을 뺀 것(`DOCKER_HOST`, `GH_CONFIG_DIR`, 빌드 캐시 변수 등)이고 codegraph는 `CODEGRAPH_NO_DOWNLOAD`도 받는다. 사용 강제는 `/etc/codex/requirements.toml`의 managed hook으로 한다. `requirements.toml`은 `allow_managed_hooks_only = true`로 managed hook만 허용하고, MCP 서버는 절대 경로 command로 고정한 allowlist(context-mode, codegraph, HAPI가 thread마다 넣는 `hapi`)만 허용한다. context-mode hook 6개(SessionStart, PreToolUse, PostToolUse, PreCompact, UserPromptSubmit, Stop)가 raw fetch를 막고 큰 출력을 sandbox로 유도하며, SessionStart의 `codegraph-index`가 worktree 색인을 준비한다. 공통 지침은 코드 탐색에 CodeGraph를, 20줄 넘는 출력에 context-mode를 기본으로 쓰게 한다. 다만 작업 대상(diff, 바뀐 파일, 따르는 스킬 파일, 저장소 지침 파일)은 context-mode snippet이 아니라 전문을 읽고, context-mode는 log·테스트 출력·목록에 쓴다.
 5. 빌드 캐시: Runner는 sccache로 Rust(`RUSTC_WRAPPER`)와 C/C++(`PATH` 앞쪽 `cc`·`gcc`·`c++`·`g++` wrapper, CMake compiler launcher) 컴파일 결과를 home PVC의 `SCCACHE_DIR`(최대 5G)에 캐시해 worktree와 세션이 공유한다. wrapper는 sccache가 부모일 때 실제 컴파일러를 바로 실행해 이중 wrapping을 막는다.
 6. 접근 제한: 에이전트 컨테이너에는 읽기 전용 설치 토큰만 마운트한다. 쓰기 토큰(bridge의 issues/pull_requests/contents/repository_advisories write, publisher의 contents write)과 publisher bearer 토큰은 에이전트 컨테이너에서 읽을 수 없다. 지침 문구를 강제적인 보안 격리로 설명하지 않는다.
 7. GitHub 읽기 자격증명 경계: Runner의 `GH_CONFIG_DIR`에는 사용자 토큰이나 PAT가 아닌 rotating repository-scoped GitHub App installation token이 들어간다. `gh auth status`, `gh auth login`, `gh auth setup-git`, `gh api user`, `gh api /user`, GraphQL `viewer` 조회는 설치 토큰에 맞지 않는 사용자 identity probe이므로 인증·readiness 확인에 사용하지 않는다. 이 probe의 실패만으로 저장소 읽기 권한이 없다고 판단하지 않는다.
 8. 운영 불변식과 incident lesson: readiness/auth는 실제 대상 이슈·PR·저장소 읽기(`gh issue view`, `gh pr view`, `gh api repos/{owner}/{repo}/...`)로만 확인한다. 대상 읽기는 일반 셸 또는 `ctx_execute`로 실행할 수 있다. `ctx_batch_execute`가 출력을 색인하면 `ctx_search`로 확인하며, 빈 직접 응답만으로 인증 실패로 처리하지 않는다. 대상 읽기가 401/403을 반환하거나, 대상 404 뒤 저장소 메타데이터 읽기(`gh api repos/{owner}/{repo}`)도 404일 때만 GitHub 인증·설치 접근 blocker로 보고한다. 단순 404 또는 리소스 부재는 저장소 접근을 확인하기 전까지 자격증명 실패로 바꾸지 않는다. bootstrap의 `gh auth token`은 로컬 설정 파싱일 뿐 API capability/health check가 아니다.
+9. Codex 실행 설정: `/etc/codex/managed_config.toml`은 `model_reasoning_effort = "high"`, `[agents] default_subagent_reasoning_effort = "high"`·`max_threads = 3`, `shell_environment_policy`(`include_only` allowlist, 비밀·내부 변수 없음)를 둔다. Codex app-server는 thread 시작 때 cwd의 git root를 자동으로 trusted로 기록하므로, 전에는 PR이 넣은 `.codex/config.toml`(MCP 서버, hook, env, `developer_instructions`, effort)이 로드될 수 있었다. 이제 `codex-untrust` helper(`/opt/issue-agent/bin/codex-untrust`)가 `CODEX_HOME/config.toml`에 경로별 `trust_level = "untrusted"` 항목을 쓴다. bootstrap은 provider config를 `codex-untrust --install`로 같은 lock 아래 설치하고 모든 기본 클론을 등록하며, publisher `/checkout`은 매 호출마다(즉 매 spawn 전) checkout과 그 worktree를 등록한다. untrusted root에서는 프로젝트 `.codex/` 설정 계층이 꺼지고 저장소 `AGENTS.md`도 자동으로 읽히지 않는다(위 3). `include_only`는 같은 uid의 `/proc/<pid>/environ` 읽기를 막지 못하는 보조 장치다.
 
 스킬은 원본을 자동화용으로 기계적으로만 고쳤다. 각 `SKILL.md` 머리의 adaptation 절이 바꾼 점을 적는다. 공통 규칙은 다음과 같다.
 
@@ -60,9 +63,24 @@ n8n은 단순히 에이전트를 한 번 호출하는 장식이 아니라 실제
 - 신뢰 규칙(triage AD-01·AD-02, implement followup): 신뢰 사용자의 명확한 기능·문서 요청만 직접 지시이고, 그 밖의 기능 요청은 제안 트랙(TRI-54)으로 결정을 묻는다. 제안·구조 변경 승인과 진행 중인 PR의 요구사항 변경은 신뢰 사용자의 댓글·수정만 할 수 있다. actor의 신뢰는 메시지의 신뢰 사실(`context.actor_trusted`)로 받고, 다른 사람은 에이전트가 `gh api repos/<owner>/<repo>/collaborators/<login>/permission`으로 확인한다.
 - 취약점(TRI-53, triage AD-04): 원본의 "공개 댓글·라벨 없이 GitHub Security Advisory로 옮기기 제안"은 TriageResult `security_advisory` 필드가 된다. 이때 `comment`는 `null`, 라벨 변경은 없고 `next_action`은 `none`이며, 재현 페이로드는 advisory 본문에만 둔다.
 
-Codex의 공통 지침은 전용 `CODEX_HOME/AGENTS.md`에서 읽고 프로젝트 지침과 결합할 수 있다. 전용 프로필은 개인 설정과 분리한다. 레포 안의 지침이 공통 지침을 덮어쓸 수 있으므로 비밀 보호나 접근 제어의 유일한 장치로 사용하지 않는다.
+Codex의 공통 지침은 전용 `CODEX_HOME/AGENTS.md`에서 읽는다. 저장소 root를 untrusted로 두므로 Codex는 프로젝트 지침과 프로젝트 `.codex/` 설정을 자동으로 결합하지 않고, 에이전트가 저장소 지침을 명시적으로 읽는다. 전용 프로필은 개인 설정과 분리한다. 에이전트가 읽은 레포 지침은 신뢰하지 않는 입력이므로 비밀 보호나 접근 제어의 유일한 장치로 사용하지 않는다.
 
 공통 지침·스킬은 버전 관리한다. 이슈 worktree에서의 수정은 다른 worktree에 자동 전파되지 않는다. 공통 반영은 기준 브랜치나 공통 이미지·설정 배포를 통해 수행한다.
+
+### 리뷰 판정 정책
+
+리뷰 규칙의 원본은 `isac-pr-review` 스킬(`SKILL.md`와 `references/`)이며 세부 규칙 ID와 문구는 스킬이 정한다. 2026-10-11 변경의 요지는 다음과 같다.
+
+- CI 독립(U1): 판정은 CI·check 결과(성공이든 실패든)에 의존하지 않는다. CI 상태를 정확성이나 결함의 근거로 인용하지 않고, verdict 줄에서 `PR-ready`를 뺐으며, lint·type·test 결과를 리뷰 지적으로 보고하지 않는다. 리뷰어는 자기 판단에 필요하면 테스트·빌드·probe를 직접 돌릴 수 있고(아래 실행 경계 안에서) 돌린 것은 자기 증거로 적는다. CI 실패는 새 commit을 요구하고 새 commit은 새 리뷰를 부른다. 이 전제를 위해 저장소 ruleset에 CI job을 required check로 넣는 일은 봇 변경이 아니며 따로 진행한다. krema의 CI job은 모두 paths filter가 있어 그대로는 required로 만들 수 없고, 항상 도는 gate job 같은 workflow 변경이 필요하다.
+- P2 blocking: PR이 들인 P2 정확성·보안 결함은 재현이나 정확한 코드 경로 논증이 있으면 blocking(REQUEST_CHANGES)이다. P3는 non-blocking이다.
+- 미확인 의심(A4''): 확인도 반박도 안 된 P0–P2 의심은 file:line, 메커니즘, 구체적 trigger(입력·interleaving·상태)를 적을 수 있을 때만 후보가 되고, 가능성이 아니라 최악의 결과로 등급을 매긴다. 반박은 실행한 probe이거나, 해당 near-miss·경계를 다루는 줄을 인용하고 반례를 만들라는 독립 challenger 하위 에이전트를 견딘 코드 경로 논증이다. bulgasaribot이 연 PR에서 남은 의심은 REQUEST_CHANGES("prove or fix")로 repair 루프에 들어가고, 그 밖의 PR에서는 COMMENT다. followup의 "prove"는 의심이 사실이면 실패할 테스트나 probe를 commit하는 것이다(새 head → 새 리뷰).
+- 결정 사항(A9'): 보안 정책 우회(SELinux·AppArmor·sandbox·권한, 정상 경로가 거부될 때 다른 경로로 닿는 fallback 포함)와 제품 결정은 항상 COMMENT와 decision brief다. maintainer(write 이상)의 보류(dismiss되지 않은 CHANGES_REQUESTED, 보류 요청 댓글)는 그 maintainer가 풀 때까지 APPROVE를 막고 push로 풀리지 않는다.
+- lens(A6''·A16'): diff를 보고 하위 리뷰어 lens를 고른다. trigger에 걸린 lens는 생략할 수 없고 본문에 trigger와 함께 적는다. lock·thread·async·signal·subprocess·cleanup → concurrency/lifecycle, 새·바뀐 parameter·flag·schema·config key → input, 다른 언어·형식에 끼워 넣는 문자열 → injection, 좌표·크기·단위·시간 산술 → math, 바뀐 테스트 → test audit, 항상 → correctness와 docs/convention이다. 걸린 lens의 checklist가 같은 턴에서 한 번 다시 돌린 뒤에도 덮이지 않으면 COMMENT다. tooling 실패가 있어도 논증으로 checklist를 덮었으면 실패가 아니다.
+- `open_items`: 에이전트 자신의 COMMENT가 결정 사항, 미확인 P0–P2 의심, 덮이지 않은 lens 때문이면 ReviewResult `open_items`에 이유를 하나씩 적는다(`### 모드와 결과 계약`의 ReviewResult와 decision 댓글).
+- 취약점(U4): PR이 새로 들인 취약점(기본 브랜치와 최신 release tag·release branch에 없음)은 리뷰에 위치·메커니즘·수정안을 적고 REQUEST_CHANGES로 낸다. 이미 있던 취약점은 기존처럼 비공개 advisory 경로(PRR-19)로 보낸다. blocking 지적은 언제나 위치·메커니즘·수정안을 담는다.
+- 그 밖의 스킬 규칙: 모든 head를 merge-base 대비 전체 리뷰하고 수정 commit은 hazard(잠금 안의 blocking I/O와 timeout, 기록과 실행 순서, 취소·signal 창, cleanup)를 따로 본다. 새 입력의 모든 진입 경로에 적대적 값과 주입을 probe하고, 새 type 오류 억제를 지적하며, 테스트가 주장한 동작을 실제로 검사하는지와 PR 본문의 동작 주장을 확인한다. 중단된 턴을 이어받으면 head와 환경을 다시 확인하고 증거를 다시 모은다.
+- 프로젝트별 규칙: 한 저장소에만 해당하는 규칙은 `profile/skills/isac-pr-review/references/projects/<owner>__<repo>.md`에 둔다(예: `isac322__kwin-mcp.md`). 공통 스킬에는 저장소 전용 규칙을 넣지 않는다.
+- 운영 감시: 배포 뒤 7일 동안 저장소별로 non-draft head 중 COMMENT로 끝난 비율을 본다. 30%를 넘으면 미확인 의심·lens 완결 규칙을 다시 검토한다.
 
 ### 자동 머지와 실행 격리의 한계
 
@@ -70,7 +88,16 @@ Codex의 공통 지침은 전용 `CODEX_HOME/AGENTS.md`에서 읽고 프로젝�
 
 다만 publisher와 에이전트는 Runner home PVC를 공유하므로 에이전트는 push될 커밋 내용을 정한다. push 대상은 턴이 끝난 뒤의 worktree branch head다. 에이전트가 worktree의 유일한 writer이므로 결과에 SHA를 따로 받지 않는다(flareway#138에서 손으로 옮긴 SHA가 실제 head와 앞 7자만 맞아 push가 `sha_mismatch`로 멈췄다). 공유 Runner는 악성 코드에 대한 주제별 보안 샌드박스가 아니다.
 
-Runner Pod의 `dockerd`는 privileged 컨테이너다. daemon에는 Secret과 home root를 마운트하지 않고 socket도 UID 1000 그룹으로 제한하지만, socket으로 privileged 컨테이너나 host 마운트를 요청할 수 있는 runner 프로세스는 사실상 node root다. 따라서 에이전트 컨테이너에 쓰기 토큰을 마운트하지 않는 분리는 정상 동작의 경계이며 Secret 격리를 보장하지 않는다. 악의적인 코드는 같은 node에 있는 publisher의 push 토큰, `issue-agent-runner`의 App 개인키 Secret `issue-agent-github-app`, 다른 Pod의 Secret에 닿을 수 있다. privileged 예외는 `issue-agent-runner` namespace에만 두고, hub·n8n·bridge가 있는 `issue-agent`는 `restricted`를 유지한다.
+Runner Pod의 `dockerd`는 privileged 컨테이너다. daemon에는 Secret과 home root를 마운트하지 않고 socket도 UID 1000 그룹으로 제한한다. 2026-10-11 전에는 socket으로 privileged 컨테이너나 host 마운트를 요청할 수 있어 runner 프로세스가 사실상 node root였다. 이제 dockerd의 authorization plugin이 그런 요청을 거절하지만(`## Runner Docker와 DRM 장치`의 Docker 권한 정책) dockerd 자체는 여전히 privileged이고 plugin은 정책 계층이지 커널 경계가 아니다. 에이전트 컨테이너에 쓰기 토큰을 마운트하지 않는 분리는 정상 동작의 경계이며 Secret 격리를 보장하지 않는다. privileged 예외는 `issue-agent-runner` namespace에만 두고, hub·n8n·bridge가 있는 `issue-agent`는 `restricted`를 유지한다.
+
+신뢰하지 않는 코드의 실행 경계(2026-10-11):
+
+- 컨테이너 안에서만 PR 코드 실행(E1'): review 모드에서 PR이 제어하는 코드(추출한 함수, PR 모듈을 import하는 harness, PR의 script·test suite·build 도구)는 Runner 셸에서 실행하지 않고 에이전트가 구성한 컨테이너 안에서만 돌린다. PR Dockerfile이나 공식 base image 위의 scratch Dockerfile(예: 최소 지원 Python 3.12 확인)을 `docker build`하고(`--allow` entitlement 없음, network는 build 때만), worktree 복사본이나 head의 `git archive`를 context로 쓴다. 실행은 항상 `docker run --rm --network none`이며 `--privileged`·`--cap-add`·socket·home mount를 쓰지 않고 `-e`는 literal 상수만 쓴다. 장치는 필요할 때 DRI node만 넘긴다. PR 자신의 docker wrapper script는 실행하지 않는다. 그렇게 probe할 수 없으면 challenger를 견딘 논증으로 대신한다. 이 규칙은 공통 지침·스킬의 문구이고, 강제는 아래 Docker 정책이 일부 맡는다.
+- 모델 키 proxy(E2): Runner Pod에 Caddy native sidecar `model-proxy`(uid 65532, `127.0.0.1:8317`, loopback 전용)를 둔다. sidecar에만 마운트한 파일에서 provider 키를 읽어 Authorization header를 붙이고 허용한 path만 upstream으로 넘긴다. Codex provider `base_url`은 `http://127.0.0.1:8317/v1`이고 `env_key`가 없으며, runner 컨테이너에서는 `OPENAI_API_KEY` env와 키 파일을 뺐다. sidecar는 startup probe(proxy 준비 뒤 runner 시작)와 liveness probe를 가지며, `reverse_proxy`는 `flush_interval -1`이고 Codex stream idle timeout보다 짧은 read/header timeout을 두지 않는다. 남는 위험: Pod 안의 로컬 프로세스는 proxy로 모델 API를 호출할 수 있지만 키 자체는 읽을 수 없다. Docker 컨테이너와 다른 Pod는 loopback proxy에 닿지 않는다.
+- Docker 권한 정책(E3): `## Runner Docker와 DRM 장치`의 Docker 권한 정책.
+- 셸 환경 제외(E4): Codex `shell_environment_policy`의 `include_only`가 에이전트 셸 환경에서 비밀을 뺀다. 보조 장치다.
+- 남은 경계와 다음 단계: HAPI runner는 hub 제어 토큰 `CLI_API_TOKEN`(모든 세션 읽기·조작, terminal 열기)을 에이전트와 같은 컨테이너·같은 uid로 가지므로, Runner 셸에서 도는 프로세스는 `/proc/<pid>/environ`으로 이 토큰을 읽을 수 있다. HAPI와 에이전트를 별도 컨테이너로 나누는 hub 토큰 분리가 다음 단계다. GitHub 읽기 토큰의 `repositories` 범위 축소는 선택 사항으로 남는다.
+
 ### PR 자동 수정과 merge-ready 알림
 
 - 같은 저장소의 `hapi-issue-<n>` head를 가진 PR은 원본 이슈에 연결한다. SQLite `prs`에 head, dirty/revision, repair delivery lease, 마지막 시도 fingerprint, 수동 요청, 알림 head를 보관한다. fork의 같은 이름 branch는 관리 대상으로 삼지 않는다.
@@ -87,13 +114,14 @@ krema#63에서 리뷰 ↔ repair 조정이 약 12시간 동안 반복돼 토큰 
 
 - 리뷰 요청 합치기와 취소: 아래 "리뷰 요청 합치기와 취소" 절의 규칙으로 PR마다 대기 리뷰는 최대 하나이고, 새 head가 오면 이전 head의 실행 중 리뷰는 끝까지 돌지 않는다.
 - `finish` 순서와 라벨 제거: `finish`는 이벤트를 먼저 `completed`로 기록하고 세션 정리를 마친 뒤 라벨을 다룬다. bridge가 attention 알림에서 라벨 추가에 성공하면 `issues.attention_label`을 1로 두고, `finish`는 이 값이 1일 때만 라벨을 DELETE한다. 200·404면 0으로 내린다. 그 밖의 GitHub 오류는 경고 로그만 남기고 값을 유지해 다음 `finish`가 다시 시도한다. 라벨 제거 실패가 끝난 실행을 실패로 바꾸지 않으며, bridge가 붙이지 않은 라벨에는 DELETE를 보내지 않는다. 마이그레이션은 `needs_attention` 이벤트가 있는 대상의 값을 1로 채운다.
-- 자동 repair 상한: reconciliation은 `_pr_findings`를 원인별로 나눈다. `base`는 behind 또는 conflict, `checks`는 실패한 check, `review`는 변경 요청 리뷰다. 리뷰어가 남기는 commit status(`issue-agent/review`, 설정 `review_status_context`)는 판정을 그대로 옮긴 것이므로 `checks`에서 빼고 `review`로만 센다. flareway#138에서는 이 status가 실패 check로 한 번 더 세어졌다.
+- 자동 repair 상한: reconciliation은 `_pr_findings`를 원인별로 나눈다. `base`는 behind 또는 conflict, `checks`는 실패한 check, `review`는 변경 요청 리뷰다. 리뷰어가 남기는 commit status(`issue-agent/review`, 설정 `review_status_context`)는 판정을 그대로 옮긴 것이므로 `checks`에서 빼고 `review`로만 센다. flareway#138에서는 이 status가 실패 check로 한 번 더 세어졌다. 리뷰 App 자신의 리뷰는 GitHub `commit_id`가 아니라 marker SHA가 현재 head일 때만 현재 head의 리뷰로 센다. 사람의 리뷰는 지금처럼 `commit_id`가 현재 head인지로 본다.
 - 실행 중인 check 대기: 현재 head에 끝나지 않은 check(CheckRun `status`가 `COMPLETED`가 아니거나 StatusContext `state`가 `PENDING`·`EXPECTED`, 리뷰어 status 포함)가 하나라도 있으면 자동·수동 repair 모두 넣지 않고 `checks_pending`을 반환한다. 수동 요청(`latest_signal`)은 남겨 두고 fingerprint도 기록하지 않으며, 60초 주기 reconciliation이 다시 확인한다. flareway#138에서는 envtest가 도는 중에 repair가 push해 그 실행을 취소했고, 진짜 envtest 실패는 끝내 repair되지 않았다.
 - 연속 횟수와 backoff: 자동 `pr_repair`를 넣을 때마다 `prs.repair_streaks`(JSON)에서 지금 있는 원인의 연속 횟수는 1 늘리고 없는 원인은 0으로 되돌린다. 지금 있는 원인이 연속 `MAX_PR_REPAIR_STREAK`(3)회에 도달하면 멈추지 않고 `PR_REPAIR_BACKOFF_SECONDS`(1시간, 4시간, 16시간) 단계로 기다린다. 기다리는 동안은 댓글 없이 `cooling`을 반환하고 fingerprint도 쓰지 않는다. 대기가 끝나면 근거 fingerprint가 직전 시도와 같아도 repair를 정확히 한 번 넣고(`no_change`로 끝나도 다음 단계로 간다), 그 원인이 남아 있으면 다음 단계를 시작한다. 세 단계를 다 쓰고도 원인이 남으면 원인과 backoff 소진을 적은 `pr-repair-limit:<PR>:<last_manual_id>` marker 댓글을 한 번 남기고 `repair_limit`으로 멈춘다. 상한에 닿은 원인이 사라지면 대기·단계 상태를 지운다.
 - 진전 시 초기화: 마지막 repair 때 실패한 check 이름 집합(CheckRun `name`, StatusContext `context`)을 `check_names`로 기억한다. `checks`가 원인인데 실패 집합이 기억한 비어 있지 않은 집합과 다르면 repair가 진전을 낸 것으로 보고 `checks` 연속 횟수와 그 backoff 단계를 0부터 다시 센다.
 - 시간 창 상한: 자동 repair 시작 시각을 `attempts`에 남기고 `PR_REPAIR_WINDOW_SECONDS`(24시간)보다 오래된 것은 버린다. 창 안에 `MAX_PR_REPAIRS_PER_WINDOW`(10)회가 차면 원인이 번갈아 나타나는 경우의 backstop으로 같은 marker 댓글을 남기고 `repair_limit`으로 멈춘다. 멈춘 상태(`stopped`)는 아래 초기화 전까지 유지된다.
 - 초기화: 사람의 `@bulgasaribot` repair 요청은 상한과 무관하게 허용되며 연속 횟수, backoff, 시간 창, 멈춤 상태를 모두 지운다(`repair_streaks = '{}'`). PR이 merge-ready가 되어도 같다. 예전 행의 `total` 값은 읽어도 쓰지 않고 다음 기록 때 사라진다. 기존 DB에 남은 `prs.repair_count` 열은 쓰지 않는다.
 - 로컬 CI 게이트: implement·followup 결과에는 `local_checks`(최대 30개, `{"command": "<=500자", "exit_code": int}`)가 반드시 있다. `ready`이면 비어 있지 않고 모든 `exit_code`가 0이어야 하며, 아니면 결과 검증이 실패해 교정 경로로 에이전트에게 돌려보내므로 n8n이 push하지 않는다. 에이전트는 `ready` 전에 PR CI가 돌리는 게이트 전부(`.github/workflows/*` job과 그 job이 부르는 Makefile/justfile 타깃, envtest·integration 같은 느린 suite 포함)를 worktree에서 돌린다. 시크릿·외부 서비스·특수 하드웨어가 필요해 로컬에서 돌릴 수 없는 게이트는 `summary`와 PR 본문에 미실행으로 적고 `local_checks`에는 넣지 않는다. 게시 후 GitHub CI는 확인일 뿐이다.
+- 변경 없는 repair 뒤 재리뷰: 리뷰가 부른 repair가 `no_change`로 끝나면(근거를 들어 지적을 반박한 경우 등) bridge는 같은 head의 리뷰를 한 번 큐에 넣는다. head당 한 번이다.
 
 ### 리뷰 요청 합치기와 취소
 
@@ -107,7 +135,7 @@ pillar-csi#155에서 PR 열기 → 31초 뒤 force-push → 3초 뒤 `@haechibot
 - head별 자동 리뷰 1회: 자동 요청(`pull_request` opened/reopened/ready_for_review/synchronize, 열린 PR 리뷰 스윕)은 같은 저장소·PR·head의 `pr_review` 요청이 대기·실행 중이거나 리뷰를 만들었거나(완료) parked(`needs_attention`) 또는 다른 요청에 밀려 끝난(`superseded`) 행이 있으면 큐에 넣지 않고 `duplicate`로 답한다. 같은 delivery id의 재전송 webhook은 어떤 부수 효과 없이 먼저 `duplicate`로 답한다. 합쳐진(`coalesced`)·취소된(`cancelled`)·시작 전에 끝난(`head_moved`, `already_reviewed`) 요청은 그 head를 리뷰한 적이 없으므로 세지 않고, 그 행의 head semantic key(`#pr:<n>:review:<head>` 모양; `#comment:<id>` 키는 유지)도 풀려 같은 head의 요청이 다시 들어올 수 있다. 다만 리뷰 게시(`github.review` op)의 기록(`stages.review_published`)은 행의 상태나 `head_sha`와 관계없이 그 head를 요청한 것으로 친다. 게시 뒤 push가 이벤트를 취소했거나, head 조회가 실패해 `head_sha`가 비어 있는 댓글 리뷰여도 리뷰는 이미 GitHub에 있다. `duplicate`로 답하기 전에도 다른 head를 리뷰 중인 이벤트는 `cancelled`로 끝내므로, 이전에 리뷰된 head로 돌아온 push 뒤에도 오래된 head의 리뷰가 계속 돌지 않는다. 확인과 삽입은 `Store.enqueue_in`의 한 SQLite 쓰기 트랜잭션이다. krema#76에서 Draft일 때 댓글로 받은 리뷰가 끝난 뒤 `ready_for_review` webhook이 같은 head를 다시 리뷰했는데, 댓글 리뷰도 시작할 때 head를 기록하므로 이제 이 webhook은 `duplicate`다. `@haechibot review` 댓글은 명시적 재요청이라 항상 큐에 들어간다.
 - 시작 시 게시 기록 우선: 자동 요청의 `begin`은 PR head를 조회하기 전에 다른 행의 `stages.review_published`가 자기 head인지 먼저 본다. 맞으면 `already_reviewed`로 끝내므로, GitHub가 head 조회에 실패해도 같은 head를 다시 리뷰하지 않는다.
 - 시작 시 열린 PR 확인: 자동 요청의 `begin`은 head를 읽을 때 받은 PR이 닫혔거나 Draft면 `pr_not_open`으로 끝낸다(리뷰·status·차단 없음). 스윕은 PR을 쓰기 트랜잭션 밖에서 읽고, PR을 닫거나 Draft로 바꾸는 webhook은 이벤트를 넣지 않으므로 그 사이에 큐에 들어간 요청이 남을 수 있기 때문이다. `pr_not_open`은 그 head를 리뷰한 적이 없으므로 세지 않고 head key도 풀어, PR이 다시 열리면 webhook이나 스윕이 그 head를 다시 요청한다. 댓글 요청은 지금처럼 현재 head를 리뷰한다.
-- head별 게시 1회: 자동 요청(댓글 없음)의 `github.review`는 POST 전에, 스레드 답글보다도 먼저 PR 리뷰 목록(delivery marker 확인과 같은 목록)에서 리뷰 App이 같은 `commit_id`로 남긴 가장 최근 리뷰를 찾는다. 있으면 게시하지 않고 그 리뷰를 이 이벤트의 `review_published`로 기록한 뒤 marker가 이미 있을 때와 같은 응답(`created: false`)을 돌려준다. 다른 실행의 리뷰를 이어받은 것이므로 스레드 답글과 resolve도 하지 않는다(그 실행이 이미 했다). 그래서 POST는 GitHub에 반영됐는데 응답만 잃은 리뷰가 push로 취소되고 같은 head가 다시 요청돼도 두 번 게시하지 않는다. 같은 delivery의 재시도(자기 marker)와 댓글 요청은 지금처럼 동작한다.
+- head별 게시 1회: `github.review`는 `("github-review", delivery)` keyed lock 안에서 리뷰 목록 조회 → marker 확인 → POST → `review_published` 기록 → status를 처리하므로, n8n이 같은 op를 동시에 재시도해도 리뷰가 둘 생기지 않는다. 자동 요청(댓글 없음)은 POST 전에, 스레드 답글보다도 먼저 같은 목록에서 리뷰 App이 이 head를 리뷰한 가장 최근 리뷰를 찾는다. 리뷰한 head는 본문 첫 줄 marker(`<!-- issue-agent:<delivery>:review:<sha> -->`)의 SHA, marker에 SHA가 없으면 같은 delivery의 로컬 `review_published.sha`로 정하며 GitHub `commit_id`는 쓰지 않는다. GitHub는 이전 head의 리뷰 `commit_id`를 새 commit으로 바꿔 달 수 있다. kwin-mcp#94에서는 이 때문에 새 head의 리뷰가 버려지고 이전 승인이 새 head의 status로 옮겨졌다. 어느 쪽으로도 정할 수 없는 예전 리뷰는 맞지 않는 것으로 친다(상태 유실이나 rebase 뒤 최대 한 번 재리뷰를 받아들인다). 찾으면 게시하지 않고 그 리뷰를 이 이벤트의 `review_published`로 기록한 뒤 marker가 이미 있을 때와 같은 응답(`created: false`)을 돌려준다. 다른 실행의 리뷰를 이어받은 것이므로 스레드 답글과 resolve도 하지 않는다(그 실행이 이미 했다). 그래서 POST는 GitHub에 반영됐는데 응답만 잃은 리뷰가 push로 취소되고 같은 head가 다시 요청돼도 두 번 게시하지 않는다. 같은 delivery의 재시도(자기 marker)와 댓글 요청은 지금처럼 동작한다.
 - 버려지는 자동 요청은 댓글 리뷰를 취소하지 않는다: `duplicate`로 답하는 자동 요청이 다른 head의 실행 중 리뷰를 취소하는 것은 댓글 없는 자동 리뷰에만 해당한다. 합쳐져 `@haechibot review` 댓글을 이어받은 실행 중 리뷰는 계속 돌아 현재 head를 리뷰한다. 아무것도 넣지 않는 요청이 사람의 재요청을 지우면 안 되기 때문이다(fuzz로 찾은 순서: 리뷰된 A → 댓글 → push B가 댓글을 합쳐 시작 → A로 되돌린 push가 그 리뷰를 취소).
 
 ### 열린 PR 리뷰 스윕
@@ -117,10 +145,10 @@ pillar-csi#155에서 PR 열기 → 31초 뒤 force-push → 3초 뒤 `@haechibot
 - 범위: 리뷰 App(`haechibot`)이 설정되어 있을 때만 돈다(없으면 push도 리뷰를 요청하지 않는다). 리뷰 App 설치 저장소(`GET /installation/repositories`) 중 registry가 받는 저장소의 열린 PR(`state=open`)을 100개씩, 최대 `REVIEW_SWEEP_MAX_PAGES`(10) 페이지 읽는다. 한도에 닿으면 경고를 남긴다.
 - 후보: Draft가 아니고 head commit(committer date)이 `REVIEW_SWEEP_MAX_AGE_SECONDS`(14일) 안인 PR. PR `updated_at`이 14일보다 오래되면 head commit도 오래되었으므로 commit을 읽지 않고 건너뛴다.
 - 진행 중이거나 멈춰 있으면 건드리지 않는다: PR에 비종결(`accepted`/`dispatching`/`dispatched`) 이벤트가 있으면(head가 아직 기록되지 않은 댓글 리뷰, repair 포함) 건너뛰고, 관리 PR은 연결된 이슈의 비종결 이벤트도 본다(연결 이슈는 `prs` 행 또는, 아직 추적되지 않은 PR이면 `hapi-issue-<n>` branch 이름으로 찾는다). `needs_attention`으로 멈춘 리뷰가 있는 PR, 주체가 막힌(`issues.blocked`) PR, 연결 이슈가 막힌 PR도 건너뛴다. 멈춘 구현·repair 세션은 아직 살아 있을 수 있다. `prs.active_delivery`는 repair가 `needs_attention`으로 멈춘 뒤에도 남으므로 보지 않는다.
-- 원격 기록: 로컬 행이 없어도 PR 리뷰 목록에 리뷰 App이 그 head(`commit_id`)에 남긴, 본문에 bridge 숨은 marker가 있는 리뷰가 있으면 건너뛴다. pillar-csi#162에서 dependabot rebase가 haechibot의 APPROVED 리뷰를 status 없이 새 head로 옮겼다. commit status(`review_status_context`)는 보지 않는다. status는 commit 단위라서 head가 같은 다른 PR(base가 다른 backport 등)의 리뷰가 이 PR의 빠진 리뷰를 가린다. 스레드 답글만 달 때 GitHub가 그때 head로 남기는 빈 `COMMENTED` 리뷰는 marker가 없어 리뷰로 치지 않는다. `github.review`의 head별 게시 1회도 같은 기준(`_app_review_of`)을 쓴다.
+- 원격 기록: 로컬 행이 없어도 PR 리뷰 목록에 리뷰 App이 남긴, 본문의 bridge 숨은 marker SHA가 그 head인 리뷰가 있으면 건너뛴다. GitHub `commit_id`는 보지 않는다. pillar-csi#162에서 dependabot rebase가 haechibot의 APPROVED 리뷰를 status 없이 새 head로 옮겼는데, 옮겨진 리뷰는 새 head를 리뷰한 것이 아니므로 이제 새 head를 다시 리뷰한다. commit status(`review_status_context`)는 보지 않는다. status는 commit 단위라서 head가 같은 다른 PR(base가 다른 backport 등)의 리뷰가 이 PR의 빠진 리뷰를 가린다. 스레드 답글만 달 때 GitHub가 그때 head로 남기는 빈 `COMMENTED` 리뷰는 marker가 없어 리뷰로 치지 않는다. `github.review`의 head별 게시 1회도 같은 기준을 쓴다.
 - live head: 큐에 넣기 직전에 PR을 다시 읽어 닫혔거나 Draft가 되었거나 head가 바뀌었으면 넣지 않는다. 새 head는 그 webhook이나 다음 스윕이 처리한다. 이 GET은 쓰기 트랜잭션 밖에서 한다. GitHub HTTP timeout(30초)이 SQLite busy timeout과 같아서, 트랜잭션 안에서 읽으면 동시에 온 webhook·op가 `database is locked`(503)로 실패할 수 있다. 읽은 뒤 push가 끼어들어도, 진행 중인 리뷰는 위 확인으로 이미 없고 시작 시점 검사(`head_moved`)가 오래된 요청을 끝낸다. 오래된 요청이 해를 끼칠 수 있는 곳은 멈춘 리뷰를 `superseded`로 끝내는 경우뿐이고, 멈춘 리뷰나 막힌 주체가 있는 PR은 스윕하지 않는다. 로컬 확인과 삽입은 한 쓰기 트랜잭션이어서 동시에 온 webhook과 섞이지 않고, 이벤트는 webhook과 같은 모양이다(delivery id만 매번 새 `pr-review-sweep-<uuid>`: 리뷰되지 않은 head의 재요청이 이전 행의 delivery id와 충돌하지 않도록).
 - 한도: 스윕 한 번에 모든 저장소를 통틀어 `REVIEW_SWEEP_MAX_ENQUEUES`(10)개까지 넣는다. 한 저장소나 PR의 GitHub 오류는 경고만 남기고 다음으로 넘어가며, 스윕 오류는 dispatcher로 올라가지 않는다.
-- 멈춘 리뷰는 자동 재시도하지 않는다: `needs_attention`으로 멈춘 리뷰도 그 head를 요청한 것으로 친다. 같은 원인으로 다시 실패할 리뷰를 10분마다 다시 돌리지 않기 위해서다. 사람이 `@haechibot review`로 재요청하면 멈춘 리뷰를 `superseded`로 끝내고 다시 리뷰한다.
+- 멈춘 리뷰의 재시도: `needs_attention`으로 멈춘 리뷰도 그 head를 요청한 것으로 치고 스윕은 다시 넣지 않는다. 일시적 원인(`park_class`)으로 멈춘 리뷰만 같은 이벤트를 bounded 자동 재시도한다(`### 오류 알림`). 그 밖의 원인은 같은 실패를 반복하지 않도록 자동으로 다시 돌리지 않는다. 사람이 `@haechibot review`로 재요청하면 멈춘 리뷰를 `superseded`로 끝내고 다시 리뷰한다.
 - 남은 경계: 오래된 head의 webhook이 늦게(재전송 등) 도착하면 그 요청이 더 새 head의 대기 리뷰를 합친 뒤 살아남을 수 있다. 살아남은 요청은 시작할 때 현재 head가 요청된 적 없으면 그 head로 옮겨 붙어 리뷰하므로 리뷰가 빠지지는 않는다. 현재 head가 이미 요청된 head면 `head_moved`로 끝나고, 이미 요청된 적 있는 head의 늦은 webhook 자체는 head별 자동 리뷰 1회로 버려진다.
 
 ### 알려진 제한
@@ -163,7 +191,7 @@ pillar-csi#155에서 PR 열기 → 31초 뒤 force-push → 3초 뒤 `@haechibot
 
 세션은 주제마다 하나이고 HAPI branch는 `hapi-<worktree>`다. 턴은 `(delivery_id, mode)`로 식별하며 HAPI 메시지 `localId`는 `issue-agent-<delivery_id>-<mode>`다. 한 delivery에서 triage 뒤 implement를 이어 실행할 수 있다. 메시지에는 대상 이슈·PR 번호와 트리거 정보만 싣는다. 이슈·댓글·PR·리뷰·스레드 같은 GitHub 내용은 에이전트가 읽기 전용 토큰으로 `gh`(REST·`gh api graphql`)를 직접 실행해 읽는다.
 
-동시 실행: bridge dispatcher는 저장소와 무관하게 전체에서 최대 `MAX_ACTIVE_EVENTS`(5)개 이벤트에 슬롯(`dispatching`/`dispatched`)을 주고 n8n에 넘긴다. 같은 주제(이슈·PR 번호)의 이벤트는 세션·worktree를 공유하므로 앞선 이벤트가 끝날 때까지 기다린다. 응답이 불확실한 n8n POST는 그 이벤트의 슬롯만 유지한 채 같은 이벤트로만 재시도하고, 다른 주제는 막지 않는다. `begin`은 슬롯을 가진 이벤트만 시작시킨다. 세션 생성·재개는 bridge의 `session_lock`으로, 같은 저장소 checkout clone과 push는 publisher의 저장소별 잠금으로 직렬화된다. 모든 세션은 Runner Pod 하나의 메모리 한도를 함께 쓴다.
+동시 실행: bridge dispatcher는 저장소와 무관하게 전체에서 최대 `MAX_ACTIVE_EVENTS`(5)개 이벤트에 슬롯(`dispatching`/`dispatched`)을 주고 n8n에 넘긴다. 그중 `pr_review`는 dispatcher 후보 조회의 `MAX_ACTIVE_REVIEWS`(2)로 최대 두 개만 동시에 돌고, 상한에 걸린 리뷰는 다른 이벤트의 dispatch를 막지 않는다. 리뷰는 lens별 하위 에이전트를 띄우며, 한 세션이 동시에 여는 하위 에이전트 thread는 Codex `[agents] max_threads = 3`으로 제한한다. 같은 주제(이슈·PR 번호)의 이벤트는 세션·worktree를 공유하므로 앞선 이벤트가 끝날 때까지 기다린다. 응답이 불확실한 n8n POST는 그 이벤트의 슬롯만 유지한 채 같은 이벤트로만 재시도하고, 다른 주제는 막지 않는다. `begin`은 슬롯을 가진 이벤트만 시작시킨다. 세션 생성·재개는 bridge의 `session_lock`으로, 같은 저장소 checkout clone과 push는 publisher의 저장소별 잠금으로 직렬화된다. 모든 세션은 Runner Pod 하나의 메모리 한도를 함께 쓴다.
 
 이벤트가 `finish`로 끝나면 bridge가 그 주제의 HAPI 세션을 `archive`해 Codex 프로세스와 MCP 서버를 멈춘다. 같은 주제의 다음 이벤트는 `ensure_session`의 resume 경로로 같은 세션 ID·같은 Codex 대화를 다시 띄운다(운영 HAPI 0.30.7에서 archive → resume이 1.2초에 같은 ID로 돌아오는 것을 확인). archive 실패는 이벤트 완료를 막지 않고 로그만 남긴다. 멈추지 않으면 끝난 세션이 Runner 재시작 전까지 세션마다 수백 MB를 계속 차지한다. `needs_attention`으로 멈춘 이벤트의 세션은 운영자 확인을 위해 archive하지 않는다.
 
@@ -200,19 +228,32 @@ followup 턴은 PR을 이슈와 맞춘다. 에이전트는 `gh issue view`와 `g
 
   footer의 bot login은 설정값(`GITHUB_REVIEW_BOT_LOGIN`의 `[bot]` 제외)이며 코드에 하드코딩하지 않는다.
 
+  리뷰 본문 첫 줄에는 bridge가 marker `<!-- issue-agent:<delivery>:review:<sha> -->`를 붙인다(`<sha>`는 리뷰한 head). `issue-agent/review` 상태는 게시된 리뷰의 SHA가 현재 head와 같을 때만 남긴다.
+
+  ReviewResult에는 `open_items`(문자열 배열, 최대 20개·각 200자)도 있다. event가 COMMENT나 REQUEST_CHANGES일 때만 허용되며 비어 있어도 된다(대체된 조언 같은 정보성 COMMENT). 에이전트 자신의 COMMENT가 결정 사항, 미확인 P0–P2 의심, 덮이지 않은 lens 때문이면 이유마다 한 항목을 적는다(`### 리뷰 판정 정책`). bridge가 `_review()`에서 검증한다.
+
+  decision 댓글: 에이전트 자신의 event가 COMMENT이고(stale 안내나 자기 PR downgrade로 바뀐 COMMENT는 제외) `head_sha`가 live head이며 `open_items`가 비어 있지 않으면, bridge는 리뷰 App으로 project owner(없으면 저장소 owner)를 멘션해 maintainer가 답하고 `@haechibot review`를 달 때까지 merge가 막혀 있다고 알리는 댓글을 남긴다. marker `review-decision:<n>:<정규화·정렬한 open_items의 hash>`와 기존 `_comment` marker lock으로 같은 PR의 같은 항목 집합에는 head가 바뀌어도 한 번만 남긴다. 게시 실패는 재시도할 수 있다. COMMENT로 끝난 리뷰가 아무 안내 없이 merge를 막는 막다른 상태를 없애기 위해서다.
+
 라벨은 bridge `LABEL_CATALOG`의 이름만 허용한다(목록은 README `#### 라벨`). 저장소에 없으면 카탈로그 설명·색으로 만들고, 같은 그룹(`repro:*`, direction, kind) 라벨을 추가하면 나머지를 같은 op에서 제거한다. `agent:needs-attention`은 bridge만 다룬다.
 
 `github.security_advisory` op는 요청에 `delivery_id`만 받고 advisory 내용은 그 이벤트의 기록된 `triage_result` 단계에서 읽는다(기록에 advisory가 없으면 재시도하지 않는 오류). issue App 토큰으로 `POST /repos/{repo}/security-advisories`에 draft를 만들고, 설명 끝에 출처 이슈·delivery를 적은 marker 줄을 붙인다. 이벤트에 `advisory` 단계가 이미 있거나 draft·triage 상태 advisory 목록에서 같은 marker를 찾으면 새로 만들지 않고 그것을 돌려준다(`already: true`). 결과 `{ghsa_id, html_url}`은 `advisory` 단계에 기록한다. 오류 메시지는 HTTP 상태와 GitHub `message`만 담아 공개 attention 댓글에 advisory 내용이 새지 않게 한다(5xx·429는 재시도 가능).
 
 ### 오류 알림
 
-에이전트를 실행하는 모든 경로는 GitHub에 보이는 상태로 끝난다. 실패는 bridge `mark_attention`으로 모인다. 입구는 워크플로의 `Mark needs attention`(`fail`), n8n 오류 워크플로 `IssueAgentError01`(Error Trigger → `fail_execution`, 메인 워크플로 `settings.errorWorkflow`), bridge 자체 포기(dispatch 8회 실패, stale dispatch, n8n 응답 없음)다. `mark_attention`은 이벤트를 `needs_attention`으로 두고 해당 이슈/PR을 block한 뒤, 멈춘 노드·단계, 이벤트 종류, delivery ID, n8n 실행 링크, HAPI 세션 링크, `retry_event` 방법을 담은 댓글과 `agent:needs-attention` 라벨을 붙인다. attention 댓글·라벨은 이벤트가 `pr_review`면 리뷰 App(`haechibot[bot]`)으로 게시하고 위의 재리뷰 footer도 붙이며, 그 외 이벤트는 작성 App(`bulgasaribot[bot]`)으로 게시한다. 둘 다 적용될 때까지 backoff 후 재시도한다. 자동 재실행은 하지 않는다. 운영자는 `retry_event`(기록된 단계부터 재개) 또는 `unblock_issue`(이후 이벤트만 진행)로 푼다. 성공한 `finish`는 `agent:needs-attention`을 제거한다.
+에이전트를 실행하는 모든 경로는 GitHub에 보이는 상태로 끝난다. 실패는 bridge `mark_attention`으로 모인다. 입구는 워크플로의 `Mark needs attention`(`fail`), n8n 오류 워크플로 `IssueAgentError01`(Error Trigger → `fail_execution`, 메인 워크플로 `settings.errorWorkflow`), bridge 자체 포기(dispatch 8회 실패, stale dispatch, n8n 응답 없음)다. `mark_attention`은 이벤트를 `needs_attention`으로 두고 해당 이슈/PR을 block한 뒤, 멈춘 노드·단계, 이벤트 종류, delivery ID, n8n 실행 링크, HAPI 세션 링크, `retry_event` 방법을 담은 댓글과 `agent:needs-attention` 라벨을 붙인다. attention 댓글·라벨은 이벤트가 `pr_review`면 리뷰 App(`haechibot[bot]`)으로 게시하고 위의 재리뷰 footer도 붙이며, 그 외 이벤트는 작성 App(`bulgasaribot[bot]`)으로 게시한다. 둘 다 적용될 때까지 backoff 후 재시도한다. 자동 재실행은 아래 일시적 `pr_review` park에만 한다. 운영자는 `retry_event`(기록된 단계부터 재개) 또는 `unblock_issue`(이후 이벤트만 진행)로 푼다. 성공한 `finish`는 `agent:needs-attention`을 제거한다.
+
+- 오류 응답과 `park_class`: bridge ops 오류 응답은 `{"ok":false,"error","retryable","needs_operator","park_class"}`다. `park_class`는 `bridge_unreachable`, `hub_5xx`(dispatch와 `_resume` 실패 포함), `hub_unreachable`, `stale_dispatch`(세션 프로세스가 사라짐, Runner·hub·n8n·bridge 재시작 포함) 중 하나이며 bridge나 n8n만 정하고 에이전트 출력에서 오지 않는다. `fail`은 `park_class`를 받아 `mark_attention`에 기록하고 모르는 값은 무시한다. n8n은 bridge 호출 노드의 HTTP 오류 출력을 Code 노드(`Normalize … error`)로 `{ok:false, retryable, park_class, error}`로 정규화한다. bridge에 닿지 못한 transport 오류는 `retryable`과 `bridge_unreachable`이고, 그 밖의 HTTP 오류는 영구 오류(`retryable: false`, 빈 `park_class`)다. bridge가 돌려준 오류 응답의 `park_class`는 그대로 전달한다. 세션 하위 워크플로의 정규화 결과는 기존 Session status·Send status·Turn state 분기로 들어간다.
+- 일시적 park의 자동 재시도: `pr_review` 이벤트가 위 class로 멈추면 `auto_retries`·`auto_retry_at`을 기록하고 10·30·90분 뒤 최대 3회(`stale_dispatch`는 1회) 같은 이벤트를 다시 진행한다. 조건은 PR이 열려 있고 Draft가 아니며 head가 그대로이고 그 PR에 다른 진행 중·멈춘 이벤트가 없는 것이다. 이미 답한 턴은 결과를 다시 읽어(같은 `localId`) 검증을 통과하고 `head_sha`가 live head일 때만 게시한다. 답하지 않은 턴은 아직 thinking이 아니면 `lost`로 표시해 같은 세션에 다시 보내며, 세션의 machine을 hub가 모르면 기존 `ensure_session`의 orphan 경로가 새 `localId`로 다시 보낸다. 새 이벤트를 만들지 않고 같은 parked 이벤트를 다시 진행하며, 이 이벤트가 주체의 유일한 blocker일 때만 `issues.blocked`를 푼다. 스키마 검증에 실패한 결과와 다른 모드의 park는 자동 재시도하지 않는다.
+- lost turn 안내: 잃어버린 턴을 다시 보낼 때 bridge는 메시지에 `LOST_TURN_NOTICE`를 붙인다. 에이전트는 head SHA와 도구 환경을 다시 확인하고, 끊긴 실행의 결론·관찰·명령 결과를 재사용하지 않고 증거를 다시 모은다.
+- 리뷰 status: 멈추거나 포기한 리뷰는 `issue-agent/review`를 `pending`이 아니라 `error`("review did not complete; will retry" 또는 "needs operator")로 남긴다. 이미 게시된 판정은 덮지 않는다.
+- n8n 재시도: Ensure session·Send step은 엔진 재시도(5회×5초) 뒤 오류 출력으로 기존 재시도 loop에 들어간다. Check turn은 엔진 재시도 없이 transport 오류를 기존 120초 대기 loop로 보낸다. Submit review·Finish reviewed는 엔진 재시도 뒤 응답이 없거나 `retryable`이면 60초 기다려 최대 10회 다시 부르고, 아니면 `Mark needs attention`으로 간다. Begin은 재시도하지 않는다. 오류 워크플로의 `Fail execution`은 `maxTries` 5다.
+- bridge probe: `deployment-bridge.yaml`의 readiness·liveness probe는 `timeoutSeconds: 5`다. 기본 1초 timeout이 bridge 재시작을 일으켰다.
 
 ## Runner Docker와 DRM 장치
 
 Runner Pod는 저장소 테스트가 Docker 이미지를 build하고 컨테이너를 실행할 수 있도록 Pod 전용 Docker daemon을 둔다. daemon에 privileged 컨테이너가 필요하므로 runner·publisher·dockerd는 `issue-agent-runner` namespace에서 실행한다. 이 namespace만 Pod Security `privileged`를 enforce하고 audit·warn은 `restricted`로 두어, dockerd 외의 위반도 audit 기록과 경고로 남긴다. hub·n8n·bridge는 `restricted`를 enforce하는 `issue-agent`에 남는다.
 
-- Pod 구성: runner, publisher, native sidecar `dockerd`가 한 Pod에 있다. Deployment는 replica 1과 `Recreate`를 유지하며 replica를 늘리지 않는다. publisher Service는 `issue-agent-publisher.issue-agent-runner`이고, runner는 `issue-agent`의 Hub에 접속한다.
+- Pod 구성: runner, publisher, native sidecar `dockerd`와 `model-proxy`(Caddy, `### 자동 머지와 실행 격리의 한계`의 E2)가 한 Pod에 있다. Deployment는 replica 1과 `Recreate`를 유지하며 replica를 늘리지 않는다. publisher Service는 `issue-agent-publisher.issue-agent-runner`이고, runner는 `issue-agent`의 Hub에 접속한다.
 - 권한: `dockerd`만 root·privileged(seccomp `Unconfined`)로 실행한다. runner와 publisher는 UID 1000이며 모든 capability를 제거하고 권한 상승을 막는다. daemon은 TCP listener 없이 Unix socket만 열고, socket은 root:1000 0660이다.
 - 마운트: daemon은 home PVC의 `checkouts` subPath(`/home/agent/checkouts`), runner와 공유하는 `/tmp` emptyDir, socket 디렉터리, Docker 데이터 PVC(`/var/lib/docker`), native DRM 장치 두 개만 마운트한다. home root(`CODEX_HOME`, `HAPI_HOME`)와 Secret은 마운트하지 않는다. checkout과 `/tmp`는 runner와 daemon에서 경로가 같으므로, 이 두 경로 아래 파일만 bind mount와 build context로 쓸 수 있다.
 - cgroup: `dockerd-start`는 컨테이너 cgroup을 경계로 둔다. `/proc/self/cgroup`이 `0::/`인 private cgroup namespace면 바로 쓰고, host cgroup namespace를 공유해 scope가 node 경로(`/kubepods…/cri-containerd-…scope`)로 보이면 그 scope의 유한한 `memory.max`를 먼저 확인한 뒤 `unshare --cgroup --mount --propagation private`로 재실행하고 `/sys/fs/cgroup`에 cgroup2를 remount한다. 그래도 격리된 보기를 만들 수 없으면 daemon을 띄우지 않는다. 컨테이너는 cgroupfs driver와 `--cgroup-parent=/issue-agent-docker`로 자기 scope 아래에 생기므로 Pod 메모리 제한을 넘지 못한다. `unshare`는 BusyBox에 없어 이미지에 `util-linux-misc`를 넣는다. dockerd는 `/usr/local/bin/dind docker-init` 경유로 띄워 DinD의 mount 준비와 PID 1 zombie 수거를 쓰고, legacy iptables로 바꿀 수 있는 stock `dockerd-entrypoint`는 거치지 않는다.
@@ -220,6 +261,8 @@ Runner Pod는 저장소 테스트가 Docker 이미지를 build하고 컨테이�
 - 시작 순서: `dockerd-start`는 home의 `checkouts/.issue-agent-home-ready`가 없으면 바로 종료한다. startup probe는 `docker info` 응답과, `/dev/dri/card0`·`/dev/dri/renderD128`이 kernel의 같은 이름 node와 device 번호가 일치하고 `asahi` 또는 `rockchip-drm` driver인 한 DRM 장치에 속하는지를 모두 요구한다. 하나라도 빠지면 runner와 publisher는 시작하지 않고 Hub에 등록하지도 않는다. runner bootstrap도 `docker info`가 실패하면 종료한다. Runner는 이 장치가 있는 `macmini`·`rock5bp`에만 스케줄된다.
 - 방화벽: dockerd는 `--firewall-backend=iptables`와 `--ip6tables=false`로 실행한다. `dockerd-start`는 daemon을 띄우기 전에 `iptables`·`ip6tables`가 iptables-nft(`nf_tables`)인지 확인하고, legacy면 시작하지 않는다. default bridge와 NAT는 켜 둔 채 Docker가 filter·NAT 규칙과 IPv4 forwarding을 직접 관리한다. 그래서 `--iptables=false`나 `--network=host`를 쓰지 않고, nft CLI나 forwarding sysctl 설정도 따로 두지 않는다. 이 규칙과 forwarding은 Pod network namespace 안에만 생기며 host 방화벽은 건드리지 않는다. 이전에는 nftables backend를 썼는데, Docker 29.4의 이 backend는 kernel FIB expression을 쓴다. `rock5bp`의 vendor 커널 `6.1.84-999-rk2410`은 `# CONFIG_NFT_FIB_IPV4 is not set`이라 `nft_fib_ipv4`·`nft_fib_inet` module이 없고, 이 backend로는 dockerd가 시작에 실패했다. iptables backend는 이 expression을 쓰지 않으므로 커널을 바꾸지 않고 이 실패를 피한다.
 - 이미지: dockerd 이미지(`Dockerfile.dockerd`)는 digest로 고정한 `docker:29.8.2-dind` 위에 `util-linux-misc=2.42.3-r1`만 빌드 때 설치하고, 실행 중에는 패키지를 설치하지 않는다. Alpine 3.24 base의 `iptables`·`ip6tables`가 iptables-nft(`nf_tables`) backend인지는 빌드 때 확인하고 `dockerd-start`가 실행 때 다시 확인한다. `unshare --cgroup` guard와 native DRM 장치 guard를 유지한다. Runner 이미지의 Docker CLI·buildx·compose는 digest로 고정한 `docker:29.8.2-cli`에서 복사한다. Krema처럼 KWin·CMake가 필요한 저장소는 harness가 자기 컨테이너 안에서 이를 쓰므로 Runner 이미지에는 넣지 않는다.
+- Docker 권한 정책(E3, 2026-10-11): `dockerd-start`가 이미지에 든 자체 Go legacy authorization plugin(`runner/authz/`)을 먼저 띄우고 socket을 기다린 뒤 `--authorization-plugin`으로 dockerd를 시작한다(fail-closed). plugin이 거절하는 요청은 `Privileged`, `CapAdd`, host pid·ipc·uts·userns·network mode, 허용 목록 밖 장치(`PathOnHost`는 `/dev/dri`, `/dev/dri/card0`, `/dev/dri/renderD128`만 허용), `/home/agent/checkouts`와 `/tmp/issue-agent` 밖 bind·mount, docker socket mount, unconfined security opt, host 경로를 bind하는 volume DriverOpts(local driver `o=bind`·`device=`), mount의 `VolumeOptions.DriverConfig`, `VolumesFrom`, container update, plugin pull·install·enable·disable·set, privileged exec, JSON body 없는 create·exec, 모르는 mutating endpoint다. `daemon.json`은 BuildKit `network-host`·`device` entitlement를 끄고, `Dockerfile.dockerd` 빌드가 고정한 dind 이미지의 `dockerd --validate --config-file`로 검증한다. `dockerd-start`는 `native-dri-prepare` 뒤 dockerd 컨테이너의 `/dev`에서 host block device를 지운다(privileged 컨테이너 자신의 `/dev` tmpfs만 바뀐다). `/opt/issue-agent/bin/docker-smoke --policy`는 `--privileged` 거절, `/` bind 거절, `docker build --allow network.host` 거절, `--device /dev/dri` 허용을 확인한다.
+- 저장소 영향: pillar-csi의 privileged Kind E2E(`test/docker-e2e/run.sh`의 `--privileged`)는 이제 Runner에서 돌 수 없다. 에이전트는 "로컬에서 실행할 수 없음, CI가 확인"으로 보고하고 CI가 이를 맡는다. krema `tests/appium/run-e2e.sh`의 `--device /dev/dri`는 허용 목록에 있어 그대로 돈다. cc-lb·flareway·kwin-mcp의 e2e script는 정책이 거절하는 flag를 쓰지 않는다.
 - 저장소와 자원: Docker 데이터 PVC는 50Gi, Runner home PVC는 기존과 같은 20Gi다. dockerd 자원은 아래 `승인된 초기 자원 예외`에 있다.
 
 ## 데이터 보존
@@ -259,6 +302,24 @@ HAPI `v0.30.7`은 agent 메시지 내부의 65,536자 초과 문자열을 저장
 
 명령별 부작용과 안전 경계는 `apps/objects/issue-agent/operations/README.md`에 있다.
 
+### Runner·dockerd 이미지 빌드
+
+이미지는 로컬 OrbStack builder로 arm64만 빌드해 GHCR에 push한다(Runner node는 arm64이고 binfmt는 쓰지 않는다). build context는 `apps/objects/issue-agent`다.
+
+```sh
+docker buildx build --builder orbstack --platform linux/arm64 \
+  -f apps/objects/issue-agent/Dockerfile.dockerd \
+  -t ghcr.io/isac322/issue-agent-dockerd:<Docker 버전>-<date>-<purpose> --push apps/objects/issue-agent
+docker buildx build --builder orbstack --platform linux/arm64 \
+  -f apps/objects/issue-agent/Dockerfile.runner \
+  -t ghcr.io/isac322/issue-agent-runner:<HAPI>-codex<v>-<date>-<purpose> --push apps/objects/issue-agent
+```
+
+- tag: Runner는 `<HAPI 버전>-codex<Codex 버전>-<YYYYMMDD>-<목적>`(예: `0.30.7-codex0.160.0-20261003-resolved-head`), dockerd는 `<Docker 버전>-<YYYYMMDD>-<목적>`(예: `29.8.2-20261002-native-drm-iptables-nft`)이다.
+- push 뒤 받은 digest를 `apps/objects/issue-agent-runner/deployment-runner.yaml`에 `<tag>@sha256:<digest>`로 고정한다. runner와 publisher는 같은 Runner 이미지를 쓰므로 두 곳을 함께 바꾼다. tag만으로 배포하지 않는다.
+- `Dockerfile.dockerd`는 authz plugin을 digest로 고정한 Go builder stage에서 `go test` 뒤 정적 빌드하고 `daemon.json`을 검증한다. Docker smoke script는 Runner 이미지에 들어 있으므로 smoke를 바꾸면 Runner 이미지도 다시 빌드한다.
+- 2026-10-11 변경의 rollout 순서: bridge(dispatch 중인 이벤트가 없을 때) → n8n(재시작 뒤 bootstrap log 확인) → dockerd 이미지 → Runner 이미지(스킬·지침, Codex 설정, `codex-untrust`, smoke) → Runner manifest(digest, 모델 키 proxy, 메모리)를 dispatch 중인 이벤트가 없을 때 Argo sync 한 번. 모델 provider 변경과 key env 제거는 하나의 되돌릴 수 있는 commit으로 내고, 기존 provider ExternalSecret은 proxy 확인이 끝날 때까지 rollback 경로로 둔다.
+
 ### 관리자 계정
 
 n8n 관리자 이메일은 사용자 지정 `bhyoo@bhyoo.com`이다. 비밀번호는 암호학적으로 안전한 난수로 생성하여 Kubernetes Secret에 보관한다. 비밀번호·HAPI 접속 토큰·GitHub 자격증명은 채팅, 로그, 저장소, 이미지에 출력하거나 포함하지 않는다. 재시작 때 비밀번호를 재생성하거나 기존 계정을 임의로 초기화하지 않는다. 최종 운영 안내에는 로그인 주소와 Secret의 namespace·이름·키만 기록한다.
@@ -284,6 +345,8 @@ GitHub App 이름은 `bulgasaribot`(작성)·`haechibot`(리뷰)이지만 인증
 v2는 Runner Pod에 publisher 사이드카를 추가했다. manifest의 값은 CPU 요청 10m, 메모리 요청 64Mi, 메모리 제한 256Mi이며 CPU 제한은 없다. 위 표의 승인 수치에는 포함되지 않은 추가분이다.
 
 위 표의 Codex Runner·dockerd 행은 초기 예외 값이다. 14일 측정(Runner 메모리 p50 515Mi·최대 3.4Gi, CPU p95 0.04코어·최대 3.05코어; dockerd 메모리 p50 61Mi·최대 168Mi, CPU 약 0) 뒤 Tier 3으로 재산정해 manifest의 Runner는 CPU 요청 100m, 메모리 요청 640Mi, native sidecar `dockerd`는 CPU 요청 10m, 메모리 요청 80Mi다. CPU 요청은 진행 보장용 하한, 메모리 요청은 p50의 약 1.25배이며 메모리 제한(4Gi·8Gi)은 그대로 두고 CPU 제한은 없다. home 복사에 쓰는 임시 scratch Pod 두 개는 각각 Tier 4, CPU 요청 1, 메모리 요청 2Gi, 메모리 제한 8Gi이며 CPU 제한이 없고, `migrate` 실행 중에만 존재한다. 사용자는 scratch Pod 값을 14일 측정 없이 초기 예외로 승인했다. 이 요청을 포함한 클러스터 메모리 요청 비율은 배포 직전에 다시 계산한다.
+
+2026-10-11 재산정(U3): 14일 Runner 메모리는 P50 2.08 GiB, P99 3.59 GiB였고, 최대값은 제한 4Gi에 닿아 잘린 값(censored, ≥3.996 GiB)이라 실제 peak는 더 높을 수 있다. 그래서 manifest의 runner를 메모리 요청 2560Mi·제한 5Gi로, native sidecar `dockerd`를 메모리 요청 160Mi로 올린다(CPU 값과 dockerd 메모리 제한은 그대로). 산정 시 `macmini` node의 메모리 요청 비율은 0.46에서 0.59로, 클러스터 비율은 0.505가 된다. 같은 변경에서 리뷰 동시 실행을 `MAX_ACTIVE_REVIEWS`(2)와 Codex `max_threads`(3)로 제한한다. `model-proxy` sidecar 요청을 포함해 배포 직전에 비율을 다시 계산한다.
 
 ## 구현 체크리스트
 
@@ -444,6 +507,29 @@ Runner namespace의 읽기 토큰에는 기존 `contents`·`issues`·`pull_reque
 - [ ] 취약점이 확인되거나 의심되는 이슈는 라벨·이슈 댓글이 없고, 재현 페이로드가 이슈·`summary`·attention 댓글 등 공개 위치에 나오지 않는다. TriageResult `security_advisory`로 비공개 draft repository security advisory가 하나 만들어지고(설명 끝에 출처 marker), 이벤트는 `triaged`로 끝난다. 재시도해도 advisory가 중복 생성되지 않는다.
 - [ ] `security_advisory`가 있는데 `comment`·라벨 변경·`next_action`이 규칙과 다르면 bridge가 거절하고, 오류 메시지에 advisory 본문이 들어가지 않는다.
 - [ ] `issue-agent-github-token` 생성기와 issue App(`bulgasaribot`) 등록에 `repository_advisories: write`가 있고, 갱신된 토큰으로 advisory 생성이 성공한다.
+
+### 리뷰 게이트·실행 경계 수용 기준(2026-10-11)
+
+배포 전후에 아래 절차를 실행하고, 결과를 확인한 항목만 체크한다.
+
+- [x] `test_bridge.py`, authz plugin `go test`, 두 app의 Kustomize dry-run, n8n JSON 파싱, shell script `bash -n`이 통과한다.
+- [x] 배포 전 offline 확인: 현재 Runner 이미지에 새 `/etc/codex/` 파일을 얹고, MCP 서버 `evil`과 `developer_instructions`를 넣은 `.codex/config.toml`이 있는 scratch 저장소를 untrusted로 등록하면 `codex mcp list --json`에 context-mode·codegraph만 있고 `evil`이 없다. git worktree 경로에서도 Codex가 그 project root를 untrusted로 본다.
+- [ ] 비밀 `/proc` 검사: Runner 컨테이너의 모든 프로세스 `/proc/<pid>/environ`에서 `OPENAI_API_KEY`가 0건이고, 에이전트 셸 환경에 `CLI_API_TOKEN`·`HAPI_*`·`OPENAI_API_KEY`가 없다.
+- [ ] Runner에서 `codex mcp list`가 context-mode·codegraph를 보이고, 실제 세션의 `ctx_execute`로 `docker version`과 `gh api` 대상 읽기가 성공한다(`env_vars`).
+- [ ] `/opt/issue-agent/bin/docker-smoke --policy`가 `--privileged` 거절, `/` bind 거절, `docker build --allow network.host` 거절, `--device /dev/dri` 허용을 보이고, `--krema-worktree` smoke도 통과한다. dockerd 컨테이너 `/dev`에 host block device가 없다.
+- [ ] 모델 키 proxy: triage 턴 하나를 먼저 proxy로 끝까지 실행한 뒤 리뷰 턴을 돌린다. 그 뒤에 기존 provider ExternalSecret을 정리한다.
+- [ ] triage 턴 하나와 review 턴 하나가 effort `high`(HAPI `state_5.threads`의 세션 metadata)로 돌고, 리뷰의 하위 에이전트도 `high`이며, `change_title`(hapi MCP)이 동작한다.
+- [ ] chaos test: 시험 리뷰 중 bridge를 3분 동안 0 replica로 줄여도 리뷰가 정확히 하나 게시되고 park가 남지 않는다. n8n bootstrap log에 `CONFLICT`가 없다.
+- [ ] 리뷰 본문 첫 줄 marker에 리뷰한 SHA가 있고, marker SHA가 현재 head가 아닌 리뷰로는 `issue-agent/review=success`가 남지 않는다.
+- [ ] 일시적 `park_class`로 멈춘 리뷰가 10·30·90분 backoff로 최대 3회(`stale_dispatch`는 1회) 자동 재시도되고, 멈춘 동안 status는 `error`다.
+- [ ] 에이전트 자신의 COMMENT에 `open_items`가 있으면 decision 댓글이 한 번만 남고, 같은 항목 집합의 새 head에서는 다시 남지 않는다.
+- [x] Runner가 메모리 요청 2560Mi·제한 5Gi, dockerd 요청 160Mi로 Ready이고, 배포 직전 node·클러스터 메모리 요청 비율을 다시 계산했다.
+- [ ] 배포 뒤 7일 동안 저장소별 non-draft head의 COMMENT 비율을 집계한다. 30%를 넘으면 미확인 의심(A4'')·lens 완결(A16') 규칙을 다시 검토한다.
+
+검증 기록(2026-10-12):
+
+- 1단계(#423) 배포 뒤 운영 Runner에서 확인: 모든 프로세스 environ에 `OPENAI_API_KEY` 0건, 키 파일은 runner 컨테이너에 없음, proxy 경유 `/v1/models` 200·허용 목록 밖 path 403. Docker 정책은 `--privileged`·`/` bind·`--cap-add`·`build --allow network.host`를 거절하고 `--network none` 실행·`--device /dev/dri`·일반 build를 허용했다. `trusted`로 표시한 scratch 저장소의 `.codex/config.toml` MCP 서버도 requirements 허용 목록 때문에 `disabled_reason: requirements`로 꺼진다.
+- 과거 head 재현 리뷰(로컬, GitHub 쓰기 없음, 리뷰 시점 이후 데이터를 숨긴 gh shim, 새 Runner 이미지·authz dind·model proxy): kwin-mcp #90·#92·#93·#95·#97 head(0848f633·db6fb8a3·6cae93c4·70803378·f1fd4ef4) 각 3회에서 결함 있는 head를 APPROVE한 실행은 0회였다(같은 head에서 이전 봇의 판정은 5개 모두 GREEN). 사람이 찾은 P1·P2 13개 중 13개를 과반 실행에서 찾았고(cycle 1 9/13 → cycle 2 11/13 → cycle 3 12/13 → cycle 4 13/13), 규칙 도출에 쓰지 않은 #94·#96·#98(7f72f219)에서도 f17·f22·f27(P1)을 찾았다. 사람이 승인한 head(#98 fdcbe63c, #93 bea98be3)는 오탐 0건이고, 지적은 소스로 확인한 실제·개연 결함이었다. 남은 변동: f01(락 해제 틈의 reap)은 lifecycle lens를 모듈별로 나눈 실행에서만 잡혀 2/3, #92 f08은 4회 중 3회다.
 
 ### 현재 실행 증거
 

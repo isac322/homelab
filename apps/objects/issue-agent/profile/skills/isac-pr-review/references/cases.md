@@ -56,6 +56,19 @@
 - 일반화: global
 - 재발 확인 기준: 게시된 리뷰의 이벤트가 판정과 맞고(GREEN=APPROVE, BLOCKING=REQUEST_CHANGES), `review:*` 라벨이 붙지 않는다.
 
+### CASE-20261011-kwin-mcp-review-gate
+- 상태: applied
+- 출처: omp session 01a11ff7 (kwin-mcp #90, #92–#98 수정 세션과 haechibot 리뷰 대조)
+- 상황: 사용자 세션이 kwin-mcp PR #90, #92–#98을 고치면서 찾은 결함을 haechibot 리뷰와 대조했다. 리뷰는 #92, #93, #94, #95, #97을 `GREEN`(APPROVE)으로 냈고 판정 줄에 `PR-ready: false: CI still pending` 같은 CI 상태를 붙였다. 놓친 것: #90 시그널 핸들러 예외가 AnyIO TaskGroup 안에서 종료를 막음(P1), 종료 중 registry 락 해제로 SIGKILL escalation이 건너뛰어짐(P1), 등록과 정리 사이 창의 자식 프로세스 누수, 새 `ty: ignore`; #92 축소 이미지 좌표가 픽셀 중심이 아니라 모서리로 매핑, 부분 캡처에서 무효 영역으로 필터가 번짐, `--screenshot-max-edge` 반복 플래그, Python 3.12/3.13 CLI annotation 파싱; #93 registry 락 아래 D-Bus 연결·introspection의 25초 기본 타임아웃(P1), 복원 상태를 기록하기 전에 설정을 바꿈; #94 같은 크기 형제 창이 fail-closed 매칭을 깸, 테스트의 `type: ignore`; #95 SELinux가 거부한 경로를 우회하는 fallback과 `Exec=` 파싱 차이(승인됨); #96 순차 placeholder 치환으로 KWin JS 인젝션(P1, 세션 수정 전 리뷰 없음); #97 `10**400`이 Infinity가 되는 숫자 검증 누락과 CLI JSON의 스키마 우회, 관찰하지 않은 "Geometry set" 응답; #97·#98이 같은 도구 수를 따로 올림; CONTRIBUTING·README 테스트 목록 동기화 누락. 우리가 제안한 수정(락을 복원 끝까지 유지)이 새 블로킹 I/O hazard를 들여온 경우도 있었다. kwin-mcp 리뷰 실행 24회 중 17회가 PR 코드를 runner 호스트 셸에서 돌렸다.
+- 대상: PR 리뷰 판정 게이트 / 사용자 소유 공개 저장소(kwin-mcp), 일반화는 모든 저장소 / GitHub PR 리뷰 이벤트와 본문, `issue-agent/review` 상태 / 높음(APPROVE가 required review를 채우고, 놓친 P1이 머지될 수 있다. 호스트 실행은 자격 증명 노출 위험)
+- 적용 조건: 이 스킬로 PR을 리뷰하는 모든 경우. kwin-mcp 고유 규칙(문서 동기화 트리거, 억제 0 정책, live desktop 안전, `_render_script` 단일 인코딩 등)은 `references/projects/isac322__kwin-mcp.md`에만 두고 여기서 일반화하지 않는다.
+- 사용자 기대: 리뷰 판정이 CI와 무관하고 lint·type·test 결과를 보고하지 않는다 [U]; PR이 들여온 취약점은 위치·메커니즘·수정안과 함께 리뷰에 적는다 [U]; PR 코드는 격리된 컨테이너에서만 실행한다 [U]; "결함 없음"과 APPROVE에는 반박 근거가 있고, 반박하지 못한 P0–P2 의심이나 메인테이너 결정이 남으면 APPROVE하지 않는다.
+- 실제 행동: 판정 줄이 CI·`PR-ready`를 근거처럼 썼고, 동시성·시그널·수치·입력 경로를 렌즈로 나누지 않아 결함 부류 전체를 놓쳤다. "알려진 입력이 없다", "probe가 도구 문제로 실패했다"는 이유로 후보를 버렸다. 저장소 CLAUDE.md의 동기화 트리거를 적용하지 않았고, 수정 커밋의 hazard를 다시 보지 않았다. 보안 정책 우회를 결정 요청 없이 승인했다.
+- 원인 분류: wrong(CI를 판정 근거로 씀, PR-ready), missing(렌즈, 반박 규칙, 입력 경로, hazard 패스, 저장소 관례, 실행 채널) / 규칙: PRR-19, PRR-24, PRR-25, PRR-28, PRR-29, PRR-30, PRR-38–PRR-56
+- 변경: PRR-38 [U], PRR-48 [U], PRR-55 [U] 신규; PRR-39–PRR-47, PRR-49–PRR-54, PRR-56 신규; PRR-24·PRR-25에서 `PR-ready` 제거와 `OPEN` 판정 추가; PRR-29를 head마다 전체 리뷰로 확장; PRR-30을 문구 전용 fix-round로 좁힘; PRR-19를 기존 취약점으로 좁힘; PRR-28 폐기; `open_items` 결과 필드 추가; review-dimensions §8 blocking 기준(PR이 들여온 근거 있는 P2)과 §10–§14 추가
+- 일반화: global
+- 재발 확인 기준: 게시된 리뷰의 판정 줄과 근거에 CI·`PR-ready`가 없다. 트리거된 렌즈마다 트리거와 커버리지가 적혀 있고, 버린 후보가 `Considered` 고정 형식으로 남는다. 결정 항목·hold가 남으면 이벤트가 COMMENT(확인된 PR 도입 취약점만 예외)이고, 그 밖의 미반박 P0–P2 의심은 COMMENT(구현 봇 PR은 "prove or fix" REQUEST_CHANGES)이며, 어느 쪽이든 `open_items`가 그 이유를 담고 본문에 @멘션이 없다. 메인테이너 답은 write 이상 권한이 확인될 때만 항목을 해소한다. PR 코드 실행 기록이 모두 `docker run --rm --network none` 컨테이너 안이다. 롤아웃 후 7일 동안 저장소별 non-draft head 중 COMMENT로 끝난 비율이 30%를 넘으면 PRR-49·PRR-53을 다시 본다.
+
 ## 출처 색인
 
 `패밀리 설계 요청` = 이 스킬 패밀리 증류를 요청한 사용자 메시지의 PR 리뷰 프레이밍(PR 이해, blast radius, 프로젝트 영향 심각도, 실제 해결 여부, 보안, 성능, 구조, 리뷰 코멘트를 달아야 하고 라벨도 추가하면 좋다). 판정을 라벨 대신 리뷰 이벤트로 표현하라는 이후 교정(CASE-20260927-verdict-as-review-event)이 라벨 부분을 대체한다.
@@ -76,11 +89,14 @@
 | PRR-16 | 패밀리 설계 요청 |
 | PRR-17 | omp 01a0d288 59de466d; omp 01a0ae59 70385fee (CASE-20260918-is-it-really-fixed) |
 | PRR-22 | 패밀리 설계 요청 |
-| PRR-25 | omp 01a0dda6 84a012fa (CASE-20260927-verdict-as-review-event) |
+| PRR-19 | omp 01a11ff7 (CASE-20261011-kwin-mcp-review-gate): PR이 들여온 취약점은 PRR-48로 분리 |
+| PRR-25 | omp 01a0dda6 84a012fa (CASE-20260927-verdict-as-review-event); omp 01a11ff7 (CASE-20261011-kwin-mcp-review-gate) |
 | PRR-31 | omp 01a0d288 59de466d (CASE-20260926-explain-merge-verdicts) |
 | PRR-32 | omp 01a0d288 59de466d |
 | PRR-33 | omp 01a0d288 59de466d (CASE-20260926-reverify-before-close) |
 | PRR-34 | omp 01a0d288 59de466d (CASE-20260926-reverify-before-close) |
+| PRR-24, PRR-29, PRR-30 | omp 01a11ff7 (CASE-20261011-kwin-mcp-review-gate) |
+| PRR-38–PRR-56 | omp 01a11ff7 (CASE-20261011-kwin-mcp-review-gate); PRR-38, PRR-48, PRR-55는 그 세션의 사용자 결정 [U] |
 
 ## 규칙 이력
 
@@ -90,3 +106,22 @@
 | 2026-09-27 | PRR-25 | "COMMENT만" 기본값을 판정별 리뷰 이벤트 매핑 [U]로 교체 | CASE-20260927-verdict-as-review-event |
 | 2026-09-27 | PRR-27 | 폐기: 판정 라벨을 리뷰 이벤트로 대체 | CASE-20260927-verdict-as-review-event |
 | 2026-09-27 | PRR-37 | 신규: 재리뷰 시 새 판정 이벤트로 다시 남김 | CASE-20260927-verdict-as-review-event |
+| 2026-10-11 | PRR-28 | 폐기: fork PR의 CI 실패 해석은 CI를 판정 근거로 쓰지 않는 PRR-38 [U]로 대체 | CASE-20261011-kwin-mcp-review-gate |
+| 2026-10-11 | PRR-24, PRR-25 | `PR-ready`와 CI 상태 제거, `OPEN` 판정(`COMMENT`)과 `open_items` 추가 | CASE-20261011-kwin-mcp-review-gate |
+| 2026-10-11 | PRR-19 | 범위를 PR이 들여오지 않은 기존 취약점으로 좁힘(PR이 들여온 것은 PRR-48) | CASE-20261011-kwin-mcp-review-gate |
+| 2026-10-11 | PRR-29, PRR-30 | PRR-29: head마다 merge-base 기준 전체 리뷰. PRR-30: 문구 전용 fix-round로 좁힘 | CASE-20261011-kwin-mcp-review-gate |
+| 2026-10-11 | PRR-38–PRR-56 | 신규: CI 무관 판정, 원문 읽기, 저장소 관례, 재개 턴, 최소 런타임, 렌즈, 입력·인젝션, 억제, 테스트 감사, 보안 정책 우회·메인테이너 hold, PR이 들여온 취약점, 미반박 의심, 반박 규칙, 런타임 claim, 내용 없는 blocking 금지, 렌즈 완결성, hazard 패스, 격리 실행 채널, 이벤트 결정 순서 | CASE-20261011-kwin-mcp-review-gate |
+| 2026-10-12 | review-dimensions §10 (R1) | cycle 2, replay 유래: 시그널·취소 창을 예외가 나타날 수 있는 모든 프레임(루프 대기, 태스크 그룹 안 실행, 워커, `finally`)과 프레임워크 래핑(ExceptionGroup, 취소 변환, goroutine·task panic)으로 확장. 시그널 probe는 격리 채널로만(kwin-mcp #90 f00) | CASE-20261011-kwin-mcp-review-gate |
+| 2026-10-12 | PRR-43, PRR-53, review-dimensions §10 (R2) | cycle 2, replay 유래: 렌즈 항목마다 `file:line`+probe/논증 근거. 일괄 "source inspection" 주장은 아무것도 덮지 않는다. 관찰한 이상 동작은 finding·Considered로. 근거 없는 렌즈 답은 한 번 재실행, 그래도 없으면 덮이지 않음 → COMMENT + open_items(#90 f00, #92 f11) | CASE-20261011-kwin-mcp-review-gate |
+| 2026-10-12 | PRR-50, review-dimensions §12 (R3) | cycle 2, replay 유래: 논증은 같은 인터리빙을 다룬다(임계 구역 사이 틈의 다른 행위자). challenger 독립성(논증 작성자 아님, 같은 후보, 답이 후보 `file:line` 인용), `argument+challenger(<agent name>)` 형식. 반박 아님 (e) 문서화된 한계는 claim, (f) 받아들인 값을 조용히 무시·대체(기본 P3, 출력이 거짓이면 P2)(#90 f01, #92 f10·f11) | CASE-20261011-kwin-mcp-review-gate |
+| 2026-10-12 | review-dimensions §10 (R4) | cycle 2, replay 유래: 이름 예약은 배타적 생성이나 증명된 전용 namespace만 안전. 프로세스 안 직렬화는 반박이 아니다. 실패 정리는 배타적으로 만든 것만 지운다(#92 f10) | CASE-20261011-kwin-mcp-review-gate |
+| 2026-10-12 | PRR-54, comment-template Fix hazards (R5) | cycle 2, replay 유래: 이전 제안을 따른 수정이라는 출처(커밋 메시지·스레드 답글·일치하는 diff)가 보일 때만 "This head applies the fix suggested in <link>"와 hazard 귀속(#93) | CASE-20261011-kwin-mcp-review-gate |
+| 2026-10-12 | comment-template 머리말 (R6) | cycle 2, replay 유래: 공개 텍스트에 스킬 이름·규칙 ID·자동화 경로 금지, 판단 이유는 프로젝트 사실로. 렌즈 이름은 예외(#95 공개 본문의 PRR-47 인용) | CASE-20261011-kwin-mcp-review-gate |
+| 2026-10-12 | PRR-39 (R7) | cycle 2, replay 유래: 변경 파일 목록·diff는 새로 fetch한 base의 merge-base에 대한 shell `git diff --name-only <merge-base>...HEAD`. `ctx_*` 색인 메타데이터로 읽을 파일을 정하지 않는다(#93) | CASE-20261011-kwin-mcp-review-gate |
+| 2026-10-12 | review-dimensions §8 (R8) | cycle 2, replay 유래: 확인된 결함의 심각도 하한. P0/P1은 현실적 트리거 필요, stub 전용 재현은 실제 프레임워크 probe 시도 후에만 최대 P2(실제 API가 낼 수 있는 실패 주입은 예외), 원자적 API 없는 본질적 경합은 최대 P2·계약 밖이면 P3. 미반박 의심 등급은 낮추지 않는다(#98 noise) | CASE-20261011-kwin-mcp-review-gate |
+| 2026-10-12 | PRR-40, review-dimensions §13 (R9 generic) | cycle 2, replay 유래: 저장소 merge 설정에서 기본 브랜치 커밋이 되는 텍스트(squash 제목 출처)를 배우고 그 관례를 확인한다. kwin-mcp 고유 부분은 프로젝트 파일 KM-C1(#97 f29) | CASE-20261011-kwin-mcp-review-gate |
+| 2026-10-12 | review-dimensions §10 (C3-1) | cycle 3, replay 유래: lifecycle에 필수 항목 둘 추가 — 락을 놓고 다시 잡는 틈(sleep·wait·grace·여러 단계 escalation)마다 다른 행위자의 할 수 있는 일, close/shutdown 후 등록·변경(스냅샷은 뒤의 등록을 덮지 못함)(#90 f01·f02) | CASE-20261011-kwin-mcp-review-gate |
+| 2026-10-12 | review-dimensions §8 (C3-2) | cycle 3, replay 유래: stub 전용 재현 상한 제거. fault injection(실제 API가 낼 수 있는 실패 재현)은 현실적 트리거, 외부 API로 현실적으로 닿으면 등급 유지, "실제 입력을 아직 못 찾음"은 낮추는 이유 아님(#98 f27이 P2로 잘못 깎임) | CASE-20261011-kwin-mcp-review-gate |
+| 2026-10-12 | PRR-50, review-dimensions §12, comment-template (C3-3) | cycle 3, replay 유래: `argument+challenger(<name>)`의 이름은 spawn 도구가 돌려준 서브 에이전트 id. 일반 이름이면 반박이 아니고 항목은 덮이지 않은 것 | CASE-20261011-kwin-mcp-review-gate |
+| 2026-10-12 | PRR-43 (C3-4) | cycle 3, replay 유래: 한 렌즈의 체크리스트 항목이 ~5개를 넘으면 모듈별 서브 에이전트로 나눈다(동시 최대 2개, 나머지 순차). 나눠도 항목별 근거가 없으면 덮이지 않은 것 | CASE-20261011-kwin-mcp-review-gate |
+| 2026-10-12 | PRR-43, review-dimensions §10 | cycle 3 sign-off 후속: 락·프로세스/스레드·시그널·close/shutdown 상태를 가진 변경 모듈이 둘 이상이면 concurrency/lifecycle 렌즈를 모듈별 서브 에이전트로 나누는 것을 필수로 함(락 틈·close 후 사용 항목별 `file:line` 근거). 다른 렌즈는 ~5개 초과 규칙 유지. f01은 lifecycle 렌즈를 나눴을 때만 찾았다(#90) | CASE-20261011-kwin-mcp-review-gate |

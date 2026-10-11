@@ -78,12 +78,15 @@ spec:
             httpGet:
               path: /healthz
               port: webhook
+            # The 1 s default timed out while the bridge was busy and the kubelet restarted it mid-request.
+            timeoutSeconds: 5
           livenessProbe:
             httpGet:
               path: /healthz
               port: webhook
             initialDelaySeconds: 10
             periodSeconds: 30
+            timeoutSeconds: 5
           resources:
             requests:
               cpu: 25m

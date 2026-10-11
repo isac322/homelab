@@ -126,13 +126,16 @@ COPY --chmod=0755 runner/sccache-cc /opt/issue-agent/sccache-bin/cc
 RUN for name in gcc c++ g++; do ln -s cc "/opt/issue-agent/sccache-bin/$name"; done
 COPY --chmod=0644 runner/gitconfig /etc/issue-agent/gitconfig
 COPY --chmod=0644 runner/gitignore /etc/issue-agent/gitignore
-# Codex system layer: MCP servers (config.toml) and managed, pre-trusted hooks
-# (requirements.toml + scripts in its managed_dir).
-COPY --chmod=0644 runner/codex/config.toml runner/codex/requirements.toml /etc/codex/
+# Codex system layer: MCP servers (config.toml), managed, pre-trusted hooks and
+# the MCP allowlist (requirements.toml + scripts in its managed_dir), and the
+# highest-precedence managed layer (effort, sub-agent cap, shell environment).
+COPY --chmod=0644 runner/codex/config.toml runner/codex/requirements.toml runner/codex/managed_config.toml /etc/codex/
 COPY --chmod=0755 runner/codex/hooks/ /etc/codex/hooks/
 COPY --chmod=0755 runner/bootstrap.sh /opt/issue-agent/bin/runner-bootstrap
 COPY --chmod=0755 runner/healthcheck.sh /opt/issue-agent/bin/runner-healthcheck
 COPY --chmod=0755 runner/publisher.py /opt/issue-agent/bin/publisher
+# Marks checkouts untrusted in CODEX_HOME (bootstrap and publisher /checkout).
+COPY --chmod=0755 runner/codex-untrust /opt/issue-agent/bin/codex-untrust
 COPY --chmod=0755 operations/issue-agent-docker-smoke /opt/issue-agent/bin/docker-smoke
 # Global instructions are copied into CODEX_HOME by the bootstrap. Skills use
 # Codex's ADMIN scope (/etc/codex/skills), so they never live on the PVC.

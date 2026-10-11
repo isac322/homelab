@@ -1,0 +1,207 @@
+#!/usr/bin/env bash
+# Marks repository checkouts untrusted in $CODEX_HOME/config.toml so Codex never
+# loads a repository's own .codex/ layer (config, MCP servers, hooks,
+# instructions) and never auto-trusts it.
+#
+#   codex-untrust [--install CONFIG] [CHECKOUT...]
+#
+# --install CONFIG  first replaces $CODEX_HOME/config.toml with CONFIG (the
+#                   bootstrap's provider config), under the same lock.
+# CHECKOUT          a base clone (<checkouts>/<owner>/<name>). It and every HAPI
+#                   worktree next to it (<checkout>-worktrees/<dir>) get
+#                   `[projects."<path>"] trust_level = "untrusted"`.
+#
+# Why every one of those paths (Codex 0.160.0): a thread looks up its project by
+# the cwd key first, then by the repository root key, each as the canonical
+# (realpath) spelling and then the original one, with no ancestor or wildcard
+# match (config_toml.rs get_active_project, project_trust.rs). For a git
+# worktree the repository root is the *main* checkout, derived from the
+# worktree's .git pointer and validated against its gitdir/commondir backlinks
+# (git-utils trust.rs resolve_root). When no key matches, app-server thread
+# start trusts that root, or the cwd itself when the root does not resolve
+# (thread_processor.rs). So the base clone covers every worktree whose
+# metadata resolves, including ones HAPI creates after this runs; the explicit
+# worktree keys cover existing worktrees even when their metadata does not.
+# Once a key says untrusted, Codex writes no trust for it.
+#
+# Idempotent: rewrites the file only when an entry is missing or not
+# untrusted. Every write holds an exclusive lock on config.toml.lock and
+# replaces config.toml atomically. Runs in the runner and in the publisher
+# container; neither follows a symlink planted in CODEX_HOME.
+set -euo pipefail
+
+fail() {
+  printf 'codex-untrust: %s\n' "$*" >&2
+  exit 1
+}
+
+[[ "${CODEX_HOME:-}" == /* ]] || fail 'CODEX_HOME must be an absolute path'
+
+install_from=
+if [[ "${1:-}" == --install ]]; then
+  [[ $# -ge 2 ]] || fail '--install needs a file'
+  install_from="$2"
+  shift 2
+  [[ -f "$install_from" ]] || fail "$install_from is not a file"
+fi
+[[ -n "$install_from" || $# -gt 0 ]] || fail 'usage: codex-untrust [--install CONFIG] [CHECKOUT...]'
+
+# Canonical spelling first (what Codex tries first), then the given one.
+keys=()
+add_keys() {
+  local path="$1" canonical
+  canonical="$(realpath -e -- "$path")" || return 1
+  keys+=("$canonical")
+  [[ "$canonical" == "$path" ]] || keys+=("$path")
+}
+
+shopt -s nullglob dotglob
+for checkout in "$@"; do
+  [[ "$checkout" == /* ]] || fail "$checkout is not an absolute path"
+  checkout="${checkout%/}"
+  [[ -d "$checkout" && ! -L "$checkout" ]] || fail "$checkout is not a directory"
+  add_keys "$checkout" || fail "cannot resolve $checkout"
+  worktrees="$checkout-worktrees"
+  [[ -d "$worktrees" && ! -L "$worktrees" ]] || continue
+  for worktree in "$worktrees"/*; do
+    [[ -d "$worktree" && ! -L "$worktree" ]] || continue
+    # A worktree removed meanwhile needs no entry.
+    add_keys "$worktree" || continue
+  done
+done
+
+mkdir -p -m 0700 -- "$CODEX_HOME"
+
+exec python3 -I - "$CODEX_HOME" "$install_from" "${keys[@]}" <<'PY'
+import fcntl
+import json
+import os
+import re
+import stat
+import sys
+import tomllib
+
+home, install_from, *keys = sys.argv[1:]
+CONFIG = "config.toml"
+HEADER = re.compile(r"""^\s*\[\s*projects\s*\.\s*("(?:[^"\\]|\\.)*"|'[^']*')\s*\]\s*(?:#.*)?$""")
+TABLE = re.compile(r"^\s*\[")
+
+
+def fail(message):
+    print(f"codex-untrust: {message}", file=sys.stderr)
+    sys.exit(1)
+
+
+def read_regular(path, dir_fd=None, follow=False):
+    """File contents, refusing anything but a regular file (and symlinks unless follow)."""
+    flags = os.O_RDONLY | os.O_NONBLOCK | os.O_CLOEXEC | (0 if follow else os.O_NOFOLLOW)
+    fd = os.open(path, flags, dir_fd=dir_fd)
+    try:
+        if not stat.S_ISREG(os.fstat(fd).st_mode):
+            fail(f"{path} is not a regular file")
+        chunks = []
+        while chunk := os.read(fd, 1 << 16):
+            chunks.append(chunk)
+        return b"".join(chunks).decode("utf-8")
+    finally:
+        os.close(fd)
+
+
+def header_key(line):
+    match = HEADER.match(line)
+    if not match:
+        return None
+    try:
+        return tomllib.loads(f"k = {match.group(1)}")["k"]
+    except tomllib.TOMLDecodeError:
+        return None
+
+
+usable = []
+for key in dict.fromkeys(keys):
+    try:
+        key.encode("utf-8")
+    except UnicodeEncodeError:
+        # Codex keys non-UTF-8 paths lossily; no exact entry can match them.
+        print(f"codex-untrust: skipping non-UTF-8 path {key!r}", file=sys.stderr)
+        continue
+    usable.append(key)
+
+try:
+    dir_fd = os.open(home, os.O_RDONLY | os.O_DIRECTORY | os.O_NOFOLLOW | os.O_CLOEXEC)
+except OSError as exc:
+    fail(f"cannot open {home}: {exc.strerror}")
+lock_fd = os.open(f"{CONFIG}.lock", os.O_RDWR | os.O_CREAT | os.O_NOFOLLOW | os.O_CLOEXEC, 0o600, dir_fd=dir_fd)
+if not stat.S_ISREG(os.fstat(lock_fd).st_mode):
+    fail(f"{home}/{CONFIG}.lock is not a regular file")
+fcntl.flock(lock_fd, fcntl.LOCK_EX)
+
+if install_from:
+    # A ConfigMap mount: the file is a symlink into its ..data directory.
+    text = read_regular(install_from, follow=True)
+else:
+    try:
+        text = read_regular(CONFIG, dir_fd=dir_fd)
+    except FileNotFoundError:
+        text = ""
+try:
+    before = tomllib.loads(text)
+except tomllib.TOMLDecodeError as exc:
+    fail(f"{'the install source' if install_from else home + '/' + CONFIG} is not valid TOML: {exc}")
+
+projects = before.get("projects", {})
+missing = [
+    key for key in usable
+    if not (isinstance(projects.get(key), dict) and projects[key].get("trust_level") == "untrusted")
+]
+if not missing and not install_from:
+    sys.exit(0)
+
+# Drop any existing table for a missing key, then append the untrusted one.
+drop = set(missing)
+lines, skipping = [], False
+for line in text.splitlines(keepends=True):
+    if TABLE.match(line):
+        skipping = header_key(line) in drop
+    if not skipping:
+        lines.append(line)
+new_text = "".join(lines)
+if new_text and not new_text.endswith("\n"):
+    new_text += "\n"
+for key in missing:
+    new_text += f'\n[projects.{json.dumps(key, ensure_ascii=False)}]\ntrust_level = "untrusted"\n'
+
+# Fail closed unless the result parses, every key is untrusted, and nothing but
+# the projects table changed (an entry Codex wrote in another form would make
+# the file fail to parse here, never silently stay trusted).
+try:
+    after = tomllib.loads(new_text)
+except tomllib.TOMLDecodeError as exc:
+    fail(f"refusing to write {home}/{CONFIG}: the edit does not parse ({exc})")
+after_projects = after.get("projects", {})
+if any(after_projects.get(key, {}).get("trust_level") != "untrusted" for key in usable):
+    fail(f"refusing to write {home}/{CONFIG}: an entry is still not untrusted")
+if {k: v for k, v in after.items() if k != "projects"} != {k: v for k, v in before.items() if k != "projects"}:
+    fail(f"refusing to write {home}/{CONFIG}: the edit changed more than the projects table")
+
+# The lock is held, so a leftover temp file is from a killed run.
+tmp = f".{CONFIG}.untrust.{os.getpid()}"
+try:
+    os.unlink(tmp, dir_fd=dir_fd)
+except FileNotFoundError:
+    pass
+fd = os.open(tmp, os.O_WRONLY | os.O_CREAT | os.O_EXCL | os.O_NOFOLLOW | os.O_CLOEXEC, 0o600, dir_fd=dir_fd)
+try:
+    with os.fdopen(fd, "wb") as handle:
+        handle.write(new_text.encode("utf-8"))
+        handle.flush()
+        os.fsync(handle.fileno())
+    os.rename(tmp, CONFIG, src_dir_fd=dir_fd, dst_dir_fd=dir_fd)
+except BaseException:
+    try:
+        os.unlink(tmp, dir_fd=dir_fd)
+    except FileNotFoundError:
+        pass
+    raise
+os.fsync(dir_fd)
+PY
