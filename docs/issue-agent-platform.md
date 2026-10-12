@@ -84,11 +84,12 @@ Codex의 공통 지침은 전용 `CODEX_HOME/AGENTS.md`에서 읽는다. 저장�
 
 ### 리뷰 품질 감사(준비만 됨)
 
-2026-10-11 변경(T0 = 2026-10-11T20:13:52Z, 새 Runner 시작) 뒤의 리뷰 품질은 프로젝트 스킬 `.claude/skills/haechibot-review-audit`로 잰다. 두 가지를 같은 절차로 baseline 주간(T0−7d…T0)과 비교한다. 하나는 봇이 리뷰한 head에 있었는데 끝내 짚지 못한 중요한 결함(important escaped)이고, 다른 하나는 봇 지적 중 틀렸거나 지엽적이거나 심각도를 부풀린 지적(noise)이다. 이 스킬은 아직 실행하지 않았고, 봇 프로필에는 아무것도 적용하지 않았다.
+2026-10-11 변경(T0 = 2026-10-11T20:13:52Z, 새 Runner 시작) 뒤의 리뷰 품질은 프로젝트 스킬 `.claude/skills/haechibot-review-audit`로 잰다. 두 가지를 같은 절차로 baseline 주간(T0−7d…T0)과 비교한다. 하나는 봇이 리뷰한 head에 있었는데 끝내 짚지 못한 중요한 결함(important escaped)이고, 다른 하나는 봇 지적 중 틀렸거나 지엽적이거나 심각도를 부풀린 지적(noise)이다. 측정 라운드는 아직 돌리지 않았고, 봇 프로필에는 아무것도 적용하지 않았다.
 
+- **pilot:** 2026-10-12에 kwin-mcp의 baseline 주간(PR 17개)으로 blind pilot을 돌렸다. 절차는 gold g1.0이 꼽은 important miss 13개 중 12개를 찾았다(놓친 하나는 g1.1에서 결함이 아닌 것으로 고쳐졌다). 그러나 독립 재리뷰(panel)가 찾은 것은 3개였고 나머지는 owner 자신의 수정 커밋과 코멘트에서 왔다. 그래서 보고서는 owner 재리뷰가 없는 주의 miss 발견이 panel에 달려 있다는 것을 매번 적는다. pilot 뒤 panel은 확인하지 못한 의심도 모두 보고하고, probe는 저장소의 잠긴 의존성과 대상 플랫폼에서 돌리며(저장소별 런타임 맥락은 `references/repos/`에 두되 지난 결함은 적지 않는다), 심각도 시작 등급과 매칭 partial 기준을 좁혔다. 채널 사이 중복은 `dedup_reconciler` 단계가 맞춘다.
 - **규칙의 출처:** 규칙은 리서치 에이전트 4명이 찾은 공개 연구와 업계 사례 108개 claim에서 나왔다. 다른 에이전트가 출처를 직접 열어 교차검증했고, 비평 에이전트 7명과 두 라운드에 걸쳐 합의했다. Microsoft·Google의 유용한 리뷰 코멘트 정의, Tricorder의 effective false positive, SZZ 한계, capture–recapture, κ 기반 평가자 신뢰도가 여기에 들어간다. 규칙마다 근거 claim과 owner policy를 구분해 적었다(`references/sources.md`).
 - **도구:** 읽기 전용 수집기 `apps/objects/issue-agent/operations/issue-agent-review-audit`(`collect`, `metrics`, `kappa`, `compare`, `panel-draw`)가 GitHub 증거를 단위 파일로 만들고, 라벨을 Wilson 구간이 붙은 수치로 바꾼다. validity와 심각도 같은 최종 판정은 reviewed head를 checkout한 Claude 에이전트가 정한다. `judge_batch`는 1차 분류에만 쓴다.
-- **보정 집합:** `references/gold-set.md`에 두 부분이 있다. 하나는 pre-baseline 주간 bot finding 55건을 독립 라벨러 두 명이 라벨하고 판정자가 확정한 것이고, 다른 하나는 kwin-mcp에서 알려진 miss 30건이다. 라벨러 일치도는 validity κ 1.0, severity κ_w 0.92였다. p2_blocking은 v2.1 정의에서 κ 0.30이었고 v2.2 정의로 고친 뒤 1.0이 됐다.
+- **보정 집합:** `references/gold-set.md`에 두 부분이 있다. 하나는 pre-baseline 주간 bot finding 55건을 독립 라벨러 두 명이 라벨하고 판정자가 확정한 것이고, 다른 하나는 kwin-mcp에서 알려진 miss 30건이다. 라벨러 일치도는 validity κ 1.0, severity κ_w 0.92였다. p2_blocking은 v2.1 정의에서 κ 0.30이었고 v2.2 정의로 고친 뒤 1.0이 됐다. pilot 뒤 g1.1에서 miss 세 항목의 판정을 고쳤고, rubric 심각도 절차가 바뀌었으므로 rater는 Part A 자격 시험을 다시 본다.
 - **실행 시점:** after 창 전체를 증거 시한 3일까지 보려면 2026-10-21T20:14Z 이후에 실행한다. 30일·90일 뒤에 같은 대상을 다시 계산한다. 결과는 `~/.local/state/haechibot-review-audit/<round>/`에만 두고 저장소나 GitHub에는 올리지 않는다.
 
 ### 자동 머지와 실행 격리의 한계

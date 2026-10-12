@@ -42,13 +42,16 @@ Subcommands
       Other top-level proportions get a descriptive Newcombe CI. Warns when the two
       evidence horizons differ.
 
-  kappa --a F --b F [--rater-a R] [--rater-b R] [--field NAME ...] [--all-items]
+  kappa --a F --b F [--dir DIR] [--rater-a R] [--rater-b R] [--field NAME ...] [--all-items]
         [--format md|json]
       Agreement between two label files per field (validity, severity, bot_match,
-      is_defect, verdict, p2_blocking): Cohen kappa with a 95% CI, linear weighted kappa
-      for severity (quadratic as an extra), raw agreement, PABAK, positive/negative and
-      per-category specific agreement. p2_blocking uses only items both raters rated P2
-      (unset counts as false). Only irr_sample items unless --all-items.
+      is_defect, verdict, p2_blocking, important, important_miss): Cohen kappa with a 95%
+      CI, linear weighted kappa for severity (quadratic as an extra), raw agreement, PABAK,
+      positive/negative and per-category specific agreement. p2_blocking uses only items
+      both raters rated P2 (unset counts as false). important / important_miss are derived
+      (P0/P1, or P2 with p2_blocking; null severity is not important) on every shared item.
+      Only irr_sample items unless --all-items. With --dir, miss ids whose @<head> suffix is a
+      GitHub commit_id alias are rewritten to the body head first, so raters pair (N1).
 
   panel-draw --dir DIR --seed S [--n 10]
       Seeded stratified draw of N PRs over repo x verdict strata (automation PRs
@@ -60,8 +63,8 @@ Subcommands
 Output files (collect). Every *.jsonl line is one JSON object with a stable "id".
 Files are 0600 inside 0700 directories.
   prs.jsonl         id "<owner>/<repo>#<n>": repo, number, title, author,
-                    author_association, author_type, state, merged, merged_at, base_ref,
-                    base_sha_at_merge, final_head_sha, merge_commit_sha, created_at,
+                    author_association, author_type, state, merged, merged_at, closed_at,
+                    base_ref, base_sha_at_merge, final_head_sha, merge_commit_sha, created_at,
                     changed_files, additions, deletions, size_bucket (S <50 changed lines,
                     M <400, L >=400 or >=20 files), bot_review_ids, human_reviewers, raw_dir
   reviews.jsonl     id "<pr-id>@review/<review_id>": every review on the PR (bot and
@@ -70,7 +73,9 @@ Files are 0600 inside 0700 directories.
                     "**Verdict: GREEN|BLOCKING|OPEN**" line mapped to APPROVED /
                     CHANGES_REQUESTED / COMMENTED; github_state when absent),
                     is_reply_container (empty-body bot review without root comments; only
-                    carries thread replies; ignored by metrics), reviewed_head_sha,
+                    carries thread replies; ignored by metrics), reviewed_head_sha (bot
+                    reviews: the head named in the body "reviewed at <sha>" / "re-reviewed
+                    at <sha>", else commit_id), commit_id (GitHub's), body_head_sha,
                     submitted_at, body, is_bot, in_window, finding_ids,
                     superseded_by_head, head_is_final
   findings.jsonl    id "<review-unit-id>/f<k>": one per bot finding (root inline comment,
@@ -90,14 +95,22 @@ Files are 0600 inside 0700 directories.
                     <pr-id>/comment/<review|review_comment|issue_comment>/<id>  human_comment
                     <pr-id>/postmerge/<sha12>                                post_merge_commit
                     <pr-id>/xref/<owner>/<repo>#<n>                          cross_reference
-                    Every candidate has anchor_at, event_at and evidence_deadline.
+                    Every candidate has anchor_at, event_at, evidence_deadline and
+                    reviewed_head_sha (head of the anchor bot review; post_merge_commit:
+                    the latest bot-reviewed head; a human comment before any bot review:
+                    the first bot-reviewed head).
                     human_comment adds commenter_kind (human|implementer_bot),
                     blind_to_bot, head_at_comment and, for human root inline comments,
                     is_root_inline, changed_in_vicinity_1 and author_reply_kind.
                     post_review_hunk covers non-merge commits after a bot-reviewed head
                     and, for reviews on force-pushed heads, the compare diff (source
                     "compare").
-  coverage.jsonl    id "<pr-id>": heads, bot_reviewed_heads, foreign_fix_commits,
+  coverage.jsonl    id "<pr-id>": heads, bot_reviewed_heads (see bot_reviewed_heads(): one
+                    {sha, first_review_at, review_ids, commit_ids, body_head, in_commits,
+                    merge_base, merge_base_note} per head, ordered by first review; merge_base
+                    only when the PR merged a commit with several parents; a compare 404 (no
+                    common ancestor) leaves merge_base null with merge_base_note, not an
+                    api_error), foreign_fix_commits,
                     unreviewed_prefix_heads (head before a non-PR-author commit that never
                     got a bot review), merged_head_reviewed, attention_comments,
                     attention_only (PR with only bot failure/stop comments), has_gap
@@ -124,15 +137,26 @@ Label files (metrics input; vocabularies are the VOCAB table at the top of this 
                           review_id, defect_type, file_type, repo_rule, dedup_key, sources}
                           One row per (defect, bot-reviewed head where present); rows of
                           one defect share dedup_key. A partial match may name review_id
-                          instead of matched_finding_id.
+                          instead of matched_finding_id. Only rater "final" rows need
+                          bot_match. not_defect rows may leave adjudicated_severity,
+                          present_at_reviewed_head, latest_present_head, defect_type and
+                          exposed_by_pr null. A head may be named by a review's GitHub
+                          commit_id when the body names another head; metrics maps it to
+                          the body head.
   labels-judge.jsonl     {id, rater "judge", validity}; labels-matcher.jsonl {id, rater
                           "matcher-defect_first" | "matcher-review_first" (or order),
-                          bot_match}; both orders may label the same id.
+                          bot_match}; both orders may label the same id. Candidate judge
+                          rows live in labels-judge-candidates.jsonl, which metrics does
+                          not read.
   A miss row with out_of_horizon: true (verdict null) is accepted but excluded from
   every figure (counted in coverage.miss_rows_out_of_horizon). A row with coverage_only:
-  true (defect fixed before any bot review; heads may be null, id may lack @<head12>) is
-  kept out of R_imp and every miss figure and counted in coverage_unreviewed_defects.
-  Rows with rater "final" drive the figures; labelerA/labelerB rows feed irr.
+  true (defect introduced and fixed before the first bot-reviewed head or between
+  reviewed heads; heads may be null, id may carry the candidate's @<head12>) is kept out
+  of R_imp and every miss figure and counted in coverage_unreviewed_defects.
+  Rows with rater "final" drive the figures; labelerA/labelerB rows feed irr. Every bad
+  row names its file, line, id, rater and reason. A final miss row matched (hit or
+  partial) to a finding whose final label is invalid is listed under "conflicts" for
+  re-adjudication; it is not a bad row.
 
 Assumptions and heuristics (documented limits, not ground truth)
   vicinity        changed_in_vicinity_k is true when a later non-merge PR commit,
@@ -190,7 +214,7 @@ import time
 from collections import Counter, defaultdict
 from dataclasses import dataclass, field
 
-COLLECTOR_VERSION = "2.0.0"
+COLLECTOR_VERSION = "2.1.0"
 
 # ---------------------------------------------------------------------------
 # Constants: label vocabularies and metric definitions. Renaming a label is a
@@ -223,7 +247,8 @@ VOCAB = {
     # Rater-assigned codes. INVALID and SEVERITY_INFLATED are derived (DERIVED_CODES).
     "noise_codes": ("LOW_VALUE", "NON_ACTIONABLE", "OFF_SCOPE", "STYLE_PREFERENCE", "AUTOMATABLE", "DUPLICATE"),
     "value": ("high", "normal", "low"),
-    "author_action": ("addressed", "rejected", "ignored", "unknown"),
+    # not_applicable: the review was posted after merge or close (excluded from addressed_rate).
+    "author_action": ("addressed", "rejected", "ignored", "unknown", "not_applicable"),
     "channel": (
         "post_review_hunk",
         "human_comment",
@@ -232,8 +257,9 @@ VOCAB = {
         "owner_session",
         "panel",
     ),
-    "verdict": ("defect_fix", "not_defect", "external_cause", "introduced_after_review", "pre_existing",
-                "policy_risk"),
+    # A defect introduced and fixed before the first bot-reviewed head or between reviewed
+    # heads is verdict defect_fix with coverage_only: true, not a verdict of its own.
+    "verdict": ("defect_fix", "not_defect", "external_cause", "pre_existing", "policy_risk"),
     "present_at_reviewed_head": ("yes", "no", "unknown"),
     "bot_match": ("hit", "partial", "miss"),
     "defect_type": (
@@ -264,6 +290,11 @@ IMPORTANT_SEVERITIES = frozenset({"P0", "P1"})
 IMPORTANT_IF_BLOCKING = frozenset({"P2"})
 P0P1 = frozenset({"P0", "P1"})
 BLOCKING_FIELD = "p2_blocking"
+IMPORTANT_FIELD = "important"  # derived kappa field, never labelled
+# important_escaped.by_first_source: earliest independent source first (K4). The bot speaks at
+# review time, human re-review (owner session, human comment) during the PR, the panel at audit
+# time; fix evidence alone (post_review_hunk, post_merge_commit, cross_reference) is not independent.
+FIRST_SOURCES = ("bot", "human_review", "panel", "fix_evidence_only")
 # An important defect also needs these miss-row values (policy_risk is never important).
 IMPORTANT_MISS_VERDICT = "defect_fix"
 IMPORTANT_MISS_PRESENT = "yes"
@@ -282,6 +313,9 @@ BOT_MATCH_ORDER = {"hit": 0, "partial": 1, "miss": 2}
 # only a fallback when the line is absent.
 VERDICT_RE = re.compile(r"\*\*Verdict:\s*(GREEN|BLOCKING|OPEN)\b", re.I)
 VERDICT_EVENT = {"GREEN": "APPROVED", "BLOCKING": "CHANGES_REQUESTED", "OPEN": "COMMENTED"}
+# The head a bot review names in its body; it wins over GitHub's commit_id, which is the PR
+# head when the review was posted (K2: #94 c3d0208 names a47cc92, #88 c974f36 names fce8827).
+REVIEWED_AT_RE = re.compile(r"\b(?:re-)?reviewed at `?([0-9a-fA-F]{40})\b")
 APPROVE_VERDICT = "APPROVED"
 BLOCKING_VERDICT = "CHANGES_REQUESTED"
 REVIEW_STRATA = ("repo", "size_bucket", "verdict", "author_type")
@@ -312,11 +346,13 @@ METRIC_KEYS = (
     ("silent_review_share", "non-container bot reviews with zero findings"),
     ("nit_share", "valid first occurrences adjudicated nit"),
     ("addressed_rate", "F_closed findings addressed (author_action, else vicinity_1 OR ack); "
-                       "implementer_bot PRs reported separately"),
+                       "implementer_bot PRs reported separately; author_action not_applicable excluded"),
     ("effective_fp_rate", "1 - addressed_rate (record only)"),
     ("explicit_not_useful_rate", "rejected / (rejected + addressed) per <coarse>.<bot_sev> family"),
     ("human_addressed_rate", "addressed_rate computed on human root inline comments"),
-    ("important_escaped", "important defects (pr, dedup_key) with no hit at any reviewed head (@H)"),
+    ("important_escaped", "important defects (pr, dedup_key) with no hit at any reviewed head (@H); "
+                          "by_first_source: counts by earliest independent source "
+                          "(bot > human_review > panel > fix_evidence_only)"),
     ("important_escaped_per_pr", "important_escaped / reviewed PRs, Garwood exact Poisson CI (@H)"),
     ("important_miss_rate_rel", "(miss + partial) / |R_imp|: all_prs (non-panel) and panel_prs (@H)"),
     ("important_partial", "important defects whose best match is partial (@H)"),
@@ -328,7 +364,8 @@ METRIC_KEYS = (
     ("coverage_unreviewed_heads", "PRs with an unreviewed pre-fix or merged head, or attention-only"),
     ("coverage_unreviewed_defects", "coverage_only miss rows (defects fixed before any bot review), by severity"),
     ("capture_recapture", "Chapman (2 sources) / Chao2 (>=3) within panel PRs; indicative only"),
-    ("irr", "irr.<field>: labelerA vs labelerB on irr_sample items"),
+    ("irr", "irr.<field>: labelerA vs labelerB on irr_sample items; important / important_miss: "
+            "derived P0/P1 or P2 with p2_blocking on findings / miss rows"),
     ("match_kappa", "match_kappa.<defect_first|review_first>: matcher order vs final bot_match (match_sample)"),
     ("judge_bias", "judge vs labelerB validity on irr_sample items; finding length vs judge 'valid'"),
 )
@@ -738,6 +775,56 @@ def review_verdict(body, github_state):
     if match:
         return VERDICT_EVENT[match.group(1).upper()]
     return github_state
+
+
+def body_head(body):
+    """Head named in a bot review body ("reviewed at <40-hex>" / "re-reviewed at <40-hex>")."""
+    match = REVIEWED_AT_RE.search(body or "")
+    return match.group(1).lower() if match else None
+
+
+def review_head(review):
+    """Effective head of a bot review: the body head, else GitHub's commit_id. Works on raw
+    API reviews and on reviews.jsonl rows (2.0.0 rows carry commit_id as reviewed_head_sha)."""
+    return body_head(review.get("body")) or review.get("commit_id") or review.get("reviewed_head_sha")
+
+
+def bot_reviewed_heads(reviews, commit_shas=None):
+    """K2: the canonical bot-reviewed heads of one PR. `reviews` are its bot reviews ({id,
+    body, submitted_at, commit_id or reviewed_head_sha, is_reply_container}); reply
+    containers are skipped, heads outside the commit list (force pushes) are kept. One row
+    per head ordered by first review: {sha, first_review_at, review_ids, commit_ids (GitHub
+    commit_id values of those reviews), body_head (head named in a body, else null),
+    in_commits (null without commit_shas), merge_base (filled by the collector)}."""
+    known = set(commit_shas) if commit_shas is not None else None
+    rows = {}
+    for review in sorted(reviews, key=lambda r: (r.get("submitted_at") or "", str(r.get("id")))):
+        if review.get("is_reply_container"):
+            continue
+        sha = review_head(review)
+        if not sha:
+            continue
+        row = rows.get(sha)
+        if row is None:
+            row = rows[sha] = {"sha": sha, "first_review_at": review.get("submitted_at"), "review_ids": [],
+                               "commit_ids": [], "body_head": None,
+                               "in_commits": (sha in known) if known is not None else None, "merge_base": None,
+                               "merge_base_note": None}
+        row["review_ids"].append(review.get("id"))
+        commit_id = review.get("commit_id") or review.get("reviewed_head_sha")
+        if commit_id and commit_id not in row["commit_ids"]:
+            row["commit_ids"].append(commit_id)
+        named = body_head(review.get("body"))
+        if named:
+            row["body_head"] = named
+    return list(rows.values())
+
+
+def head_aliases(head_rows):
+    """GitHub commit_id -> body head, for commit_ids that are not bot-reviewed heads themselves
+    (labels written against the commit_id resolve to the head the review names)."""
+    heads = {row["sha"] for row in head_rows}
+    return {cid: row["sha"] for row in head_rows for cid in row["commit_ids"] if cid not in heads}
 
 
 def inline_severity(body):
@@ -1194,12 +1281,33 @@ class Collector:
         # Empty-body bot reviews without root comments only carry thread replies.
         containers = {r["id"] for r in reviews if login_of(r) == self.reviewer
                       and not (r.get("body") or "").strip() and not roots_by_review.get(r["id"])}
+        # commit_id below is the effective head (K2: the body head wins); github_commit_id keeps
+        # GitHub's value.
         bot_reviews = sorted(
-            (r for r in reviews if login_of(r) == self.reviewer and r.get("state") != "PENDING"
-             and r["id"] not in containers),
+            (dict(r, commit_id=review_head(r), github_commit_id=r.get("commit_id")) for r in reviews
+             if login_of(r) == self.reviewer and r.get("state") != "PENDING" and r["id"] not in containers),
             key=lambda r: (r.get("submitted_at") or "", r["id"]),
         )
+        effective_head = {r["id"]: r["commit_id"] for r in bot_reviews}
         review_uid = lambda r: "%s@review/%d" % (pr_id, r["id"])
+        head_rows = bot_reviewed_heads(
+            [{"id": review_uid(r), "body": r.get("body"), "submitted_at": r.get("submitted_at"),
+              "commit_id": r["github_commit_id"]} for r in bot_reviews],
+            [c["sha"] for c in commits])
+        if any(len(c.get("parents") or []) > 1 for c in commits):
+            base_ref = (pr.get("base") or {}).get("ref")
+            for row in head_rows:
+                if not base_ref:
+                    continue
+                before = len(gh.errors)
+                cmp = gh.rest_obj("repos/%s/compare/%s...%s" % (repo, base_ref, row["sha"]))
+                new = gh.errors[before:]
+                if cmp is None and new and all(e.get("status") == 404 for e in new):
+                    # N5: no common ancestor (force-pushed or vanished head): a fact, not an API failure.
+                    del gh.errors[before:]
+                    row["merge_base_note"] = "compare %s...%s returned 404: %s" % (
+                        base_ref, row["sha"][:12], new[-1].get("message") or "")
+                row["merge_base"] = ((cmp or {}).get("merge_base_commit") or {}).get("sha")
         human_roots = [c for c in review_comments
                        if not c.get("in_reply_to_id") and login_of(c) and login_of(c) != author
                        and not is_bot_login(login_of(c), (c.get("user") or {}).get("type"))]
@@ -1369,7 +1477,7 @@ class Collector:
         for review in sorted(reviews, key=lambda r: (r.get("submitted_at") or "", r["id"])):
             if review.get("state") == "PENDING":
                 continue
-            head = review.get("commit_id")
+            head = effective_head.get(review["id"], review.get("commit_id"))
             idx = sha_index.get(head)
             superseded = commits[idx + 1]["sha"] if idx is not None and idx + 1 < len(commits) else None
             reviewer = login_of(review)
@@ -1383,6 +1491,8 @@ class Collector:
                 "verdict": review_verdict(review.get("body"), review.get("state")),
                 "is_reply_container": review["id"] in containers,
                 "reviewed_head_sha": head,
+                "commit_id": review.get("commit_id"),
+                "body_head_sha": body_head(review.get("body")) if review["id"] in effective_head else None,
                 "submitted_at": review.get("submitted_at"),
                 "body": review.get("body"),
                 "is_bot": is_bot_login(reviewer, ((review.get("user") or {}).get("type"))),
@@ -1401,16 +1511,24 @@ class Collector:
         if merged:
             candidates += self._post_merge(repo, pr_id, number, pr, files, commits, raw_dir)
         candidates += self._cross_refs(pr_id, timeline, bot_reviews, review_uid)
+        # K3: every candidate names a bot-reviewed head (hunks already carry their anchor's).
+        head_by_review = {review_uid(r): r["commit_id"] for r in bot_reviews}
+        latest_head = bot_reviews[-1]["commit_id"] if bot_reviews else None
+        first_head = head_rows[0]["sha"] if head_rows else None
         seen = Counter()
         for cand in candidates:
             cand["pr_id"] = pr_id
+            if cand["kind"] == "post_merge_commit":
+                cand["reviewed_head_sha"] = latest_head
+            elif "reviewed_head_sha" not in cand:
+                cand["reviewed_head_sha"] = head_by_review.get(cand.get("bot_review_id"), first_head)
             seen[cand["id"]] += 1
             if seen[cand["id"]] > 1:  # same content key twice: keep both, mark the repeat
                 self.notes.append("duplicate candidate id %s" % cand["id"])
                 cand["id"] = "%s~%d" % (cand["id"], seen[cand["id"]])
 
         # Coverage (D16).
-        reviewed = {r.get("commit_id") for r in bot_reviews}
+        reviewed = {row["sha"] for row in head_rows}
         foreign = []
         for i, commit in enumerate(commits):
             login = (commit.get("author") or {}).get("login")
@@ -1435,8 +1553,8 @@ class Collector:
             "attention_comments": len(attention),
             "bot_reviews": len(bot_reviews),
             "heads": [c["sha"] for c in commits],
-            "bot_reviewed_heads": [commits[i]["sha"] for i in sorted({sha_index[h] for h in reviewed if h in sha_index})],
-            "reviewed_heads_outside_commits": sum(1 for h in reviewed if h and h not in sha_index),
+            "bot_reviewed_heads": head_rows,
+            "reviewed_heads_outside_commits": sum(1 for row in head_rows if not row["in_commits"]),
             "foreign_fix_commits": [commits[i]["sha"] for i in foreign],
             "unreviewed_prefix_heads": prefix_heads,
             "first_foreign_commit_after_review": next(
@@ -1466,6 +1584,7 @@ class Collector:
             "state": pr.get("state"),
             "merged": merged,
             "merged_at": pr.get("merged_at"),
+            "closed_at": pr.get("closed_at"),
             "base_ref": (pr.get("base") or {}).get("ref"),
             "base_sha_at_merge": (pr.get("base") or {}).get("sha"),
             "final_head_sha": final_head,
@@ -2019,10 +2138,10 @@ def load_jsonl(path, bad, label):
             try:
                 row = json.loads(line)
             except ValueError as exc:
-                bad.append({"file": label, "line": number, "id": None, "reason": "invalid JSON: %s" % exc})
+                bad.append({"file": label, "line": number, "id": None, "rater": None, "reason": "invalid JSON: %s" % exc})
                 continue
             if not isinstance(row, dict):
-                bad.append({"file": label, "line": number, "id": None, "reason": "not an object"})
+                bad.append({"file": label, "line": number, "id": None, "rater": None, "reason": "not an object"})
                 continue
             row["_line"] = number
             rows.append(row)
@@ -2078,6 +2197,16 @@ def validate_finding_label(row, units):
         errors.append("adjudicated_severity none requires validity != valid")
     if row.get(BLOCKING_FIELD) is True and row.get("adjudicated_severity") not in IMPORTANT_IF_BLOCKING:
         errors.append("%s applies only to adjudicated P2" % BLOCKING_FIELD)
+    if row.get("rater") == FINAL_RATER and row.get("author_action") == "not_applicable" \
+            and row.get("id") in units["findings"]:
+        # N6: only a review posted at or after merge/close leaves nobody to act on the finding.
+        finding = units["findings"][row["id"]]
+        review = units["reviews"].get(finding.get("review_id")) or {}
+        pr = units["prs"].get(finding.get("pr_id")) or {}
+        posted = parse_time(review.get("submitted_at") or finding.get("submitted_at"))
+        ended = parse_time(pr.get("merged_at") or pr.get("closed_at"))
+        if posted is None or ended is None or posted < ended:
+            errors.append("author_action not_applicable requires the review at or after the PR's merge/close")
     key = row.get("dedup_key")
     if key is not None and not isinstance(key, str):
         errors.append("dedup_key must be a string")
@@ -2091,6 +2220,20 @@ def miss_base_id(item_id):
     """Miss-row id without its `@<head12>` suffix (`<candidate-id>[.<k>]@<head12>`)."""
     match = HEAD_SUFFIX_RE.match(item_id or "")
     return match.group("base") if match else item_id
+
+
+def canonical_miss_id(item_id, units):
+    """N1: a miss-row id whose `@<head>` suffix names a GitHub commit_id alias is rewritten to
+    the body head the review names (same suffix length); other ids are returned unchanged."""
+    match = HEAD_SUFFIX_RE.match(item_id or "") if isinstance(item_id, str) else None
+    if not match:
+        return item_id
+    head = match.group("head")
+    alias = units.get("_head_alias", {}).get(miss_pr_id(item_id, units), {})
+    for commit_id, body in alias.items():
+        if commit_id.startswith(head):
+            return "%s@%s" % (match.group("base"), body[:len(head)])
+    return item_id
 
 
 def candidate_of(item_id, units):
@@ -2142,18 +2285,22 @@ def validate_miss_label(row, units):
     if row.get("exposed_by_pr") is True and row.get("verdict") != IMPORTANT_MISS_VERDICT:
         errors.append("exposed_by_pr requires verdict %s" % IMPORTANT_MISS_VERDICT)
     heads = units.get("_heads", {}).get(pr, {})
+    aliases = units.get("_head_alias", {}).get(pr, {})
     for name, required in (("reviewed_head_sha", defect and not coverage_only),
                            ("latest_present_head", defect and not coverage_only)):
         value = row.get(name)
         if value is None:
             if required:
                 errors.append("missing %s" % name)
-        elif value not in heads:
+        elif value not in heads and value not in aliases:
             errors.append("%s is not a bot-reviewed head of the PR" % name)
-    suffix = HEAD_SUFFIX_RE.match(row.get("id") or "")
-    if suffix and row.get("reviewed_head_sha") and not row["reviewed_head_sha"].startswith(suffix.group("head")):
+    suffix = HEAD_SUFFIX_RE.match(canonical_miss_id(row.get("id") or "", units))
+    reviewed = row.get("reviewed_head_sha")
+    if suffix and reviewed and not aliases.get(reviewed, reviewed).startswith(suffix.group("head")):
         errors.append("id @<head12> suffix does not match reviewed_head_sha")
-    if (defect and not coverage_only and row.get("verdict") == IMPORTANT_MISS_VERDICT
+    # The matcher writes bot_match to final rows only; labelerA/labelerB leave it null (K1).
+    if (row.get("rater") == FINAL_RATER and defect and not coverage_only
+            and row.get("verdict") == IMPORTANT_MISS_VERDICT
             and row.get("present_at_reviewed_head") == IMPORTANT_MISS_PRESENT
             and is_important(row.get("adjudicated_severity"), row.get(BLOCKING_FIELD))
             and row.get("bot_match") is None):
@@ -2176,19 +2323,45 @@ def validate_miss_label(row, units):
     return errors
 
 
-def split_raters(rows, validator, units, bad, label):
-    """Validate rows; return (final rows by id, {rater: {id: row}} for every rater)."""
+def with_head_index(units):
+    """K2/N1: units with bot reviews and findings carrying the body head as reviewed_head_sha
+    (commit_id kept), plus `_heads` (pr -> head -> first review time) and `_head_alias`
+    (pr -> GitHub commit_id -> body head) for label validation and id canonicalisation."""
+    reviews = dict(units["reviews"])
+    for r in [r for r in reviews.values() if r.get("is_bot") and not r.get("is_reply_container")]:
+        reviews[r["id"]] = dict(r, reviewed_head_sha=review_head(r),
+                                commit_id=r.get("commit_id") or r.get("reviewed_head_sha"))
+    findings = {fid: (dict(f, reviewed_head_sha=reviews[f["review_id"]]["reviewed_head_sha"])
+                      if f.get("review_id") in reviews else f) for fid, f in units["findings"].items()}
+    reviews_by_pr = defaultdict(list)
+    for r in reviews.values():
+        if r.get("is_bot") and not r.get("is_reply_container"):
+            reviews_by_pr[r["pr_id"]].append(r)
+    heads, aliases = {}, {}
+    for pr_id, pr_reviews in reviews_by_pr.items():
+        head_rows = bot_reviewed_heads(pr_reviews)
+        heads[pr_id] = {row["sha"]: row["first_review_at"] or "" for row in head_rows}
+        aliases[pr_id] = head_aliases(head_rows)
+    return dict(units, reviews=reviews, findings=findings, _heads=heads, _head_alias=aliases)
+
+
+def split_raters(rows, validator, units, bad, label, canonical_id=None):
+    """Validate rows; return (final rows by id, {rater: {id: row}} for every rater). With
+    canonical_id, rows are keyed (and their id rewritten) by canonical_id(id, units) so raters
+    that wrote a commit_id alias and the body head pair on one item (N1)."""
     by_rater, seen = defaultdict(dict), set()
     for row in rows:
         errors = validator(row, units)
-        key = (row.get("id"), row.get("rater"))
+        item_id = canonical_id(row.get("id"), units) if canonical_id and not errors else row.get("id")
+        key = (item_id, row.get("rater"))
         if not errors and key in seen:
             errors = ["duplicate (id, rater)"]
         if errors:
-            bad.append({"file": label, "line": row.get("_line"), "id": row.get("id"), "reason": "; ".join(errors)})
+            bad.append({"file": label, "line": row.get("_line"), "id": row.get("id"), "rater": row.get("rater"),
+                        "reason": "; ".join(errors)})
             continue
         seen.add(key)
-        by_rater[row["rater"]][row["id"]] = row
+        by_rater[row["rater"]][item_id] = row if item_id == row["id"] else dict(row, id=item_id)
     return dict(by_rater.get(FINAL_RATER, {})), dict(by_rater)
 
 
@@ -2264,6 +2437,10 @@ KAPPA_FIELDS = (
     ("verdict", "verdict", VOCAB["verdict"], None, IMPORTANT_MISS_VERDICT, "misses"),
     # Only items both raters adjudicated P2; an unset p2_blocking counts as false.
     ("p2_blocking", BLOCKING_FIELD, (True, False), None, True, "findings"),
+    # Derived important flag (P0/P1, or P2 with p2_blocking; null severity counts as not
+    # important) over every shared item; flips at the P2/P3 or p2_blocking boundary show here.
+    ("important", IMPORTANT_FIELD, (True, False), None, True, "findings"),
+    ("important_miss", IMPORTANT_FIELD, (True, False), None, True, "misses"),
 )
 
 
@@ -2280,6 +2457,9 @@ def agreement(rows_a, rows_b, kinds=("findings", "misses"), irr_only=True):
         if fld == BLOCKING_FIELD:
             pairs = [(rows_a[i].get(fld) is True, rows_b[i].get(fld) is True) for i in ids
                      if rows_a[i].get("adjudicated_severity") == "P2" and rows_b[i].get("adjudicated_severity") == "P2"]
+        elif fld == IMPORTANT_FIELD:
+            flag = lambda row: is_important(row.get("adjudicated_severity"), row.get(BLOCKING_FIELD))
+            pairs = [(flag(rows_a[i]), flag(rows_b[i])) for i in ids]
         else:
             pairs = [(rows_a[i].get(fld), rows_b[i].get(fld)) for i in ids
                      if rows_a[i].get(fld) is not None and rows_b[i].get(fld) is not None]
@@ -2321,7 +2501,7 @@ def compute_metrics(units, finding_label_rows, miss_label_rows, evidence_days=No
     judge_rows = [dict(r, rater=r.get("rater") or JUDGE_RATER) for r in judge_rows if keep(r)]
     matcher_rows = [dict(r, rater=r.get("rater") or ("matcher-%s" % r.get("order"))) for r in matcher_rows if keep(r)]
     for row in [r for r in matcher_rows if r["rater"] not in MATCHER_RATERS]:
-        bad.append({"file": "labels-matcher", "line": row.get("_line"), "id": row.get("id"),
+        bad.append({"file": "labels-matcher", "line": row.get("_line"), "id": row.get("id"), "rater": row["rater"],
                     "reason": "rater must be one of %s (or set order)" % ", ".join(MATCHER_RATERS)})
     matcher_rows = [r for r in matcher_rows if r["rater"] in MATCHER_RATERS]
     units = exclude_units(units, excluded)
@@ -2331,13 +2511,30 @@ def compute_metrics(units, finding_label_rows, miss_label_rows, evidence_days=No
     panel_prs = {p["pr_id"] for p in panel.get("prs", [])} if panel else None
     panel_targets = {p["pr_id"]: p.get("target_head_sha") for p in panel.get("prs", [])} if panel else {}
 
+    units = with_head_index(units)
+    reviews, findings = units["reviews"], units["findings"]
+    heads, aliases = units["_heads"], units["_head_alias"]
     bot_reviews = [r for r in reviews.values() if r.get("is_bot") and not r.get("is_reply_container")]
-    heads = defaultdict(dict)  # pr -> head -> first review time
-    for r in sorted(bot_reviews, key=lambda r: r.get("submitted_at") or ""):
-        heads[r["pr_id"]].setdefault(r.get("reviewed_head_sha"), r.get("submitted_at") or "")
-    units = dict(units, _heads=heads)
     lf_final, lf_by_rater = split_raters(finding_label_rows, validate_finding_label, units, bad, "labels-findings")
-    lm_final, lm_by_rater = split_raters(miss_label_rows, validate_miss_label, units, bad, "labels-misses")
+    lm_final, lm_by_rater = split_raters(miss_label_rows, validate_miss_label, units, bad, "labels-misses",
+                                         canonical_miss_id)
+    conflicts = []  # K6: final miss rows matched to a finding whose final label is invalid
+    for i, r in sorted(lm_final.items()):
+        matched = r.get("matched_finding_id")
+        if r.get("bot_match") in ("hit", "partial") and matched in lf_final \
+                and lf_final[matched].get("validity") == "invalid":
+            conflicts.append({"id": i, "bot_match": r["bot_match"], "matched_finding_id": matched,
+                              "reason": "matched finding is labelled invalid; re-adjudicate the match or the validity"})
+
+    def canonical_heads(row):
+        alias = aliases.get(miss_pr_id(row["id"], units), {})
+        names = ("reviewed_head_sha", "latest_present_head")
+        if not any(row.get(name) in alias for name in names):
+            return row
+        return dict(row, **{name: alias.get(row.get(name), row.get(name)) for name in names})
+
+    lm_final = {i: canonical_heads(r) for i, r in lm_final.items()}
+    lm_by_rater = {rater: {i: canonical_heads(r) for i, r in rows.items()} for rater, rows in lm_by_rater.items()}
     out_of_horizon_rows = sum(1 for r in lm_final.values() if r.get("out_of_horizon") is True)
     coverage_only_rows = [r for i, r in sorted(lm_final.items())
                           if r.get("coverage_only") is True and r.get("out_of_horizon") is not True]
@@ -2345,7 +2542,8 @@ def compute_metrics(units, finding_label_rows, miss_label_rows, evidence_days=No
     lm_final = {i: r for i, r in lm_final.items() if in_figures(r)}
     lm_by_rater = {rater: {i: r for i, r in rows.items() if in_figures(r)} for rater, rows in lm_by_rater.items()}
     _, judge_by_rater = split_raters(judge_rows, validate_finding_label, units, bad, "labels-judge")
-    _, matcher_by_rater = split_raters(matcher_rows, validate_miss_label, units, bad, "labels-matcher")
+    _, matcher_by_rater = split_raters(matcher_rows, validate_miss_label, units, bad, "labels-matcher",
+                                       canonical_miss_id)
 
     verdict_of = lambda r: r.get("verdict") or review_verdict(r.get("body"), r.get("event"))
 
@@ -2434,7 +2632,7 @@ def compute_metrics(units, finding_label_rows, miss_label_rows, evidence_days=No
     # Addressed (D12): F_closed = first occurrences on merged/closed PRs with a non-null vicinity
     # (or an auditor author_action); implementer_bot PRs reported separately.
     closed = lambda pr_id: prs.get(pr_id, {}).get("state") == "closed"
-    addressed_items, implementer_items, null_vicinity = [], [], 0
+    addressed_items, implementer_items, null_vicinity, not_applicable = [], [], 0, 0
     not_useful_cells, axis_type, axis_sev = defaultdict(lambda: [0, 0]), defaultdict(lambda: [0, 0]), \
         defaultdict(lambda: [0, 0])
     for fid, f in sorted(window_findings.items()):
@@ -2442,6 +2640,9 @@ def compute_metrics(units, finding_label_rows, miss_label_rows, evidence_days=No
             continue
         label = lf_final.get(fid)
         action = (label or {}).get("author_action")
+        if action == "not_applicable":  # review posted after merge or close: nobody could act on it
+            not_applicable += 1
+            continue
         addressed, rejected = finding_addressed(f, label), finding_rejected(f, label)
         if rejected or addressed:
             coarse = ((label or {}).get("defect_type") or "unknown").split("/")[0]
@@ -2457,6 +2658,7 @@ def compute_metrics(units, finding_label_rows, miss_label_rows, evidence_days=No
     figures["addressed_rate"] = aggregate(addressed_items, dims=FINDING_STRATA)
     figures["addressed_rate"]["implementer_bot"] = aggregate(implementer_items, dims=())["overall"]
     figures["addressed_rate"]["null_vicinity_excluded"] = null_vicinity
+    figures["addressed_rate"]["not_applicable_excluded"] = not_applicable
     figures["effective_fp_rate"] = aggregate([(d, n - k, n) for d, k, n in addressed_items], dims=FINDING_STRATA)
     figures["effective_fp_rate"]["note"] = "record only; compare with human_addressed_rate"
     figures["explicit_not_useful_rate"] = pool_families(not_useful_cells)
@@ -2538,13 +2740,19 @@ def compute_metrics(units, finding_label_rows, miss_label_rows, evidence_days=No
             return at is None or limit is None or at <= limit
 
         human_blind = any(r.get("channel") == "human_comment" and blind_before_target(r) for r in eligible)
+        human_review = "owner_session" in channels or any(
+            r.get("channel") == "human_comment" and (candidate_of(r["id"], units) or {}).get("commenter_kind") != "implementer_bot"
+            for r in eligible) or any("human_comment" in (r.get("sources") or []) and r.get("channel") != "human_comment"
+                                      for r in eligible)
+        first_source = ("bot" if best == "partial" else "human_review" if human_review
+                        else "panel" if "panel" in channels else "fix_evidence_only")
         defects.append({
             "pr_id": pr_id, "key": key, "best": best, "escaped": best != "hit", "status_at": status_at,
             "first_exposure": status_at[first_head], "severity": severity,
             "severity_miss": any(g <= -INFLATION_MIN_LEVELS for g in hit_gap),
             "repo_rule": any(r.get("repo_rule") is True for r in eligible),
             "non_panel": any(r.get("channel") != "panel" for r in eligible),
-            "channels": channels, "human_blind": human_blind,
+            "channels": channels, "human_blind": human_blind, "first_source": first_source,
             "dims": {**unit_dims((pr_id, anchor)), "file_type": labelled_rows[0].get("file_type"),
                      "defect_type": labelled_rows[0].get("defect_type")},
         })
@@ -2557,6 +2765,11 @@ def compute_metrics(units, finding_label_rows, miss_label_rows, evidence_days=No
     figures["important_escaped"]["repo_rule"] = {
         "escaped": sum(1 for d in reference if d["escaped"] and d["repo_rule"]),
         "final_rows": sum(1 for r in lm_final.values() if r.get("repo_rule") is True),
+    }
+    first_sources = Counter(d["first_source"] for d in reference if d["escaped"])
+    figures["important_escaped"]["by_first_source"] = {
+        **{source: first_sources[source] for source in FIRST_SOURCES},
+        "note": "escaped defects of the all-PR figure; panel-only defects are counted under panel_only",
     }
     # Panel-only defects (found by no other channel) count only for panel-sampled PRs.
     panel_only = [d for d in defects if not d["non_panel"]]
@@ -2730,7 +2943,8 @@ def compute_metrics(units, finding_label_rows, miss_label_rows, evidence_days=No
         "miss_rows_out_of_horizon": out_of_horizon_rows,
         "miss_rows_coverage_only": len(coverage_only_rows),
     }
-    return {"figures": figures, "coverage": counts, "bad_rows": bad, "evidence_days": evidence_days}
+    return {"figures": figures, "coverage": counts, "bad_rows": bad, "conflicts": conflicts,
+            "evidence_days": evidence_days}
 
 
 def capture_recapture(defects, targets=None):
@@ -2823,19 +3037,22 @@ def compare_results(baseline, after):
 
 def panel_target_head(coverage_row, pr_reviews):
     """D8: latest bot-reviewed head before the first non-PR-author fix commit; else the first
-    GREEN head (body verdict); else the final bot-reviewed head. Returns (sha, rule)."""
+    GREEN head (body verdict); else the final bot-reviewed head. Heads come from
+    bot_reviewed_heads() (the body head wins). Returns (sha, rule)."""
     commits = (coverage_row or {}).get("heads") or []
     foreign = (coverage_row or {}).get("first_foreign_commit_after_review")
     if foreign and foreign in commits:
         cut = commits.index(foreign)
-        before = [h for h in coverage_row.get("bot_reviewed_heads") or [] if h in commits and commits.index(h) < cut]
+        before = [row["sha"] for row in bot_reviewed_heads(pr_reviews)
+                  if row["sha"] in commits and commits.index(row["sha"]) < cut]
         if before:
-            return before[-1], "pre_foreign_fix"
-    ordered = sorted(pr_reviews, key=lambda r: (r.get("submitted_at") or "", r["id"]))
+            return max(before, key=commits.index), "pre_foreign_fix"
+    ordered = sorted((r for r in pr_reviews if not r.get("is_reply_container")),
+                     key=lambda r: (r.get("submitted_at") or "", r["id"]))
     for review in ordered:
         if (review.get("verdict") or review_verdict(review.get("body"), review.get("event"))) == APPROVE_VERDICT:
-            return review.get("reviewed_head_sha"), "first_green"
-    return (ordered[-1].get("reviewed_head_sha"), "final_reviewed") if ordered else (None, "none")
+            return review_head(review), "first_green"
+    return (review_head(ordered[-1]), "final_reviewed") if ordered else (None, "none")
 
 
 def draw_panel(units, seed, n):
@@ -2972,7 +3189,12 @@ def render_md(result):
     if result["bad_rows"]:
         lines.append("## bad rows (excluded)")
         for row in result["bad_rows"]:
-            lines.append("- %s line %s id=%s: %s" % (row["file"], row["line"], row["id"], row["reason"]))
+            lines.append("- %s line %s id=%s rater=%s: %s" % (row["file"], row["line"], row["id"], row.get("rater"),
+                                                              row["reason"]))
+    if result.get("conflicts"):
+        lines.append("## conflicts (re-adjudicate; still counted)")
+        for row in result["conflicts"]:
+            lines.append("- %s %s -> %s: %s" % (row["id"], row["bot_match"], row["matched_finding_id"], row["reason"]))
     return "\n".join(lines) + "\n"
 
 
@@ -3035,15 +3257,24 @@ def _rows_for_rater(rows, rater, bad, label):
         if len(picked) == 1:
             out[item_id] = picked[0]
         elif len(picked) > 1:
-            bad.append({"file": label, "line": picked[1].get("_line"), "id": item_id,
+            bad.append({"file": label, "line": picked[1].get("_line"), "id": item_id, "rater": rater,
                         "reason": "several rows for one rater; pass --rater-a/--rater-b"})
     return out
 
 
+def canonical_rows(rows, units):
+    """N1: rewrite commit_id-alias `@<head>` suffixes to the body head before pairing raters."""
+    return [dict(r, id=canonical_miss_id(r["id"], units)) if isinstance(r.get("id"), str) else r for r in rows]
+
+
 def cmd_kappa(args):
     bad = []
-    rows_a = _rows_for_rater(load_jsonl(args.a, bad, "a"), args.rater_a, bad, "a")
-    rows_b = _rows_for_rater(load_jsonl(args.b, bad, "b"), args.rater_b, bad, "b")
+    units = with_head_index(load_units(args.dir)) if args.dir else None
+    rows = [load_jsonl(args.a, bad, "a"), load_jsonl(args.b, bad, "b")]
+    if units:
+        rows = [canonical_rows(r, units) for r in rows]
+    rows_a = _rows_for_rater(rows[0], args.rater_a, bad, "a")
+    rows_b = _rows_for_rater(rows[1], args.rater_b, bad, "b")
     fields = set(args.field or [f[0] for f in KAPPA_FIELDS])
     result = {"agreement": {k: v for k, v in agreement(rows_a, rows_b, irr_only=not args.all_items).items()
                             if v["n"] and k in fields},
@@ -3055,7 +3286,8 @@ def cmd_kappa(args):
     for name, stats in result["agreement"].items():
         lines.append("- %s: %s pos=%s neg=%s" % (name, _fmt_summary(stats), stats["pos"], stats["neg"]))
     for row in bad:
-        lines.append("- bad row %s line %s id=%s: %s" % (row["file"], row["line"], row["id"], row["reason"]))
+        lines.append("- bad row %s line %s id=%s rater=%s: %s" % (row["file"], row["line"], row["id"], row.get("rater"),
+                                                                  row["reason"]))
     sys.stdout.write("\n".join(lines) + "\n")
 
 
@@ -3114,6 +3346,8 @@ def build_parser():
                                        "PABAK and positive/negative agreement per label field.")
     kappa.add_argument("--a", required=True, help="first label file (labels-findings or labels-misses)")
     kappa.add_argument("--b", required=True, help="second label file")
+    kappa.add_argument("--dir", help="directory written by collect: miss ids whose @<head> suffix is a "
+                                     "GitHub commit_id alias pair with the body head the review names")
     kappa.add_argument("--rater-a", help="rater id to take from --a (default: final, else the only row)")
     kappa.add_argument("--rater-b", help="rater id to take from --b (default: final, else the only row)")
     kappa.add_argument("--all-items", action="store_true", help="use every shared id, not only irr_sample rows")

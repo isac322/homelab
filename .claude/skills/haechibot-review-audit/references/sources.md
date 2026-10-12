@@ -1,6 +1,6 @@
-# Sources v2.3
+# Sources v2.6
 
-근거는 2026-10-12 연구 4건(R1 유용성·noise, R2 AI reviewer 평가, R3 miss 탐지, R4 심각도·rater)의 claim 108개다. 각 claim은 다른 연구자가 원문을 다시 열어 교차 검증했다: VERIFIED 103, OVERSTATED 5, WRONG 0. 이 skill은 VERIFIED claim과, OVERSTATED claim의 교정된 형태만 쓴다. 원문 보고서는 세션 artifact(`R1ReviewUsefulness.md` 등)이고, 여기에는 규칙 점검에 필요한 만큼만 옮긴다. v2는 7개 비평과 orchestrator 결정 D1–D23(Round 1)을 반영했다.
+근거는 2026-10-12 연구 4건(R1 유용성·noise, R2 AI reviewer 평가, R3 miss 탐지, R4 심각도·rater)의 claim 108개다. 각 claim은 다른 연구자가 원문을 다시 열어 교차 검증했다: VERIFIED 103, OVERSTATED 5, WRONG 0. 이 skill은 VERIFIED claim과, OVERSTATED claim의 교정된 형태만 쓴다. 원문 보고서는 세션 artifact(`R1ReviewUsefulness.md` 등)이고, 여기에는 규칙 점검에 필요한 만큼만 옮긴다. v2는 7개 비평과 orchestrator 결정 D1–D23(Round 1)을 반영했다. v2.4는 blind pilot `pilot-kwin-20261012`의 결정을, v2.5는 그 sign-off 결정을, v2.6은 세 번째 panel 실행의 결정을 반영했다(§4).
 
 **출처 표시 규칙.** 규칙과 임계값마다 근거가 claim인지 **policy**(owner·감사 설계의 선택, 출처 없음)인지 적는다. "policy by analogy to R…"는 출처의 수치를 다른 양에 빌려 쓴 policy다. Newcombe, Fisher, 조건부 binomial, McNemar, PABAK, Garwood 구간은 표준 통계 방법이며 claim에서 오지 않았다(D13 선택).
 
@@ -142,3 +142,58 @@
 | HRA-28 30/90일 재계산 | R3-01, R3-12, R3-08 | — | — |
 | HRA-29 사람·owner 증거의 한계 | R3-24, R1-01, R4-13, R2-04 | — | R3-04의 54%는 검증 안 된 SZZ 원출력이라 사람 리뷰 miss 기준선으로 쓰지 않는다 |
 | HRA-30 비용 상한 | — | 전부 policy(D20) | — |
+
+## 4. pilot-kwin-20261012 결정 → 규칙 매핑
+
+2026-10-12 blind pilot(kwin-mcp, baseline 창 B)과 두 비평(근거, 범위), sign-off 검토(N 항목), 세 번째 panel 실행의 SKILL GAPS(PR3 항목)에서 나온 결정이다. 결정 id는 그 라운드의 것이며(K = collector, T = 문서·프롬프트, A·B·C = 원 제안 번호, N = sign-off, PR3 = 세 번째 panel 실행), 결정 기록은 라운드의 비공개 디렉터리에 있다. 표의 "policy"는 `policy: pilot-kwin-20261012 <item>`으로 인용한다.
+
+| 산출물 | pilot 결정(T) 반영 | sign-off 결정(N) 반영 | 세 번째 panel 결정(PR3) 반영 |
+|---|---|---|---|
+| collector | 2.1.0 | 2.1.0 | 2.1.0 |
+| rubric | v2.3 | v2.4 | v2.5 |
+| agent prompts | v2.4 | v2.5 | v2.6 |
+| judge-questions | v2.3 | v2.3(`rubric_version`만 v2.4) | v2.3(`rubric_version`만 v2.5) |
+| metrics | v2.4 | v2.4 | v2.4 |
+| gold | g1.1 | g1.1 | g1.1 |
+
+| item | 규칙 위치 | claims | policy 부분 |
+|---|---|---|---|
+| K1 (B1) | collector 검증기: `bot_match`는 `final` 행에만 필수, bad row에 `rater` | — | policy: pilot-kwin-20261012 K1 |
+| K2 (B3) | rubric §9 bot-reviewed head 목록, metrics 입력, SKILL 역할 입력 | R3-11 | 답글 컨테이너 제외, force-push head 유지, 본문 head 우선, head별 `merge_base`(policy: pilot-kwin-20261012 K2) |
+| K3 (B4) | rubric §9: 후보의 `reviewed_head_sha` | — | policy: pilot-kwin-20261012 K3 |
+| K4 (A4) | metrics `important_escaped.by_first_source`, 보고서 §4 | R3-24 | 출처 분류와 "새 비율 없음"(policy: pilot-kwin-20261012 A4) |
+| K5 (A5) | metrics IRR `important`, 보고서 §2 | R4-17 | 문턱 없이 기록(policy: pilot-kwin-20261012 A5) |
+| K6 (A7) | rubric §8, metrics `conflicts`, SKILL Phase 5.4, adjudicator (e) | — | policy: pilot-kwin-20261012 A7 |
+| K7 (C1/C4/M5) | rubric §5 `not_applicable`, §6 null 필드와 `coverage_only`, §12; "마지막 리뷰 뒤 도입" 판정을 없애고 `coverage_only`로 옮김 | R3-11 | policy: pilot-kwin-20261012 K7 |
+| K8, T16 | gold-set.md g1.1 | — | policy: pilot-kwin-20261012 K8, T16 |
+| T1 (A1) | panel reviewer·panel judge 프롬프트, metrics panel precision, SKILL Phase 4.3 | R3-24 | 모든 의심 보고, `unverified:` 근거, judge의 unverifiable(policy: pilot-kwin-20261012 T1) |
+| T2 (A2) | rubric §1 probe 충실도, COMMON | — | policy: pilot-kwin-20261012 T2 |
+| T3 (A3) | `references/repos/<owner>__<repo>.md`, SKILL 파일 표, COMMON. 저장소 파일에는 런타임·probe·저장소 규칙만 두고 지난 결함이나 감사 결과는 두지 않는다(panel 편향과 라운드 사이 비교 깨짐을 막는다) | — | policy: pilot-kwin-20261012 T3 |
+| T4 (A5) | rubric §2 절차 1–3과 important 사례 목록, judge 심각도 질문 | R4-10, R4-11 | 명명된 완화 요인 각 1개, 보조·opt-in 진입점 1단계, rarity 재사용 금지, 파괴적 오동작 P1 시작, 비현실적 입력 정의, 경합 상한 우선(policy: pilot-kwin-20261012 T4) |
+| T5 (A6) | rubric §8 partial·miss 테스트와 행 판정 규칙, matcher 프롬프트 | R2-18, R3-21 | ±3줄·같은 함수 조건, 메커니즘당 결함 하나, `review_id`, 매칭 대상(policy: pilot-kwin-20261012 T5) |
+| T6 (C1/C2) | rubric §6 null 필드, `exposed_by_pr`, `sources`, 근거 필드, §12 | — | policy: pilot-kwin-20261012 T6 |
+| T7 (C3) | rubric §6 딸린 hunk와 후보 위생, verifier·dedup reconciler 프롬프트 | R3-06 | policy: pilot-kwin-20261012 T7 |
+| T8 (C4) | rubric §6 `coverage_only` (b)–(d) | R3-11 | policy: pilot-kwin-20261012 T8 |
+| T9 (C5) | rubric §5, labeler 프롬프트 pass 1·2, metrics `F_closed` | R1-19 | policy: pilot-kwin-20261012 T9 |
+| T10 (C6) | judge-questions v2.3 `f_low_value`, LOW_VALUE 제안 P ≥ 0.7, 재판정 | — | policy: pilot-kwin-20261012 T10 |
+| T11 (C7) | `dedup_reconciler` 프롬프트, SKILL Phase 4.4, rubric §12 | — | policy: pilot-kwin-20261012 T11 |
+| T12 (C8) | owner-session extractor, rubric §6 후보 위생, SKILL Phase 1.3 | R3-06, R3-07 | 감사 세션 제외, squash 커밋 blame 귀속(policy: pilot-kwin-20261012 T12) |
+| T13 (C9) | judge-questions escalation, triage·verifier 프롬프트, SKILL Phase 4.1 | — | policy: pilot-kwin-20261012 T13 |
+| T14 (C10) | panel reviewer 입력, SKILL Phase 4.3 | — | policy: pilot-kwin-20261012 T14 |
+| T15 (M) | rubric §6 `.k` 번호와 panel 행 기본값, §9 역할 입력, adjudicator 프롬프트 | — | policy: pilot-kwin-20261012 T15 |
+| T17 | SKILL "Pilot 결과", 보고서 §1 독립 발견 문장 | R3-24 | policy: pilot-kwin-20261012 T17 |
+| B2 | rubric §12, judge-questions `logging`, SKILL Phase 3.1: `labels-judge-candidates.jsonl` | — | policy: pilot-kwin-20261012 B2 |
+| B5 (기각) | rubric §6: head 접미사는 마지막 `@<hex>` | — | policy: pilot-kwin-20261012 B5 |
+| N2 | rubric §2 절차 1(출력이 관찰값을 싣거나 목적이 유지되면 표의 행에서 시작), labeler 프롬프트, gold-set 재자격 경계 사례 f25·f02 | R4-10 | policy: pilot-kwin-20261012 N2 |
+| N3 | rubric §8 매칭 대상(escape 수치가 쓰는 important `defect_fix` 행), SKILL Phase 5.1, matcher 프롬프트 입력 | — | policy: pilot-kwin-20261012 N3 |
+| N4 | metrics APPROVE 행, report-template §5: base만 merge한 최종 head 위의 APPROVE는 `superseded` | — | policy: pilot-kwin-20261012 N4 |
+| N7 | repos/isac322__kwin-mcp.md: 의존성은 선언 범위와 `uv.lock` 고정값으로 적는다 | — | policy: pilot-kwin-20261012 N7 |
+| N6 | rubric §5 `not_applicable`: 리뷰 시각이 merge·close 이후인지 검증기가 확인 | — | policy: pilot-kwin-20261012 N6 |
+| PR3-1 | panel reviewer A·B 출력에 `repo_rule`, panel judge가 복사 | — | policy: pilot-kwin-20261012 PR3-1 |
+| PR3-2 | rubric §2 `p2_blocking` 조건 4: `final` true는 `evidence_kind` probe·file_line만, COMMON, panel judge | R4-10 | policy: pilot-kwin-20261012 PR3-2 |
+| PR3-3 | rubric §6 `repo_rule`: base가 이미 어긴 규칙도 PR의 새 누락은 결함(P3), base 누락은 보고하지 않음, COMMON | — | policy: pilot-kwin-20261012 PR3-3 |
+| PR3-4 | rubric §6·§10 이미 있던 동작에 대한 새 주장: `defect_fix`, `functional/claim_mismatch`, `exposed_by_pr` false, `p2_blocking` false, COMMON, panel judge | — | policy: pilot-kwin-20261012 PR3-4 |
+| PR3-5 | rubric §1 probe 충실도: lockfile 일부 일치는 probe한 경로의 패키지가 모두 맞을 때만 `probe`, COMMON | — | policy: pilot-kwin-20261012 PR3-5 |
+| PR3-6 | rubric §12, COMMON: `evidence`·`mechanism`에도 로컬 경로·비공개 텍스트 금지 | — | policy: pilot-kwin-20261012 PR3-6 (D2 확장) |
+
+기각: B6(PR 본문 편집 기록 수집), tests-only hunk 자동 닫기, `independent_recall` 비율(HRA-21과 충돌), `asserted_correct` 필드(`notes`로 대신).

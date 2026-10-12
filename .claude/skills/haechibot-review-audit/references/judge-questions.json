@@ -1,8 +1,8 @@
 {
-  "version": "v2.2",
-  "rubric_version": "v2.2",
+  "version": "v2.3",
+  "rubric_version": "v2.5",
   "purpose": "First-pass triage only. judge_batch has no repository access; its answers never become final validity, severity, verdict or match labels. Final labels come from repo-access agents (references/agent-prompts.md) at the reviewed head (HRA-07, D18).",
-  "frozen": "Do not edit during a measured round. Any change bumps `version` and its hash in versions.json, and every item judged with the old version is re-judged before pooling (HRA-03, D19).",
+  "frozen": "Do not edit during a measured round. Any change bumps `version` and its hash in versions.json, and every item judged with the old version is re-judged before pooling (HRA-03, D19). Items judged under v2.2 are re-judged under v2.3: v2.3 reversed the wording of f_low_value, so v2.2 answers to it are not comparable.",
   "state_builder": {
     "severity_strip_regex": [
       "(?:\\*\\*)?\\s*\\[?\\bP[0-3]\\b\\]?\\s*:?\\s*(?:\\*\\*)?",
@@ -49,7 +49,7 @@
     },
     "f_severity": {
       "type": "choice",
-      "instructions": "Assume the finding is correct. Rate the impact of the problem on the project. Start from the worst realistic failure on a default-reachable path. Lower it for significant mitigating factors (non-default configuration, dev-only path, implausible input, a failure that CI catches), by at most two levels in total. If an attack needs an implausible precondition, rate it as an ordinary functional problem. If no concrete failure scenario can be stated, do not go above P2. A test, fixture, harness, lint, codegen, CI or developer-tooling defect whose only consequence is that a test, check or CI job fails, is skipped or stops defending is not a product correctness defect: rate that consequence, unless it hides or admits a concrete product defect introduced by the PR, in which case rate that product defect.",
+      "instructions": "Assume the finding is correct. Rate the impact of the problem on the project. Start from the worst realistic failure on a default-reachable path; running a destructive action on the wrong target starts at P1. Lower it for significant mitigating factors (non-default configuration, dev-only path, input that no documented interface or tool schema accepts, a failure that CI catches, an entry point that is a secondary CLI/REPL or opt-in only), by at most two levels in total; each named mitigation counts once, and rarity used to pick the starting level is not lowered again. If an attack needs an implausible precondition, rate it as an ordinary functional problem. If no concrete failure scenario can be stated, do not go above P2. A test, fixture, harness, lint, codegen, CI or developer-tooling defect whose only consequence is that a test, check or CI job fails, is skipped or stops defending is not a product correctness defect: rate that consequence, unless it hides or admits a concrete product defect introduced by the PR, in which case rate that product defect.",
       "criteria": {
         "P0": "Data loss, security defect, secret leak, or wide outage, with a concrete failure scenario reachable by default.",
         "P1": "The change fails its purpose, causes a regression, or produces a wrong result on a realistic path.",
@@ -92,10 +92,10 @@
     },
     "f_low_value": {
       "type": "bool",
-      "instructions": "Assume the finding is correct. Would acting on it bring a concrete benefit (fewer defects, a documented convention met, clearly easier maintenance) larger than the cost of the change?",
+      "instructions": "Assume the finding is correct. Is the finding correct but low value? Answer true when acting on it would bring no concrete benefit (fewer defects, a documented convention met, clearly easier maintenance) larger than the cost of the change.",
       "criteria": {
-        "true": "No: the change brings no benefit larger than its cost (correct but low value).",
-        "false": "Yes: there is a concrete benefit larger than the cost."
+        "true": "Low value: the change brings no benefit larger than its cost.",
+        "false": "Not low value: there is a concrete benefit larger than the cost."
       }
     }
   },
@@ -113,7 +113,7 @@
     },
     "c_severity": {
       "type": "choice",
-      "instructions": "If this evidence shows a defect, rate the impact of that defect on the project. Start from the worst realistic failure on a default-reachable path, and lower it for significant mitigating factors (non-default configuration, dev-only path, implausible input, a failure that CI catches) by at most two levels in total. If an attack needs an implausible precondition, rate it as an ordinary functional problem. If no concrete failure scenario can be stated, do not go above P2. A test, fixture, harness, lint, codegen, CI or developer-tooling defect whose only consequence is that a test, check or CI job fails, is skipped or stops defending is not a product correctness defect: rate that consequence, unless it hides or admits a concrete product defect introduced by the PR, in which case rate that product defect. Choose `none` if it shows no defect.",
+      "instructions": "If this evidence shows a defect, rate the impact of that defect on the project. Start from the worst realistic failure on a default-reachable path; running a destructive action on the wrong target starts at P1. Lower it for significant mitigating factors (non-default configuration, dev-only path, input that no documented interface or tool schema accepts, a failure that CI catches, an entry point that is a secondary CLI/REPL or opt-in only) by at most two levels in total; each named mitigation counts once, and rarity used to pick the starting level is not lowered again. If an attack needs an implausible precondition, rate it as an ordinary functional problem. If no concrete failure scenario can be stated, do not go above P2. A test, fixture, harness, lint, codegen, CI or developer-tooling defect whose only consequence is that a test, check or CI job fails, is skipped or stops defending is not a product correctness defect: rate that consequence, unless it hides or admits a concrete product defect introduced by the PR, in which case rate that product defect. Choose `none` if it shows no defect.",
       "criteria": {
         "P0": "Data loss, security defect, secret leak, or wide outage.",
         "P1": "The change fails its purpose, causes a regression, or produces a wrong result on a realistic path.",
@@ -133,16 +133,16 @@
       }
     }
   },
-  "logging": "Write every judge answer as a row with rater `judge` to the window's labels-judge.jsonl, never to labels-findings.jsonl or labels-misses.jsonl (findings: validity mapped likely_valid->valid, likely_invalid->invalid, needs_repo->unverifiable, plus severity; candidates: verdict). metrics uses these rows only for judge_bias, computed every round on irr_sample items only, against the blind labelerB row: κ judge vs labelerB, and the point-biserial correlation between finding length and a likely_valid answer (D18, R4-19, R4-20).",
+  "logging": "Write every judge answer as a row with rater `judge`, never to labels-findings.jsonl or labels-misses.jsonl. Finding answers go to the window's labels-judge.jsonl (validity mapped likely_valid->valid, likely_invalid->invalid, needs_repo->unverifiable, plus severity and the bool answers). Candidate answers go to the window's labels-judge-candidates.jsonl (verdict and p_not_defect); metrics does not read that file, it records triage closures and the closed-candidate audit sample. metrics uses labels-judge.jsonl rows only for judge_bias, computed every round on irr_sample items only, against the blind labelerB row: κ judge vs labelerB, and the point-biserial correlation between finding length and a likely_valid answer (D18, R4-19, R4-20).",
   "escalation": {
     "findings": [
-      "Every finding goes to the labeler agent (one per PR, heads in order) for the final labels. judge_batch only orders the queue. Its suggestions go to labelerA only, and only for findings whose irr_sample is false; there labelerA must confirm or overturn them with file:line evidence. labelerB never sees judge suggestions, and nobody sees them on irr_sample items (R4-16, R4-18).",
+      "Every finding goes to the labeler agent (one per PR, heads in order) for the final labels. judge_batch only orders the queue. Its suggestions go to labelerA only, and only for findings whose irr_sample is false; there labelerA must confirm or overturn them with file:line evidence. A LOW_VALUE suggestion (f_low_value true) is shown only when its probability is >= 0.7. labelerB never sees judge suggestions, and nobody sees them on irr_sample items (R4-16, R4-18).",
       "Second independent labeler (labelerB), then adjudication, for: every finding with bot severity P0 or P1, or a judge or labelerA severity of P0 or P1 (D10); every finding with irr_sample true (seeded random ~20%, D10); every finding where labelerA disagrees with the judge on validity or f_off_scope/f_style_only/f_low_value; every finding where f_validity is needs_repo or its confidence < 0.7.",
       "κ is computed only on irr_sample items. κ on the other double-labelled items is diagnostic only (D10, R4-16).",
       "If labelers and adjudicator still disagree on an important item, the owner decides and the reason is recorded in notes (private/ if it quotes private text)."
     ],
     "candidates": [
-      "Escalate to the candidate verifier agent (one per PR): every candidate with c_verdict in {defect_fix, external_cause, policy_risk, unclear}; every candidate with P(not_defect) < 0.85; every cross_reference and owner_session candidate (owner_session items with coverage_only true are verified too, and their miss rows carry coverage_only true and count only in coverage_unreviewed_defects); every post_merge_commit with any keyword flag (fix, bug, revert, regress, hotfix, #<pr>). Judge suggestions go to the first verifier (labelerA) only for candidates whose irr_sample is false; the second verifier (labelerB) never sees them.",
+      "Escalate to the candidate verifier agent (one per PR): every candidate with c_verdict in {defect_fix, external_cause, policy_risk, unclear}; every candidate with P(not_defect) < 0.85; every cross_reference and owner_session candidate (owner_session items with coverage_only true are verified too, and their miss rows carry coverage_only true and count only in coverage_unreviewed_defects); every post_merge_commit with any keyword flag (fix, bug, revert, regress, hotfix, #<pr>). post_review_hunk candidates are grouped by commit: the verifier judges each commit once and applies that judgement to its hunks; this grouping adds no closing rule. Judge suggestions go to the first verifier (labelerA) only for candidates whose irr_sample is false; the second verifier (labelerB) never sees them.",
       "Candidates judged not_defect with P(not_defect) >= 0.85 and not escalated above are closed with a `final` row: verdict not_defect, is_defect false, notes \"judge-triage p=<P(not_defect)>\". A seeded random 20% of them (at least 10 per channel when available) is re-labelled by the verifier.",
       "If any sampled closed candidate turns out defect_fix at P2 or above, or the verifier disagrees on more than 10% of the sample, escalate every closed candidate of that channel.",
       "Every candidate the first verifier (labelerA) labels defect_fix with an important severity (P0, P1, or P2 with p2_blocking) gets a second independent verifier (labelerB), then adjudication, before it enters R_imp (HRA-13). With a single verifier its rows are copied to `final`. Disagreement on an important item that the adjudicator cannot settle goes to the owner.",

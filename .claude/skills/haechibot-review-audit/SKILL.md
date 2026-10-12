@@ -16,6 +16,7 @@ haechibot 리뷰가 한 기간 동안 **중요한 결함을 놓쳤는지(importa
 | `references/report-template.md` | 보고서 형식 |
 | `references/gold-set.md` | rater 자격 시험용 보정 세트로, 별도 단계에서 만든다. (A) 사전 baseline 주 `[T0−14d, T0−7d)`의 bot finding 40개 이상을 이중 라벨하고 adjudicate한 것, (B) kwin-mcp miss f00–f29를 비식별화한 것. frontmatter에는 version, part·등급별 항목 수, 만든 라벨러들의 κ 결과가 있다 |
 | `references/sources.md` | 출처, 교정, 규칙 → claim 매핑 |
+| `references/repos/<owner>__<repo>.md` | 저장소별 감사 맥락: 대상 플랫폼, 오프라인 probe 방법, stub으로 보일 수 없는 것, 문서 규칙. 저장소에 접근하는 모든 역할(labeler, adjudicator, candidate verifier, panel reviewer, panel judge, dedup reconciler)은 이 파일이 있으면 먼저 읽는다. 이 파일에는 지난 결함이나 감사 결과를 적지 않는다. 적으면 panel이 그쪽으로 치우치고 라운드 사이 비교가 깨진다(policy: pilot-kwin-20261012 T3) |
 
 ## 경계
 
@@ -26,7 +27,8 @@ haechibot 리뷰가 한 기간 동안 **중요한 결함을 놓쳤는지(importa
 
 - `T0 = 2026-10-11T20:13:52Z`. after 창 `A = [T0, min(T0+7d, run_time − H))`, baseline 창 `B = [T0−7d, T0)`. evidence horizon `H` 기본값은 3일이고 두 창에 같은 값을 쓴다. 전체 창을 덮는 가장 이른 실행은 T0+10d(2026-10-21T20:14Z)다.
 - `$ROUND = ~/.local/state/haechibot-review-audit/<round-id>/`(0700): `baseline/`, `after/`(collect DIR과 라벨 파일), `private/`(창별 owner 세션 후보 `private/<window>/`, runner transcript, 비공개 notes), `queue/`(섞인 라벨링 큐와 `map.jsonl`), `scratch/`(checkout), `versions.json`, `report.md`.
-- 도구: `apps/objects/issue-agent/operations/issue-agent-review-audit`의 `collect --since --until --out --evidence-days H`, `panel-draw --dir --n --seed`, `metrics --format json [--labels-findings F] [--labels-misses F] [--labels-judge F] [--labels-matcher F] [--exclude-pr OWNER/REPO#N ...]`, `kappa --a --b [--rater-a --rater-b] [--all-items] [--field validity|severity|p2_blocking|bot_match|is_defect|verdict ...]`, `compare --before B.json --after A.json`; `issue-agent-records`; omp eval의 `archive`, `judge_batch`.
+- 도구: `apps/objects/issue-agent/operations/issue-agent-review-audit`의 `collect --since --until --out --evidence-days H`, `panel-draw --dir --n --seed`, `metrics --format json [--labels-findings F] [--labels-misses F] [--labels-judge F] [--labels-matcher F] [--exclude-pr OWNER/REPO#N ...]`, `kappa --a --b [--rater-a --rater-b] [--all-items] [--field validity|severity|p2_blocking|important|important_miss|bot_match|is_defect|verdict ...]`, `compare --before B.json --after A.json`; `issue-agent-records`; omp eval의 `archive`, `judge_batch`.
+- 역할 입력: 오케스트레이터는 모든 역할에 collector의 PR별 `bot_reviewed_heads`(head별 리뷰 id와 `merge_base` 포함)를 그대로 넘기고, 어떤 텍스트도 잘라서 넘기지 않는다(rubric §9; policy: pilot-kwin-20261012 T15).
 
 ## 규칙
 
@@ -70,41 +72,46 @@ haechibot 리뷰가 한 기간 동안 **중요한 결함을 놓쳤는지(importa
 ### Phase 1. 수집
 1. 창마다 `issue-agent-review-audit collect --since <ISO> --until <ISO> --out $ROUND/<baseline|after>/collect --evidence-days <H>`를 돌린다.
 2. `manifest.json`의 잘림과 API 오류를 확인한다. 0이 아니면 다시 수집하거나 제외 사유를 적는다.
-3. owner 세션 후보를 만든다: `owner_session_extractor` 프롬프트를 창마다 돌리고, 결과는 `private/<window>/extra-candidates.jsonl`이다. 각 항목에 `anchor_review_id`와 `anchor_at`이 있다. bot 리뷰가 하나도 없는 PR의 항목은 coverage에만 센다(HRA-14).
+3. owner 세션 후보를 만든다: `owner_session_extractor` 프롬프트를 창마다 돌리고, 결과는 `private/<window>/extra-candidates.jsonl`이다. 각 항목에 `anchor_review_id`와 `anchor_at`이 있다. bot 리뷰가 하나도 없는 PR의 항목은 coverage에만 센다(HRA-14). 이 감사 스킬을 돌렸거나 haechibot 리뷰를 분석한 세션은 건너뛴다. 나중에 main에서 찾은 결함은 `git blame -w -M -C`가 그 PR의 squash 커밋에 닿을 때만 그 PR의 후보이고, 아니면 버리고 건수를 응답에 적는다(rubric §6 후보 위생; policy: pilot-kwin-20261012 T12).
 4. runner transcript(`issue-agent-records issue <repo> <n> --out $ROUND/private/runner/<owner>__<repo>__<n>`)는 진단용으로만 받는다. `issue-agent-records bridge events`는 coverage 교차 확인에만 쓴다.
 
 ### Phase 2. 자격 시험과 pilot
-1. rater 구성(라벨러, adjudicator, verifier, matcher, judge 질문)마다 `references/gold-set.md`로 시험한다. 정답은 보여주지 않는다. rater는 Part A 55건을 모두 라벨한 뒤 `issue-agent-review-audit kappa --a <rater 라벨> --b gold-findings.jsonl --rater-b gold --all-items --field validity --field severity --field p2_blocking`을 돌린다. 출력의 n이 gold 수와 같지 않으면 통과가 아니다. gate는 HRA-05이고, `p2_blocking` κ(두 쪽이 모두 P2로 매긴 항목)는 기록만 한다(metrics.md §6).
+1. rater 구성(라벨러, adjudicator, verifier, matcher, judge 질문)마다 `references/gold-set.md`로 시험한다. 정답은 보여주지 않는다. rater는 Part A 55건을 모두 라벨한 뒤 `issue-agent-review-audit kappa --a <rater 라벨> --b gold-findings.jsonl --rater-b gold --all-items --field validity --field severity --field p2_blocking --field important`을 돌린다. 출력의 n이 gold 수와 같지 않으면 통과가 아니다. gate는 HRA-05이고, `p2_blocking` κ(두 쪽이 모두 P2로 매긴 항목)와 `important` κ는 기록만 한다(metrics.md §6). rubric §2가 v2.3과 v2.4에서 바뀌었으므로 v2.2로 자격을 얻은 rater도 다시 시험하고, gold-set.md의 경계 사례 f25·f02를 따로 기록한다.
 2. `[T0−21d, T0−14d)`의 리뷰 약 20건(모든 repo, gold set에 없는 것)으로 pilot을 돌린다. rubric, 질문, 프롬프트 변경은 v2.x로 올린다. 바뀌면 1단계를 다시 한다.
 3. `versions.json`을 동결한다(HRA-03). 이후 바뀌면 영향받은 라벨을 다시 만든다.
 
 ### Phase 3. Noise 감사 (창 안의 모든 bot finding)
-1. `triage` 프롬프트로 두 창의 state를 만들고 `judge_batch`를 돌린다. judge 행은 `labels-judge.jsonl`에 쓰고, `irr_sample`과 escalation을 정하고, PR 단위로 큐를 섞는다(HRA-07).
-2. PR마다 `labeler` 에이전트 하나(labelerA)가 bot-reviewed head를 순서대로 따라가며 그 PR의 finding을 모두 라벨한다. 앞선 head의 finding과 그 `dedup_key`를 알고 있으므로 재진술에 같은 key와 `DUPLICATE`를 붙인다. judge 제안은 irr_sample이 아닌 finding에서만 본다. pass 1은 결과를 보지 않고, pass 2에서 `author_action`을 정한다.
+1. `triage` 프롬프트로 두 창의 state를 만들고 `judge_batch`를 돌린다. finding judge 행은 `labels-judge.jsonl`에, 후보 judge 행은 `labels-judge-candidates.jsonl`에 쓴다(metrics는 뒤 파일을 읽지 않는다). `irr_sample`과 escalation을 정하고, PR 단위로 큐를 섞는다(HRA-07).
+2. PR마다 `labeler` 에이전트 하나(labelerA)가 bot-reviewed head를 순서대로 따라가며 그 PR의 finding을 모두 라벨한다. 앞선 head의 finding과 그 `dedup_key`를 알고 있으므로 재진술에 같은 key와 `DUPLICATE`를 붙인다. judge 제안은 irr_sample이 아닌 finding에서만 보고, `LOW_VALUE` 제안은 확률 0.7 이상일 때만 보인다. pass 1은 결과를 보지 않고 `author_action: null`을 쓴다. pass 2에서는 `author_action`만 정하며, 오케스트레이터는 사람·작성자 답글과 커밋을 bot 코멘트 본문 없이 준다(rubric §5; policy: pilot-kwin-20261012 T9, T10).
 3. escalation 대상과 `irr_sample`은 labelerB가 judge 제안 없이 독립적으로 라벨하고, `adjudicator`가 `final`을 쓴다. 단일 라벨 항목은 labelerA 값을 `final`로 복사한다. 동점은 owner가 정한다(HRA-11).
 4. addressed 보정 표본을 확인한다(metrics.md §3).
 5. `queue/map.jsonl`로 각 창 DIR의 `labels-findings.jsonl`에 되돌려 쓴다.
 
 ### Phase 4. Miss 감사
-1. 후보(collector 4채널 + 창별 owner 세션)에 judge 질문을 돌리고 escalation 규칙대로 큐를 만든다. triage로 닫은 후보는 `<candidate-id>@<head12>` `final` 행으로 쓴다.
+1. 후보(collector 4채널 + 창별 owner 세션)에 judge 질문을 돌리고 escalation 규칙대로 큐를 만든다. triage로 닫은 후보는 `<candidate-id>@<head12>` `final` 행으로 쓴다. `post_review_hunk` 후보는 커밋별로 묶어 verifier가 커밋 하나를 한 번 판정하고 그 판정을 hunk들에 적용한다. 닫는 규칙은 새로 두지 않는다(policy: pilot-kwin-20261012 T13).
 2. PR마다 `candidate_verifier` 에이전트 하나(labelerA)가 escalated 후보를 판정하고, 결함이 있던 head마다 `<candidate-id>[.<k>]@<head12>` 행을 쓴다. bot 출력은 보지 않는다. horizon 밖 후보는 `out_of_horizon: true`로 남긴다. important `defect_fix`는 두 번째 verifier(labelerB)가 judge 제안 없이 독립적으로 확인하고, `adjudicator`가 `final`을 쓴다. verifier가 하나면 그 행을 `final`로 복사한다(HRA-13).
-3. panel(HRA-15): `issue-agent-review-audit panel-draw --dir <DIR> --n 10 --seed <SEED_PANEL>`이 `panel.json`을 쓴다. 대상 head는 다음 순서로 정한다: PR 작성자가 아닌 사람의 첫 수정 커밋 직전의 마지막 bot-reviewed head; 그런 커밋이 없으면 body verdict 기준 첫 GREEN head; 그것도 없으면 최종 bot-reviewed head. 오케스트레이터가 remote 없는 scratch clone을 만든다: 대상 head를 detach하고, base branch를 대상 head 커밋 시각까지 자른 `refs/audit/base`를 넣는다(B의 merge-skew 렌즈용). PR마다 `panel_reviewer_a`(id `<pr-id>/pA<k>`)와 `panel_reviewer_b`(id `<pr-id>/pB<k>`)를 그 clone과 merge-base diff만 주고 돌린다. reviewer당 약 250k 토큰이다. PR마다 `panel_judge` 한 번(labelerA)이 A·B 중복을 합치고, 모든 functional 항목을 reviewer 심각도와 상관없이 확인하거나 다시 매기고, 결함이 있던 head마다 행을 쓴다. P0/P1 여부에서 judge와 reviewer가 갈릴 때만 두 번째 judge(labelerB)와 adjudicator를 쓰고, important 동점은 owner가 정한다. judge가 하나면 그 행을 `final`로 복사한다.
-4. 같은 근본 원인을 `dedup_key`로 묶고, `sources`에 드러낸 채널을 모두 적는다(HRA-16).
+3. panel(HRA-15): `issue-agent-review-audit panel-draw --dir <DIR> --n 10 --seed <SEED_PANEL>`이 `panel.json`을 쓴다. 대상 head는 다음 순서로 정한다: PR 작성자가 아닌 사람의 첫 수정 커밋 직전의 마지막 bot-reviewed head; 그런 커밋이 없으면 body verdict 기준 첫 GREEN head; 그것도 없으면 최종 bot-reviewed head. 오케스트레이터가 remote 없는 scratch clone을 만든다: 대상 head를 detach하고, base branch를 대상 head 커밋 시각까지 자른 `refs/audit/base`를 넣는다(B의 merge-skew 렌즈용). PR마다 `panel_reviewer_a`(id `<pr-id>/pA<k>`)와 `panel_reviewer_b`(id `<pr-id>/pB<k>`)를 그 clone, merge-base diff, 그 PR 자신의 커밋 목록(stacked PR이면 그 커밋만 리뷰한다), PR 본문만 주고 돌린다. 본문은 현재 텍스트이고 대상 head 뒤에 고쳐졌을 수 있으므로 head의 코드, 커밋, CHANGELOG를 우선한다(policy: pilot-kwin-20261012 T14). reviewer당 약 250k 토큰이며, reviewer는 PR이 밝힌 목표와 주장을 나열해 하나씩 시험하고, 확인하지 못한 의심도 `evidence`를 `unverified: <이유>`로 시작해 모두 보고한다(policy: pilot-kwin-20261012 T1). PR마다 `panel_judge` 한 번(labelerA)이 A·B 중복을 합치고, 모든 functional 항목을 reviewer 심각도와 상관없이 confirmed, rejected, unverifiable로 판정해 다시 매긴다. 저장소 파일(`references/repos/`)이 런타임을 적어 두었으면 unverifiable로 두기 전에 거기서 probe한다. 결함이 있던 head마다 행을 쓰고(`irr_sample: false`, `out_of_horizon: false`), 항목별 판정을 `panel-status.jsonl`에 쓴다. P0/P1 여부에서 judge와 reviewer가 갈릴 때만 두 번째 judge(labelerB)와 adjudicator를 쓰고, important 동점은 owner가 정한다. judge가 하나면 그 행을 `final`로 복사한다.
+4. PR마다 verifier와 panel judge의 `final` 행이 다 나온 뒤, matcher 전에 `dedup_reconciler`를 한 번 돌린다(HRA-16; policy: pilot-kwin-20261012 T11). 같은 메커니즘과 같은 수정을 가진 행을 한 `dedup_key`로 묶고(파일만 같다고 묶지 않는다), `sources`에 드러낸 채널 이름을 모두 적고, 근본 원인이 여럿인 행은 `.k`로 나눈다. 묶은 무리 안에서 심각도, `p2_blocking`, verdict가 갈리면 `adjudicator`가 정한다.
 
 ### Phase 5. 매칭
-1. PR마다 `matcher`를 두 번 따로 돌린다. 각 실행은 그 PR의 모든 결함 행을 그 head의 bot 리뷰와 비교하고, 결과를 `labels-matcher.jsonl`에 rater `matcher-defect_first` 또는 `matcher-review_first`로 쓴다. 두 순서가 같으면 그 값을 `final`의 `bot_match`, `matched_finding_id`(summary-only `partial`이면 null과 `review_id`)에 복사한다(`notes: matcher-copy`). 두 순서가 다르면 `adjudicator`가 rubric §8로 `final`을 정한다. "낮은 값" 규칙은 없다(HRA-18).
+1. PR마다 `matcher`를 두 번 따로 돌린다. 대상은 escape 수치가 쓰는 행(important `defect_fix`, bot-reviewed head에 있음(`present_at_reviewed_head: yes`), `coverage_only` 아님)이고, 각 실행은 그 행을 그 head의 모든 bot 리뷰와 비교해 결과를 `labels-matcher.jsonl`에 rater `matcher-defect_first` 또는 `matcher-review_first`로 쓴다. 두 순서가 같으면 그 값을 `final`의 `bot_match`, `matched_finding_id`, `review_id`(`hit`·`partial`이면 판정에 쓴 리뷰, `miss`이면 null)에 복사한다(`notes: matcher-copy`). 두 순서가 다르면 `adjudicator`가 rubric §8로 `final`을 정한다. "낮은 값" 규칙은 없다(HRA-18).
 2. match 20–30건(두 창 합산, seed)을 사람이 확인한다. 사람 값이 그 행의 matcher-copy `final`을 대체하고 `match_sample: true`를 붙인다(`irr_sample`과 별개). `match_kappa`는 이 행에서만, 순서별로(`matcher-defect_first` 대 사람 `final`, `matcher-review_first` 대 사람 `final`) 계산하며 gate는 HRA-19다.
 3. dedup_key 조정(PR마다 한 번): `final` `bot_match`가 `hit`인 결함은 모든 miss 행이 matched finding의 `final` `dedup_key`를 받는다. 옛 key는 `notes`에 `prev_key`로 남긴다. 이렇게 해서 `R_imp`에서 bot_finding 행과 후보 행이 한 결함으로 센다(rubric §0, HRA-16).
+4. metrics가 `conflicts`(hit·partial의 matched finding이 `final` invalid)를 내면 그 행과 finding을 `adjudicator`에게 다시 보내고, 고친 뒤 metrics를 다시 돌린다(rubric §8; policy: pilot-kwin-20261012 A7).
 
 ### Phase 6. 계산
 1. 창마다 `issue-agent-review-audit metrics --format json`을 돌린다. `bad_rows`가 비어 있어야 한다. baseline은 `--exclude-pr isac322/kwin-mcp#90 … --exclude-pr isac322/kwin-mcp#98`을 붙인 실행도 한다(gold set 출처 PR 제외본).
-2. `issue-agent-review-audit kappa --a <labels> --b <labels> [--field validity|severity|p2_blocking|bot_match|is_defect|verdict]`로 IRR을 확인한다(기본은 irr_sample 행만, 누적 60쌍까지 라운드 합산).
+2. `issue-agent-review-audit kappa --a <labels> --b <labels> [--field validity|severity|p2_blocking|important|important_miss|bot_match|is_defect|verdict]`로 IRR을 확인한다(기본은 irr_sample 행만, 누적 60쌍까지 라운드 합산). `important`(finding)와 `important_miss`(miss 행)는 P0/P1, 또는 P2 ∧ `p2_blocking`에서 파생한 일치도다.
 3. `issue-agent-review-audit compare --before <B.json> --after <A.json>`로 primary endpoint를 검정한다(HRA-27). 제외본 baseline으로도 한 번 더 돌린다.
 4. gate 미달 라벨에 기대는 수치에 `tentative`를 붙이고, 임계값은 Wilson 구간으로 판정한다(HRA-23, HRA-24).
 
 ### Phase 7. 보고와 재계산
-1. `references/report-template.md`로 `$ROUND/report.md`를 쓴다. miss는 상대값과 `@H`로, capture–recapture는 indicative로 적는다(HRA-21, HRA-22).
+1. `references/report-template.md`로 `$ROUND/report.md`를 쓴다. miss는 상대값과 `@H`로, capture–recapture는 indicative로 적는다(HRA-21, HRA-22). escaped의 첫 독립 출처(`important_escaped.by_first_source`), panel precision, adjudicator가 정한 important 여부 사례 목록을 넣고, owner 재리뷰가 없는 주의 miss 발견은 panel에 달려 있다는 문장을 매 라운드 넣는다(policy: pilot-kwin-20261012 T1, T4, T17).
 2. 30일·90일 재계산 날짜를 적는다. 그때 같은 창을 `--evidence-days 30`/`90`으로 새 DIR에 다시 수집하고, 옛 DIR의 `final` 라벨 행을 새 DIR로 복사한 뒤 새 DIR에 없는 id만 라벨한다. 옛 DIR은 바꾸지 않는다(HRA-28).
+
+## Pilot 결과
+
+pilot `pilot-kwin-20261012`(kwin-mcp, baseline 창 B, PR 17개)에서 이 절차는 gold g1.0 Part B의 important 결함 13개 중 12개를 찾았다(g1.1에서는 놓친 하나인 f10이 `not_defect`가 되어 R_imp가 12다). 그러나 독립 panel이 찾은 것은 3/13이었고, 나머지는 owner 자신의 수정 커밋과 코멘트에서 왔다. 두 라벨러는 bot finding 8개 중 4개에서 important 여부를 바꿨다. 그래서 보고서는 매 라운드 owner 재리뷰가 없는 주는 panel에 기대고 panel 발견력이 낮다는 것을 적고, `irr.important`를 기록한다. 이 pilot에서 바꾼 규칙에는 `sources.md`의 `policy: pilot-kwin-20261012 <item>` 행이 있다. pilot 라벨을 다시 쓸 때는 없어진 "마지막 리뷰 뒤 도입" 판정의 행을 먼저 `defect_fix`, `coverage_only: true`로 바꾼다.
 
 ## 완료 조건
 

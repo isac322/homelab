@@ -1,6 +1,9 @@
 """Unit tests for the pure logic of issue-agent-review-audit (no gh wiring)."""
+import contextlib
 import importlib.machinery
 import importlib.util
+import io
+import json
 import os
 import sys
 import tempfile
@@ -353,17 +356,29 @@ class EvidenceHorizonTest(unittest.TestCase):
 
 
 class FakeGh:
-    """In-memory stand-in for Gh: canned responses keyed by endpoint path (query ignored)."""
+    """In-memory stand-in for Gh: canned responses keyed by endpoint path (query ignored). A
+    route whose value is an HttpError records an api error like Gh._run and returns None."""
+
+    class HttpError:
+        def __init__(self, status, message):
+            self.status, self.message = status, message
 
     def __init__(self, routes):
         self.routes = routes
         self.errors = []
 
+    def _get(self, endpoint, default):
+        value = self.routes.get(endpoint.split("?")[0], default)
+        if isinstance(value, FakeGh.HttpError):
+            self.errors.append({"call": endpoint, "status": value.status, "message": value.message})
+            return None
+        return value
+
     def rest_obj(self, endpoint, paginate=False):
-        return self.routes.get(endpoint.split("?")[0])
+        return self._get(endpoint, None)
 
     def rest_list(self, endpoint, paginate=True):
-        return self.routes.get(endpoint.split("?")[0], [])
+        return self._get(endpoint, [])
 
     def review_threads(self, owner, name, number):
         return []
@@ -537,8 +552,7 @@ class PanelDrawTest(unittest.TestCase):
             reviews[pr_id + "@review/1"] = {"id": pr_id + "@review/1", "pr_id": pr_id, "is_bot": True, "in_window": True,
                                             "submitted_at": "2026-10-12T00:00:00Z", "reviewed_head_sha": "h%d" % i,
                                             "verdict": "APPROVED" if i % 3 else "CHANGES_REQUESTED"}
-            coverage[pr_id] = {"id": pr_id, "heads": ["h%d" % i], "bot_reviewed_heads": ["h%d" % i],
-                               "first_foreign_commit_after_review": None}
+            coverage[pr_id] = {"id": pr_id, "heads": ["h%d" % i], "first_foreign_commit_after_review": None}
         return {"prs": prs, "reviews": reviews, "coverage": coverage}
 
     def test_seeded_and_stratified(self):
@@ -551,8 +565,7 @@ class PanelDrawTest(unittest.TestCase):
         self.assertEqual(len(audit.draw_panel(self.units(), seed=7, n=50)["prs"]), 11)
 
     def test_target_head_rules(self):
-        cov = {"heads": ["h1", "h2", "h3", "h4"], "bot_reviewed_heads": ["h1", "h2", "h4"],
-               "first_foreign_commit_after_review": "h3"}
+        cov = {"heads": ["h1", "h2", "h3", "h4"], "first_foreign_commit_after_review": "h3"}
         reviews = [{"id": "1", "submitted_at": "1", "reviewed_head_sha": "h1", "verdict": "CHANGES_REQUESTED"},
                    {"id": "2", "submitted_at": "2", "reviewed_head_sha": "h2", "verdict": "APPROVED"},
                    {"id": "3", "submitted_at": "3", "reviewed_head_sha": "h4", "verdict": "APPROVED"}]
@@ -764,6 +777,268 @@ class MetricsTest(unittest.TestCase):
         self.assertEqual(result["coverage"]["reviewed_prs"], 0)
         self.assertEqual(result["coverage"]["excluded_prs"], [self.PR])
         self.assertTrue(all(pr not in (row["id"] or "") for row in result["bad_rows"] for pr in [self.PR]))
+
+
+class PilotCollectorTest(unittest.TestCase):
+    """K2/K3 (pilot-kwin-20261012): body-named heads, canonical head rows and candidate heads."""
+
+    C1, C2, C3, BASE2, POST, MB = "1" * 40, "2" * 40, "3" * 40, "4" * 40, "5" * 40, "6" * 40
+
+    def collect(self, compare_404=False):
+        def commit(sha, parents, date):
+            return {"sha": sha, "parents": [{"sha": p} for p in parents], "author": {"login": "isac322"},
+                    "commit": {"committer": {"date": date}}}
+
+        def detail(sha, parents, date, patch):
+            return {"sha": sha, "parents": [{"sha": p} for p in parents], "commit": {"committer": {"date": date}},
+                    "files": [{"filename": "f.py", "status": "modified", "changes": 1, "patch": patch}]}
+
+        routes = {
+            "repos/o/r": {"default_branch": "main"},
+            "repos/o/r/pulls/1": {"number": 1, "title": "t", "user": {"login": "isac322"}, "state": "closed",
+                                  "merged_at": "2026-10-12T03:00:00Z", "merge_commit_sha": "9" * 40,
+                                  "head": {"sha": self.C3}, "base": {"ref": "main", "sha": "0" * 40},
+                                  "additions": 3, "deletions": 0, "changed_files": 1},
+            "repos/o/r/pulls/1/files": [{"filename": "f.py", "status": "added", "patch": "@@ -0,0 +1,3 @@\n+a\n+b\n+c"}],
+            # C2 merges the base branch back in.
+            "repos/o/r/pulls/1/commits": [commit(self.C1, ["0" * 40], "2026-10-11T22:00:00Z"),
+                                          commit(self.C2, [self.C1, self.BASE2], "2026-10-11T23:00:00Z"),
+                                          commit(self.C3, [self.C2], "2026-10-12T01:00:00Z")],
+            "repos/o/r/commits/" + self.C3: detail(self.C3, [self.C2], "2026-10-12T01:00:00Z", "@@ -2 +2 @@\n-b\n+B"),
+            "repos/o/r/pulls/1/comments": [{
+                "id": 101, "pull_request_review_id": 6, "user": {"login": "alice"}, "path": "f.py", "line": 1,
+                "original_line": 1, "start_line": None, "original_start_line": None, "side": "RIGHT", "body": "why?",
+                "original_commit_id": self.C3, "in_reply_to_id": None, "created_at": "2026-10-12T02:30:00Z"}],
+            "repos/o/r/issues/1/comments": [{"id": 300, "user": {"login": "alice"}, "body": "early note",
+                                             "created_at": "2026-10-11T23:30:00Z"}],
+            "repos/o/r/compare/main..." + self.C1: {"merge_base_commit": {"sha": "0" * 40}},
+            "repos/o/r/compare/main..." + self.C3: {"merge_base_commit": {"sha": self.MB}},
+            "repos/o/r/commits": [{"sha": self.POST, "parents": [{"sha": "9" * 40}]}],
+            "repos/o/r/commits/" + self.POST: detail(self.POST, ["9" * 40], "2026-10-12T04:00:00Z",
+                                                    "@@ -2 +2 @@\n-B\n+b2"),
+        }
+        if compare_404:  # C1 shares no history with the base branch any more
+            routes["repos/o/r/compare/main..." + self.C1] = FakeGh.HttpError(
+                404, "gh: No common ancestor between main and %s. (HTTP 404)" % self.C1)
+        bot = {"login": "haechibot[bot]"}
+        reviews = [
+            # GitHub's commit_id is C2 (the PR head when posted); the body names C1.
+            {"id": 5, "user": bot, "state": "COMMENTED", "commit_id": self.C2, "submitted_at": "2026-10-12T00:00:00Z",
+             "body": "**Verdict: GREEN** reviewed at %s. No blocking findings." % self.C1},
+            {"id": 7, "user": bot, "state": "COMMENTED", "commit_id": self.C3, "submitted_at": "2026-10-12T01:59:00Z",
+             "body": ""},  # reply container
+            {"id": 8, "user": bot, "state": "COMMENTED", "commit_id": self.C3, "submitted_at": "2026-10-12T02:00:00Z",
+             "body": "**Verdict: GREEN** re-reviewed at %s." % self.C3},
+            {"id": 6, "user": {"login": "alice"}, "state": "COMMENTED", "commit_id": self.C3,
+             "submitted_at": "2026-10-12T02:30:00Z", "body": ""},
+        ]
+        collector = audit.Collector(FakeGh(routes), tempfile.mkdtemp(), audit.parse_time("2026-10-11"),
+                                    audit.parse_time("2026-10-13"), "haechibot[bot]", 3,
+                                    now=audit.parse_time("2026-10-20"))
+        collector.collect_pr("o/r", 1, reviews)
+        return collector
+
+    def test_k2_body_head_wins_and_head_rows(self):
+        collector = self.collect()
+        review = next(r for r in collector.reviews if r["review_id"] == 5)
+        self.assertEqual((review["reviewed_head_sha"], review["commit_id"], review["body_head_sha"]),
+                         (self.C1, self.C2, self.C1))
+        (cov,) = collector.coverage
+        heads = cov["bot_reviewed_heads"]
+        self.assertEqual([h["sha"] for h in heads], [self.C1, self.C3])  # container 7 adds nothing
+        self.assertEqual(heads[0]["review_ids"], ["o/r#1@review/5"])
+        self.assertEqual((heads[0]["commit_ids"], heads[0]["body_head"]), ([self.C2], self.C1))
+        self.assertEqual([h["merge_base"] for h in heads], ["0" * 40, self.MB])
+        self.assertIs(heads[1]["in_commits"], True)
+
+    def test_n5_merge_base_404_is_a_note_not_an_api_error(self):
+        collector = self.collect(compare_404=True)
+        (cov,) = collector.coverage
+        first, second = cov["bot_reviewed_heads"]
+        self.assertIsNone(first["merge_base"])
+        self.assertIn("404", first["merge_base_note"])
+        self.assertEqual((second["merge_base"], second["merge_base_note"]), (self.MB, None))
+        self.assertEqual(collector.gh.errors, [])
+
+    def test_k2_force_pushed_head_kept_in_first_review_order(self):
+        gone = "f" * 40
+        rows = audit.bot_reviewed_heads([
+            {"id": "r2", "submitted_at": "2", "commit_id": "a" * 40, "body": "re-reviewed at " + "a" * 40},
+            {"id": "r1", "submitted_at": "1", "commit_id": gone, "body": "**Verdict: OPEN**"},
+            {"id": "r0", "submitted_at": "0", "commit_id": "a" * 40, "body": "", "is_reply_container": True},
+        ], ["a" * 40])
+        self.assertEqual([(r["sha"], r["in_commits"]) for r in rows], [(gone, False), ("a" * 40, True)])
+        self.assertEqual(audit.head_aliases(rows), {})
+
+    def test_k3_every_candidate_names_a_reviewed_head(self):
+        heads = {(c["kind"], c.get("source")): c["reviewed_head_sha"] for c in self.collect().candidates}
+        self.assertEqual(heads, {
+            ("post_review_hunk", "commit"): self.C1,  # C3's hunk, anchored at review 5 whose body names C1
+            ("human_comment", "review_comment"): self.C3,  # anchor review 8
+            ("human_comment", "issue_comment"): self.C1,  # before any bot review: the first reviewed head
+            ("post_merge_commit", None): self.C3,  # after merge: the latest bot-reviewed head
+        })
+
+
+class PilotMetricsTest(unittest.TestCase):
+    """K1 and K4-K7 (pilot-kwin-20261012) on the MetricsTest fixture."""
+
+    BASE = MetricsTest("test_exclude_pr")
+    PR, R1, R2, HA, HB, CAND = BASE.PR, BASE.R1, BASE.R2, BASE.HA, BASE.HB, BASE.CAND
+
+    def miss(self, mid, head, **extra):
+        row = {"id": "%s@%s" % (mid, head[:12]), "rater": "final", "channel": "post_review_hunk",
+               "verdict": "defect_fix", "is_defect": True, "present_at_reviewed_head": "yes",
+               "adjudicated_severity": "P1", "bot_match": "miss", "matched_finding_id": None,
+               "reviewed_head_sha": head, "latest_present_head": head, "dedup_key": "k"}
+        row.update(extra)
+        return row
+
+    def compute(self, misses, findings=None, units=None):
+        return audit.compute_metrics(units or self.BASE.units(),
+                                     self.BASE.finding_labels()[:4] if findings is None else findings, misses, 3)
+
+    def reasons(self, result):
+        return {(row["rater"], row["id"]): row["reason"] for row in result["bad_rows"]}
+
+    def test_k1_bot_match_required_only_on_final(self):
+        rows = [self.miss(self.CAND, self.HA, rater=rater, bot_match=None) for rater in ("labelerA", "labelerB", "final")]
+        reasons = self.reasons(self.compute(rows))
+        self.assertEqual(list(reasons), [("final", self.CAND + "@" + self.HA[:12])])
+        self.assertIn("bot_match required", reasons[("final", self.CAND + "@" + self.HA[:12])])
+
+    def test_k2_commit_id_alias_resolves_to_body_head(self):
+        units = self.BASE.units()
+        hc = "c" * 40  # R2's GitHub commit_id; its body names HB
+        units["reviews"][self.R2] = dict(units["reviews"][self.R2], reviewed_head_sha=hc,
+                                         body="**Verdict: GREEN** re-reviewed at %s." % self.HB)
+        rows = [self.miss(self.CAND, self.HB, dedup_key="k2"),
+                self.miss(self.CAND + ".1", hc, dedup_key="k3", latest_present_head=hc)]
+        result = self.compute(rows, units=units)
+        self.assertEqual(result["bad_rows"], [])
+        # Both defects sit in the APPROVE unit at HB: the row named hc was mapped to the body head.
+        self.assertEqual(self.BASE.kn(result["figures"]["approve_with_important_miss"]["overall"]), (1, 1))
+        self.assertEqual(result["figures"]["important_escaped"]["overall"]["count"], 2)
+
+    def test_k4_escaped_by_first_source(self):
+        units = self.BASE.units()
+        human = "o/r#1/comment/issue_comment/7"
+        bot_said = "o/r#1/comment/issue_comment/8"
+        units["candidates"][human] = {"id": human, "pr_id": self.PR, "kind": "human_comment", "commenter_kind": "human"}
+        units["candidates"][bot_said] = {"id": bot_said, "pr_id": self.PR, "kind": "human_comment",
+                                         "commenter_kind": "implementer_bot"}
+        rows = [
+            self.miss(self.CAND, self.HB, dedup_key="partial", bot_match="partial", review_id=self.R2,
+                      sources=["owner_session"]),
+            self.miss(self.PR + "/os1", self.HA, channel="owner_session", dedup_key="owner", sources=["panel"]),
+            self.miss(human, self.HA, channel="human_comment", dedup_key="human"),
+            self.miss(self.CAND + ".1", self.HA, dedup_key="panelfix", sources=["panel"]),
+            self.miss(bot_said, self.HA, channel="human_comment", dedup_key="fixed-at-reply"),
+            self.miss(self.CAND + ".2", self.HA, dedup_key="hunk-only"),
+        ]
+        by_source = self.compute(rows, units=units)["figures"]["important_escaped"]["by_first_source"]
+        self.assertEqual({k: v for k, v in by_source.items() if k != "note"},
+                         {"bot": 1, "human_review": 2, "panel": 1, "fix_evidence_only": 2})
+
+    def test_k5_important_flag_agreement(self):
+        base = {"irr_sample": True, "validity": "valid"}
+        a = {"x": {**base, "adjudicated_severity": "P2", "p2_blocking": True},
+             "y": {**base, "adjudicated_severity": "P1"}, "z": {**base, "adjudicated_severity": "P3"},
+             "w": {**base, "adjudicated_severity": "P2", "p2_blocking": False}}
+        b = {"x": {**base, "adjudicated_severity": "P3"}, "y": {**base, "adjudicated_severity": "P1"},
+             "z": {**base, "adjudicated_severity": "P3"}, "w": {**base, "adjudicated_severity": "P2"}}
+        important = audit.agreement(a, b, kinds=("findings",))["important"]
+        self.assertEqual((important["n"], important["raw"]), (4, 0.75))
+        self.assertIn("ci95", important)
+        misses = {"m": {"irr_sample": True, "adjudicated_severity": "P2", "p2_blocking": True}}
+        not_defect = {"m": {"irr_sample": True, "adjudicated_severity": None}}
+        self.assertEqual(audit.agreement(misses, not_defect, kinds=("misses",))["important_miss"]["raw"], 0.0)
+
+    def test_k6_conflict_listed_not_bad(self):
+        f3 = self.R1 + "/f3"  # final validity invalid in the fixture
+        rows = [self.miss(self.CAND, self.HA, bot_match="hit", matched_finding_id=f3)]
+        result = self.compute(rows)
+        self.assertEqual(result["bad_rows"], [])
+        self.assertEqual([(c["id"], c["matched_finding_id"]) for c in result["conflicts"]],
+                         [(self.CAND + "@" + self.HA[:12], f3)])
+        self.assertEqual(self.compute(rows, findings=[])["conflicts"], [])  # no final findings label
+
+    def test_k7_vocabulary_and_null_fields(self):
+        nulls = dict.fromkeys(("adjudicated_severity", "present_at_reviewed_head", "latest_present_head",
+                               "defect_type", "exposed_by_pr", "bot_match"))
+        rows = [
+            self.miss(self.CAND, self.HA, verdict="not_defect", is_defect=False, **nulls),
+            self.miss(self.CAND + ".1", self.HA, coverage_only=True, reviewed_head_sha=None, latest_present_head=None,
+                      present_at_reviewed_head="no", bot_match=None),
+            self.miss(self.CAND + ".2", self.HA, verdict="introduced_after_review", is_defect=True),
+        ]
+        reasons = self.reasons(self.compute(rows))
+        self.assertEqual(list(reasons), [("final", self.CAND + ".2@" + self.HA[:12])])
+        self.assertIn("verdict='introduced_after_review' not in vocabulary", reasons[("final", self.CAND + ".2@" + self.HA[:12])])
+
+    def test_k7_not_applicable_leaves_addressed_denominator(self):
+        units = self.BASE.units()
+        units["prs"][self.PR]["merged_at"] = "2026-10-11T00:00:00Z"  # R1 was posted after the merge
+        labels = self.BASE.finding_labels()[:4]
+        labels[0] = dict(labels[0], author_action="not_applicable")
+        result = self.compute([], findings=labels, units=units)
+        self.assertEqual(result["bad_rows"], [])
+        addressed = result["figures"]["addressed_rate"]
+        self.assertEqual(self.BASE.kn(addressed["overall"]), (0, 1))
+        self.assertEqual(addressed["not_applicable_excluded"], 1)
+
+    def test_n6_not_applicable_needs_review_at_or_after_merge(self):
+        labels = self.BASE.finding_labels()[:4]
+        labels[0] = dict(labels[0], author_action="not_applicable")
+        for merged_at, bad in (("2026-10-12T00:00:00Z", False),  # posted at the merge: accepted
+                               ("2026-10-12T00:00:01Z", True),   # posted before the merge
+                               (None, True)):                    # never merged or closed
+            units = self.BASE.units()
+            units["prs"][self.PR]["merged_at"] = merged_at
+            reasons = self.reasons(self.compute([], findings=labels, units=units))
+            self.assertEqual(("final", self.R1 + "/f1") in reasons, bad, merged_at)
+        units = self.BASE.units()
+        units["prs"][self.PR]["closed_at"] = "2026-10-11T00:00:00Z"  # closed unmerged before R1
+        self.assertEqual(self.reasons(self.compute([], findings=labels, units=units)), {})
+
+    def alias_units(self):
+        units = self.BASE.units()
+        hc = "c" * 40  # R2's GitHub commit_id; its body names HB
+        units["reviews"][self.R2] = dict(units["reviews"][self.R2], reviewed_head_sha=hc,
+                                         body="**Verdict: GREEN** re-reviewed at %s." % self.HB)
+        return units, hc
+
+    def test_n1_alias_suffix_pairs_raters_and_validates(self):
+        units, hc = self.alias_units()
+        rows = [self.miss(self.CAND, hc, rater="labelerA", bot_match=None, irr_sample=True),
+                self.miss(self.CAND, self.HB, rater="labelerB", bot_match=None, irr_sample=True),
+                # final: id names the commit_id, the fields name the body head
+                self.miss(self.CAND, self.HB, id="%s@%s" % (self.CAND, hc[:12]))]
+        result = self.compute(rows, units=units)
+        self.assertEqual(result["bad_rows"], [])
+        self.assertEqual(result["figures"]["irr"]["is_defect"]["n"], 1)
+        self.assertEqual(result["figures"]["important_escaped"]["overall"]["count"], 1)
+
+    def test_n1_kappa_dir_pairs_alias_suffix(self):
+        units, hc = self.alias_units()
+        tmp = tempfile.mkdtemp()
+        for name in ("prs", "reviews", "findings", "candidates"):
+            with open(os.path.join(tmp, name + ".jsonl"), "w") as handle:
+                handle.writelines(json.dumps(row) + "\n" for row in units[name].values())
+        for name, rater, head in (("a.jsonl", "labelerA", hc), ("b.jsonl", "labelerB", self.HB)):
+            with open(os.path.join(tmp, name), "w") as handle:
+                handle.write(json.dumps(self.miss(self.CAND, head, rater=rater, irr_sample=True)) + "\n")
+
+        def kappa(*extra):
+            out = io.StringIO()
+            with contextlib.redirect_stdout(out):
+                audit.main(["kappa", "--a", os.path.join(tmp, "a.jsonl"), "--b", os.path.join(tmp, "b.jsonl"),
+                            "--format", "json", *extra])
+            return json.loads(out.getvalue())["agreement"]
+
+        self.assertNotIn("is_defect", kappa())  # unpaired without the head index
+        self.assertEqual(kappa("--dir", tmp)["is_defect"]["n"], 1)
+
 
 
 if __name__ == "__main__":

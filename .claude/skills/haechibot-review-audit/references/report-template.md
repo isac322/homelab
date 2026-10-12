@@ -18,13 +18,14 @@
 | `manifest.json` 잘림·API 오류, `bad_rows` | |
 | pilot 결과 | rubric v2.x 변경 요약 |
 
-## 1. 요약 (5줄 이내)
+## 1. 요약 (6줄 이내)
 
 - important escaped `@H`:
 - noise:
 - verdict-level error:
 - before/after(primary endpoint 4개):
 - 이 결과로 말할 수 없는 것(metrics.md §6):
+- 독립 발견: 이 창에 owner 재리뷰가 있었는지 적는다. owner 재리뷰가 없는 주의 miss는 panel만 독립적으로 찾으며, pilot에서 panel은 important 13개 중 3개를 찾았다. 이 문장은 매 라운드 넣는다.
 
 ## 2. Rater 자격과 신뢰도
 
@@ -35,11 +36,14 @@
 | 감사 `irr.validity` (무작위 층, 누적 쌍) | | | ≥ 0.80 | |
 | 감사 `irr.adjudicated_severity` | | | ≥ 0.667 | |
 | `irr.is_defect`, `irr.verdict` | | | 기록 | |
+| `irr.important` (P0/P1 또는 P2 ∧ p2_blocking) | | | 기록 | |
 | `match_kappa` (`match_sample` 행만, `matcher-defect_first`·`matcher-review_first` 순서별) | | | ≥ 0.80 definite / 0.667–0.80 tentative | |
 | `judge_bias` (κ judge vs blind labelerB, irr_sample만; 길이 상관) | | | 기록 | |
 | escalation 항목 κ (진단용) | | | — | |
 
 CI 하한 ≥ 0.667 조건은 gold-set 자격 gate에만 적용한다. 감사 IRR은 점추정으로 판정하고 CI는 보고만 한다. 누적 IRR 쌍이 60 미만이면 그 사실을 적는다. gate 미달 라벨에 기대는 수치에는 아래 표에서 `tentative`를 붙인다. 첫 라운드에서는 gold gate의 CI 조건 때문에 tentative가 나올 수 있다고 적는다.
+
+important 여부 사례 목록: adjudicator가 important 여부(P0/P1, 또는 P2 ∧ p2_blocking)를 정한 항목마다 한 줄(공개 링크, 두 rater 값, 결정과 이유 한 문장, `notes`의 `adj: important:`에서). 다시 adjudicate한 `conflicts` 항목도 여기에 결과와 함께 적는다.
 
 ## 3. Noise
 
@@ -54,7 +58,7 @@ CI 하한 ≥ 0.667 조건은 gold-set 자격 gate에만 적용한다. 감사 IR
 | nit share, 리뷰당 nit(miss 유무별) | `nit_share` | | | — | |
 | findings per PR, valid blocking per PR | `findings_per_pr` / manual | | | — | |
 | silent review share, verdict 분포 | `silent_review_share` | | | — | |
-| addressed `@H` (보정값과 CI, 표본 n) | `addressed_rate` | | | — | |
+| addressed `@H` (보정값과 CI, 표본 n; merge·close 뒤 리뷰로 뺀 수 `.not_applicable_excluded`) | `addressed_rate` | | | — | |
 | effective FP `@H` (record-only) | `effective_fp_rate` | | | — | |
 | human addressed `@H` | `human_addressed_rate` | | | — | |
 | implementer_bot PR addressed | `addressed_rate.implementer_bot` | | | — | |
@@ -75,6 +79,8 @@ CI 하한 ≥ 0.667 조건은 gold-set 자격 gate에만 적용한다. 감사 IR
 | first-exposure miss | `first_exposure_miss` | | | |
 | severity miss | `important_escaped.severity_miss` | | | |
 | repo-rule miss | `important_escaped.repo_rule` | | | |
+| escaped의 첫 독립 출처(panel / bot / owner 재리뷰 / 수정 증거만) | `important_escaped.by_first_source` | | | |
+| panel precision(confirmed ÷ 보고, rejected·unverifiable 건수) | manual(`panel-status.jsonl`) | | | |
 | capture–recapture (indicative only; panel 대상 head에 있는 결함만; 출처 수, panel family, m; "not estimable"은 정상 결과) | `capture_recapture` | | | |
 
 miss rate는 union reference set에 대한 상대값이며 recall이 아니다. 짧은 H의 값은 bot 효과의 상한이다.
@@ -88,7 +94,7 @@ escaped 결함마다 한 줄: PR 링크, latest_present_head, 채널, 심각도,
 | 지표 | key | B | A |
 |---|---|---|---|
 | APPROVE with important miss, merged final head | `approve_with_important_miss.merged_final` | | |
-| 같은 지표, superseded head | `approve_with_important_miss.superseded` | | |
+| 같은 지표, superseded head(base branch만 merge한 최종 head 위의 APPROVE는 리뷰 본문에 적힌 앞 head의 단위라 여기에 든다) | `approve_with_important_miss.superseded` | | |
 | RC without valid blocking (prove-or-fix 분리, observe-only) | `rc_without_valid_blocking` | | |
 | 리뷰 못 받은 head가 있는 PR | `coverage_unreviewed_heads` | | |
 | bot 리뷰를 받지 못한 PR의 결함(important 소계) | `coverage_unreviewed_defects` | | |
