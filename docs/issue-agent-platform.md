@@ -82,6 +82,15 @@ Codex의 공통 지침은 전용 `CODEX_HOME/AGENTS.md`에서 읽는다. 저장�
 - 프로젝트별 규칙: 한 저장소에만 해당하는 규칙은 `profile/skills/isac-pr-review/references/projects/<owner>__<repo>.md`에 둔다(예: `isac322__kwin-mcp.md`). 공통 스킬에는 저장소 전용 규칙을 넣지 않는다.
 - 운영 감시: 배포 뒤 7일 동안 저장소별로 non-draft head 중 COMMENT로 끝난 비율을 본다. 30%를 넘으면 미확인 의심·lens 완결 규칙을 다시 검토한다.
 
+### 리뷰 품질 감사(준비만 됨)
+
+2026-10-11 변경(T0 = 2026-10-11T20:13:52Z, 새 Runner 시작) 뒤의 리뷰 품질은 프로젝트 스킬 `.claude/skills/haechibot-review-audit`로 잰다. 두 가지를 같은 절차로 baseline 주간(T0−7d…T0)과 비교한다. 하나는 봇이 리뷰한 head에 있었는데 끝내 짚지 못한 중요한 결함(important escaped)이고, 다른 하나는 봇 지적 중 틀렸거나 지엽적이거나 심각도를 부풀린 지적(noise)이다. 이 스킬은 아직 실행하지 않았고, 봇 프로필에는 아무것도 적용하지 않았다.
+
+- **규칙의 출처:** 규칙은 리서치 에이전트 4명이 찾은 공개 연구와 업계 사례 108개 claim에서 나왔다. 다른 에이전트가 출처를 직접 열어 교차검증했고, 비평 에이전트 7명과 두 라운드에 걸쳐 합의했다. Microsoft·Google의 유용한 리뷰 코멘트 정의, Tricorder의 effective false positive, SZZ 한계, capture–recapture, κ 기반 평가자 신뢰도가 여기에 들어간다. 규칙마다 근거 claim과 owner policy를 구분해 적었다(`references/sources.md`).
+- **도구:** 읽기 전용 수집기 `apps/objects/issue-agent/operations/issue-agent-review-audit`(`collect`, `metrics`, `kappa`, `compare`, `panel-draw`)가 GitHub 증거를 단위 파일로 만들고, 라벨을 Wilson 구간이 붙은 수치로 바꾼다. validity와 심각도 같은 최종 판정은 reviewed head를 checkout한 Claude 에이전트가 정한다. `judge_batch`는 1차 분류에만 쓴다.
+- **보정 집합:** `references/gold-set.md`에 두 부분이 있다. 하나는 pre-baseline 주간 bot finding 55건을 독립 라벨러 두 명이 라벨하고 판정자가 확정한 것이고, 다른 하나는 kwin-mcp에서 알려진 miss 30건이다. 라벨러 일치도는 validity κ 1.0, severity κ_w 0.92였다. p2_blocking은 v2.1 정의에서 κ 0.30이었고 v2.2 정의로 고친 뒤 1.0이 됐다.
+- **실행 시점:** after 창 전체를 증거 시한 3일까지 보려면 2026-10-21T20:14Z 이후에 실행한다. 30일·90일 뒤에 같은 대상을 다시 계산한다. 결과는 `~/.local/state/haechibot-review-audit/<round>/`에만 두고 저장소나 GitHub에는 올리지 않는다.
+
 ### 자동 머지와 실행 격리의 한계
 
 워크플로는 PR 생성·갱신과 리뷰 제출까지 수행하고 **merge는 사람이 한다**. bridge는 GitHub가 현재 head를 merge-ready로 판정할 때만 설정된 project owner를 assign하고 멘션한다. 에이전트는 읽기 전용 GitHub 토큰으로 작업하며, bridge가 결과를 받아 GitHub 쓰기를 수행한다. push는 publisher가 checkout의 `hapi-issue-[0-9]+` branch를 자기 private bare mirror로 가져온 뒤 그 mirror에서 non-force 방식으로 실행한다. 에이전트 checkout을 git의 cwd나 git dir로 쓰지 않는다. push 토큰은 publisher 사이드카에만 마운트한다.

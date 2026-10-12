@@ -1,6 +1,6 @@
 # Issue Agent operations
 
-There are four operator scripts. The three that call `kubectl` default to
+There are five operator scripts. The three that call `kubectl` default to
 `--context homelab-backbone` and never use the current kubectl context. They need
 bash ≥ 4.4. Hub, bridge, and n8n run in `issue-agent`; the runner pod (runner,
 publisher, and the privileged `dockerd` sidecar) runs in `issue-agent-runner`.
@@ -11,6 +11,7 @@ publisher, and the privileged `dockerd` sidecar) runs in `issue-agent-runner`.
 | `issue-agent-backup` | Consistent online backup of the record stores. This is a **private operator artifact**: never give it to agents or external readers | Snapshot temp files next to each database, removed afterwards. Needs `pods/exec` in both namespaces |
 | `issue-agent-runner-home-migrate` | One-time copy of the runner home into `issue-agent-runner` during the namespace cutover | `status` is read-only. `migrate` patches the old PV, creates and deletes two scratch pods, writes the new home claim, and deletes runner pods that never started. `cleanup` deletes the scratch pods |
 | `issue-agent-docker-smoke` | Checks the pod-local Docker daemon from inside the runner container; `--policy` also checks its authorization policy | Builds and runs containers on the privileged daemon; keeps an artifact directory under `/tmp/issue-agent` |
+| `issue-agent-review-audit` | Read-only evidence collector and metrics calculator for the haechibot review-quality audit (project skill `.claude/skills/haechibot-review-audit`): `collect`, `metrics`, `kappa`, `compare`, `panel-draw`. Python 3 standard library plus `gh api` GET/GraphQL queries only; no kubectl | Writes a new 0700 output directory (0600 files) and refuses to overwrite; `panel-draw` writes `panel.json` into that directory |
 
 `issue-agent-records` and `issue-agent-backup` read hub, bridge, and n8n from
 `--namespace` (default `issue-agent`) and the runner from `--runner-namespace`
