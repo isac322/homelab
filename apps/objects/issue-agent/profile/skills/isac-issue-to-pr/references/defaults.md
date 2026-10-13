@@ -32,7 +32,7 @@
 
 ## CI
 
-- 완료 보고의 "구현 완료"는 build, lint 0, unit, integration, 실제 컴포넌트 테스트, 해당하면 공식 conformance, install smoke까지 통과를 뜻한다. 병렬 fixture starvation처럼 도구가 공식 옵션(직렬 실행 등)을 제공하면 그것을 쓰고 테스트를 생략하지 않는다.
+- 완료 보고의 "구현 완료"는 build, lint 0, unit, integration, 실제 컴포넌트 테스트, 해당하면 공식 conformance, install smoke까지 통과를 뜻한다. 이 중 오래 걸리는 suite는 CI에서의 통과이고, 로컬에서 무엇을 돌리는지는 I2P-46을 따른다. 병렬 fixture starvation처럼 도구가 공식 옵션(직렬 실행 등)을 제공하면 그것을 쓰고 테스트를 생략하지 않는다.
 - CI 하드닝 후보: 생성 파일 parity 검사, lint/test/build, 렌더 게이트, 컨테이너 게이트, 최소 권한, pinned action, job timeout, 시크릿 없음, 외부 변경 없음. 로컬에서 같은 Make 타깃으로 재현할 수 있어야 한다. 의존성·자동화 설정 변경은 머지 전에 그 스키마와 게이트를 따로 리뷰한다.
 - 대규모 완전성 작업(parity 등)은 기계 판독 가능한 ledger와 CI checker로 되돌림을 막는다.
 - 비게이트 leg(`continue-on-error`)는 사용자가 원인 수정을 이미 범위 밖으로 둔 경우에만 쓴다. 실패 테스트와 사유를 `pr.body`, README, CHANGELOG에 적고, 실패가 계속 보이게 둔다. 그 외에는 묻는다(`questions`, `needs_info`).

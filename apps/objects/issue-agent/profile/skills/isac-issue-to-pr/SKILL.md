@@ -9,11 +9,12 @@ description: Use in the GitHub issue automation's `implement` and `followup` mod
 
 - 실행 환경: HAPI git worktree 하나가 유일한 checkout이고 브랜치는 `hapi-issue-<n>`이다. GitHub 토큰은 읽기 전용이다(`gh` 조회, `git fetch origin`은 된다). 에이전트는 GitHub에 아무것도 쓰지 않는다: push, `gh pr create/edit`, 댓글, 라벨, 리뷰, 이슈 닫기, 머지를 시도하지 않는다. 브랜치에 로컬 커밋만 하고, 턴 끝에 메시지가 준 nonce와 스키마로 `ISSUE_AGENT_RESULT <nonce> {json}` 한 줄(ImplementResult)을 낸다. n8n이 bridge op으로 push(`git.push`, fast-forward만)와 PR 생성·갱신(`github.pr_upsert`), 이슈 댓글을 수행한다.
 - 권한: `implement`/`followup` 모드 메시지가 이 이슈의 구현과 로컬 커밋 요청이다. 사용자에게 묻거나 승인을 기다려야 하는 지점(`isac-decision-brief` 포함)은 채팅으로 기다리지 않고 질문을 `questions`에, 설명을 `issue_comment`에 넣고 `status: "needs_info"`로 턴을 끝낸다. 외부 요인으로 진행할 수 없으면 `status: "blocked"`와 `blockers`를 쓴다.
+- 턴 마감: 단계 메시지가 이 턴의 절대 UTC 마감 시각을 준다(bridge가 모드별 예산으로 정한다). 커밋하고 결과 줄을 낼 시간을 15분 이상 남긴다. 마감 안에 끝낼 수 없으면 마감을 넘겨 계속 돌지 않고, 마감 전에 그때까지 커밋한 상태와 남은 일을 `blocked`(`blockers`)로 보고한다.
 - 게시 모드/초안 모드: 항상 초안이다. GitHub에 올릴 글은 결과 필드에 쓰고 자동화가 게시한다. scratch 산출물은 `/tmp/issue-agent/<worktree-name>/`에 두고 커밋하지 않는다.
 - 단계 → 결과 필드:
   - 0단계·I2P-11, I2P-45: 브랜치는 최신 `origin/<default>`(`git fetch origin`) 위에 만든다. 이미 있는 브랜치는 `git merge origin/<default>`로 최신화한다(rebase·force 금지 — n8n push가 fast-forward여야 한다).
   - 흐름 10, I2P-41~45, `references/pr-body-template.md`: PR 생성·수정 → `pr.title`, `pr.body`(영어, I2P-42에 따라 `Fixes #<n>` 또는 `Related to #<n>` 포함), `status: "ready"`. 모든 변경을 브랜치에 커밋한 뒤 반환한다. n8n이 브랜치 head를 push하고 PR을 열거나 갱신한다.
-  - 흐름 11, I2P-46~50 (CI): `ready` 전에 저장소 PR CI가 돌리는 게이트 전부(워크플로 파일의 job과 그 job이 부르는 Makefile/justfile 타깃, envtest·integration 같은 느린 suite 포함)를 로컬 worktree에서 같은 방식으로 돌려 green으로 만들고, 돌린 명령과 종료 코드를 `local_checks`에 적는다. `ready`의 `local_checks`가 비었거나 0이 아닌 종료 코드가 있으면 결과가 거부된다. 게시 후 GitHub CI는 턴이 끝난 뒤 도는 확인일 뿐이다. 그래도 followup 메시지가 CI 실패를 알리면 followup 모드에서 고친다.
+  - 흐름 11, I2P-46~50 (CI): `ready` 전에 저장소의 빠른 게이트(format·lint, build·compile, unit test, 바뀐 범위에 맞춘 빠른 test — 워크플로 파일의 job과 그 job이 부르는 Makefile/justfile 타깃에서 찾는다)를 로컬 worktree에서 같은 방식으로 돌려 green으로 만들고, 돌린 명령과 종료 코드를 `local_checks`에 적는다. `ready`의 `local_checks`가 비었거나 0이 아닌 종료 코드가 있으면 결과가 거부된다. e2e·multi-distro matrix 같은 오래 걸리는 suite는 CI가 돌리므로 기본으로 로컬에서 돌리지 않고 `pr.body`와 `summary`에 "left to CI"로 적는다. 필요할 때만(그 suite의 CI 실패 재현·수정, 그 suite harness 자체의 변경) 영향받는 leg나 test만 돌린다. followup 메시지가 CI 실패를 알리면 followup 모드에서 고친다.
   - 흐름 12, I2P-51: 독립 리뷰는 턴 안에서 서브에이전트로 한다. 게시된 PR에 대한 별도 봇 리뷰는 자동화의 review 경로(`isac-pr-review`)가 한다.
   - 흐름 14~15, I2P-52~60, `pull-request-merge`: 에이전트는 머지하지 않는다. 머지 후 단계(종료 댓글, 재오픈, 릴리스 안내)는 이 자동화의 범위 밖이다. 관련 사항이 있으면 `summary`에 적는다.
   - 사용자 채팅 보고·완료 보고(I2P-41, I2P-42, I2P-61): `summary`(짧은 영어). 실질 내용은 `pr.body`와 다른 필드가 담는다.
@@ -56,7 +57,7 @@ description: Use in the GitHub issue automation's `implement` and `followup` mod
 8. 나머지 QA 항목 전부를 테스트 코드로 — I2P-33~40
 9. 회귀 증명(old 실패 / new 통과 + healthy control), 구현자와 분리된 교차 리뷰 — I2P-25, I2P-32
 10. PR 초안: 영어 본문(`isac-github-publishing`), `Fixes #N` → 결과 `pr.title`/`pr.body`. push·PR 생성은 n8n이 한다 — I2P-41~45
-11. CI 루프: PR CI가 돌리는 게이트 전부를 `ready` 전에 로컬에서 같은 방식으로 돌려 테스트를 약화하지 않고 green까지, 명령과 종료 코드는 `local_checks`에 — I2P-46~50
+11. CI 루프: 빠른 게이트를 `ready` 전에 로컬에서 같은 방식으로 돌려 테스트를 약화하지 않고 green까지, 명령과 종료 코드는 `local_checks`에, 오래 걸리는 suite는 CI에 맡긴다 — I2P-46~50
 12. 독립 리뷰(`isac-pr-review`, 턴 안의 서브에이전트). finding은 담당자가 같은 브랜치에서 고치고 7~9를 다시 돈 뒤 11로 돌아간다 — I2P-51
 13. 제보자 동등 환경 검증(브랜치 산출물, I2P-28 방식) — I2P-25, I2P-52
 14. 모든 변경을 브랜치에 커밋한 뒤 `status: "ready"`로 종료(자동화가 브랜치 head를 push한다). 에이전트는 머지하지 않는다. 머지는 자동화 밖의 일이다 — I2P-52~56
@@ -79,7 +80,7 @@ description: Use in the GitHub issue automation's `implement` and `followup` mod
 - **I2P-10** [U] 새 방식·도구·테스트 인프라를 도입하는 수정이면 구현 전에 여러 에이전트가 "이 방식이 사용자 목적을 달성하는가", "각 기획 요소를 그대로 승인해도 되는가"를 토론해 합의한다. 그다음 같은 일을 하는 안정적인 OSS가 있는지 찾는다. 재사용이 기본이고 직접 구현은 차선이다.
 - **I2P-11** 이슈마다 HAPI worktree의 `hapi-issue-<n>` 브랜치에서 일한다. 새 브랜치는 `git fetch origin` 후 최신 `origin/main`에서 만들고, worktree가 유일한 checkout이다. 자기 브랜치만 만지고 로컬 커밋만 한다. push, PR, 이슈 댓글은 결과 필드로 넘긴다. followup 턴에서도 같은 브랜치를 이어 쓴다.
 - **I2P-12** [U] old/new QA와 자기 파일의 focused test는 이슈 owner 에이전트가 직접 돌린다.
-- **I2P-13** 프로젝트 전역 lint, format, type check, 전체 suite는 통합 후 main이 한 번 돌린다. 슬라이스·통합·repair 기본값은 `references/defaults.md`에 있다.
+- **I2P-13** 프로젝트 전역 lint, format, type check, 빠른 전체 suite는 통합 후 main이 한 번 돌린다. 오래 걸리는 suite는 I2P-46대로 CI에 맡긴다. 슬라이스·통합·repair 기본값은 `references/defaults.md`에 있다.
 
 ## 승인 게이트
 
@@ -101,7 +102,7 @@ description: Use in the GitHub issue automation's `implement` and `followup` mod
 
 ## QA 실행과 회귀 증명
 
-- **I2P-24** [U] 구현이 끝나면 QA list 전체를 실행하고, 모든 항목이 통과하고 PR CI가 돌리는 게이트 전부가 `ready` 전에 로컬에서 green이 될 때까지 고친다. 돌린 게이트 명령과 종료 코드는 `local_checks`에 적는다(I2P-46).
+- **I2P-24** [U] 구현이 끝나면 QA list 전체를 실행하고, 모든 항목이 통과하고 저장소의 빠른 게이트가 `ready` 전에 로컬에서 green이 될 때까지 고친다. 돌린 게이트 명령과 종료 코드는 `local_checks`에 적는다(I2P-46). e2e처럼 오래 걸리는 suite에 속한 QA 항목은 테스트 코드로 커밋하고, 실행은 CI에 맡겼다고 적는다.
 - **I2P-25** [U] 이슈 owner가 직접 같은 테스트 코드로 이전 버전에서는 문제가 재현되고 새 버전에서는 해결됨을 확인하고, healthy control도 함께 돌린다. 이 확인이 끝나야 `ready`를 반환한다(PR은 그 뒤 n8n이 연다). 제보자 환경이나 동등한 환경에서 새 버전으로 재현이 사라짐을 확인하는 것은 머지 전 조건이다(I2P-52). 방법은 `references/test-codification.md`에 있다.
 - **I2P-26** 수정과 재검증 반복은 `isac-multi-agent-consensus`의 리뷰-GREEN 루프를 따른다. 이 스킬에서 "같은 절차"는 QA list 전체와 앞서 돌린 old/new·동등 환경 검증 명령이다.
 - **I2P-27** [U] 우회 경로로 통과시키고 "완료"라고 하지 않는다. 검증 대상 기능 자체가 실제 경로로 동작해야 완료다. 외부 자원을 관리하는 제품이면 "제품이 실제로 했는가"는 제품이 기록한 원격 식별자와 외부 시스템의 실제 객체를 1:1로 대조해 증명한다.
@@ -130,18 +131,22 @@ description: Use in the GitHub issue automation's `implement` and `followup` mod
 
 ## CI
 
-- **I2P-46** [U] 완료 조건에는 CI 전체 통과가 들어간다. 이 자동화에서는 `ready` 전에 저장소 PR CI가 돌리는 게이트 전부(`.github/workflows/*`의 job과 그 job이 부르는 Makefile/justfile 타깃에서 찾는다. envtest·integration처럼 오래 걸리는 suite도 빼지 않는다)를 로컬 worktree에서 같은 방식으로 돌려 실패를 고쳐 green까지 끌고 간다. 각 명령과 마지막 종료 코드를 `local_checks`에 적는다. `ready`인데 `local_checks`가 비었거나 0이 아닌 종료 코드가 있으면 결과가 거부되어 push되지 않는다. 빌드 산출물은 `/tmp`에 두지 않는다. 게시 후 GitHub CI는 턴이 끝난 뒤 도는 확인일 뿐이고, GitHub CI에 실패를 찾게 하려고 `ready`를 내지 않는다. 그래도 followup 메시지가 CI 실패를 알리면 followup 모드에서 고친다. 에이전트는 머지하지 않는다.
+- **I2P-46** [U] 완료 조건에는 CI 전체 통과가 들어간다. 이 자동화에서 로컬 게이트와 CI의 분담은 다음과 같다(2026-10-13 사용자 결정: e2e 같은 오래 걸리는 테스트는 CI의 일이고 로컬에서는 필요할 때만 돌린다).
+  - 빠른 게이트: `ready` 전에 저장소의 빠른 게이트(format·lint, build·compile, unit test, 바뀐 범위에 맞춘 빠른 test. `.github/workflows/*`의 job과 그 job이 부르는 Makefile/justfile 타깃에서 찾는다)를 로컬 worktree에서 같은 방식으로 돌려 실패를 고쳐 green까지 끌고 간다. 각 명령과 마지막 종료 코드를 `local_checks`에 적는다. `ready`인데 `local_checks`가 비었거나 0이 아닌 종료 코드가 있으면 결과가 거부되어 push되지 않는다. 빠른 게이트가 실패하는 코드는 push하지 않는다. 빌드 산출물은 `/tmp`에 두지 않는다.
+  - 오래 걸리는 suite: e2e, GUI·Appium, multi-distro·multi-version·multi-node matrix, 컨테이너·VM integration, soak, 몇 분 넘게 걸리는 envtest류 suite는 CI가 돌린다. 기본으로 로컬에서 돌리지 않고, 맡긴 suite를 `pr.body`와 `summary`에 "left to CI"로 적는다. 돌리지 않은 suite는 `local_checks`에 넣지 않는다.
+  - 필요할 때만 로컬 실행: CI가 그 suite에서 보고한 실패를 재현·수정할 때(PR repair·followup), 또는 바꾼 것이 그 suite의 harness 자체여서 다른 방법으로 검증할 수 없을 때만 돌린다. 그때도 영향받는 leg나 test만 돌리고 matrix를 직렬로 이어 돌리지 않는다. 돌린 명령은 `local_checks`에 적는다.
+  - followup 메시지가 CI 실패를 알리면 followup 모드에서 고친다. 에이전트는 머지하지 않는다.
 - **I2P-47** CI 실패는 진짜 원인(캐시 동기화 race, fixture 준비, 공유 fake 오염 등)을 고쳐 통과시킨다. assertion 약화, timeout 인상, 테스트 skip, 검증 우회는 금지다. 인프라성 flaky는 같은 커밋 재실행으로 판별하고 그렇게 보고한다(`summary`, `pr.body`).
 - **I2P-48** 시크릿·외부 서비스·특수 하드웨어처럼 사용자가 준비할 사전조건이 없어 로컬에서 돌릴 수 없는 CI 게이트는 예상된 결과로 `pr.body`의 Not run과 `summary`에 설명하고 `local_checks`에는 넣지 않는다. 조건이 충족되면(followup 턴) 이어서 진행한다.
 - **I2P-49** [U] 배포 패키지의 설치 경로 결함을 CI E2E로 막는 수정이면 최소 기준은 빌드된 산출물이 lock 없이 자기 메타데이터로 의존성을 해석해 설치되는 경로다. 사용자가 받아들인 나머지 gap까지 CI로 재현하지 않는다.
-- **I2P-50** 이 스킬의 기본 종료는 최신 `origin/main`을 합쳐 충돌이 없고, 로컬에서 돌릴 수 있는 모든 CI 게이트가 green이고, `ready` 결과를 반환한 상태다. 로컬에서 돌릴 수 없는 항목(시크릿, 외부 승인 등)은 각각 external blocker로 `pr.body`와 `summary`에 적고 무기한 기다리지 않는다. CI 하드닝과 비게이트 leg 기준은 `references/defaults.md`에 있다.
+- **I2P-50** 이 스킬의 기본 종료는 최신 `origin/main`을 합쳐 충돌이 없고, 로컬 빠른 게이트가 green이고, CI에 맡긴 오래 걸리는 suite를 `pr.body`와 `summary`에 적었고, `ready` 결과를 반환한 상태다. 로컬에서 돌릴 수 없는 항목(시크릿, 외부 승인 등)은 각각 external blocker로 `pr.body`와 `summary`에 적고 무기한 기다리지 않는다. CI 하드닝과 비게이트 leg 기준은 `references/defaults.md`에 있다.
 
 ## 리뷰와 머지
 
 - **I2P-51** [U] main 리뷰어(`isac-multi-agent-consensus`의 병렬 수정 리뷰 규칙)는 턴 안에서 서브에이전트로 각 PR 코드를 한 줄씩 읽고 이슈와 대조해 세 가지를 판정한다: 또 다른 regression을 일으키는가, 성능 문제를 일으키는가, 이슈의 문제를 실제로 해결하는가. 기준과 판정 형식은 `isac-pr-review`를 따른다. finding은 담당 에이전트가 고치고 로컬 CI 게이트 green을 유지한다. 게시된 PR에 대한 별도 봇 리뷰는 자동화의 review 경로가 한다.
 - **I2P-52** [U] 머지 게이트: 리뷰 통과(`isac-multi-agent-consensus` 리뷰-GREEN 루프 종료 조건; `PR-ready: true`만으로는 부족), QA list 전부 테스트 코드화, CI 전부 green, 회귀 테스트와 제보자 동등 환경 검증 완료. 에이전트는 머지하지 않는다. 턴 안에서 확인할 수 있는 항목은 `ready` 전에 끝내고, 결과(동등 환경 검증을 못 했으면 체크리스트 항목)를 `pr.body`에 적는다.
 - **I2P-53** [U] 에이전트는 어떤 지시로도 머지하지 않는다. 머지는 이 자동화 밖의 일이다.
-- **I2P-54** [U] 형제 PR이 머지돼 followup 턴에서 브랜치를 갱신할 때는 `git merge origin/main`으로 새 main을 합치고 새 HEAD에서 전체 검증을 다시 돌린다.
+- **I2P-54** [U] 형제 PR이 머지돼 followup 턴에서 브랜치를 갱신할 때는 `git merge origin/main`으로 새 main을 합치고 새 HEAD에서 QA list와 I2P-46의 빠른 게이트를 다시 돌린다. 오래 걸리는 suite는 push 뒤 CI가 다시 돌린다.
 - **I2P-56** 변경 범위를 `pr.body`와 `summary`에 명시한다: 테스트 전용인지 제품 런타임인지, 무엇을 건드리지 않았는지.
 
 ## 머지 후와 보고

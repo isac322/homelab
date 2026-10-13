@@ -10,6 +10,8 @@ called only by the bridge (bearer token the agent container cannot read).
   POST /resolve  {repo, branch}                -> {sha}
   POST /push     {repo, branch, expected_sha}  -> {sha}
   POST /cleanup  {repo, worktree, branch, codex_session_ids} -> {removed}
+  POST /janitor/prune-request {lease_until}   -> {requested_at, lease_until}
+  GET  /janitor/status                        -> the janitor's status JSON
 
 /resolve reports the commit the checkout's branch points at; /push pushes that
 branch only while it still points at expected_sha.
@@ -19,7 +21,13 @@ git dir: commits are fetched *from* the checkout by path into a private bare
 mirror, and pushed from that mirror. The GitHub token is passed only through
 `git -c http.extraHeader=...` on the command line; it is never written to any
 config file and never logged. /cleanup runs no git at all: it removes a
-worktree, its branch ref and Codex rollouts with plain file operations.
+worktree, its branch ref and Codex rollouts with plain file operations. Entries
+a Docker container left owned by another uid fail it with ``foreign_owner``
+(409, retryable): the dockerd sidecar's janitor (dockerd-janitor) chowns them
+back to the agent uid. /janitor/prune-request asks that janitor to prune
+unused Docker data within the bridge's maintenance lease (no dispatch until
+lease_until); /janitor/status returns the janitor's last report (Docker usage,
+last prune and the lease it served). Every route but /healthz needs the token.
 
 /checkout also marks the checkout and its worktrees untrusted for Codex
 (codex-untrust) on every call, so a session never loads the repository's own
@@ -42,6 +50,7 @@ import subprocess
 import sys
 import tempfile
 import threading
+import time
 import urllib.error
 import urllib.request
 from http import HTTPStatus
@@ -68,6 +77,17 @@ CLEANUP_BRANCH_RE = re.compile(r"^hapi-(issue|review-pr)-[0-9]+(-[0-9a-f]{4})?$"
 CODEX_ID_RE = re.compile(r"^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$")
 MAX_CODEX_IDS = 50
 PACKED_REF_RE = re.compile(r"^[0-9a-f]{40,64} (refs/\S+)$")
+# Shared with the dockerd sidecar, which mounts the same checkouts directory at
+# the same path (runner/dockerd-janitor.sh reads the request and writes the
+# status there, through runner/chown-sweep).
+JANITOR_DIR = ".issue-agent-janitor"
+PRUNE_REQUEST = "prune-request"
+JANITOR_STATUS = "status"
+MAX_JANITOR_STATUS_BYTES = 4096
+JANITOR_RESULTS = ("ok", "error")
+# Each pass of rmtree_agent unblocks at least one directory; the pre-pass in
+# restore_dir_modes normally leaves nothing for later passes.
+MAX_RMTREE_PASSES = 100
 
 log = logging.getLogger("publisher")
 
@@ -331,17 +351,108 @@ def confined_root(path: str) -> str:
 
 
 def worktree_admin_dir(worktree: str) -> str | None:
-    """Admin dir named by the worktree's ``.git`` file (``gitdir: <path>``), None when the file is gone."""
+    """Admin dir named by the worktree's ``.git`` file (``gitdir: <path>``).
+
+    None when ``.git`` is gone, or is a real directory: the worktree is then a
+    standalone clone whose repository is removed together with it. Any other
+    failure to inspect ``.git`` (EACCES on the worktree root) raises: treating
+    it as absent would leave the admin dir behind.
+    """
     dot_git = os.path.join(worktree, ".git")
-    if not os.path.lexists(dot_git):
+    try:
+        st = os.lstat(dot_git)
+    except FileNotFoundError:
         return None
-    if os.path.islink(dot_git) or not os.path.isfile(dot_git):
+    if stat.S_ISLNK(st.st_mode):
+        raise PublisherError(HTTPStatus.CONFLICT, "unsafe_path", f"{dot_git} is a symlink")
+    if stat.S_ISDIR(st.st_mode):
+        return None
+    if not stat.S_ISREG(st.st_mode):
         raise PublisherError(HTTPStatus.CONFLICT, "unsafe_path", f"{dot_git} is not a regular file")
     with open(dot_git, encoding="utf-8", errors="replace") as handle:
         text = handle.read(4096).strip()
     if not text.startswith("gitdir:"):
         raise PublisherError(HTTPStatus.CONFLICT, "unsafe_path", f"{dot_git} has no gitdir line")
     return os.path.join(worktree, text.removeprefix("gitdir:").strip())
+
+
+def foreign_owner(path: str, uid: int) -> PublisherError:
+    return PublisherError(HTTPStatus.CONFLICT, "foreign_owner",
+                          f"{path} is owned by uid {uid}; the dockerd janitor chowns it back")
+
+
+def unblock_dir(path: str) -> bool:
+    """Give an agent-owned directory u+rwx; True when its mode changed.
+
+    A directory owned by another uid (a Docker container wrote it as root)
+    raises ``foreign_owner``: only the dockerd janitor can chown it back.
+    """
+    st = os.lstat(path)
+    if not stat.S_ISDIR(st.st_mode):
+        return False
+    if st.st_uid != os.getuid():
+        raise foreign_owner(path, st.st_uid)
+    if st.st_mode & stat.S_IRWXU == stat.S_IRWXU:
+        return False
+    os.chmod(path, stat.S_IMODE(st.st_mode) | stat.S_IRWXU)
+    return True
+
+
+def restore_dir_modes(root: str) -> None:
+    """Top-down u+rwx on agent-owned directories (Go module caches, read-only test fixtures) before removal."""
+    uid = os.getuid()
+
+    def fix(path: str) -> None:
+        st = os.lstat(path)
+        if stat.S_ISDIR(st.st_mode) and st.st_uid == uid and st.st_mode & stat.S_IRWXU != stat.S_IRWXU:
+            os.chmod(path, stat.S_IMODE(st.st_mode) | stat.S_IRWXU)
+
+    fix(root)
+    # Unreadable or foreign directories are skipped here; rmtree_agent reports them.
+    for dirpath, dirnames, _ in os.walk(root, onerror=lambda _exc: None):
+        for name in dirnames:
+            try:
+                fix(os.path.join(dirpath, name))
+            except OSError:
+                pass
+
+
+class _Unblocked(Exception):
+    """A directory blocking rmtree got u+rwx; run the removal again."""
+
+
+def rmtree_agent(root: str) -> None:
+    """``shutil.rmtree`` of an already confined ``root`` that also removes agent-owned read-only trees.
+
+    On EACCES/EPERM the blocking directory (the one rmtree could not list, or
+    the parent of the entry it could not unlink) gets u+rwx when the agent uid
+    owns it and the removal is retried; entries owned by another uid raise
+    ``foreign_owner``. Symlinks are never followed (rmtree's own guarantee).
+    """
+    restore_dir_modes(root)
+
+    def onexc(func, failed: str, exc: BaseException) -> None:
+        if not isinstance(exc, PermissionError):
+            raise exc
+        blocker = failed if func in (os.open, os.scandir) else os.path.dirname(failed)
+        if (blocker == root or inside(blocker, root)) and unblock_dir(blocker):
+            raise _Unblocked
+        try:
+            owner = os.lstat(failed).st_uid
+        except OSError:
+            raise exc from None
+        if owner != os.getuid():
+            raise foreign_owner(failed, owner)
+        raise exc
+
+    for _ in range(MAX_RMTREE_PASSES):
+        try:
+            shutil.rmtree(root, onexc=onexc)
+            return
+        except _Unblocked:
+            continue
+    raise PublisherError(HTTPStatus.INTERNAL_SERVER_ERROR, "cleanup_failed",
+                         f"{root}: still blocked after {MAX_RMTREE_PASSES} permission fixes")
 
 
 def remove_worktree(repo: str, name: str) -> list[str]:
@@ -354,6 +465,9 @@ def remove_worktree(repo: str, name: str) -> list[str]:
     if os.path.islink(path) or not os.path.isdir(path) or not inside(os.path.realpath(path), worktrees_root):
         raise PublisherError(HTTPStatus.CONFLICT, "unsafe_path", f"{path} is not a worktree directory")
     removed = []
+    # The worktree root may be agent-chmodded (e.g. 000): give it u+rwx (or
+    # raise foreign_owner) before reading its .git file.
+    unblock_dir(path)
     admin = worktree_admin_dir(path)
     if admin is not None and os.path.lexists(admin):
         admin_root = confined_root(os.path.join(base, ".git", "worktrees"))
@@ -361,10 +475,10 @@ def remove_worktree(repo: str, name: str) -> list[str]:
         if os.path.islink(admin) or not os.path.isdir(real_admin) or not inside(real_admin, admin_root):
             raise PublisherError(HTTPStatus.CONFLICT, "unsafe_path", f"{admin} is not a worktree admin directory")
         # Admin dir first: a worktree left without it is still found and removed on retry.
-        shutil.rmtree(real_admin)
+        rmtree_agent(real_admin)
         removed.append(real_admin)
     real_path = os.path.realpath(path)
-    shutil.rmtree(real_path)
+    rmtree_agent(real_path)
     removed.append(real_path)
     return removed
 
@@ -453,6 +567,105 @@ def do_cleanup(repo: str, worktree: str | None, branch: str | None, codex_ids: l
     return {"removed": removed}
 
 
+def open_janitor_dir(*, create: bool) -> int:
+    """O_NOFOLLOW fd of <checkouts>/.issue-agent-janitor (agent-writable, so never a pathname)."""
+    nofollow_dir = os.O_RDONLY | os.O_DIRECTORY | os.O_NOFOLLOW
+    checkouts_fd = os.open(CHECKOUTS, nofollow_dir)
+    try:
+        if create:
+            try:
+                os.mkdir(JANITOR_DIR, 0o700, dir_fd=checkouts_fd)
+            except FileExistsError:
+                pass
+        return os.open(JANITOR_DIR, nofollow_dir, dir_fd=checkouts_fd)
+    finally:
+        os.close(checkouts_fd)
+
+
+def do_prune_request(lease_until: int) -> dict:
+    """Atomically (re)write the janitor's prune request: ``{"requested_at", "lease_until"}``.
+
+    The janitor prunes only while enough of the lease is left. The checkouts
+    directory is agent-writable, so every step goes through O_NOFOLLOW
+    directory fds: a planted symlink cannot redirect the write.
+    """
+    requested_at = int(time.time())
+    request = {"requested_at": requested_at, "lease_until": lease_until}
+    payload = json.dumps(request).encode()
+    try:
+        dir_fd = open_janitor_dir(create=True)
+    except OSError as exc:
+        raise PublisherError(HTTPStatus.CONFLICT, "unsafe_path",
+                             f"{os.path.join(CHECKOUTS, JANITOR_DIR)}: {exc.strerror or exc}") from None
+    tmp = f".{PRUNE_REQUEST}.{os.getpid()}.{threading.get_ident()}"
+    try:
+        fd = os.open(tmp, os.O_WRONLY | os.O_CREAT | os.O_EXCL | os.O_NOFOLLOW, 0o600, dir_fd=dir_fd)
+        try:
+            os.write(fd, payload)
+            os.fsync(fd)
+        finally:
+            os.close(fd)
+        os.replace(tmp, PRUNE_REQUEST, src_dir_fd=dir_fd, dst_dir_fd=dir_fd)
+    except OSError as exc:
+        try:
+            os.unlink(tmp, dir_fd=dir_fd)
+        except OSError:
+            pass
+        raise PublisherError(HTTPStatus.INTERNAL_SERVER_ERROR, "prune_request_failed",
+                             f"{exc.filename or PRUNE_REQUEST}: {exc.strerror or exc}") from None
+    finally:
+        os.close(dir_fd)
+    log.info("janitor prune requested at %d, lease until %d", requested_at, lease_until)
+    return request
+
+
+def _is_int(value, *, nullable: bool = False, low: int = 1, high: int | None = None) -> bool:
+    if value is None:
+        return nullable
+    return (isinstance(value, int) and not isinstance(value, bool) and value >= low
+            and (high is None or value <= high))
+
+
+def read_janitor_status() -> dict:
+    """The janitor's status file, validated; ``no_status`` (404) if missing, linked or malformed."""
+    def no_status(detail: str) -> PublisherError:
+        return PublisherError(HTTPStatus.NOT_FOUND, "no_status", detail)
+
+    try:
+        dir_fd = open_janitor_dir(create=False)
+    except OSError as exc:
+        raise no_status(f"{JANITOR_DIR}: {exc.strerror or exc}") from None
+    try:
+        fd = os.open(JANITOR_STATUS, os.O_RDONLY | os.O_NOFOLLOW | os.O_NONBLOCK, dir_fd=dir_fd)
+    except OSError as exc:
+        raise no_status(f"{JANITOR_STATUS}: {exc.strerror or exc}") from None
+    finally:
+        os.close(dir_fd)
+    try:
+        if not stat.S_ISREG(os.fstat(fd).st_mode):
+            raise no_status(f"{JANITOR_STATUS} is not a regular file")
+        raw = os.read(fd, MAX_JANITOR_STATUS_BYTES + 1)
+    except OSError as exc:
+        raise no_status(f"{JANITOR_STATUS}: {exc.strerror or exc}") from None
+    finally:
+        os.close(fd)
+    if len(raw) > MAX_JANITOR_STATUS_BYTES:
+        raise no_status(f"{JANITOR_STATUS} is too large")
+    try:
+        data = json.loads(raw)
+    except (ValueError, UnicodeDecodeError):
+        raise no_status(f"{JANITOR_STATUS} is not valid JSON") from None
+    if not (isinstance(data, dict)
+            and _is_int(data.get("checked_at"))
+            and _is_int(data.get("docker_used_pct"), low=0, high=100)
+            and _is_int(data.get("last_prune_at"), nullable=True)
+            and _is_int(data.get("last_prune_lease"), nullable=True)
+            and (data.get("last_prune_result") is None or data.get("last_prune_result") in JANITOR_RESULTS)):
+        raise no_status(f"{JANITOR_STATUS} has an unexpected shape")
+    return {key: data.get(key) for key in
+            ("checked_at", "docker_used_pct", "last_prune_at", "last_prune_lease", "last_prune_result")}
+
+
 class Handler(BaseHTTPRequestHandler):
     server_version = "issue-agent-publisher"
     sys_version = ""
@@ -472,10 +685,21 @@ class Handler(BaseHTTPRequestHandler):
         self.reply(exc.status, {"error": exc.error, "detail": exc.detail})
 
     def do_GET(self) -> None:  # noqa: N802
-        if self.path == "/healthz":
-            self.reply(HTTPStatus.OK, {"ok": True})
-        else:
-            self.error(PublisherError(HTTPStatus.NOT_FOUND, "not_found", self.path))
+        try:
+            if self.path == "/healthz":
+                self.reply(HTTPStatus.OK, {"ok": True})
+                return
+            self.authorize()
+            if self.path == "/janitor/status":
+                self.reply(HTTPStatus.OK, read_janitor_status())
+            else:
+                raise PublisherError(HTTPStatus.NOT_FOUND, "not_found", self.path)
+        except PublisherError as exc:
+            log.warning("%s failed: %s %s", self.path, exc.error, exc.detail)
+            self.error(exc)
+        except Exception as exc:  # pragma: no cover - last-resort JSON error
+            log.exception("%s crashed", self.path)
+            self.error(PublisherError(HTTPStatus.INTERNAL_SERVER_ERROR, "internal_error", type(exc).__name__))
 
     def authorize(self) -> None:
         expected = read_secret(AUTH_TOKEN_FILE, "publisher token")
@@ -485,8 +709,9 @@ class Handler(BaseHTTPRequestHandler):
             raise PublisherError(HTTPStatus.UNAUTHORIZED, "unauthorized", "missing or invalid bearer token")
 
     def body(self, fields: dict[str, re.Pattern], *, nullable: tuple[str, ...] = (),
-             lists: dict[str, re.Pattern] | None = None) -> dict:
-        """Validated JSON body: ``fields`` are strings (None allowed for ``nullable``), ``lists`` string arrays."""
+             lists: dict[str, re.Pattern] | None = None, ints: tuple[str, ...] = ()) -> dict:
+        """Validated JSON body: ``fields`` are strings (None allowed for ``nullable``), ``lists`` string
+        arrays, ``ints`` required positive integers."""
         lists = lists or {}
         if (self.headers.get("Content-Type") or "").split(";")[0].strip().lower() != "application/json":
             raise PublisherError(HTTPStatus.UNSUPPORTED_MEDIA_TYPE, "invalid_request", "Content-Type must be application/json")
@@ -502,7 +727,7 @@ class Handler(BaseHTTPRequestHandler):
             raise PublisherError(HTTPStatus.BAD_REQUEST, "invalid_request", "body is not valid JSON") from None
         if not isinstance(data, dict):
             raise PublisherError(HTTPStatus.BAD_REQUEST, "invalid_request", "body must be a JSON object")
-        unknown = sorted(set(data) - set(fields) - set(lists))
+        unknown = sorted(set(data) - set(fields) - set(lists) - set(ints))
         if unknown:
             raise PublisherError(HTTPStatus.BAD_REQUEST, "invalid_request", f"unknown fields: {', '.join(unknown)}")
         values = {}
@@ -520,6 +745,10 @@ class Handler(BaseHTTPRequestHandler):
                     or not all(isinstance(item, str) and pattern.fullmatch(item) for item in value)):
                 raise PublisherError(HTTPStatus.BAD_REQUEST, "invalid_request", f"invalid {name}")
             values[name] = list(dict.fromkeys(value))
+        for name in ints:
+            if not _is_int(data.get(name)):
+                raise PublisherError(HTTPStatus.BAD_REQUEST, "invalid_request", f"invalid {name}")
+            values[name] = data[name]
         repo = values.get("repo")
         if repo is not None and any(part in (".", "..") or part.endswith(".git") for part in repo.split("/")):
             raise PublisherError(HTTPStatus.BAD_REQUEST, "invalid_request", "invalid repo")
@@ -546,6 +775,9 @@ class Handler(BaseHTTPRequestHandler):
                 with repo_lock(args["repo"]):
                     self.reply(HTTPStatus.OK, do_cleanup(args["repo"], args["worktree"], args["branch"],
                                                          args["codex_session_ids"]))
+            elif self.path == "/janitor/prune-request":
+                args = self.body({}, ints=("lease_until",))
+                self.reply(HTTPStatus.OK, do_prune_request(args["lease_until"]))
             else:
                 raise PublisherError(HTTPStatus.NOT_FOUND, "not_found", self.path)
         except PublisherError as exc:

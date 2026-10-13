@@ -15,6 +15,20 @@ RUN go test ./... \
     && CGO_ENABLED=0 GOOS=$TARGETOS GOARCH=$TARGETARCH \
        go build -trimpath -ldflags='-s -w' -o /out/issue-agent-authz .
 
+# issue-agent-chown-sweep: the janitor's root-side filesystem helper
+# (runner/chown-sweep): fd-anchored, no-follow ownership sweep of worktrees
+# and the status/prune-request files. Same toolchain image and gating as authz;
+# its one dependency (golang.org/x/sys) is pinned by go.sum.
+FROM --platform=$BUILDPLATFORM golang:1.27.2-alpine3.24@sha256:f92b6ef800e499660581efdabdf25d9d817a9d124eaf900924f0504e7e27e12d AS chown-sweep
+ARG TARGETOS TARGETARCH
+WORKDIR /src
+COPY runner/chown-sweep/go.mod runner/chown-sweep/go.sum ./
+RUN go mod download && go mod verify
+COPY runner/chown-sweep/ ./
+RUN go test ./... \
+    && CGO_ENABLED=0 GOOS=$TARGETOS GOARCH=$TARGETARCH \
+       go build -trimpath -ldflags='-s -w' -o /out/issue-agent-chown-sweep .
+
 # docker:29.9.0-dind (linux/arm64); matches the runner image's docker:29.9.0-cli.
 FROM docker:29.9.0-dind@sha256:0b6d18a4a222e71c88be6034926b4f6cde2fc33c2218643d03ccfddc65995470
 
@@ -30,6 +44,12 @@ RUN apk add --no-cache util-linux-misc=2.42.3-r1 \
 
 RUN install -d -m 0755 /opt/issue-agent/bin
 COPY --chmod=0755 runner/dockerd-start.sh /opt/issue-agent/bin/dockerd-start
+# Started and restarted by dockerd-start; uses the dind image's BusyBox df,
+# date and timeout plus its docker CLI, and issue-agent-chown-sweep for every
+# filesystem change under the agent-writable checkouts directory.
+COPY --chmod=0755 runner/dockerd-janitor.sh /opt/issue-agent/bin/dockerd-janitor
+RUN sh -n /opt/issue-agent/bin/dockerd-janitor && command -v docker
+COPY --chmod=0755 --from=chown-sweep /out/issue-agent-chown-sweep /opt/issue-agent/bin/issue-agent-chown-sweep
 COPY --chmod=0755 runner/dockerd-probe.sh /opt/issue-agent/bin/dockerd-probe
 COPY --chmod=0755 runner/native-dri-prepare.sh /opt/issue-agent/bin/native-dri-prepare
 COPY --chmod=0755 --from=authz /out/issue-agent-authz /opt/issue-agent/bin/issue-agent-authz

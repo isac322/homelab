@@ -127,6 +127,11 @@ class Fake:
         self.branch_heads: dict[str, str] = {}
         self.cleanups: list[dict[str, Any]] = []
         self.cleanup_error: str | None = None
+        self.prune_requests: list[dict[str, Any]] = []
+        self.session_list_queries: list[dict[str, str]] = []  # query of every GET /api/sessions
+        # GET /janitor/status answers this with ``checked_at`` = now unless it carries one; None answers 404
+        self.janitor_status: dict[str, Any] | None = {"docker_used_pct": 50, "last_prune_at": None,
+                                                      "last_prune_lease": None, "last_prune_result": None}
         # n8n
         self.n8n_status = 200
         self.n8n_hang = False
@@ -267,7 +272,7 @@ class Fake:
                 return -1, 1.5
             return self.n8n_status, {"message": "Workflow was started"}
         if path.startswith("/publisher/"):
-            return self.publisher(path.removeprefix("/publisher"), body, auth)
+            return self.publisher(method, path.removeprefix("/publisher"), body, auth)
         if path.startswith("/api/"):
             return self.hub(method, path, query, body, auth)
         if auth == f"Bearer {self.gh_token}":
@@ -279,7 +284,7 @@ class Fake:
         self.gh_calls.append((self.gh_actor, method, path))
         return self.github(method, path, query, body)
 
-    def publisher(self, path: str, body: Any, auth: str) -> tuple[int, Any]:
+    def publisher(self, method: str, path: str, body: Any, auth: str) -> tuple[int, Any]:
         if auth != f"Bearer {PUB_TOKEN}":
             return 401, {"error": "unauthorized"}
         self.calls.append(f"publisher{path}")
@@ -305,6 +310,13 @@ class Fake:
             if self.cleanup_error:
                 return 409, {"error": self.cleanup_error}
             return 200, {"removed": []}
+        if path == "/janitor/status" and method == "GET":
+            if self.janitor_status is None:
+                return 404, {"error": "no_status"}
+            return 200, {"checked_at": int(time.time()), **self.janitor_status}
+        if path == "/janitor/prune-request":
+            self.prune_requests.append(body)
+            return 200, {"requested_at": int(time.time()), "lease_until": body["lease_until"]}
         return 404, {"error": "no route"}
 
     def hub(self, method: str, path: str, query: dict[str, str], body: Any, auth: str) -> tuple[int, Any]:
@@ -330,8 +342,14 @@ class Fake:
                 return -1, 1.5
             return 200, {"type": "success", "sessionId": sid}
         if parts == ["sessions"]:
+            # HAPI SessionSummary: pending requests as a count, never agentState; ``limit`` truncates the list.
+            self.session_list_queries.append(query)
+            listed = list(self.sessions.values())
+            if "limit" in query:
+                listed = listed[:int(query["limit"])]
             return 200, {"sessions": [{"id": s["id"], "active": s["active"], "thinking": s["thinking"],
-                                       "metadata": s["metadata"]} for s in self.sessions.values()]}
+                                       "pendingRequestsCount": len(s["agentState"]["requests"]),
+                                       "metadata": s["metadata"]} for s in listed]}
         sid = parts[1]
         session = self.sessions.get(sid)
         if session is None:
@@ -1227,6 +1245,21 @@ class PrRepairTests(BridgeTestCase):
         self.assertEqual(self.bridge.reconcile_pr(REPO, 144), "queued")
         self.assertEqual(self.repair_delivery(), self.store.pr_state(REPO, 144)["active_delivery"])
 
+    def test_dismissing_a_parked_repair_releases_its_lease(self) -> None:
+        self.managed_pr()
+        self.assertEqual(self.dispatcher.tick(), "dispatched")
+        delivery = self.repair_delivery()
+        self.assertEqual(self.op("begin", delivery, attempt=1)["status"], "started")
+        self.assertTrue(self.op("fail", delivery, detail="operator review needed")["ok"])
+        self.assertEqual(self.bridge.reconcile_pr(REPO, 144), "active")  # a parked repair keeps its lease
+        attempted = self.store.pr_state(REPO, 144)["attempted_key"]
+        self.assertEqual(self.op("dismiss_event", delivery, reason="obsolete"), {"ok": True, "already": False})
+        state = self.store.pr_state(REPO, 144)
+        self.assertEqual((state["active_delivery"], state["dirty"], state["attempted_key"]), (None, 1, attempted))
+        self.assertEqual(self.store.claim_pr_repair(REPO, 144, "replacement")["status"], "started")
+        self.assertTrue(self.store.release_pr_repair(REPO, 144, "replacement", success=True))
+        self.assertNotEqual(self.bridge.reconcile_pr(REPO, 144), "active")
+
     def test_no_change_before_first_send_clears_repair_fingerprint(self) -> None:
         pr = self.managed_pr()
         self.assertEqual(self.bridge.reconcile_pr(REPO, 144), "queued")
@@ -2098,7 +2131,8 @@ class DispatchTests(BridgeTestCase):
         self.assertEqual(self.op("begin", "d1", attempt=1)["status"], "started")  # delayed first execution
         self.assertEqual(self.op("begin", "d1", attempt=2, execution_id="ex-late")["status"], "duplicate")
         self.assertEqual(self.store.event("d1")["execution_id"], "ex-d1")
-        self.assertEqual(self.dispatcher.tick(now + 10**4), "busy")
+        # Both keep their slots for as long as their workflows count as alive (until the stale sweep).
+        self.assertEqual(self.dispatcher.tick(now + bridge.STALE_SECONDS - 60), "busy")
         self.assertEqual(self.events(), [("d1", "dispatched"), ("d2", "dispatched")])
 
     def test_n8n_refusals_back_off_then_park_with_operator_comment_and_label(self) -> None:
@@ -3307,7 +3341,8 @@ class CleanupTests(BridgeTestCase):
         self.assertEqual((result["checked"], result["skipped_active"], result["errors"]), (1, [], []))
         self.assertEqual(self.fake.sessions, {})
         self.assertEqual(self.fake.calls[calls:], [f"archive {current}", f"delete {current}", f"archive {first}",
-                                                   f"delete {first}", "publisher/cleanup"])
+                                                   f"delete {first}", "publisher/cleanup",
+                                                   "publisher/janitor/status"])  # Docker below the prune threshold
         self.assertEqual(self.fake.cleanups, [{"repo": REPO, "worktree": "issue-7", "branch": "hapi-issue-7",
                                                "codex_session_ids": [CODEX_2, CODEX_1]}])
         issue = self.store.issue(REPO, 7)
@@ -3383,6 +3418,118 @@ class CleanupTests(BridgeTestCase):
         self.assertEqual([c["issue_number"] for c in result["cleaned"]], [7])
         self.assertEqual(self.fake.cleanups[-1]["worktree"], "issue-7")
         self.assertIsNone(self.store.issue(REPO, 7)["session_id"])
+
+    def test_a_failing_subject_never_stops_the_sweep_and_turns_persistent_after_three_failures(self) -> None:
+        self.finished_subject(7, "d1")
+        self.finished_subject(8, "d2")
+        self.fake.issue_states.update({7: closed_days_ago(40), 8: closed_days_ago(40)})
+        real = self.bridge._cleanup_subject
+
+        def flaky(repo: str, number: int) -> None:
+            if number == 7:
+                raise RuntimeError("disk on fire")
+            real(repo, number)
+
+        error = {"repo": REPO, "issue_number": 7, "error": "RuntimeError: disk on fire"}
+        with patch.object(self.bridge, "_cleanup_subject", side_effect=flaky):
+            first = self.cleanup()
+            self.assertEqual([c["issue_number"] for c in first["cleaned"]], [8])  # swept past the failing subject
+            self.assertEqual((first["errors"], first["persistent_errors"]), ([error], []))
+            self.assertEqual(self.cleanup()["persistent_errors"], [])
+            third = self.cleanup()
+        self.assertEqual((third["errors"], third["persistent_errors"]), ([error], [{**error, "failures": 3}]))
+        self.assertEqual(self.store.issue(REPO, 7)["cleanup_failures"], 3)
+
+        self.fake.cleanup_error = "foreign_owner"  # retryable until the dockerd janitor fixes ownership
+        fourth = self.cleanup()
+        self.assertEqual(fourth["persistent_errors"],
+                         [{"repo": REPO, "issue_number": 7, "error": "foreign_owner", "failures": 4}])
+
+        self.fake.cleanup_error = None
+        recovered = self.cleanup()
+        self.assertEqual(([c["issue_number"] for c in recovered["cleaned"]], recovered["persistent_errors"]),
+                         ([7], []))
+        self.assertEqual(self.store.issue(REPO, 7)["cleanup_failures"], 0)
+
+    def test_docker_maintenance_lease_is_requested_only_when_nothing_can_use_docker(self) -> None:
+        self.fake.janitor_status["docker_used_pct"] = 80
+        self.finished_subject(7, "d1")
+        self.started(9, "d3")  # d3 holds a dispatch slot
+        sid = self.op("ensure_session", "d3")["session_id"]
+        held = self.cleanup()
+        self.assertEqual((held["prune_requested"], held["maintenance_until"]), (False, None))
+        self.assertFalse(self.op("finish", "d3", outcome="triaged")["already"])
+        self.assertFalse(self.cleanup(dry_run=True)["prune_requested"])
+        # A HAPI session still working outside any event: thinking, or waiting on a permission request.
+        self.fake.sessions[sid].update(active=True, thinking=True)
+        self.assertFalse(self.cleanup()["prune_requested"])
+        self.fake.sessions[sid].update(thinking=False, agentState={"requests": {"r1": {"tool": "bash"}}})
+        self.assertFalse(self.cleanup()["prune_requested"])
+        self.fake.sessions[sid].update(active=False, agentState={"requests": {}})
+        # A busy session behind 500 newer idle ones: the check reads the whole list, never a limited page.
+        idle = {f"idle-{n}": {"id": f"idle-{n}", "active": True, "thinking": False, "agentState": {"requests": {}},
+                              "metadata": {"path": "/x"}} for n in range(500)}
+        busy = {"id": "old-busy", "active": True, "thinking": True, "agentState": {"requests": {}},
+                "metadata": {"path": "/x"}}
+        self.fake.sessions.update({**idle, "old-busy": busy})
+        queries = len(self.fake.session_list_queries)
+        self.assertFalse(self.cleanup()["prune_requested"])
+        self.assertEqual(self.fake.session_list_queries[queries:], [{}])
+        for key in [*idle, "old-busy"]:
+            del self.fake.sessions[key]
+        # A stale, missing or below-threshold janitor status.
+        self.fake.janitor_status["checked_at"] = int(time.time() - bridge.JANITOR_STATUS_MAX_AGE - 60)
+        self.assertFalse(self.cleanup()["prune_requested"])
+        del self.fake.janitor_status["checked_at"]
+        self.fake.janitor_status["docker_used_pct"] = bridge.JANITOR_PRUNE_USED_PCT
+        self.assertFalse(self.cleanup()["prune_requested"])
+        status, self.fake.janitor_status = self.fake.janitor_status, None
+        self.assertFalse(self.cleanup()["prune_requested"])
+        self.fake.janitor_status = {**status, "docker_used_pct": 80}
+        self.assertEqual(self.fake.prune_requests, [])
+
+        leased = self.cleanup()
+        self.assertTrue(leased["prune_requested"])
+        until = leased["maintenance_until"]
+        self.assertAlmostEqual(until, time.time() + bridge.MAINTENANCE_LEASE_SECONDS, delta=5)
+        self.assertEqual(self.fake.prune_requests, [{"lease_until": int(until)}])
+        self.assertEqual(bridge.Store(self.config.state_path).maintenance_until(), until)  # survives a restart
+        again = self.cleanup()  # a lease still held is not extended
+        self.assertEqual((again["prune_requested"], again["maintenance_until"]), (False, until))
+        self.assertEqual(len(self.fake.prune_requests), 1)
+
+    def test_docker_maintenance_waits_for_a_time_budget_park(self) -> None:
+        self.fake.janitor_status["docker_used_pct"] = 80
+        self.started(9, "d3")
+        self.assertTrue(self.op("fail", "d3", node="Within time budget? (implement)", detail="still running")["ok"])
+        self.assertEqual(self.store.event("d3")["park_class"], "time_budget")  # its agent turn may still run
+        self.assertFalse(self.cleanup()["prune_requested"])
+        self.assertTrue(self.op("dismiss_event", "d3", reason="obsolete")["ok"])
+        self.assertTrue(self.cleanup()["prune_requested"])
+
+    def test_dispatch_pauses_under_the_maintenance_lease_until_the_janitor_reports_it(self) -> None:
+        self.fake.janitor_status["docker_used_pct"] = 80
+        self.finished_subject(7, "d1")
+        until = self.cleanup()["maintenance_until"]
+        self.assertEqual(self.deliver(issue_payload(8), delivery="d2").outcome, "queued")
+        self.assertEqual(self.dispatcher.tick(), "maintenance")
+        self.assertEqual(self.store.event("d2")["state"], "accepted")
+        restarted = bridge.make_bridge(self.config, bridge.Store(self.config.state_path))
+        self.assertEqual(bridge.Dispatcher(self.config, restarted.store, restarted).tick(), "maintenance")
+        self.fake.janitor_status.update(last_prune_lease=int(until) - 1, last_prune_result="ok")  # an older lease
+        self.assertEqual(self.dispatcher.tick(), "maintenance")
+        self.fake.janitor_status["last_prune_lease"] = int(until)  # pruned under this lease: released early
+        self.assertEqual(self.dispatcher.tick(), "dispatched")
+        self.assertIsNone(self.store.maintenance_until())
+
+    def test_a_maintenance_lease_the_janitor_never_reports_lapses(self) -> None:
+        self.fake.janitor_status["docker_used_pct"] = 80
+        self.finished_subject(7, "d1")
+        until = self.cleanup()["maintenance_until"]
+        self.assertEqual(self.deliver(issue_payload(8), delivery="d2").outcome, "queued")
+        self.assertEqual(self.dispatcher.tick(until - 1), "maintenance")
+        self.assertEqual(self.dispatcher.tick(until), "dispatched")
+        self.assertIsNone(self.store.maintenance_until())
 
 
 class TurnTests(BridgeTestCase):
@@ -3619,6 +3766,7 @@ class TurnTests(BridgeTestCase):
         self.send()
         self.fake.invoke(self.sid, self.lid)
         self.fake.codex(self.sid, "message", message=self.result_line(status="blocked", blockers=["x"]))
+        self.assertEqual(self.op("session_turn")["state"], "done")  # consumed: a retry must re-read the history
         self.assertTrue(self.op("fail", detail="operator stop")["ok"])
         with patch.object(self.bridge, "_history_from", side_effect=bridge.OpError("history HTTP 502", retryable=True)):
             failed = self.op("retry_event")
@@ -3708,6 +3856,234 @@ class TurnTests(BridgeTestCase):
             self.fake.codex(self.sid, "tool-call-result", callId=f"c{i}", output=f"progress {i}")
         self.say(self.result_line())
         self.assertEqual(self.op("session_turn")["state"], "done")
+
+    # -- F2: bridge-owned turn deadline ------------------------------------------------
+
+    def expire(self) -> None:
+        """Move the sent implement turn's deadline into the past."""
+        self.store.put_turn("d1", "implement", self.lid, self.sid, "sent", deadline_at=time.time() - 1)
+
+    def test_step_message_names_the_deadline_and_an_already_send_keeps_it(self) -> None:
+        self.send()
+        deadline = self.store.turn("d1", "implement")["deadline_at"]
+        self.assertAlmostEqual(deadline, time.time() + bridge.TURN_BUDGET_SECONDS["implement"], delta=60)
+        text = self.fake.message_posts[0]["text"]
+        self.assertIn(f"Deadline: this step must end by {bridge._utc(deadline)} (UTC)", text)
+        self.assertIn("at least 15 minutes", text)
+        self.assertEqual(self.send()["delivery"], "already")
+        self.assertEqual(self.store.turn("d1", "implement")["deadline_at"], deadline)
+
+    def test_busy_turn_past_its_deadline_is_expired(self) -> None:
+        self.send()
+        self.fake.invoke(self.sid, self.lid)
+        self.say("building...")
+        self.fake.sessions[self.sid]["thinking"] = True
+        self.assertEqual(self.op("session_turn")["state"], "running")  # before the deadline
+        self.expire()
+        expired = self.op("session_turn")
+        self.assertEqual((expired["state"], expired["session_id"]), ("expired", self.sid))
+        self.assertIn("agent turn still running at the bridge deadline", expired["detail"])
+
+    def test_answered_turn_past_its_deadline_is_not_expired(self) -> None:
+        self.send()
+        self.fake.invoke(self.sid, self.lid)
+        self.say(self.result_line())
+        self.fake.sessions[self.sid]["thinking"] = True  # result already emitted while the agent still thinks
+        self.expire()
+        self.assertEqual(self.op("session_turn")["state"], "running")
+        self.fake.sessions[self.sid]["thinking"] = False
+        self.assertEqual(self.op("session_turn")["state"], "done")
+
+    # -- F1: local gate policy ------------------------------------------------------------
+
+    def test_implement_prompt_leaves_long_running_suites_to_ci(self) -> None:
+        self.send()
+        text = self.fake.message_posts[0]["text"]
+        for stale in ("slow suites such as envtest", "discover every gate", "only confirms this"):
+            self.assertNotIn(stale, text)
+            self.assertNotIn(stale, bridge._IMPLEMENT_SCHEMA)
+        self.assertIn("run the repository's fast gates locally", text)
+        self.assertIn("are CI's job: do not run them locally by default", text)
+        self.assertIn("never report ready with code whose fast gates fail", text)
+        self.assertIn("never under /tmp", text)
+
+
+class TimeBudgetTests(BridgeTestCase):
+    """krema#99: an implement turn outlived the n8n time budget; its late result must be harvested, not redone."""
+
+    RESULT = {"status": "no_change", "pr": None, "issue_comment": "nothing needed", "questions": [],
+              "summary": "nothing needed", "blockers": [], "local_checks": []}
+
+    def timed_out_comment(self) -> tuple[str, str]:
+        """Comment event c1 on issue 7 (phase 'implementing'), parked at the time budget mid implement turn."""
+        self.started(7, "d1")
+        self.op("ensure_session", "d1")
+        self.assertFalse(self.op("finish", "d1", outcome="triaged")["already"])
+        self.assertEqual(self.deliver(comment_payload(), event="issue_comment", delivery="c1").outcome, "queued")
+        self.assertEqual(self.dispatcher.tick(), "dispatched")
+        self.assertEqual(self.op("begin", "c1", attempt=1)["status"], "started")
+        sid = self.op("ensure_session", "c1")["session_id"]
+        sent = self.op("session_send", "c1", mode="implement", instructions="Implement it.")
+        self.assertEqual(sent["delivery"], "sent")
+        lid = sent["local_id"]
+        self.fake.invoke(sid, lid)
+        self.fake.codex(sid, "message", message="running the e2e matrix...")
+        self.fake.sessions[sid]["thinking"] = True
+        self.store.put_turn("c1", "implement", lid, sid, "sent", deadline_at=time.time() - 1)
+        self.assertEqual(self.op("session_turn", "c1")["state"], "expired")
+        self.assertTrue(self.op("fail", "c1", node="Within time budget? (implement)",
+                                detail="Within time budget? (implement): agent turn still running")["ok"])
+        ev = self.store.event("c1")
+        self.assertEqual((ev["state"], ev["kind"], ev["park_class"]),
+                         ("needs_attention", "issue_comment", "time_budget"))
+        self.assertEqual(self.store.issue(REPO, 7)["phase"], "implementing")
+        return sid, lid
+
+    def answer(self, sid: str, lid: str) -> None:
+        self.fake.codex(sid, "message", message=f"done.\n{bridge.RESULT_TAG} {lid} {json.dumps(self.RESULT)}")
+        self.fake.sessions[sid]["thinking"] = False
+
+    def test_retry_harvests_the_late_result_of_a_timed_out_implement_turn(self) -> None:
+        sid, lid = self.timed_out_comment()
+        self.answer(sid, lid)
+        self.assertTrue(self.op("retry_event", "c1")["ok"])
+        turn = self.store.turn("c1", "implement")
+        self.assertEqual((turn["state"], turn["local_id"]), ("sent", lid))
+        self.assertEqual(self.dispatcher.tick(), "dispatched")
+        begun = self.op("begin", "c1", attempt=1)
+        # Without the unconsumed turn the hint would drift to 'followup' (phase 'implementing', issue_comment).
+        self.assertEqual((begun["status"], begun["mode_hint"], begun["phase"]),
+                         ("started", "implement", "implementing"))
+        posts = len(self.fake.message_posts)
+        self.assertEqual(self.op("session_send", "c1", mode="implement", instructions="Implement it.")["delivery"],
+                         "already")
+        done = self.op("session_turn", "c1")
+        self.assertEqual((done["state"], done["mode"], done["result"]["status"]), ("done", "implement", "no_change"))
+        self.assertEqual(len(self.fake.message_posts), posts)  # nothing re-sent to the agent
+
+    def test_retry_of_a_consumed_answered_turn_resends_it(self) -> None:
+        sid, lid = self.timed_out_comment()
+        self.answer(sid, lid)
+        self.store.consume_turn("c1", "implement", lid)  # the workflow already took this result
+        self.assertTrue(self.op("retry_event", "c1")["ok"])
+        turn = self.store.turn("c1", "implement")
+        self.assertEqual((turn["state"], turn["local_id"]), ("lost", f"{lid}-r1"))
+        self.assertEqual(self.dispatcher.tick(), "dispatched")
+        self.assertEqual(self.op("begin", "c1", attempt=1)["mode_hint"], "followup")
+
+    def test_dispatcher_harvests_an_answered_time_budget_park(self) -> None:
+        sid, lid = self.timed_out_comment()
+        now = time.time()
+        self.assertEqual(self.dispatcher.tick(now), "idle")  # still running: checked again later
+        ev = self.store.event("c1")
+        self.assertEqual((ev["state"], ev["park_class"]), ("needs_attention", "time_budget"))
+        self.assertAlmostEqual(ev["auto_retry_at"], now + bridge.TIME_BUDGET_CHECK_SECONDS, delta=1)
+        self.answer(sid, lid)
+        self.assertEqual(self.dispatcher.tick(now + 1), "idle")  # not due yet
+        self.assertEqual(self.store.event("c1")["state"], "needs_attention")
+        self.assertEqual(self.dispatcher.tick(now + bridge.TIME_BUDGET_CHECK_SECONDS + 1), "dispatched")
+        self.assertEqual(self.fake.dispatched[-1][1]["delivery_id"], "c1")
+        self.assertEqual(self.store.issue(REPO, 7)["blocked"], 0)
+        turn = self.store.turn("c1", "implement")
+        self.assertEqual((turn["state"], turn["local_id"]), ("sent", lid))
+        self.assertEqual(self.op("begin", "c1", attempt=1)["mode_hint"], "implement")
+
+    def test_time_budget_park_without_a_result_after_the_grace_period_archives_the_session(self) -> None:
+        sid, _ = self.timed_out_comment()
+        self.assertEqual(self.dispatcher.tick(time.time() + bridge.TURN_GRACE_SECONDS + 10), "idle")
+        ev = self.store.event("c1")
+        self.assertEqual((ev["state"], ev["park_class"]), ("needs_attention", "time_budget_expired"))
+        self.assertIn(f"archive {sid}", self.fake.calls)
+        self.assertFalse(self.fake.sessions[sid]["active"])
+        calls = len(self.fake.calls)
+        self.dispatcher.tick(time.time() + 2 * bridge.TURN_GRACE_SECONDS)
+        self.assertNotIn(f"archive {sid}", self.fake.calls[calls:])  # settled once
+
+    def test_dismiss_closes_only_a_parked_event_unblocks_and_removes_the_label(self) -> None:
+        sid, _ = self.timed_out_comment()
+        self.assertEqual(self.fake.labels[7], [NEEDS])
+        self.assertEqual(self.op("dismiss_event", "c1")["error"], "reason required")
+        done = self.op("dismiss_event", "c1", reason="subject closed upstream")
+        self.assertEqual(done, {"ok": True, "already": False})
+        ev = self.store.event("c1")
+        self.assertEqual((ev["state"], ev["outcome"], ev["detail"], ev["park_class"]),
+                         ("completed", "dismissed", "subject closed upstream", None))
+        issue = self.store.issue(REPO, 7)
+        self.assertEqual((issue["blocked"], issue["attention_label"]), (0, 0))
+        self.assertEqual(self.fake.labels[7], [])
+        self.assertIn(f"archive {sid}", self.fake.calls)
+        self.assertEqual(self.op("dismiss_event", "c1", reason="again"), {"ok": True, "already": True})
+        self.assertEqual(self.op("retry_event", "c1")["error"], "event_terminal")
+        # A completed (not dismissed) or running event cannot be dismissed.
+        self.assertEqual(self.op("dismiss_event", "d1", reason="x")["error"], "not_needs_attention")
+        self.assertEqual(self.deliver(comment_payload(comment_id=101), event="issue_comment", delivery="c2").outcome,
+                         "queued")
+        self.assertEqual(self.dispatcher.tick(), "dispatched")
+        self.assertEqual(self.op("begin", "c2", attempt=1)["status"], "started")
+        self.assertEqual(self.op("dismiss_event", "c2", reason="x")["error"], "not_needs_attention")
+
+    def test_a_legacy_turn_without_a_deadline_expires_once_after_a_fixed_grace_period(self) -> None:
+        sid, _ = self.timed_out_comment()
+        with self.store.tx() as conn:  # sent before deadlines existed
+            conn.execute("UPDATE turns SET deadline_at = NULL WHERE delivery_id = 'c1'")
+        calls = len(self.fake.calls)
+        start = time.time()
+        classes = []
+        for check in range(24):  # every TIME_BUDGET_CHECK_SECONDS for two hours
+            self.dispatcher.tick(start + check * bridge.TIME_BUDGET_CHECK_SECONDS)
+            classes.append(self.store.event("c1")["park_class"])
+        # The first check anchors the deadline; waiting checks (which touch the event) never move it.
+        self.assertEqual(self.store.turn("c1", "implement")["deadline_at"], start)
+        self.assertEqual(classes.index("time_budget_expired"),
+                         int(bridge.TURN_GRACE_SECONDS // bridge.TIME_BUDGET_CHECK_SECONDS))
+        self.assertEqual(self.fake.calls[calls:].count(f"archive {sid}"), 1)
+
+    def test_dismiss_waits_for_an_attention_notice_in_flight_and_leaves_no_label(self) -> None:
+        self.started(7, "d1")
+        entered, release = threading.Event(), threading.Event()
+        self.addCleanup(release.set)
+        self.fake.comment_gate = (entered, release)
+        failed = threading.Thread(target=lambda: self.op("fail", "d1", detail="boom", node="Pull request upserted?"))
+        failed.start()
+        self.assertTrue(entered.wait(5))  # the notifier holds the attention lock; its label is not added yet
+        self.assertEqual(self.fake.labels.get(7, []), [])
+        waiting = threading.Event()
+        original = self.bridge._keyed_lock
+
+        def keyed_lock(key: Any) -> threading.Lock:
+            if key == ("attention", "d1"):
+                waiting.set()
+            return original(key)
+
+        results: list[dict] = []
+        with patch.object(self.bridge, "_keyed_lock", side_effect=keyed_lock):
+            dismiss = threading.Thread(target=lambda: results.append(
+                self.op("dismiss_event", "d1", reason="obsolete")))
+            dismiss.start()
+            self.assertTrue(waiting.wait(5))
+            self.assertEqual(self.store.event("d1")["state"], "needs_attention")  # blocked behind the notifier
+            release.set()
+            failed.join(10)
+            dismiss.join(10)
+        self.assertEqual(results, [{"ok": True, "already": False}])
+        self.assertEqual((self.fake.labels[7], self.store.issue(REPO, 7)["attention_label"]), ([], 0))
+        self.dispatcher.tick(time.time() + 10 * bridge.DISPATCH_BACKOFF)  # no notifier attempt is left to add it
+        self.assertEqual(self.fake.labels[7], [])
+
+    def test_a_superseded_session_is_archived_once(self) -> None:
+        self.started(7, "d1")
+        first = self.op("ensure_session", "d1")["session_id"]
+        self.fake.sessions[first]["active"] = False  # runner restart: the next ensure resumes into a new session
+        calls = len(self.fake.calls)
+        current = self.op("ensure_session", "d1")["session_id"]
+        self.assertNotEqual(current, first)
+        self.assertEqual(json.loads(self.store.issue(REPO, 7)["superseded"]), [first])
+        self.assertIn(f"archive {first}", self.fake.calls[calls:])
+        self.assertNotIn(f"archive {current}", self.fake.calls)
+        self.assertTrue(self.fake.sessions[current]["active"])
+        calls = len(self.fake.calls)
+        self.op("ensure_session", "d1")
+        self.assertNotIn(f"archive {first}", self.fake.calls[calls:])
 
 
 class ResultValidationTests(unittest.TestCase):
@@ -4991,7 +5367,18 @@ class MigrationTests(unittest.TestCase):
         with tempfile.TemporaryDirectory() as d:
             path = os.path.join(d, "state.sqlite3")
             conn = sqlite3.connect(path)
-            conn.executescript(bridge.TURNS_DDL.format(name="turns").replace(", 'lost'", ""))
+            # The v2 turns table: 7 columns, no 'lost' state (spelled out: TURNS_DDL has gained columns since).
+            conn.executescript("""
+                CREATE TABLE turns (
+                    delivery_id TEXT NOT NULL,
+                    mode        TEXT NOT NULL,
+                    local_id    TEXT NOT NULL UNIQUE,
+                    session_id  TEXT NOT NULL,
+                    state       TEXT NOT NULL CHECK (state IN ('sending', 'sent')),
+                    idle_polls  INTEGER NOT NULL DEFAULT 0,
+                    updated_at  REAL NOT NULL,
+                    PRIMARY KEY (delivery_id, mode)
+                )""")
             conn.execute("INSERT INTO turns VALUES ('d1', 'review', 'issue-agent-d1-review', 's1', 'sent', 2, 0)")
             conn.commit()
             conn.close()
@@ -4999,6 +5386,7 @@ class MigrationTests(unittest.TestCase):
             store.put_turn("d1", "review", "issue-agent-d1-review-r1", "s1", "lost")
             turn = store.turn("d1", "review")
             self.assertEqual((turn["local_id"], turn["state"]), ("issue-agent-d1-review-r1", "lost"))
+            self.assertIsNone(turn["deadline_at"])  # upgraded rows gain the newer columns empty
 
     def test_v2_events_table_gains_issue_edits_and_trust_keeping_rows(self) -> None:
         with tempfile.TemporaryDirectory() as d:

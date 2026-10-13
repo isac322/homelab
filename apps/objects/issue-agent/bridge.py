@@ -190,7 +190,31 @@ _N8N_TRANSPORT_ERROR_RE = re.compile(
     r"The service refused the connection.*|connect ECONN(?:REFUSED|RESET) .*|socket hang up|read ECONNRESET"
     r"|getaddrinfo EAI_AGAIN .*|timeout of \d+ms exceeded", re.DOTALL)
 DISPATCH_BACKOFF = 60.0
-STALE_SECONDS = 6 * 3600.0
+# A dispatched event whose workflow made no bridge call for this long is parked (`stale_dispatch`): its n8n
+# execution was lost (n8n, runner or bridge restart). Every live op refreshes ``heartbeat_at``; a running turn is
+# polled every 120 s and the longest single op (checkout plus spawn) stays far below this.
+STALE_SECONDS = 30 * 60.0
+# Bridge-owned wall-clock budget of one agent turn, by mode, from its send. The step message names the deadline;
+# session_turn reports a turn still running past it as 'expired' and the workflow parks it (`time_budget`).
+TURN_BUDGET_SECONDS = {"triage": 3600.0, "review": 7200.0, "implement": 21600.0, "followup": 21600.0,
+                       "reopen_check": 3600.0}
+# A `time_budget` park whose turn still has no result this long after its deadline gets its session archived;
+# until then the dispatcher looks for a late result every TIME_BUDGET_CHECK_SECONDS.
+TURN_GRACE_SECONDS = 3600.0
+TIME_BUDGET_CHECK_SECONDS = 300.0
+TIME_BUDGET_NODE = "Within time budget?"  # n8n node (prefix) that parks a turn past its deadline
+# Result stages the workflow records once it consumed a turn's result (implement/followup have none:
+# ``turns.consumed_id`` covers every mode).
+RESULT_STAGES = {"triage": "triage_result", "reopen_check": "reopen_result", "review": "review_published"}
+# cleanup_closed lists a subject failing this many consecutive sweeps in persistent_errors.
+CLEANUP_PERSISTENT_FAILURES = 3
+PUBLISHER_PRUNE_TIMEOUT = 30.0  # publisher janitor status read and prune request
+# Docker maintenance lease: after a cleanup sweep finds the runner idle and the janitor's Docker storage above
+# JANITOR_PRUNE_USED_PCT, the dispatcher starts no event for MAINTENANCE_LEASE_SECONDS (or until the janitor
+# reports it pruned under this lease). A janitor status older than JANITOR_STATUS_MAX_AGE is not trusted.
+MAINTENANCE_LEASE_SECONDS = 1200
+JANITOR_STATUS_MAX_AGE = 900.0
+JANITOR_PRUNE_USED_PCT = 70
 SPAWN_SETTLE_SECONDS = 300.0
 SPAWN_TIMEOUT = 180.0  # spawn waits for the runner to start the agent
 IDLE_WITHOUT_RESULT_LIMIT = 3
@@ -499,9 +523,10 @@ EVENT_COLUMNS = (
     ("attention_node", "TEXT"),
     ("trusted", "INTEGER"),  # 1/0 collaborator verdict at intake; NULL for events recorded before it existed
     ("pr_number", "INTEGER"),
-    ("park_class", "TEXT"),  # transient failure class of an auto-retry-armed park (TRANSIENT_PARK_CLASSES)
+    ("park_class", "TEXT"),  # TRANSIENT_PARK_CLASSES (auto-retry-armed), or time_budget / time_budget_expired
     ("auto_retries", "INTEGER NOT NULL DEFAULT 0"),  # automatic re-queues of this event so far
-    ("auto_retry_at", "REAL"),  # when the dispatcher re-queues an armed park; NULL when not armed
+    # when the dispatcher re-queues an armed park, or next looks for a time_budget park's late result
+    ("auto_retry_at", "REAL"),
 )
 ISSUES_DDL = """
 CREATE TABLE IF NOT EXISTS {name} (
@@ -520,6 +545,7 @@ CREATE TABLE IF NOT EXISTS {name} (
     subject       TEXT NOT NULL DEFAULT 'issue',
     pr_number     INTEGER,
     attention_label INTEGER NOT NULL DEFAULT 0,
+    cleanup_failures INTEGER NOT NULL DEFAULT 0,
     PRIMARY KEY (repo, issue_number)
 )"""
 # Columns added to ``issues`` after v1; ALTER TABLE ADD COLUMN keeps existing rows.
@@ -528,6 +554,7 @@ ISSUE_COLUMNS = (
     ("subject", "TEXT NOT NULL DEFAULT 'issue'"),
     ("pr_number", "INTEGER"),
     ("attention_label", "INTEGER NOT NULL DEFAULT 0"),  # 1 while the bridge's needs-attention label is on GitHub
+    ("cleanup_failures", "INTEGER NOT NULL DEFAULT 0"),  # consecutive cleanup_closed sweeps that failed on it
 )
 TURNS_DDL = """
 CREATE TABLE IF NOT EXISTS {name} (
@@ -538,6 +565,8 @@ CREATE TABLE IF NOT EXISTS {name} (
     state       TEXT NOT NULL CHECK (state IN ('sending', 'sent', 'lost')),
     idle_polls  INTEGER NOT NULL DEFAULT 0,
     updated_at  REAL NOT NULL,
+    deadline_at REAL,
+    consumed_id TEXT,
     PRIMARY KEY (delivery_id, mode)
 )"""
 COLLABORATORS_DDL = """
@@ -567,6 +596,12 @@ CREATE TABLE IF NOT EXISTS {name} (
     updated_at      REAL NOT NULL,
     PRIMARY KEY (repo, pr_number)
 )"""
+# Bridge-wide values that survive a restart (key ``maintenance_until``: the Docker maintenance lease's end).
+BRIDGE_STATE_DDL = """
+CREATE TABLE IF NOT EXISTS bridge_state (
+    key   TEXT PRIMARY KEY,
+    value REAL NOT NULL
+)"""
 SCHEMA = ";\n".join([
     EVENTS_DDL.format(name="events"),
     "CREATE INDEX IF NOT EXISTS events_state_seq ON events (state, seq)",
@@ -575,6 +610,7 @@ SCHEMA = ";\n".join([
     TURNS_DDL.format(name="turns"),
     COLLABORATORS_DDL.format(name="collaborators"),
     PRS_DDL.format(name="prs"),
+    BRIDGE_STATE_DDL,
 ]) + ";\n"
 # Event: accepted -> dispatched -> completed | needs_attention. A pull request keeps at most one pending
 # ('accepted') review: a new review request folds older pending ones into itself with outcome 'coalesced',
@@ -586,6 +622,8 @@ SCHEMA = ";\n".join([
 # Issue phase: none -> triaged -> implementing; pull requests: none -> reviewing
 # Turn: sending -> sent -> lost (session died mid-turn) -> sending under a fresh localId
 #       sent with an invalid result -> sent under <localId>-fix (one correction request) -> attention if still invalid
+#       sent past its deadline_at while the agent is busy -> 'expired' (the workflow parks it as time_budget); a
+#       result it emits later is harvested under the same localId until session_turn hands it out (consumed_id)
 
 
 def _columns(conn: sqlite3.Connection, table: str) -> list[str]:
@@ -640,6 +678,11 @@ def migrate(conn: sqlite3.Connection) -> None:
         _rebuild(conn, "turns", TURNS_DDL, {"mode": "'legacy'"})
     elif "turns" in tables and "'lost'" not in tables["turns"]:
         _rebuild(conn, "turns", TURNS_DDL)  # widens the state CHECK for session-lost turns
+    if "turns" in tables:
+        have = set(_columns(conn, "turns"))
+        for col, decl in (("deadline_at", "REAL"), ("consumed_id", "TEXT")):
+            if col not in have:
+                conn.execute(f"ALTER TABLE turns ADD COLUMN {col} {decl}")
     if "prs" in tables:
         have = set(_columns(conn, "prs"))
         for col, decl in (("latest_signal", "TEXT"), ("last_manual_id", "INTEGER"),
@@ -945,6 +988,22 @@ class Store:
                          (head_sha, time.time(), repo, pr_number))
 
     @staticmethod
+    def maintenance_until_in(conn: sqlite3.Connection) -> float | None:
+        """End of the Docker maintenance lease (no dispatch before it), inside the caller's transaction."""
+        row = conn.execute("SELECT value FROM bridge_state WHERE key = 'maintenance_until'").fetchone()
+        return row[0] if row else None
+
+    def maintenance_until(self) -> float | None:
+        with closing(self._connect()) as conn:
+            return self.maintenance_until_in(conn)
+
+    def clear_maintenance(self, until: float) -> bool:
+        """End the lease ``until`` (and only that one: a newer lease stays)."""
+        with self.tx() as conn:
+            return conn.execute("DELETE FROM bridge_state WHERE key = 'maintenance_until' AND value = ?",
+                                (until,)).rowcount > 0
+
+    @staticmethod
     def _supersede_parked_reviews(conn: sqlite3.Connection, ev: dict[str, Any], now: float) -> None:
         """A new review request replaces reviews parked on the same pull request and lifts their block.
 
@@ -1009,15 +1068,31 @@ class Store:
         return rows[0] if rows else None
 
     def put_turn(self, delivery_id: str, mode: str, local_id: str, session_id: str, state: str,
-                 idle_polls: int = 0) -> None:
+                 idle_polls: int = 0, *, deadline_at: float | None = None) -> None:
+        """Upsert a turn. ``deadline_at`` is set by a send; None keeps the recorded one."""
         with self.tx() as conn:
             conn.execute(
-                "INSERT INTO turns (delivery_id, mode, local_id, session_id, state, idle_polls, updated_at)"
-                " VALUES (?, ?, ?, ?, ?, ?, ?) ON CONFLICT(delivery_id, mode) DO UPDATE SET"
+                "INSERT INTO turns (delivery_id, mode, local_id, session_id, state, idle_polls, updated_at,"
+                " deadline_at) VALUES (?, ?, ?, ?, ?, ?, ?, ?) ON CONFLICT(delivery_id, mode) DO UPDATE SET"
                 " local_id = excluded.local_id, session_id = excluded.session_id, state = excluded.state,"
-                " idle_polls = excluded.idle_polls, updated_at = excluded.updated_at",
-                (delivery_id, mode, local_id, session_id, state, idle_polls, time.time()),
+                " idle_polls = excluded.idle_polls, updated_at = excluded.updated_at,"
+                " deadline_at = COALESCE(excluded.deadline_at, turns.deadline_at)",
+                (delivery_id, mode, local_id, session_id, state, idle_polls, time.time(), deadline_at),
             )
+
+    def anchor_turn_deadline(self, delivery_id: str, mode: str, deadline_at: float) -> float:
+        """Give a turn without a deadline (sent before deadlines existed) ``deadline_at``; returns the recorded one."""
+        with self.tx() as conn:
+            conn.execute("UPDATE turns SET deadline_at = ? WHERE delivery_id = ? AND mode = ? AND deadline_at IS NULL",
+                         (deadline_at, delivery_id, mode))
+            return conn.execute("SELECT deadline_at FROM turns WHERE delivery_id = ? AND mode = ?",
+                                (delivery_id, mode)).fetchone()[0]
+
+    def consume_turn(self, delivery_id: str, mode: str, local_id: str) -> None:
+        """Record that session_turn handed out (or rejected) the result of the turn sent under ``local_id``."""
+        with self.tx() as conn:
+            conn.execute("UPDATE turns SET consumed_id = ? WHERE delivery_id = ? AND mode = ? AND local_id = ?",
+                         (local_id, delivery_id, mode, local_id))
 
     def drop_turn(self, delivery_id: str, mode: str) -> None:
         with self.tx() as conn:
@@ -1172,22 +1247,28 @@ class Publisher:
         self.token_file = token_file
         self.timeout = timeout
 
-    def request(self, path: str, body: Mapping[str, Any], timeout: float) -> dict[str, Any]:
+    def request(self, path: str, body: Mapping[str, Any] | None, timeout: float) -> dict[str, Any]:
+        """POST ``body`` to ``path``; a None body is a GET (``/janitor/status``)."""
         try:
             token = read_secret_file(self.token_file)
         except (OSError, ConfigError, UnicodeDecodeError):
             raise OpError("publisher token unavailable", retryable=True) from None
         try:
-            status, data = http_json("POST", self.base_url + path, headers={"Authorization": f"Bearer {token}"},
-                                     body=dict(body), timeout=max(timeout, self.timeout))
+            status, data = http_json("GET" if body is None else "POST", self.base_url + path,
+                                     headers={"Authorization": f"Bearer {token}"},
+                                     body=None if body is None else dict(body), timeout=max(timeout, self.timeout))
         except TransportError as exc:
             # checkout and push are both idempotent, so an unknown outcome is safe to repeat.
             raise OpError(f"publisher {path} transport: {exc}", retryable=True) from None
         if status == 200 and isinstance(data, dict):
             return data
         error = data.get("error") if isinstance(data, dict) else None
-        raise OpError(error if isinstance(error, str) and error else f"publisher {path} HTTP {status}",
-                      retryable=status >= 500 or status == 429)
+        detail = data.get("detail") if isinstance(data, dict) else None
+        message = error if isinstance(error, str) and error else f"publisher {path} HTTP {status}"
+        if error == "foreign_owner" and isinstance(detail, str) and detail:
+            message = f"{error}: {detail[:500]}"
+        # foreign_owner (409): a worktree entry another uid owns; the dockerd janitor chowns it within minutes.
+        raise OpError(message, retryable=status >= 500 or status == 429 or error == "foreign_owner")
 
 
 # --------------------------------------------------------------------------
@@ -1690,12 +1771,17 @@ _IMPLEMENT_SCHEMA = """\
  "summary":"<=2000",
  "blockers":[strings] (non-empty iff blocked),
  "local_checks":[{"command":"<=500 exact command you ran in this worktree","exit_code":int}] (max 30; when ready: non-empty and every exit_code 0)}
-Before reporting ready, discover every gate the repository's pull-request CI runs (the jobs in .github/workflows/*
-and the Makefile/justfile/script targets they call, including slow suites such as envtest or integration tests),
-run each of them locally in this worktree, fix failures, and rerun until all pass; record each command with its
-final exit code in local_checks. GitHub CI after the push only confirms this. A gate that genuinely cannot run
-locally (needs secrets, external services or special hardware) goes in summary and the PR body as not run, never
-in local_checks. Keep build outputs and caches in the worktree's default locations, never under /tmp.
+Before reporting ready, run the repository's fast gates locally in this worktree: format/lint, build/compile,
+unit tests, and fast tests scoped to your change (take the commands from .github/workflows/* and the
+Makefile/justfile targets they call). Fix failures and rerun until they pass, and record each command with its
+final exit code in local_checks; never report ready with code whose fast gates fail. Long-running suites (e2e,
+GUI/Appium, multi-distro/multi-version/multi-node matrices, container/VM integration, soak, envtest-style suites
+taking more than a few minutes) are CI's job: do not run them locally by default; list them as left to CI in
+summary and the PR body. Run such a suite locally only when needed (to reproduce or fix a failure CI reported in
+it, or when you change that suite's harness and cannot validate it otherwise), and then run only the affected leg
+or test, never a serialized matrix. A gate that cannot run locally at all (needs secrets, external services or
+special hardware) goes in summary and the PR body as not run, never in local_checks. Keep build outputs and
+caches in the worktree's default locations, never under /tmp.
 Commit everything on your worktree branch before reporting ready; the automation pushes the branch head.
 Do not push or open pull requests."""
 
@@ -1723,8 +1809,12 @@ RESULT_SCHEMAS = {"triage": _TRIAGE_SCHEMA, "implement": _IMPLEMENT_SCHEMA, "fol
                   "review": _REVIEW_SCHEMA, "reopen_check": _REOPEN_CHECK_SCHEMA}
 
 
+def _utc(ts: float) -> str:
+    return datetime.datetime.fromtimestamp(ts, datetime.timezone.utc).strftime("%Y-%m-%dT%H:%M:%SZ")
+
+
 def build_message(ev: sqlite3.Row, mode: str, branch: str | None, default_branch: str, instructions: str,
-                  context: Any, nonce: str) -> str:
+                  context: Any, nonce: str, *, deadline_at: float | None = None) -> str:
     n = int(ev["issue_number"])
     repo = ev["repo"]
     pr_number = ev["pr_number"] or (n if ev["kind"] == "pr_review" else None)
@@ -1749,6 +1839,13 @@ def build_message(ev: sqlite3.Row, mode: str, branch: str | None, default_branch
     if mode in ("implement", "followup"):
         lines.append(f"- Commit all your changes locally on branch {branch or f'hapi-issue-{n}'} before reporting "
                      "ready; the automation pushes the branch head and opens or updates the pull request.")
+    if deadline_at is not None:
+        lines += [
+            f"- Deadline: this step must end by {_utc(deadline_at)} (UTC); the automation stops waiting then.",
+            "  Leave at least 15 minutes before it to commit and emit your result line. If the work cannot finish",
+            "  in time, report status blocked (with what remains in blockers) before the deadline rather than",
+            "  running past it.",
+        ]
     lines += [
         "- End your final reply with exactly one line: the tag, the nonce, then the result JSON on the same line:",
         f"  {RESULT_TAG} {nonce} {{...}}",
@@ -2156,6 +2253,7 @@ class Bridge:
             "github.security_advisory": self.op_github_security_advisory,
             "github.pr_upsert": self.op_github_pr_upsert,
             "git.push": self.op_git_push,
+            "dismiss_event": self.op_dismiss_event,
         }
 
     # -- plumbing ----------------------------------------------------------
@@ -2222,6 +2320,17 @@ class Bridge:
         prefix = "review-pr" if subject_of(ev["kind"]) == "pull_request" else "issue"
         return f"{prefix}-{ev['issue_number']}"
 
+    def _resumed_mode(self, ev: sqlite3.Row) -> str | None:
+        """Mode of the event's sent step whose result the workflow never consumed, else None.
+
+        A retried event resumes that step: session_send answers 'already' and session_turn harvests the result, so
+        a retried implement does not drift to 'followup' because its send already moved the phase to 'implementing'.
+        """
+        turn = self.store.turn(ev["delivery_id"])
+        if turn is not None and turn["state"] == "sent" and turn["mode"] in MODES and not self._consumed(ev, turn):
+            return turn["mode"]
+        return None
+
     @staticmethod
     def _mode_hint(ev: sqlite3.Row, phase: str) -> str:
         if ev["kind"] == "pr_review":
@@ -2233,6 +2342,13 @@ class Bridge:
         if ev["kind"] in ("issue_comment", "issue_edited") and phase == "implementing":
             return "followup"
         return "triage"
+
+    @staticmethod
+    def _consumed(ev: sqlite3.Row, turn: sqlite3.Row) -> bool:
+        """Whether the workflow already took this turn's result: session_turn handed it out (or rejected it) under
+        the turn's current localId, or the mode's result stage is recorded."""
+        stage = RESULT_STAGES.get(turn["mode"])
+        return turn["consumed_id"] == turn["local_id"] or (stage is not None and stage in json.loads(ev["stages"]))
 
     # -- event lifecycle ---------------------------------------------------
 
@@ -2315,7 +2431,7 @@ class Bridge:
         return {
             "status": status,
             "stages": stages,
-            "mode_hint": self._mode_hint(ev, issue["phase"]),
+            "mode_hint": self._resumed_mode(ev) or self._mode_hint(ev, issue["phase"]),
             "phase": issue["phase"],
             "subject": subject_of(ev["kind"]),
             "event": {
@@ -2474,7 +2590,7 @@ class Bridge:
         no-change repair: it reviews the live head even when the review App already reviewed it."""
         return ev["comment_id"] is not None or ":rereview:" in (ev["semantic_key"] or "")
 
-    def _clear_attention_label(self, repo: str, number: int) -> None:
+    def _clear_attention_label(self, repo: str, number: int, *, client: GitHub | None = None) -> None:
         """A successful run clears the failure notice the bridge put on the subject, if it put one there.
 
         Best effort: the flag stays set when GitHub refuses the removal, so the next finish retries it."""
@@ -2483,7 +2599,7 @@ class Bridge:
             return
         try:
             self._gh("DELETE", f"/repos/{repo}/issues/{number}/labels/"
-                               f"{urllib.parse.quote(NEEDS_ATTENTION, safe='')}", ok=(200, 404))
+                               f"{urllib.parse.quote(NEEDS_ATTENTION, safe='')}", ok=(200, 404), client=client)
         except (OpError, TransportError) as exc:
             LOG.warning("%s#%d %s not removed (next finish retries): %s", repo, number, NEEDS_ATTENTION, exc)
             return
@@ -2495,17 +2611,19 @@ class Bridge:
         Idle sessions otherwise keep their Codex process (and its MCP servers) alive until the runner restarts.
         Best effort: the event is already completed, so a failure only leaves the process running."""
         sid = self.store.issue(ev["repo"], int(ev["issue_number"]))["session_id"]
-        if not sid:
-            return
+        if sid:
+            self._archive_sid(ev["repo"], int(ev["issue_number"]), sid)
+
+    def _archive_sid(self, repo: str, number: int, sid: str) -> None:
+        """Archive one HAPI session (best effort; 409 means already inactive, nothing left to stop)."""
         try:
             status, data = self.hapi.request("POST", f"/api/sessions/{urllib.parse.quote(sid, safe='')}/archive",
                                              body={})
         except (TransportError, OpError) as exc:
-            LOG.warning("%s#%d session %s not archived: %s", ev["repo"], ev["issue_number"], sid, exc)
+            LOG.warning("%s#%d session %s not archived: %s", repo, number, sid, exc)
             return
-        # 409: already inactive (e.g. the runner restarted), nothing left to stop.
         if status not in (200, 409):
-            LOG.warning("%s#%d session %s not archived: HTTP %s %s", ev["repo"], ev["issue_number"], sid, status,
+            LOG.warning("%s#%d session %s not archived: HTTP %s %s", repo, number, sid, status,
                         data.get("error") if isinstance(data, dict) else "")
 
     def stop_cancelled_review(self, delivery_id: str) -> None:
@@ -2532,12 +2650,15 @@ class Bridge:
         detail = req.get("detail")
         detail = detail[:2000] if isinstance(detail, str) and detail.strip() else "workflow reported failure"
         node = req.get("node")
+        node = node[:200] if isinstance(node, str) and node.strip() else None
         # n8n forwards the class of the bridge error (or of its own exhausted transport loop); anything outside
-        # the closed enum is ignored, so the park stays operator-owned.
+        # the closed enum is ignored, so the park stays operator-owned. A turn the workflow stopped waiting on at
+        # its deadline is classed by the bridge (``time_budget``), so the dispatcher can harvest its late result.
         park_class = req.get("park_class")
         park_class = park_class if park_class in TRANSIENT_PARK_CLASSES else None
-        self.mark_attention(ev, detail, node[:200] if isinstance(node, str) and node.strip() else None,
-                            park_class=park_class)
+        if (node or "").startswith(TIME_BUDGET_NODE) or self._past_deadline(ev, time.time()):
+            park_class = "time_budget"
+        self.mark_attention(ev, detail, node, park_class=park_class)
         if ev["kind"] == "pr_repair" and ev["pr_number"]:
             self.store.release_pr_repair(ev["repo"], int(ev["pr_number"]), ev["delivery_id"], success=False)
         return {}
@@ -2563,8 +2684,10 @@ class Bridge:
         # handled by a Code node included) stays operator-owned.
         transport = isinstance(node, str) and (node.startswith("Run agent session (") or node in _N8N_BRIDGE_NODES) \
             and isinstance(error, str) and _N8N_TRANSPORT_ERROR_RE.fullmatch(error.strip()) is not None
+        park_class = "bridge_unreachable" if transport else "time_budget" if self._past_deadline(ev, time.time()) \
+            else None
         self.mark_attention(ev, detail, node[:200] if isinstance(node, str) and node.strip() else None,
-                            park_class="bridge_unreachable" if transport else None)
+                            park_class=park_class)
         if ev["kind"] == "pr_repair" and ev["pr_number"]:
             self.store.release_pr_repair(ev["repo"], int(ev["pr_number"]), ev["delivery_id"], success=False)
         return {"delivery_id": ev["delivery_id"], "already": False}
@@ -2595,7 +2718,8 @@ class Bridge:
             "",
             "To retry after fixing the cause, an operator calls the bridge op `retry_event` with "
             f"`{{\"delivery_id\": \"{ev['delivery_id']}\"}}`; the workflow resumes from its recorded stages and "
-            f"`{NEEDS_ATTENTION}` is removed when the run finishes.",
+            f"`{NEEDS_ATTENTION}` is removed when the run finishes. To give up on it instead, the op "
+            "`dismiss_event` with the same `delivery_id` and a `reason` closes it and removes the label.",
         ]
         footer = review_footer(self.reviewer_login(), pushes_reviewed=self.review_github is not None)
         if ev["kind"] == "pr_review" and footer:
@@ -2611,8 +2735,9 @@ class Bridge:
 
         A ``pr_review`` park of a transient class (``TRANSIENT_PARK_CLASSES``) with a recorded head is armed for
         an automatic retry (``Bridge.auto_retry_event``) after AUTO_RETRY_BACKOFF[auto_retries], while fewer than
-        AUTO_RETRY_LIMIT retries (STALE_DISPATCH_RETRY_LIMIT for ``stale_dispatch``) ran; any other park is
-        operator-owned and records no class.
+        AUTO_RETRY_LIMIT retries (STALE_DISPATCH_RETRY_LIMIT for ``stale_dispatch``) ran. A ``time_budget`` park (its
+        turn outlived the deadline) records its class unarmed: the dispatcher harvests a late result
+        (``harvest_time_budget``). Any other park is operator-owned and records no class.
         """
         if ev["state"] != "needs_attention":
             retries = int(ev["auto_retries"] or 0)
@@ -2624,7 +2749,7 @@ class Bridge:
             self.store.update_event(ev["delivery_id"], state="needs_attention", detail=detail,
                                     attention_pending=1, attention_node=node,
                                     next_attempt_at=now + DISPATCH_BACKOFF,
-                                    park_class=park_class if armed else None,
+                                    park_class=park_class if armed or park_class == "time_budget" else None,
                                     auto_retry_at=now + AUTO_RETRY_BACKOFF[retries] if armed else None)
         LOG.error("%s#%d event %s needs attention: %s", ev["repo"], ev["issue_number"], ev["delivery_id"], detail)
         self.notify_attention(ev["delivery_id"])
@@ -2686,6 +2811,60 @@ class Bridge:
         ev = self._event(req, live=False)
         if ev["state"] == "completed":
             raise OpError("event_terminal")
+        self._requeue(ev)
+        return {}
+
+    def op_dismiss_event(self, req: dict[str, Any]) -> dict[str, Any]:
+        """Operator: close a needs_attention event nobody will retry (outcome 'dismissed', detail ``reason``).
+
+        The subject unblocks unless another event on it is still parked; then the needs-attention label goes (as
+        the App that posted the notice) and the event's agent session is archived. A dismissed repair releases its
+        pull request's repair lease like a finished one (the attempted key stays), so the next blocker can start a
+        repair.
+
+        Holds the event's attention lock (blocking) across the transition and the label removal: a notifier
+        attempt in flight adds its label before the dismissal removes it, and a later attempt sees the terminal
+        event and adds nothing."""
+        ev = self._event(req, live=False)
+        reason = req.get("reason")
+        if not isinstance(reason, str) or not reason.strip():
+            raise OpError("reason required")
+        if ev["state"] == "completed" and ev["outcome"] == "dismissed":
+            return {"already": True}
+        if ev["state"] != "needs_attention":
+            raise OpError("not_needs_attention")
+        with self._keyed_lock(("attention", ev["delivery_id"])):
+            with self.session_lock:
+                # Same lock as the time-budget harvest and retry_event: a parked event is re-queued or dismissed,
+                # never both.
+                with self.store.tx() as conn:
+                    changed = conn.execute(
+                        "UPDATE events SET state = 'completed', outcome = 'dismissed', detail = ?,"
+                        " attention_pending = 0, park_class = NULL, auto_retry_at = NULL, updated_at = ?"
+                        " WHERE delivery_id = ? AND state = 'needs_attention'",
+                        (reason.strip()[:2000], time.time(), ev["delivery_id"])).rowcount
+            if not changed:
+                raise OpError("not_needs_attention")
+            repo, number = ev["repo"], int(ev["issue_number"])
+            LOG.info("%s#%d event %s dismissed by an operator: %s", repo, number, ev["delivery_id"],
+                     reason.strip()[:200])
+            if ev["kind"] == "pr_repair" and ev["pr_number"]:
+                self.store.release_pr_repair(repo, int(ev["pr_number"]), ev["delivery_id"], success=True)
+            if not self._other_parked(ev):
+                self.store.update_issue(repo, number, blocked=0, detail=None)
+                self._clear_attention_label(repo, number,
+                                            client=self.review_github if ev["kind"] == "pr_review" else None)
+        if self.store.turn(ev["delivery_id"]) is not None and not self.store.query(
+                "SELECT 1 FROM events WHERE repo = ? AND issue_number = ? AND state IN ('dispatching', 'dispatched')"
+                " LIMIT 1", (repo, number)):
+            self._archive_session(ev)  # an event holding a dispatch slot shares the session: leave it running
+        return {"already": False}
+
+    def _requeue(self, ev: sqlite3.Row, *, park_class: str | None = None) -> bool:
+        """Re-queue a parked event with its recorded stages (``retry_event``, time-budget harvest).
+
+        With ``park_class`` the event is re-queued only while it is still parked under that class; returns whether
+        it was re-queued."""
         stages = json.loads(ev["stages"])
         stages.pop("started", None)
         if ev["kind"] == "pr_repair" and self.store.turn(ev["delivery_id"]) is None:
@@ -2694,11 +2873,16 @@ class Bridge:
             stages.pop("repair_snapshot", None)
         with self.session_lock:
             # Same lock as session_send/session_turn, so a live operation cannot finish the turn in between.
+            if park_class is not None:
+                fresh = self.store.event(ev["delivery_id"])
+                if fresh["state"] != "needs_attention" or fresh["park_class"] != park_class:
+                    return False
             turn = self.store.turn(ev["delivery_id"])
-            if turn is not None and turn["state"] == "sent" and self._answered(ev, turn):
-                # The parked step already returned its result. Re-running it needs a new message: under the old
-                # localId session_send reports 'already' and session_turn re-reads that same result. A turn
-                # still running, or without a result, keeps its localId so it is never sent twice.
+            if turn is not None and turn["state"] == "sent" and self._consumed(ev, turn) and self._answered(ev, turn):
+                # The workflow already took this step's result. Re-running it needs a new message: under the old
+                # localId session_send reports 'already' and session_turn re-reads that same result. A turn still
+                # running, or whose result was never consumed (its run was parked at the time budget or lost),
+                # keeps its localId: it is never sent twice, and session_turn harvests a late result.
                 self.store.put_turn(ev["delivery_id"], turn["mode"],
                                     resend_local_id(ev["delivery_id"], turn["mode"], turn["local_id"]),
                                     turn["session_id"], "lost")
@@ -2708,7 +2892,56 @@ class Bridge:
                                     next_attempt_at=0, detail=None, attention_pending=0, attention_node=None,
                                     heartbeat_at=None, execution_id=None, park_class=None, auto_retry_at=None)
         self.store.update_issue(ev["repo"], ev["issue_number"], blocked=0, detail=None)
-        return {}
+        return True
+
+    def _past_deadline(self, ev: sqlite3.Row, now: float) -> bool:
+        """Whether the event's current step is a sent turn, never consumed, whose deadline has passed."""
+        turn = self.store.turn(ev["delivery_id"])
+        return turn is not None and turn["state"] == "sent" and turn["deadline_at"] is not None \
+            and now >= turn["deadline_at"] and not self._consumed(ev, turn)
+
+    def harvest_time_budget(self, delivery_id: str, now: float | None = None) -> str:
+        """Dispatcher: settle a ``time_budget`` park (the workflow stopped waiting on its turn at the deadline).
+
+        * the turn answered since: re-queue the event like ``retry_event``, keeping the turn 'sent' under its
+          localId, so the new execution's session_send reports 'already' and session_turn returns the result;
+        * still no result TURN_GRACE_SECONDS after the deadline: archive the session (stops the agent) and mark
+          the park ``time_budget_expired``; the event stays parked for an operator;
+        * otherwise check again after TIME_BUDGET_CHECK_SECONDS (``auto_retry_at``; also after a lookup failure).
+
+        A park without an unconsumed sent turn has nothing to harvest and becomes operator-owned. A legacy turn
+        sent before deadlines existed (``deadline_at`` NULL) gets the first check's time as its deadline, so the
+        grace period runs from a fixed point."""
+        now = time.time() if now is None else now
+        ev = self.store.event(delivery_id)
+        if ev is None or ev["state"] != "needs_attention" or ev["park_class"] != "time_budget":
+            return "skipped"
+        turn = self.store.turn(delivery_id)
+        if turn is None or turn["state"] != "sent" or turn["mode"] not in MODES or self._consumed(ev, turn):
+            self.store.update_event(delivery_id, park_class=None, auto_retry_at=None)
+            return "operator"
+        try:
+            state, _ = self._answered_result(ev, turn)
+        except (OpError, TransportError) as exc:
+            LOG.warning("time-budget harvest of %s waits: turn lookup failed: %s", delivery_id, exc)
+            state = "unknown"
+        if state == "answered":
+            if not self._requeue(ev, park_class="time_budget"):
+                return "skipped"
+            LOG.info("%s#%d event %s re-queued to harvest its late %s result", ev["repo"], ev["issue_number"],
+                     delivery_id, turn["mode"])
+            return "harvested"
+        deadline_at = turn["deadline_at"]
+        if deadline_at is None:
+            deadline_at = self.store.anchor_turn_deadline(delivery_id, turn["mode"], now)
+        if now >= deadline_at + TURN_GRACE_SECONDS:
+            self._archive_session(ev)
+            self.store.update_event(delivery_id, park_class="time_budget_expired", auto_retry_at=None)
+            LOG.warning("%s#%d event %s: %s turn still without a result after the grace period; session archived",
+                        ev["repo"], ev["issue_number"], delivery_id, turn["mode"])
+            return "expired"
+        self.store.update_event(delivery_id, auto_retry_at=now + TIME_BUDGET_CHECK_SECONDS)
+        return "waiting"
 
     def _answered(self, ev: sqlite3.Row, turn: sqlite3.Row) -> bool:
         """Whether this turn finished with a result line, by session_turn's rule (not while still running).
@@ -2794,7 +3027,8 @@ class Bridge:
         """
         now = time.time() if now is None else now
         ev = self.store.event(delivery_id)
-        if ev is None or ev["state"] != "needs_attention" or ev["kind"] != "pr_review" or not ev["park_class"]:
+        if ev is None or ev["state"] != "needs_attention" or ev["kind"] != "pr_review" \
+                or ev["park_class"] not in TRANSIENT_PARK_CLASSES:
             return "skipped"
         repo, number = ev["repo"], int(ev["issue_number"])
         if self.store.query(
@@ -2820,7 +3054,7 @@ class Bridge:
         with self.session_lock:
             # Same lock as session_send/session_turn/retry_event: nothing changes the turn in between.
             ev = self.store.event(delivery_id)
-            if ev is None or ev["state"] != "needs_attention" or not ev["park_class"]:
+            if ev is None or ev["state"] != "needs_attention" or ev["park_class"] not in TRANSIENT_PARK_CLASSES:
                 return "skipped"
             turn = self.store.turn(delivery_id)
             if turn is not None and turn["state"] == "sent" and turn["mode"] in MODES:
@@ -2897,15 +3131,21 @@ class Bridge:
         return session
 
     def _record_session(self, repo: str, number: int, session: Mapping[str, Any], chain: list[str]) -> None:
+        """Make ``session`` the subject's current one; sessions it replaced join ``superseded`` and are archived,
+        so a replaced agent process does not linger until the runner restarts."""
         issue = self.store.issue(repo, number)
         worktree = (session.get("metadata") or {}).get("worktree") or {}
         if issue["session_id"] and issue["session_id"] != session["id"] and issue["session_id"] not in chain:
             chain.append(issue["session_id"])
+        known = set(json.loads(issue["superseded"] or "[]"))
+        replaced = [s for s in dict.fromkeys(chain) if s not in known and s != session["id"]]
         self.store.update_issue(
             repo, number, session_state="ready", session_id=session["id"], pending_at=None,
             worktree_path=worktree.get("worktreePath") or issue["worktree_path"],
             branch=worktree.get("branch") or issue["branch"], superseded=json.dumps(chain),
         )
+        for sid in replaced:
+            self._archive_sid(repo, number, sid)
 
     def _machine_ids(self) -> set[str]:
         status, data = self.hapi.request("GET", "/api/machines")
@@ -3245,13 +3485,18 @@ class Bridge:
                 "Evaluate ALL currently observed CI failures and review findings together in this ONE followup "
                 "with receiving-code-review. Read current CI logs, reviews and threads yourself, verify claims, "
                 "repair only supported blockers, and retain the full issue scope in the PR body. "
-                "Do not add a separate behind-only turn. Before reporting ready, discover every gate the "
-                "repository's pull-request CI runs (.github/workflows/* jobs and the Makefile/justfile targets they "
-                "call, including slow suites such as envtest or integration tests), run them all locally in this "
-                "worktree, fix failures and rerun until every gate passes, and record each command with its exit "
-                "code in local_checks; GitHub CI after the push only confirms this. List gates that genuinely "
-                "cannot run locally (secrets, external services, special hardware) as not run in summary and the "
-                "PR body, never in local_checks. Keep build outputs off /tmp. "
+                "Do not add a separate behind-only turn. Before reporting ready, run the repository's fast gates "
+                "locally in this worktree: format/lint, build/compile, unit tests, and fast tests scoped to your "
+                "change (take the commands from .github/workflows/* and the Makefile/justfile targets they call); "
+                "fix failures and rerun until they pass, and record each command with its exit code in "
+                "local_checks; never report ready with code whose fast gates fail. Long-running suites (e2e, "
+                "GUI/Appium, multi-distro/multi-version/multi-node matrices, container/VM integration, soak, "
+                "envtest-style suites taking more than a few minutes) are CI's job: run one locally only to "
+                "reproduce or fix a failure CI reported in it, or when you change that suite's harness and cannot "
+                "validate it otherwise, and then only the affected leg or test, never a serialized matrix; list the "
+                "others as left to CI in summary and the PR body. List gates that cannot run locally at all "
+                "(secrets, external services, special hardware) as not run in summary and the PR body, never in "
+                "local_checks. Keep build outputs off /tmp. "
                 "GitHub owns merge policy; never merge the PR."
             )
             self.store.update_event(ev["delivery_id"], head_sha=snapshot["head_sha"],
@@ -3288,8 +3533,10 @@ class Bridge:
                 # A re-send of a lost turn (state 'lost', or a 'sending' re-send that never landed): the agent must
                 # not trust anything from the interrupted run.
                 instructions += LOST_TURN_NOTICE
-            text = build_message(ev, mode, issue["branch"], default_branch, instructions, context, local_id)
-            self.store.put_turn(delivery, mode, local_id, session_id, "sending")
+            deadline_at = time.time() + TURN_BUDGET_SECONDS[mode]
+            text = build_message(ev, mode, issue["branch"], default_branch, instructions, context, local_id,
+                                 deadline_at=deadline_at)
+            self.store.put_turn(delivery, mode, local_id, session_id, "sending", deadline_at=deadline_at)
             path = f"/api/sessions/{urllib.parse.quote(session_id, safe='')}/messages"
             try:
                 status, data = self.hapi.request("POST", path, body={"text": text, "localId": local_id,
@@ -3367,10 +3614,19 @@ class Bridge:
             # HAPI clears `active` once the agent process is gone; `thinking` may then be stale.
             alive = session.get("active") is not False
             if alive and (session.get("thinking") or requests):
+                deadline_at = turn["deadline_at"]
+                if deadline_at is not None and time.time() >= deadline_at and find_result(last_text, local_id) is None:
+                    # The workflow stops waiting and parks the event (`time_budget`); the dispatcher harvests a
+                    # result that still arrives, or stops the agent after TURN_GRACE_SECONDS.
+                    return {"state": "expired", "session_id": sid,
+                            "detail": f"agent turn still running at the bridge deadline {_utc(deadline_at)}"}
                 self.store.put_turn(ev["delivery_id"], mode, local_id, turn["session_id"], "sent", 0)
                 return {"state": "running", "session_id": sid, "pending_requests": len(requests)}
             raw = find_result(last_text, local_id)
             if raw is not None:
+                # The workflow takes this result now (or a correction replaces the turn's localId): a retry must
+                # re-run the step rather than harvest it again.
+                self.store.consume_turn(ev["delivery_id"], mode, local_id)
                 result = validate_result(mode, raw, int(ev["issue_number"]))
                 if isinstance(result, str):
                     return self._request_correction(ev, mode, sid, local_id, result)
@@ -3427,7 +3683,16 @@ class Bridge:
     # -- closed-subject cleanup ----------------------------------------------
 
     def op_cleanup_closed(self, req: dict[str, Any]) -> dict[str, Any]:
-        """Delete the agent state of subjects closed for ``older_than_days``; GitHub content and events stay."""
+        """Delete the agent state of subjects closed for ``older_than_days``; GitHub content and events stay.
+
+        One subject's failure never stops the sweep. Each subject counts its consecutive failed sweeps
+        (``issues.cleanup_failures``, reset once it no longer fails); ``persistent_errors`` lists the subjects that
+        failed CLEANUP_PERSISTENT_FAILURES sweeps in a row. Retryable failures (such as the publisher's
+        ``foreign_owner`` until the dockerd janitor fixes ownership) are expected to clear by themselves.
+
+        After a real sweep the bridge may lease the runner to the dockerd janitor for a Docker prune
+        (``request_maintenance``): ``prune_requested`` says whether this sweep sent a lease, ``maintenance_until``
+        is the end of the lease currently held (None without one)."""
         days = req.get("older_than_days", CLEANUP_AFTER_DAYS)
         if not isinstance(days, int) or isinstance(days, bool) or days < 0:
             raise OpError("bad older_than_days")
@@ -3435,11 +3700,12 @@ class Bridge:
         if not isinstance(dry_run, bool):
             raise OpError("bad dry_run")
         cutoff = time.time() - days * 86400
-        rows = self.store.query("SELECT repo, issue_number FROM issues WHERE session_id IS NOT NULL"
+        rows = self.store.query("SELECT repo, issue_number, cleanup_failures FROM issues WHERE session_id IS NOT NULL"
                                 " OR worktree_path IS NOT NULL ORDER BY repo, issue_number")
         cleaned: list[dict[str, Any]] = []
         skipped: list[dict[str, Any]] = []
         errors: list[dict[str, Any]] = []
+        persistent: list[dict[str, Any]] = []
         for row in rows:
             repo, number = row["repo"], int(row["issue_number"])
             subject = {"repo": repo, "issue_number": number}
@@ -3449,6 +3715,8 @@ class Bridge:
             try:
                 closed_at = self._closed_before(repo, number, cutoff)
                 if closed_at is None:
+                    if row["cleanup_failures"] and not dry_run:
+                        self.store.update_issue(repo, number, cleanup_failures=0)
                     continue
                 if not dry_run:
                     # ensure_session takes the same lock: no event can spawn into a half-deleted subject.
@@ -3457,16 +3725,123 @@ class Bridge:
                             skipped.append(subject)
                             continue
                         self._cleanup_subject(repo, number)
-            except (OpError, TransportError) as exc:
-                error = exc.error if isinstance(exc, OpError) else f"transport: {exc}"
-                LOG.warning("cleanup %s#%d failed: %s", repo, number, error)
+            except Exception as exc:  # one subject's failure never aborts the sweep
+                if isinstance(exc, OpError):
+                    error = exc.error
+                elif isinstance(exc, TransportError):
+                    error = f"transport: {exc}"
+                else:
+                    LOG.exception("cleanup %s#%d failed unexpectedly", repo, number)
+                    error = f"{type(exc).__name__}: {exc}"[:2000]
+                failures = int(row["cleanup_failures"] or 0) + 1
+                if not dry_run:
+                    self.store.update_issue(repo, number, cleanup_failures=failures)
+                LOG.warning("cleanup %s#%d failed (%d consecutive): %s", repo, number, failures, error)
                 errors.append({**subject, "error": error})
+                if failures >= CLEANUP_PERSISTENT_FAILURES:
+                    persistent.append({**subject, "error": error, "failures": failures})
                 continue
             LOG.info("cleanup %s#%d closed at %s%s", repo, number, closed_at, " (dry run)" if dry_run else "")
             cleaned.append({**subject, "closed_at": closed_at})
-        LOG.info("cleanup_closed%s: checked %d, cleaned %d, skipped active %d, errors %d",
-                 " (dry run)" if dry_run else "", len(rows), len(cleaned), len(skipped), len(errors))
-        return {"checked": len(rows), "cleaned": cleaned, "skipped_active": skipped, "errors": errors}
+        prune = not dry_run and self.request_maintenance(time.time()) is not None
+        LOG.info("cleanup_closed%s: checked %d, cleaned %d, skipped active %d, errors %d (persistent %d)%s",
+                 " (dry run)" if dry_run else "", len(rows), len(cleaned), len(skipped), len(errors), len(persistent),
+                 ", docker prune requested" if prune else "")
+        return {"checked": len(rows), "cleaned": cleaned, "skipped_active": skipped, "errors": errors,
+                "persistent_errors": persistent, "prune_requested": prune,
+                "maintenance_until": self.store.maintenance_until()}
+
+    # -- Docker maintenance lease ----------------------------------------------
+
+    def request_maintenance(self, now: float) -> float | None:
+        """Lease the runner to the dockerd janitor for a Docker prune; returns the new lease's end, else None.
+
+        Only when the janitor's status is fresh (checked within JANITOR_STATUS_MAX_AGE) and Docker storage is above
+        JANITOR_PRUNE_USED_PCT, and nothing can be using Docker: no event holds a dispatch slot, no ``time_budget``
+        park (its turn may still run), and no HAPI session is thinking or waiting on a request. The lease
+        (``maintenance_until``, persisted) is recorded in the same transaction that finds no dispatched event, so
+        the dispatcher, which reads it in its own transaction, starts nothing until the lease ends
+        (``release_maintenance``). An earlier lease still held is not extended."""
+        if self.release_maintenance(now) is not None:
+            return None
+        status = self._janitor_status()
+        if status is None or not self._janitor_wants_prune(status, now) or not self._hub_idle():
+            return None
+        until = float(int(now) + MAINTENANCE_LEASE_SECONDS)
+        with self.store.tx() as conn:
+            if conn.execute("SELECT 1 FROM events WHERE state IN ('dispatching', 'dispatched')"
+                            " OR (state = 'needs_attention' AND park_class = 'time_budget') LIMIT 1").fetchone():
+                return None
+            conn.execute("INSERT INTO bridge_state (key, value) VALUES ('maintenance_until', ?)"
+                         " ON CONFLICT(key) DO UPDATE SET value = excluded.value", (until,))
+        try:
+            self.publisher.request("/janitor/prune-request", {"lease_until": int(until)},
+                                   timeout=PUBLISHER_PRUNE_TIMEOUT)
+        except OpError as exc:
+            if not exc.retryable:
+                self.store.clear_maintenance(until)  # refused: the janitor never acts on this lease
+            # A retryable failure may still have delivered it: the lease holds until it lapses.
+            LOG.warning("docker prune request not delivered (next sweep retries): %s", exc.error)
+            return None
+        LOG.info("docker maintenance lease until %s: dispatch paused for the janitor's prune", _utc(until))
+        return until
+
+    def release_maintenance(self, now: float) -> float | None:
+        """End the Docker maintenance lease once it lapsed or the janitor reports that it pruned under it (status
+        ``last_prune_lease`` equal to the lease); returns the end of the lease still held, else None."""
+        until = self.store.maintenance_until()
+        if until is None:
+            return None
+        if now < until:
+            status = self._janitor_status()
+            if status is None or status.get("last_prune_lease") != until:
+                return until
+            LOG.info("docker maintenance lease until %s released early: janitor prune %s", _utc(until),
+                     status.get("last_prune_result"))
+        else:
+            LOG.warning("docker maintenance lease until %s lapsed without a janitor report", _utc(until))
+        self.store.clear_maintenance(until)
+        return None
+
+    def _janitor_status(self) -> dict[str, Any] | None:
+        """The dockerd janitor's last status (through the publisher), or None while unavailable."""
+        try:
+            return self.publisher.request("/janitor/status", None, timeout=PUBLISHER_PRUNE_TIMEOUT)
+        except OpError as exc:
+            LOG.warning("docker janitor status unavailable: %s", exc.error)
+            return None
+
+    @staticmethod
+    def _janitor_wants_prune(status: Mapping[str, Any], now: float) -> bool:
+        checked, used = status.get("checked_at"), status.get("docker_used_pct")
+        if not all(isinstance(v, (int, float)) and not isinstance(v, bool) for v in (checked, used)):
+            return False
+        return now - checked <= JANITOR_STATUS_MAX_AGE and used > JANITOR_PRUNE_USED_PCT
+
+    def _hub_idle(self) -> bool:
+        """No HAPI session is working: none alive and thinking, none with pending permission/input requests.
+
+        Reads every session summary (no ``limit``: the hub caps a limited list at 500 and an older busy session
+        must not drop out); a summary carries ``thinking`` and ``pendingRequestsCount``, not ``agentState``. A
+        session list the hub does not answer, or a summary without ``pendingRequestsCount``, counts as busy."""
+        try:
+            status, data = self.hapi.request("GET", "/api/sessions")
+        except (OpError, TransportError) as exc:
+            LOG.warning("docker maintenance skipped: hapi session list failed: %s", exc)
+            return False
+        sessions = data.get("sessions") if isinstance(data, dict) else None
+        if status != 200 or not isinstance(sessions, list):
+            LOG.warning("docker maintenance skipped: hapi session list HTTP %s", status)
+            return False
+        for session in sessions:
+            pending = session.get("pendingRequestsCount") if isinstance(session, dict) else None
+            if not isinstance(pending, int) or isinstance(pending, bool):
+                LOG.warning("docker maintenance skipped: hapi session summary without pendingRequestsCount")
+                return False
+            # HAPI clears `active` once the agent process is gone; `thinking` may then be stale.
+            if pending > 0 or (session.get("active") is not False and session.get("thinking")):
+                return False
+        return True
 
     def _subject_active(self, repo: str, number: int) -> bool:
         marks = ", ".join("?" for _ in ACTIVE_EVENT_STATES)
@@ -3522,7 +3897,7 @@ class Bridge:
             }, timeout=PUBLISHER_CLEANUP_TIMEOUT)
         self.store.update_issue(repo, number, blocked=0, session_state="none", session_id=None, pending_at=None,
                                 worktree_path=None, branch=None, superseded="[]", detail=None, phase="none",
-                                pr_number=None)
+                                pr_number=None, cleanup_failures=0)
 
     # -- GitHub ------------------------------------------------------------
 
@@ -4196,7 +4571,8 @@ class Bridge:
                                 " AND json_extract(stages, '$.review_published.sha') = ? LIMIT 1",
                                 (repo, number, head)):
                 return None
-            description = ("Review did not complete; retrying automatically" if ev["park_class"]
+            retrying = ev["park_class"] in TRANSIENT_PARK_CLASSES
+            description = ("Review did not complete; retrying automatically" if retrying
                            else "Review did not complete; needs an operator")
             return self._set_review_status(repo, head, "error", description, None)
 
@@ -4829,6 +5205,9 @@ class Dispatcher:
         slots are held, and never two for the same subject, since events on one issue or pull request
         share its session and worktree. An unconfirmed POST keeps its slot and is retried for the
         same event only; ``begin`` makes duplicates exit.
+
+        While the Docker maintenance lease is held (``Bridge.request_maintenance``) nothing is handed over
+        ("maintenance"); reconciliation, attention notices, time-budget harvests and the stale sweep still run.
         """
         now = time.time() if now is None else now
         self.bridge.reconcile_due_prs(now)
@@ -4847,13 +5226,24 @@ class Dispatcher:
         # Transient review parks whose notice is out and whose backoff is due (``mark_attention`` armed them).
         for ev in self.store.query(
             "SELECT delivery_id FROM events WHERE state = 'needs_attention' AND kind = 'pr_review'"
-            " AND attention_pending = 0 AND park_class IS NOT NULL AND auto_retry_at <= ? ORDER BY seq",
-            (now,),
+            f" AND attention_pending = 0 AND park_class IN ({', '.join('?' for _ in TRANSIENT_PARK_CLASSES)})"
+            " AND auto_retry_at <= ? ORDER BY seq",
+            (*TRANSIENT_PARK_CLASSES, now),
         ):
             try:
                 self.bridge.auto_retry_event(ev["delivery_id"], now)
             except (OpError, TransportError) as exc:
                 LOG.warning("automatic retry of %s failed (next tick retries): %s", ev["delivery_id"], exc)
+        # Parks whose turn outlived its deadline: harvest a late result, or stop the agent after the grace period.
+        for ev in self.store.query(
+            "SELECT delivery_id FROM events WHERE state = 'needs_attention' AND park_class = 'time_budget'"
+            " AND COALESCE(auto_retry_at, 0) <= ? ORDER BY seq",
+            (now,),
+        ):
+            try:
+                self.bridge.harvest_time_budget(ev["delivery_id"], now)
+            except (OpError, TransportError) as exc:
+                LOG.warning("time-budget harvest of %s failed (next tick retries): %s", ev["delivery_id"], exc)
         for ev in self.store.query(
             "SELECT delivery_id FROM events WHERE outcome = 'cancelled'"
             " AND json_extract(stages, '$.cancelled.archive') = 1 ORDER BY seq"
@@ -4866,7 +5256,13 @@ class Dispatcher:
             # The cause (runner, hub, n8n or bridge restart) is not observable here: retried once whatever it was.
             self.bridge.mark_attention(ev, "workflow made no progress for this event (stale dispatch)",
                                        park_class="stale_dispatch")
+        self.bridge.release_maintenance(now)
         with self.store.tx() as conn:
+            # Read in the dispatch transaction: a lease recorded concurrently is either seen here or was recorded
+            # only after finding no dispatched event, which this transaction would have created.
+            until = Store.maintenance_until_in(conn)
+            if until is not None and now < until:
+                return "maintenance"
             active = conn.execute(
                 "SELECT COUNT(*) FROM events WHERE state IN ('dispatching', 'dispatched')"
             ).fetchone()[0]
