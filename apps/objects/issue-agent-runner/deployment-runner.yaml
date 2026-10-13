@@ -239,12 +239,15 @@ spec:
             requests:
               cpu: 100m
               memory: 2560Mi
-            # Blast wall: 14d working-set P99 ~2.9Gi, observed max ~5Gi under
-            # allowed concurrency (bridge MAX_ACTIVE_REVIEWS=2 review sessions
-            # + up to 3 other events; one codex session ~1Gi with its MCP
-            # servers and max_threads=2 sub-agents). 1.25 x ~5Gi -> 6Gi.
+            # Blast wall: 14d working-set P99 ~3.4Gi. After the 2026-10-13
+            # upgrade (CodeGraph 1.6.2 ~+120MiB and Node 26 context-mode ~+18MiB
+            # per Codex thread, each thread starting its own MCP servers) the
+            # container hit its 6Gi limit (OOMKilled 10:10Z, working set 5.95Gi)
+            # with max_threads=2 under the allowed concurrency (bridge
+            # MAX_ACTIVE_REVIEWS=2 review sessions + up to 3 other events).
+            # 1.25 x 6Gi -> 7.5Gi.
             limits:
-              memory: 6Gi
+              memory: 7680Mi
           securityContext:
             allowPrivilegeEscalation: false
             capabilities:
