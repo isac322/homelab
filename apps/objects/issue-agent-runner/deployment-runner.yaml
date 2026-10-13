@@ -187,6 +187,13 @@ spec:
               value: /home/agent/.codex
             - name: HAPI_API_URL
               value: http://issue-agent-hub.issue-agent.svc.cluster.local:3006
+            # How long the runner waits for a spawned/resumed session to report in
+            # (HAPI default 15s). Resuming a long Codex thread right after a pod
+            # restart took 14s before Codex 0.162.1 and 15.5s+ after it, so the
+            # default made resumes fail. Kept below the hub's 30s machine RPC
+            # timeout and the bridge's 30s HAPI request timeout.
+            - name: HAPI_RUNNER_WEBHOOK_TIMEOUT_MS
+              value: "25000"
             - name: GH_CONFIG_DIR
               value: /run/issue-agent/github
             - name: GH_PROMPT_DISABLED

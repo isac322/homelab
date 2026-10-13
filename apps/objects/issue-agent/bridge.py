@@ -217,6 +217,9 @@ JANITOR_STATUS_MAX_AGE = 900.0
 JANITOR_PRUNE_USED_PCT = 70
 SPAWN_SETTLE_SECONDS = 300.0
 SPAWN_TIMEOUT = 180.0  # spawn waits for the runner to start the agent
+# Codex sessions run in Fast mode. HAPI resumes a session with the hub-stored tier (``--service-tier``), which
+# overrides the Codex managed config ``service_tier = "fast"``, so the bridge sets the tier explicitly.
+CODEX_SERVICE_TIER = "fast"
 IDLE_WITHOUT_RESULT_LIMIT = 3
 HISTORY_PAGE_LIMIT = 200
 MAX_HISTORY_PAGES = 25
@@ -3242,6 +3245,7 @@ class Bridge:
                         session = self._resume(repo, number, session)
                         resumed = True
                     issue = self.store.issue(repo, number)
+                    self._ensure_service_tier(cfg, issue["session_id"], session)
                     return {"session_id": issue["session_id"], "worktree_path": issue["worktree_path"],
                             "branch": issue["branch"], "resumed": resumed}
 
@@ -3252,11 +3256,32 @@ class Bridge:
             if len(matches) == 1:
                 session = self._follow(repo, number, matches[0])
                 issue = self.store.issue(repo, number)
+                self._ensure_service_tier(cfg, issue["session_id"], session)
                 return {"session_id": issue["session_id"], "worktree_path": issue["worktree_path"],
                         "branch": issue["branch"], "resumed": False, "recovered": True}
             if issue["session_state"] == "pending" and time.time() - (issue["pending_at"] or 0) < SPAWN_SETTLE_SECONDS:
                 raise OpError("previous spawn outcome still settling", retryable=True)
             return self._spawn(cfg, repo, number, name)
+
+    def _ensure_service_tier(self, cfg: RepoConfig, session_id: str, session: Mapping[str, Any]) -> None:
+        """Pin an active Codex session to CODEX_SERVICE_TIER so later resumes keep Fast mode.
+
+        An inactive session is left alone: the hub accepts the change only for active sessions, and the next
+        ensure after its resume sets it. A refusal (4xx) is logged and does not fail the event."""
+        if cfg.agent != "codex" or not session.get("active") or session.get("serviceTier") == CODEX_SERVICE_TIER:
+            return
+        try:
+            status, data = self.hapi.request(
+                "POST", f"/api/sessions/{urllib.parse.quote(session_id, safe='')}/service-tier",
+                body={"serviceTier": CODEX_SERVICE_TIER})
+        except TransportError as exc:
+            raise OpError(f"service tier update failed: {exc}", retryable=True,
+                          park_class="hub_unreachable") from None
+        if status == 200:
+            return
+        if status >= 500 or status == 0:
+            raise OpError(f"service tier update HTTP {status}", retryable=True, park_class=hub_park_class(status))
+        LOG.warning("session %s service tier %s refused: HTTP %s %s", session_id, CODEX_SERVICE_TIER, status, data)
 
     def _resume(self, repo: str, number: int, session: Mapping[str, Any]) -> dict[str, Any]:
         sid = session["id"]
@@ -3300,6 +3325,8 @@ class Bridge:
             body["model"] = cfg.model
         if cfg.permission_mode:
             body["permissionMode"] = cfg.permission_mode
+        if cfg.agent == "codex":
+            body["serviceTier"] = CODEX_SERVICE_TIER
         self.store.update_issue(repo, number, session_state="pending", pending_at=time.time())
         try:
             status, data = self.hapi.request("POST", f"/api/machines/{urllib.parse.quote(machine, safe='')}/spawn",

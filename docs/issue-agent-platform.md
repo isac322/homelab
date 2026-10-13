@@ -325,7 +325,7 @@ HAPI `v0.30.7`은 agent 메시지 내부의 65,536자 초과 문자열을 저장
 - 전환 전 미처리 작업을 확인하고, 단일 GitHub App webhook을 새 endpoint와 secret으로 변경한 뒤 실제 전달을 검증한다. 과거 Archon 대화의 HAPI 이전이나 legacy 댓글 전달 기능은 구현하지 않는다.
 - 전환 검증 후 Archon 전용 리소스와 PVC 데이터를 삭제한다. 삭제 뒤 과거 Archon 세션을 재개할 수 없다는 결과를 사용자에게 고지했다. GitHub App과 SSM 인증 원본은 새 시스템의 공유 의존성이므로 유지하며, 삭제 전 새 namespace에서 독립적인 토큰 발급을 확인한다.
 - 최소 운영 주의사항: 이번 n8n 업그레이드는 5개 forward migration(261→266)을 실행했으므로 downgrade 전 검증된 pre-upgrade SQLite backup restore가 선행돼야 한다.
-- Runner 도구 기준 버전은 Docker 29.9.0, Codex 0.162.1, Node 26.11.1, Go 1.27.2, GitHub CLI 2.102.0이며 HAPI 0.30.7은 유지한다. Codex는 managed config(`runner/codex/managed_config.toml`)의 `service_tier = "fast"`로 모든 세션·sub-agent에서 Fast mode(`priority` tier)를 쓴다. n8n은 2.42.7이고 워크플로 노드는 이 버전의 최신 typeVersion을 쓴다. bridge·publisher는 GitHub REST API `2026-03-10`을 쓴다.
+- Runner 도구 기준 버전은 Docker 29.9.0, Codex 0.162.1, Node 26.11.1, Go 1.27.2, GitHub CLI 2.102.0이며 HAPI 0.30.7은 유지한다. Codex는 managed config(`runner/codex/managed_config.toml`)의 `service_tier = "fast"`로 모든 세션·sub-agent에서 Fast mode(`priority` tier)를 쓴다. HAPI는 resume 시 hub에 저장된 tier를 `--service-tier`로 넘겨 이 설정을 덮으므로, bridge는 Codex 세션 spawn 시 `serviceTier: "fast"`를 보내고 `ensure_session`이 돌려주는 active 세션의 저장 tier가 `fast`가 아니면 `POST /api/sessions/:id/service-tier`로 `fast`를 지정한다. n8n은 2.42.7이고 워크플로 노드는 이 버전의 최신 typeVersion을 쓴다. bridge·publisher는 GitHub REST API `2026-03-10`을 쓴다.
 
 ### Runner namespace 전환
 
