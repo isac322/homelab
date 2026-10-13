@@ -52,6 +52,7 @@
             ./nix/modules/linux/k3s-host.nix
             ./nix/modules/linux/nvme-tcp-dkms.nix
             ./nix/modules/linux/irq-affinity.nix
+            ./nix/modules/linux/zfs-scrub.nix
           ]
           ++ lib.optional (builtins.pathExists hostModule) hostModule;
           specialArgs = {
@@ -194,6 +195,10 @@
                     ++ lib.optionals (hostName == "rock5bp") [
                       "homelab-irq-affinity"
                       "homelab-pillar-firewall"
+                      "homelab-zfs-scrub-fast"
+                      "homelab-zfs-scrub-hot-data"
+                      "homelab-zfs-scrub-nas"
+                      "homelab-zfs-scrub-temporal"
                     ]
                   );
                 in
@@ -327,6 +332,18 @@
             assert lib.hasSuffix " apply" rock.systemd.services.homelab-irq-affinity.serviceConfig.ExecReload;
             assert builtins.elem "irqbalance.service" rock.systemd.maskedUnits;
             assert !(builtins.elem "irqbalance.service" rpi5.systemd.maskedUnits);
+            # Every rock5bp pool gets a monthly scrub; pools sharing a disk run on different days.
+            assert
+              rock.homelab.zfsScrub.pools == {
+                nas = "*-*-01 05:00:00";
+                hot-data = "*-*-08 05:00:00";
+                fast = "*-*-15 05:00:00";
+                temporal = "*-*-15 05:00:00";
+              };
+            assert rock.systemd.timers.homelab-zfs-scrub-nas.wantedBy == [ "timers.target" ];
+            assert rock.systemd.timers.homelab-zfs-scrub-nas.timerConfig.Persistent;
+            assert lib.hasSuffix " nas" rock.systemd.services.homelab-zfs-scrub-nas.serviceConfig.ExecStart;
+            assert !(builtins.hasAttr "homelab-zfs-scrub-nas" rpi5.systemd.timers);
             assert builtins.length topology.requiredLinks == 36;
             assert !(builtins.hasAttr "wg1" topology);
             assert gracefulShutdownConfigured;
