@@ -34,7 +34,7 @@ description: Use in the issue agent's `review` mode (a non-draft PR opened/reope
 
 bridge는 에이전트 자신의 `event`가 `COMMENT`이고, `head_sha`가 PR의 현재 head이며, `open_items`가 비어 있지 않을 때만 project owner(없으면 저장소 owner)를 멘션하는 결정 요청 코멘트를 PR에 한 번 게시한다. 같은 open_items 집합(정규화·정렬 후 해시)에는 head가 바뀌어도 다시 게시하지 않는다. 리뷰 계정 = PR 작성자라서 bridge가 COMMENT로 바꾼 경우나 stale 리뷰에는 게시하지 않는다. 그래서 open_items는 사람이 읽고 답할 수 있는 결정·증거 요청으로 쓴다.
 
-고친 곳: 도입 문단, 경계(`isac-decision-brief` 줄), PRR-01, PRR-02, PRR-03, PRR-04, PRR-06, PRR-10, PRR-19, PRR-25, PRR-26, PRR-37, §8 머리말, PRR-29, §9 제목, PRR-32, §10 머리말, PRR-33, PRR-34, PRR-35, 완료 조건, 교정 루프, References. references 중 `comment-template.md`, `defaults.md`, `stale-pr-audit.md`, `review-dimensions.md` §5·§6, `cases.md` 머리말도 같은 방식으로 고쳤다. 리뷰 게이트 보강(`references/cases.md` CASE-20261011-kwin-mcp-review-gate)으로 §0, PRR-06, PRR-11, PRR-18, PRR-19, PRR-24, PRR-25, PRR-29, PRR-30, 완료 조건을 고치고, PRR-28을 폐기하고, PRR-38–PRR-56과 `open_items`를 추가했다.
+고친 곳: 도입 문단, 경계(`isac-decision-brief` 줄), PRR-01, PRR-02, PRR-03, PRR-04, PRR-06, PRR-10, PRR-19, PRR-25, PRR-26, PRR-37, §8 머리말, PRR-29, §9 제목, PRR-32, §10 머리말, PRR-33, PRR-34, PRR-35, 완료 조건, 교정 루프, References. references 중 `comment-template.md`, `defaults.md`, `stale-pr-audit.md`, `review-dimensions.md` §5·§6, `cases.md` 머리말도 같은 방식으로 고쳤다. 리뷰 게이트 보강(`references/cases.md` CASE-20261011-kwin-mcp-review-gate)으로 §0, PRR-06, PRR-11, PRR-18, PRR-19, PRR-24, PRR-25, PRR-29, PRR-30, 완료 조건을 고치고, PRR-28을 폐기하고, PRR-38–PRR-56과 `open_items`를 추가했다. 로컬 실행 범위 보강(`references/cases.md` CASE-20261013-review-suites-to-ci)으로 PRR-57 [U]를 추가하고 PRR-11, PRR-38, PRR-43, PRR-44, PRR-46, PRR-55, 완료 조건과 `review-dimensions.md` §1·§7·§9·§10·§12·§14, `comment-template.md` `Not verified`, `stale-pr-audit.md` 재현 단계, `references/projects/isac322__kwin-mcp.md` §2를 고쳤다.
 
 # GitHub PR Review
 
@@ -71,10 +71,11 @@ bridge는 에이전트 자신의 `event`가 `COMMENT`이고, `head_sha`가 PR의
   - `docker build`는 `--allow` entitlement 없이 한다. 네트워크는 빌드 단계에서만 쓴다.
   - `docker run`은 항상 `--rm --network none`이다. `--privileged`, `--cap-add`, 호스트 네임스페이스(`--pid`/`--ipc`/`--uts`/`--userns`/`--network host`), docker 소켓 마운트, 홈 디렉터리 마운트는 쓰지 않는다. `-e`는 리터럴 상수만 넘긴다(호스트 환경 변수 전달 금지). 장치는 필요할 때 `/dev/dri` 렌더 노드만 넘긴다.
   - worktree는 마운트하지 않는다(그 `.git` 파일이 바깥 저장소를 가리킨다). `git archive <head>`로 풀거나 복사한 사본을 `/tmp/issue-agent/<worktree-name>/` 아래에 두고 빌드 컨텍스트에 넣거나 읽기 전용으로 마운트한다. 쓰기 가능한 캐시가 필요한 도구는 `--tmpfs`나 같은 scratch 디렉터리를 쓴다.
-  - 공식 베이스 이미지 위에 에이전트가 쓴 scratch Dockerfile은 허용된다(예: 최소 런타임 확인용 `python:3.12-slim`). PR의 Dockerfile을 빌드해도 된다.
+  - 공식 베이스 이미지 위에 에이전트가 쓴 scratch Dockerfile은 허용된다(예: 최소 런타임 확인용 `python:3.12-slim`). PR의 Dockerfile은 PRR-57의 컨테이너 이미지 build 제한 때문에 빌드하지 않는다.
   - PR 자신의 docker 래퍼 스크립트(`scripts/run-e2e.sh`처럼 docker를 부르는 스크립트)는 실행하지 않는다. 필요한 플래그는 읽고 위 규칙 안에서 직접 재구성한다.
   - 이 방식으로 할 수 없는 probe는 실행하지 않고 PRR-50의 challenger를 통과한 코드 경로 논증으로 대신하며, 무엇을 실행하지 못했는지 `Not verified`에 적는다.
-  리뷰어는 자기 추론에 쓸모 있다고 판단하면 이 채널 안에서 테스트, 빌드, probe를 무엇이든 돌릴 수 있다(PRR-38). 방법은 `references/review-dimensions.md` §14.
+  리뷰어는 자기 추론에 쓸모 있다고 판단하면 이 채널 안에서 테스트, 빌드, probe를 돌릴 수 있다(PRR-38). 범위는 PRR-57의 빠른 targeted check이고, 방법은 `references/review-dimensions.md` §14.
+- **PRR-57** [U] 로컬 실행 범위(2026-10-13 사용자 결정: 모든 프로젝트에서 e2e 같은 오래 걸리는 테스트는 CI의 일이고 로컬에서는 필요할 때만 돌린다; 리뷰어는 필요할 때도 CI에 맡긴다). 오래 걸리는 suite — e2e, GUI·Appium, multi-distro·패키지 matrix, 컨테이너 이미지 build, envtest, integration·soak — 는 CI가 돌리고 리뷰어는 로컬에서 돌리지 않는다. 그 suite의 CI 결과는 판정 근거가 아니라 입력으로만 읽는다(PRR-38). 로컬에서 돌리는 것은 특정 claim을 확인할 필요가 있을 때의 빠른 targeted check뿐이다: 단일 unit test, lint, 바뀐 모듈 하나의 빠른 build(그 check를 싣는 가벼운 scratch 이미지 포함). PRR-55 채널 안에서도 같은 범위다. 오래 걸리는 suite로만 확인할 수 있는 claim은 로컬에서 돌리지 않고, `Not verified`에 적거나 PRR-50의 argument+challenger로 다룬다.
 
 ## 2. 대상 고정과 읽기
 
@@ -89,7 +90,7 @@ bridge는 에이전트 자신의 `event`가 `COMMENT`이고, `head_sha`가 PR의
 - **PRR-08** [U] 가장 먼저 판정한다: PR이 해결한다고 주장하는 문제가 실제로 있는가, 재현되는가, 근본 원인은 무엇인가, 이 PR이 그 근본 원인을 고치는가(증상이나 타임아웃만 덮지 않는가).
 - **PRR-09** [U] PR을 이슈와 같은 엄격도와 순서로 다룬다. 그 프로젝트에서 이슈를 처리해 온 순서(재현 → 근본 원인 → 해결 적합성 → 코멘트)를 그대로 쓴다. 재현과 claim 판정은 `issue-validation`, 원인 체인을 새로 도출해야 하면 `five-whys-root-cause-analysis`를 호출하고, 절차를 새로 만들지 않는다.
 - **PRR-10** [U] 연결 이슈가 없는 PR도 같은 순서로 검증한다. 결과는 그 PR의 리뷰(ReviewResult.body)에 담고, 새 이슈는 만들지 않는다(필요하면 body에 권고로 적는다).
-- **PRR-11** "고친다"는 판정에는 실행 증거가 필요하다(실행은 PRR-55 채널에서). merge-base(또는 PR 적용 전)에서 주장된 실패가 재현되고, PR head(오래됐으면 main 위로 rebase한 것)에서 통과하며, 정상 대조군(healthy control)도 관찰한다. 실행할 수 없으면 PRR-50의 challenger를 통과한 코드 경로 논증으로 대신하고 실행하지 않았다고 표시한다. rebase가 충돌하면 head를 그 merge-base 기준으로 검증하고, 요약 문단에 main과 충돌한다고 적고, 겹치는 main 커밋을 나열한다(충돌 자체는 판정을 바꾸지 않는다). 일부 claim만 맞는 PR을 전체 해결로 판정하지 않는다. 방법은 `references/review-dimensions.md` §1, claim 판정 어휘는 `references/defaults.md`.
+- **PRR-11** "고친다"는 판정에는 실행 증거가 필요하다(실행은 PRR-55 채널, 범위는 PRR-57). merge-base(또는 PR 적용 전)에서 주장된 실패가 재현되고, PR head(오래됐으면 main 위로 rebase한 것)에서 통과하며, 정상 대조군(healthy control)도 관찰한다. 실행할 수 없거나 로컬 실행 범위 밖(PRR-57)이면 PRR-50의 challenger를 통과한 코드 경로 논증으로 대신하고 실행하지 않았다고 표시한다. rebase가 충돌하면 head를 그 merge-base 기준으로 검증하고, 요약 문단에 main과 충돌한다고 적고, 겹치는 main 커밋을 나열한다(충돌 자체는 판정을 바꾸지 않는다). 일부 claim만 맞는 PR을 전체 해결로 판정하지 않는다. 방법은 `references/review-dimensions.md` §1, claim 판정 어휘는 `references/defaults.md`.
 
 ## 4. 리뷰 차원
 
@@ -107,10 +108,10 @@ bridge는 에이전트 자신의 `event`가 `COMMENT`이고, `head_sha`가 PR의
   - 좌표, 크기, 단위, 시간에 대한 산술 → math. 픽셀·샘플 중심, 경계 원소, 유효 영역과 무효 영역(마스크·덮이지 않은 영역)의 경계를 보고 왕복(round-trip) 검산을 한다.
   - 변경된 테스트 → test audit (PRR-46).
   - 항상 → correctness, docs/convention (PRR-40).
-  보안 정책 우회(PRR-47)는 input/injection 렌즈나 보안 패스가 함께 본다. 각 렌즈는 PRR-55 채널 안에서 probe를 실행할 수 있다. 렌즈의 체크리스트 항목마다 근거(`file:line`과 probe 또는 PRR-50 논증)가 있어야 한다. "소스로 확인했다" 같은 일괄 주장은 아무 항목도 덮지 못한다. 관찰한 이상 동작은 finding이거나 `Considered` 후보이고, `Lenses` 텍스트에 남겨 두지 않는다. concurrency/lifecycle 렌즈는 락을 잡거나, 프로세스·스레드를 만들거나 거두거나, 시그널을 다루거나, close/shutdown 상태를 가진 변경 모듈(파일·패키지)이 둘 이상이면 반드시 그런 모듈마다 서브 에이전트 하나로 나눈다. 각 서브 에이전트는 자기 모듈에서 락 틈과 close/shutdown 후 사용 항목(`references/review-dimensions.md` §10)을 포함한 항목마다 `file:line` 근거를 낸다. 다른 렌즈는 담당 체크리스트 항목이 ~5개를 넘으면 모듈별 서브 에이전트로 나눈다. 각 서브 에이전트는 맡은 항목마다 `file:line` 근거를 낸다. 나눈 뒤에도 항목별 근거가 없으면 그 항목은 덮이지 않은 것이다. 분리 렌즈의 동시 서브 에이전트는 최대 2개다(Codex `max_threads` 2가 상한이다)고, 나머지는 순차로 돌린다. 렌즈별 체크리스트는 `references/review-dimensions.md` §10.
-- **PRR-44** 새·변경 파라미터마다 그 값이 들어오는 경로를 모두 나열한다: API·도구 스키마, CLI argv, CLI raw JSON·설정 파일·환경 변수. 스키마 검증을 건너뛰는 경로는 따로 표시한다. 경로마다 적대적 값(non-finite, 아주 큰 값, 음수, 0, int로 쓰인 bool, 잘못된 타입, 빈 값, 중복·반복 플래그)을 probe한다. 다른 언어·형식(JS, SQL, 셸, desktop entry `Exec=` 줄, 템플릿, 정규식)에 이어 붙이는 값은 인젝션 probe를 하고, 여러 치환이 서로 상호작용하는 경우(앞 치환의 결과가 뒤 치환의 placeholder가 되는 경우 등)도 probe한다. 방법은 `references/review-dimensions.md` §11.
+  보안 정책 우회(PRR-47)는 input/injection 렌즈나 보안 패스가 함께 본다. 각 렌즈는 PRR-55 채널 안에서 PRR-57 범위의 probe를 실행할 수 있다. 렌즈의 체크리스트 항목마다 근거(`file:line`과 probe 또는 PRR-50 논증)가 있어야 한다. "소스로 확인했다" 같은 일괄 주장은 아무 항목도 덮지 못한다. 관찰한 이상 동작은 finding이거나 `Considered` 후보이고, `Lenses` 텍스트에 남겨 두지 않는다. concurrency/lifecycle 렌즈는 락을 잡거나, 프로세스·스레드를 만들거나 거두거나, 시그널을 다루거나, close/shutdown 상태를 가진 변경 모듈(파일·패키지)이 둘 이상이면 반드시 그런 모듈마다 서브 에이전트 하나로 나눈다. 각 서브 에이전트는 자기 모듈에서 락 틈과 close/shutdown 후 사용 항목(`references/review-dimensions.md` §10)을 포함한 항목마다 `file:line` 근거를 낸다. 다른 렌즈는 담당 체크리스트 항목이 ~5개를 넘으면 모듈별 서브 에이전트로 나눈다. 각 서브 에이전트는 맡은 항목마다 `file:line` 근거를 낸다. 나눈 뒤에도 항목별 근거가 없으면 그 항목은 덮이지 않은 것이다. 분리 렌즈의 동시 서브 에이전트는 최대 2개다(Codex `max_threads` 2가 상한이다)고, 나머지는 순차로 돌린다. 렌즈별 체크리스트는 `references/review-dimensions.md` §10.
+- **PRR-44** 새·변경 파라미터마다 그 값이 들어오는 경로를 모두 나열한다: API·도구 스키마, CLI argv, CLI raw JSON·설정 파일·환경 변수. 스키마 검증을 건너뛰는 경로는 따로 표시한다. 경로마다 적대적 값(non-finite, 아주 큰 값, 음수, 0, int로 쓰인 bool, 잘못된 타입, 빈 값, 중복·반복 플래그)을 probe한다. 다른 언어·형식(JS, SQL, 셸, desktop entry `Exec=` 줄, 템플릿, 정규식)에 이어 붙이는 값은 인젝션 probe를 하고, 여러 치환이 서로 상호작용하는 경우(앞 치환의 결과가 뒤 치환의 placeholder가 되는 경우 등)도 probe한다. probe는 PRR-57 범위로 한다. 방법은 `references/review-dimensions.md` §11.
 - **PRR-45** 새로 추가된 타입 오류 억제(`type: ignore`, `ty: ignore`, `@ts-ignore`, `@ts-expect-error`, 침묵용으로만 쓴 `cast`)는 테스트 코드를 포함해 finding이다. 보통 P3이고, 실제 API·타입 결함을 가리면 P2다. 타입이 맞는 수정안(Protocol, 정확한 시그니처, overload)을 함께 적는다. 이 규칙은 PRR-20의 "스타일 지적 금지"보다 우선한다. lint 억제(`noqa`, `#[allow]`, `nolint`, `eslint-disable`)는 프로젝트 관례(프로젝트 문서, PRR-40의 지침)가 금지할 때만 finding이다.
-- **PRR-46** 새·변경 테스트를 감사한다: 주장한 동작을 실제로 단언하는가, 수정이 없으면 실패하는가(추론하고, 쓸모 있으면 PRR-55 채널에서 수정을 되돌려 돌린다). 고정 sleep, 순서와 무관하게 참인 단언, 우연한 텍스트(로그 문구, 오류 문자열 일부)에 대한 단언을 지적한다. 테스트 결과의 통과·실패를 판정 근거로 보고하지 않는다(PRR-38). 리뷰어가 직접 돌린 실행은 자기 증거로 `Verified`에 적는다.
+- **PRR-46** 새·변경 테스트를 감사한다: 주장한 동작을 실제로 단언하는가, 수정이 없으면 실패하는가(추론하고, 쓸모 있으면 PRR-55 채널에서 PRR-57 범위로 수정을 되돌려 돌린다). 고정 sleep, 순서와 무관하게 참인 단언, 우연한 텍스트(로그 문구, 오류 문자열 일부)에 대한 단언을 지적한다. 테스트 결과의 통과·실패를 판정 근거로 보고하지 않는다(PRR-38). 리뷰어가 직접 돌린 실행은 자기 증거로 `Verified`에 적는다.
 - **PRR-42** 언어·라이브러리 기능은 프로젝트가 선언한 최소 런타임·플랫폼(`requires-python`, `engines`, MSRV, 지원 OS)에서 판단한다. 필요하면 그 버전의 공식 이미지로 PRR-55 채널에서 확인한다. 비동기 부작용을 내는 API(요청 후 나중에 반영되는 설정, 창 geometry, 외부 상태 전환)는 요청한 상태와 관찰한 상태를 정직하게 구분해 보고해야 한다. 관찰하지 않은 성공을 보고하면 finding이다.
 - **PRR-19** 공개 저장소에서 이 PR이 들여오지 않은 악용 가능한 취약점(PRR-48 기준)이나 유출된 비밀을 찾으면 세부를 결과의 어떤 필드(body, comments, thread_replies, summary, blockers, open_items)에도 쓰지 않는다. 결과는 게시될 수 있다. ReviewResult.body에는 세부 없는 문구만 쓰고, 비공개 보고 경로를 메인테이너가 정해 달라고 적는다(`references/review-dimensions.md` §5).
 - **PRR-48** [U] PR이 들여온 취약점(기본 브랜치에도, GitHub 최신 공개 릴리스의 태그와 릴리스 브랜치에도 없는 것. 확인 방법은 `references/review-dimensions.md` §5이며, 가장 가까운 태그로 대신하지 않는다)은 리뷰에 위치(`file:line`), 메커니즘, 수정안을 적고 `BLOCKING`(`REQUEST_CHANGES`)으로 낸다. 결정 항목이 남아 있어도 이 경우는 `BLOCKING`이다(PRR-56). 기본 브랜치나 릴리스에 이미 있는 취약점, 또는 릴리스·ref를 확인하지 못해 PR 도입으로 단정할 수 없는 취약점은 PRR-19의 비공개 경로를 따른다. 어느 경우든 유출된 비밀 값과 바로 쓸 수 있는 익스플로잇 입력은 인용하지 않는다(위치와 교체 필요성만 적는다).
@@ -132,7 +133,7 @@ bridge는 에이전트 자신의 `event`가 `COMMENT`이고, `head_sha`가 PR의
 
 ## 6. 판정 계약
 
-- **PRR-38** [U] 판정은 CI와 무관하다. CI·check 상태(통과든 실패든 진행 중이든)를 정확성이나 결함의 증거로 인용하지 않고, 판정과 이벤트를 그것에 맞추지 않는다. 린트·타입 검사·테스트 결과를 리뷰 finding으로 보고하지 않는다(CI 실패는 새 커밋을 부르고 그 커밋이 새 리뷰를 부른다). 리뷰어는 자기 추론에 쓸모 있으면 PRR-55 채널에서 무엇이든 직접 돌릴 수 있고, 돌린 것은 자기 증거로 적는다. 판정 줄에 `PR-ready`나 required check 상태를 쓰지 않는다.
+- **PRR-38** [U] 판정은 CI와 무관하다. CI·check 상태(통과든 실패든 진행 중이든)를 정확성이나 결함의 증거로 인용하지 않고, 판정과 이벤트를 그것에 맞추지 않는다. 린트·타입 검사·테스트 결과를 리뷰 finding으로 보고하지 않는다(CI 실패는 새 커밋을 부르고 그 커밋이 새 리뷰를 부른다). 리뷰어는 자기 추론에 쓸모 있으면 PRR-55 채널에서 PRR-57 범위의 것을 직접 돌릴 수 있고, 돌린 것은 자기 증거로 적는다. 판정 줄에 `PR-ready`나 required check 상태를 쓰지 않는다.
 - **PRR-24** PR 리뷰는 `isac-multi-agent-consensus`의 라운드 판정(`GREEN` 또는 `BLOCKING`)이나, 그 둘 중 무엇으로도 끝낼 수 없을 때 `OPEN`으로 끝나고, 다음 PR 고유 필드를 붙인다:
   - `BLOCKING`이면 blocking finding(P0/P1, PRR-22의 P2)마다 `file:line`, 메커니즘, 수정안.
   - `OPEN`이면 결정 항목, 미반박 P0–P2 우려, 덮이지 않은 렌즈마다 한 항목(PRR-56).
@@ -187,7 +188,7 @@ bridge는 에이전트 자신의 `event`가 `COMMENT`이고, `head_sha`가 PR의
 - 현재 head에 대해 PRR-24 판정(`GREEN`/`BLOCKING`/`OPEN`)과 리뷰한 head SHA가 있다. 판정 줄과 근거 어디에도 CI·check 상태가 없다(PRR-38).
 - 모든 blocking finding에 `file:line`, 메커니즘, 수정안이 있고, 실행 확인과 추론이 구분돼 있다. 인용한 명령과 probe는 모두 끝난 것이다.
 - 트리거된 렌즈마다 트리거와 커버리지가 `Lenses`에 있고, 버린 후보는 `Considered` 고정 형식으로 있다. 적용한 저장소 지침 파일이 `Verified`에 있다.
-- PR 코드는 PRR-55 채널에서만 실행했다.
+- PR 코드는 PRR-55 채널에서만, PRR-57의 로컬 실행 범위 안에서만 실행했다.
 - ReviewResult가 `status: reviewed`이고, `head_sha`가 리뷰한 head이며, `event`가 PRR-25, PRR-56의 판정 매핑과 맞고, `open_items`가 PRR-56을 따른다. 재리뷰면 이전 봇 스레드마다 `thread_replies`가 있다.
 - summary가 PRR-31, PRR-32 형식을 따른다.
 

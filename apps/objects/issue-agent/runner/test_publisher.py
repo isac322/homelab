@@ -1,4 +1,4 @@
-"""Tests for publisher.py worktree removal and the janitor prune request/status.
+"""Tests for publisher.py worktree removal and restore, and the janitor prune request/status.
 
 Run: python3 -m unittest apps/objects/issue-agent/runner/test_publisher.py
 (as a non-root user: root ignores the permission bits these tests rely on).
@@ -9,7 +9,9 @@ from __future__ import annotations
 import http.client
 import json
 import os
+import shutil
 import stat
+import subprocess
 import sys
 import tempfile
 import threading
@@ -292,7 +294,7 @@ class JanitorStatusTest(CheckoutsCase):
         self.assert_error("no_status", publisher.read_janitor_status)
 
 
-class JanitorEndpointTest(CheckoutsCase):
+class EndpointCase(CheckoutsCase):
     def setUp(self) -> None:
         super().setUp()
         token_file = os.path.join(self.root, "token")
@@ -306,7 +308,7 @@ class JanitorEndpointTest(CheckoutsCase):
         self.addCleanup(self.server.shutdown)
 
     def call(self, method: str, path: str, body: bytes | None = None, token: str = TOKEN) -> tuple[int, dict]:
-        conn = http.client.HTTPConnection("127.0.0.1", self.server.server_address[1], timeout=10)
+        conn = http.client.HTTPConnection("127.0.0.1", self.server.server_address[1], timeout=30)
         self.addCleanup(conn.close)
         headers = {"Authorization": f"Bearer {token}"}
         if body is not None:
@@ -315,6 +317,8 @@ class JanitorEndpointTest(CheckoutsCase):
         response = conn.getresponse()
         return response.status, json.loads(response.read())
 
+
+class JanitorEndpointTest(EndpointCase):
     def post(self, body: bytes, token: str = TOKEN) -> tuple[int, dict]:
         return self.call("POST", "/janitor/prune-request", body, token)
 
@@ -358,6 +362,176 @@ class JanitorEndpointTest(CheckoutsCase):
 
     def test_healthz_needs_no_token(self) -> None:
         self.assertEqual(self.call("GET", "/healthz", token="nope"), (HTTPStatus.OK, {"ok": True}))
+
+
+GIT_ENV = {
+    "PATH": os.environ.get("PATH", "/usr/bin:/bin"),
+    "HOME": "/nonexistent",
+    "GIT_CONFIG_NOSYSTEM": "1",
+    "GIT_CONFIG_GLOBAL": "/dev/null",
+    "GIT_AUTHOR_NAME": "agent",
+    "GIT_AUTHOR_EMAIL": "agent@example.com",
+    "GIT_COMMITTER_NAME": "agent",
+    "GIT_COMMITTER_EMAIL": "agent@example.com",
+    "LANG": "C",
+    "LC_ALL": "C",
+}
+
+
+def git(*args: str, cwd: str) -> str:
+    """Git as the agent runs it (the test user), on the temp repositories."""
+    result = subprocess.run(["git", "-c", "commit.gpgsign=false", *args], cwd=cwd, env=GIT_ENV,
+                            capture_output=True, text=True, check=False)
+    if result.returncode != 0:
+        raise AssertionError(f"git {' '.join(args)} failed: {result.stderr}")
+    return result.stdout.strip()
+
+
+class WorktreeRestoreTest(EndpointCase):
+    """A real base clone whose issue-7 worktree was removed (`git worktree remove --force`), keeping its branch."""
+
+    def setUp(self) -> None:
+        super().setUp()
+        state = os.path.join(self.root, "state")
+        os.makedirs(state)
+        self.untrusted: list[str] = []
+        for name, value in (("STATE_DIR", state), ("untrust_checkout", self.untrusted.append)):
+            patcher = patch.object(publisher, name, value)
+            patcher.start()
+            self.addCleanup(patcher.stop)
+        shutil.rmtree(self.base)
+        os.makedirs(self.base)
+        git("init", "--quiet", "--initial-branch=main", cwd=self.base)
+        write(os.path.join(self.base, "README.md"), "base\n")
+        git("add", ".", cwd=self.base)
+        git("commit", "--quiet", "-m", "base", cwd=self.base)
+        self.path = os.path.join(self.worktrees, "issue-7")
+        self.add_worktree("issue-7", "hapi-issue-7", new=True)
+        # Unpushed work: exists only in the base clone's refs/heads/hapi-issue-7.
+        write(os.path.join(self.path, "src", "main.rs"), "fn main() {}\n")
+        os.chmod(os.path.join(self.path, "src", "main.rs"), 0o755)
+        git("add", ".", cwd=self.path)
+        git("commit", "--quiet", "-m", "local work", cwd=self.path)
+        self.local_sha = git("rev-parse", "HEAD", cwd=self.path)
+        git("worktree", "remove", "--force", self.path, cwd=self.base)
+
+    def add_worktree(self, name: str, branch: str, *, new: bool = False) -> str:
+        path = os.path.join(self.worktrees, name)
+        git("worktree", "add", "--quiet", *(["-b", branch, path] if new else [path, branch]), cwd=self.base)
+        return path
+
+    def restore(self, body: dict, token: str = TOKEN) -> tuple[int, dict]:
+        return self.call("POST", "/worktree/restore", json.dumps(body).encode(), token)
+
+    def request(self, worktree: str = "issue-7", branch: str = "hapi-issue-7") -> dict:
+        return {"repo": REPO, "worktree": worktree, "branch": branch}
+
+    def worktree_list(self) -> dict[str, str]:
+        listed, path = {}, None
+        for line in git("worktree", "list", "--porcelain", cwd=self.base).splitlines():
+            if line.startswith("worktree "):
+                path = line.removeprefix("worktree ")
+            elif line.startswith("branch "):
+                listed[path] = line.removeprefix("branch ")
+        return listed
+
+    def test_restores_the_worktree_on_its_branch_with_unpushed_commits(self) -> None:
+        status, payload = self.restore(self.request())
+        self.assertEqual((status, payload), (HTTPStatus.OK, {"restored": True, "path": self.path, "already": False}))
+        self.assertEqual(git("symbolic-ref", "HEAD", cwd=self.path), "refs/heads/hapi-issue-7")
+        self.assertEqual(git("rev-parse", "HEAD", cwd=self.path), self.local_sha)
+        self.assertEqual(git("rev-parse", "refs/heads/hapi-issue-7", cwd=self.base), self.local_sha)
+        self.assertEqual(git("status", "--porcelain", "--untracked-files=all", cwd=self.path), "")
+        with open(os.path.join(self.path, "src", "main.rs"), encoding="utf-8") as handle:
+            self.assertEqual(handle.read(), "fn main() {}\n")
+        self.assertTrue(os.stat(os.path.join(self.path, "src", "main.rs")).st_mode & stat.S_IXUSR)
+        self.assertEqual(self.worktree_list().get(self.path), "refs/heads/hapi-issue-7")
+        # A pass of git's own maintenance keeps it, and the agent can keep committing on the branch.
+        git("worktree", "prune", cwd=self.base)
+        self.assertIn(self.path, self.worktree_list())
+        git("commit", "--quiet", "--allow-empty", "-m", "more", cwd=self.path)
+        self.assertEqual(git("rev-parse", "HEAD~1", cwd=self.path), self.local_sha)
+        self.assertEqual(os.listdir(self.worktrees), ["issue-7"])
+        self.assertFalse(os.path.lexists(os.path.join(self.base, ".git", "worktrees", "issue-7", "locked")))
+        self.assertEqual(self.untrusted, [self.base])
+
+    def test_present_worktree_is_reported_already(self) -> None:
+        self.add_worktree("issue-7", "hapi-issue-7")
+        status, payload = self.restore(self.request())
+        self.assertEqual((status, payload), (HTTPStatus.OK, {"restored": True, "path": self.path, "already": True}))
+        self.assertEqual(self.restore(self.request())[1]["already"], True)
+
+    def test_second_restore_is_already(self) -> None:
+        self.assertEqual(self.restore(self.request())[1]["already"], False)
+        status, payload = self.restore(self.request())
+        self.assertEqual((status, payload), (HTTPStatus.OK, {"restored": True, "path": self.path, "already": True}))
+
+    def test_stale_admin_dir_is_pruned(self) -> None:
+        # The worktree directory deleted without git: its admin dir is left behind, as `git worktree prune` would find.
+        self.add_worktree("issue-7", "hapi-issue-7")
+        shutil.rmtree(self.path)
+        status, payload = self.restore(self.request())
+        self.assertEqual((status, payload["already"]), (HTTPStatus.OK, False))
+        self.assertEqual(self.worktree_list().get(self.path), "refs/heads/hapi-issue-7")
+        self.assertEqual(git("status", "--porcelain", cwd=self.path), "")
+
+    def test_missing_branch_is_not_restored(self) -> None:
+        status, payload = self.restore(self.request("issue-8", "hapi-issue-8"))
+        self.assertEqual((status, payload), (HTTPStatus.OK, {"restored": False, "reason": "no_branch"}))
+        self.assertFalse(os.path.lexists(os.path.join(self.worktrees, "issue-8")))
+        self.assertEqual(self.untrusted, [])
+
+    def test_missing_checkout_is_no_branch(self) -> None:
+        status, payload = self.restore({"repo": "isac322/other", "worktree": "issue-7", "branch": "hapi-issue-7"})
+        self.assertEqual((status, payload), (HTTPStatus.OK, {"restored": False, "reason": "no_branch"}))
+
+    def test_plain_directory_at_the_path_conflicts(self) -> None:
+        write(os.path.join(self.path, "notes.txt"), "keep")
+        status, payload = self.restore(self.request())
+        self.assertEqual((status, payload["error"]), (HTTPStatus.CONFLICT, "worktree_conflict"))
+        self.assertEqual(os.listdir(self.path), ["notes.txt"])
+
+    def test_worktree_on_another_branch_conflicts(self) -> None:
+        git("branch", "hapi-issue-9", cwd=self.base)
+        self.add_worktree("issue-7", "hapi-issue-9")
+        status, payload = self.restore(self.request())
+        self.assertEqual((status, payload["error"]), (HTTPStatus.CONFLICT, "worktree_conflict"))
+        self.assertEqual(self.worktree_list().get(self.path), "refs/heads/hapi-issue-9")
+
+    def test_branch_checked_out_in_another_worktree_conflicts(self) -> None:
+        other = self.add_worktree("issue-7-abcd", "hapi-issue-7")
+        status, payload = self.restore(self.request())
+        self.assertEqual((status, payload["error"]), (HTTPStatus.CONFLICT, "worktree_conflict"))
+        self.assertFalse(os.path.lexists(self.path))
+        self.assertEqual(self.worktree_list().get(other), "refs/heads/hapi-issue-7")
+        self.assertNotIn(self.path, self.worktree_list())
+
+    def test_symlinked_worktrees_dir_is_refused(self) -> None:
+        shutil.rmtree(self.worktrees)
+        os.symlink(self.outside, self.worktrees)
+        status, payload = self.restore(self.request())
+        self.assertEqual((status, payload["error"]), (HTTPStatus.CONFLICT, "unsafe_path"))
+        self.assertEqual(os.listdir(self.outside), ["keep"])
+        self.assert_outside_intact()
+
+    def test_symlinked_worktree_is_refused(self) -> None:
+        os.symlink(self.outside, self.path)
+        status, payload = self.restore(self.request())
+        self.assertEqual((status, payload["error"]), (HTTPStatus.CONFLICT, "unsafe_path"))
+        self.assert_outside_intact()
+
+    def test_wrong_token_is_refused(self) -> None:
+        status, payload = self.restore(self.request(), token="nope")
+        self.assertEqual((status, payload["error"]), (HTTPStatus.UNAUTHORIZED, "unauthorized"))
+        self.assertFalse(os.path.lexists(self.path))
+
+    def test_unknown_or_invalid_fields_are_refused(self) -> None:
+        for body in ({**self.request(), "force": True}, self.request(branch="main"),
+                     self.request(worktree="../issue-7"), {"repo": REPO, "worktree": "issue-7"}):
+            with self.subTest(body=body):
+                status, payload = self.restore(body)
+                self.assertEqual((status, payload["error"]), (HTTPStatus.BAD_REQUEST, "invalid_request"))
+        self.assertFalse(os.path.lexists(self.path))
 
 
 if __name__ == "__main__":

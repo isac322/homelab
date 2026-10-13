@@ -6,7 +6,7 @@ SKILL.md의 PRR-08–PRR-23과 PRR-38–PRR-56이 가리키는 세부 항목이�
 
 1. PR 설명, 커밋 메시지, 연결 이슈에서 주장을 뽑아 원자적 claim으로 쪼갠다. 서로 다른 코드 경로·계약·메커니즘을 건드리는 claim은 따로 판정한다.
 2. 각 claim에 기대 계약(문서, 공개 API, 기존 테스트, upstream 명세)을 적는다. 계약이 없으면 결함인지부터 판단한다(`issue-validation`).
-3. 세 기준점에서 같은 재현을 돌린다(PR 코드 실행은 §14 채널에서만).
+3. 세 기준점에서 같은 재현을 돌린다(PR 코드 실행은 §14 채널에서만, 범위는 PRR-57의 빠른 targeted check). 재현이 PRR-57이 맡긴 오래 걸리는 suite를 요구하면 로컬에서 돌리지 않고 §12의 argument+challenger로 다루고 `Not verified`에 적는다.
    - merge-base(PR 적용 전): 주장된 실패가 재현돼야 한다.
    - 현재 main: 이미 고쳐졌는지 본다. 커밋이 다른 PR을 통해 간접 머지됐는지, 다른 PR에 흡수됐는지, 배포된 옛 이미지나 릴리스와 main이 어떻게 다른지도 본다. 고쳐졌으면 `references/stale-pr-audit.md`로 간다.
    - PR head. head가 오래됐으면 main 위로 rebase한 scratch 사본: 통과해야 한다.
@@ -73,7 +73,7 @@ PR이 들여온 취약점(기본 브랜치에도, 최신 공개 릴리스와 릴
 - **생성물·공개 계약·게이트 코드**: 생성 파일 재생성 누락(CRD, RBAC, 차트 등), 템플릿 도구 간 불일치, values 키와 플래그의 실제 연결, 문서와 샘플의 정확성, 라이선스 표기. diff가 바꾼 워크플로·스크립트에서 실패할 수 없는 게이트(`|| true`, `continue-on-error`, `tee`가 pipefail을 가리는 경우), 남은 TODO·stub. 이것은 게이트 코드의 리뷰이고, CI 실행 결과를 근거로 쓰는 것이 아니다(PRR-38).
 - **도메인 불변조건**: 프로젝트가 불변조건을 명시했으면(예: fail-closed, 소유권·인가 순서, 관찰 전용 모드는 쓰기 없음, 단일 writer) 그 목록으로 확인한다. 목록은 프로젝트 문서가 소유한다.
 - **의존성·보안 업데이트 PR**: 현재 advisory(OSV 등)가 목표 버전에도 남아 있는지, 버전 범위와 lock 정합성, CI 액션 버전, main에서 이미 올렸는지.
-- **결정적 vs 일시적 실패**: 리뷰어가 직접 돌린 실행의 실패가 결정적인지(다시 돌려도 같음) 일시적인지(네트워크, 다운로드, 도구) 구분한다. 도구 문제로 실패한 probe는 반박도 확인도 아니다(§12). CI 실패·통과는 판정 근거가 아니다(PRR-38). blocker, 안전 차이, 마이그레이션에서만 생기는 우려를 서로 구분한다.
+- **결정적 vs 일시적 실패**: 리뷰어가 직접 돌린 실행(PRR-57 범위)의 실패가 결정적인지(다시 돌려도 같음) 일시적인지(네트워크, 다운로드, 도구) 구분한다. 도구 문제로 실패한 probe는 반박도 확인도 아니다(§12). CI 실패·통과는 판정 근거가 아니다(PRR-38). blocker, 안전 차이, 마이그레이션에서만 생기는 우려를 서로 구분한다.
 - **최소 런타임과 요청 vs 관찰 상태**: 언어·라이브러리 기능은 프로젝트가 선언한 최소 런타임·플랫폼(`requires-python`, `engines`, MSRV)에서 판단한다(예: 최소 Python에서 annotation 평가, 표준 라이브러리 API 존재). 비동기 부작용 API는 요청한 값과 관찰한 값을 구분해 보고해야 한다. 관찰하지 않은 성공 문구("Geometry set")는 finding이다(PRR-42).
 - **억제 주석**: 새 타입 오류 억제는 테스트 포함 finding(P3, 실제 API·타입 결함을 가리면 P2), 타입이 맞는 수정안과 함께. lint 억제는 프로젝트 관례가 금지할 때만(PRR-45).
 - **릴리스 노트·공개 문서 PR**: 노트의 claim마다 구현과 라인 증거로 대조한다. 필수 업그레이드·롤백 경고가 빠졌는지, 보안이나 복구에 대한 과장된 확실성이 있는지 본다.
@@ -98,7 +98,7 @@ PR이 들여온 취약점(기본 브랜치에도, 최신 공개 릴리스와 릴
 - finding마다 `file:line`(또는 `file:symbol`, 아티팩트 위치), 메커니즘, 최소 수정안.
 - 1차 소스로 확인한다. 이전 보고, 문서, 작성자 설명은 출발점일 뿐 증거가 아니다.
 - 실행한 것, 소스만 읽고 추론한 것, 측정하지 않은 것을 구분한다. 게시 문구는 실제 실행 범위와 정확히 일치해야 한다(main에서만 돌렸으면 "confirmed on both"라고 쓰지 않는다). 끝나지 않은 명령이나 probe, 죽은 실행이나 이전 턴의 출력은 인용하지 않는다(PRR-41, PRR-53).
-- CI·check 상태는 증거가 아니다. 리뷰어가 돌린 것만 자기 증거로 적는다(PRR-38).
+- CI·check 상태는 증거가 아니다. 리뷰어가 PRR-57 범위 안에서 돌린 것만 자기 증거로 적는다(PRR-38).
 - 시그널, I/O 블로킹, 타이밍에 대한 런타임 claim과 "결함 없음" 결론은 probe나 challenger를 통과한 논증이 필요하다. 읽기만으로는 부족하다(PRR-49, PRR-51).
 - 증거끼리 모순되면 덮지 말고 해소하거나, 해소하지 못했다고 쓴다.
 - 확인했고 문제없던 영역도 적는다. 커버리지의 증거다.
@@ -106,7 +106,7 @@ PR이 들여온 취약점(기본 브랜치에도, 최신 공개 릴리스와 릴
 
 ## 10. 렌즈 체크리스트
 
-트리거가 diff에 있으면 렌즈는 필수다(PRR-43). 본문 `Lenses`에 `- <lens> — <trigger file:line and what> — covered | uncovered: <items>`로 적는다. 렌즈는 서브 리뷰어로 돌리고, 각자 §14 채널에서 probe를 실행할 수 있다. 렌즈 결과가 오지 않았거나 항목이 덮이지 않았으면 같은 턴에서 한 번 다시 돌리고, 그래도 남으면 `OPEN`이다(PRR-53). 도구가 실패했어도 §12 논증으로 항목을 덮었으면 그 렌즈는 덮인 것이다. 체크리스트 항목마다 근거(`file:line`과 probe 또는 §12 논증)를 둔다. "소스로 확인했다" 같은 일괄 주장은 그 항목을 덮지 못한다. `Lenses` 줄에는 덮은 범위만 적는다. 이상 동작을 관찰했으면 그것은 finding이거나 `Considered` 후보이고, coverage 텍스트에 남겨 두지 않는다. 메인 에이전트는 항목별 근거가 없는 렌즈 답을 받아들이지 않고 그 렌즈를 한 번 다시 돌린다(PRR-53). 그래도 근거가 없으면 그 항목은 덮이지 않은 것이고, 이벤트는 `COMMENT`이며 그 렌즈를 `open_items`에 적는다.
+트리거가 diff에 있으면 렌즈는 필수다(PRR-43). 본문 `Lenses`에 `- <lens> — <trigger file:line and what> — covered | uncovered: <items>`로 적는다. 렌즈는 서브 리뷰어로 돌리고, 각자 §14 채널에서 PRR-57 범위의 probe를 실행할 수 있다. 렌즈 결과가 오지 않았거나 항목이 덮이지 않았으면 같은 턴에서 한 번 다시 돌리고, 그래도 남으면 `OPEN`이다(PRR-53). 도구가 실패했어도 §12 논증으로 항목을 덮었으면 그 렌즈는 덮인 것이다. 체크리스트 항목마다 근거(`file:line`과 probe 또는 §12 논증)를 둔다. "소스로 확인했다" 같은 일괄 주장은 그 항목을 덮지 못한다. `Lenses` 줄에는 덮은 범위만 적는다. 이상 동작을 관찰했으면 그것은 finding이거나 `Considered` 후보이고, coverage 텍스트에 남겨 두지 않는다. 메인 에이전트는 항목별 근거가 없는 렌즈 답을 받아들이지 않고 그 렌즈를 한 번 다시 돌린다(PRR-53). 그래도 근거가 없으면 그 항목은 덮이지 않은 것이고, 이벤트는 `COMMENT`이며 그 렌즈를 `open_items`에 적는다.
 
 - **concurrency/lifecycle** (락, 스레드, async, 시그널, 서브프로세스, 정리). 락을 잡거나, 프로세스·스레드를 만들거나 거두거나, 시그널을 다루거나, close/shutdown 상태를 가진 변경 모듈(파일·패키지)이 둘 이상이면 이 렌즈는 반드시 그런 모듈마다 서브 에이전트 하나로 나눈다(동시 최대 2개, 나머지 순차, PRR-43). 각 서브 에이전트는 자기 모듈에서 아래 항목마다, 특히 락 틈과 close/shutdown 후 사용 항목에 `file:line` 근거를 낸다:
   - 블로킹 I/O(D-Bus, HTTP, 서브프로세스 대기, 파일 잠금)를 감싸고 잡은 락·임계 구역. 그 안의 모든 호출에 타임아웃이 있는가, 연결·인증·이름 조회·introspection 같은 setup 단계의 기본 타임아웃까지 포함해 얼마인가.
@@ -141,7 +141,7 @@ PR이 들여온 취약점(기본 브랜치에도, 최신 공개 릴리스와 릴
 ## 12. 반박 규칙과 `Considered`
 
 - 후보는 반박으로만 버린다(PRR-50). 반박은 둘 중 하나다:
-  - **probe**: §14 채널에서 실행한 probe. 결함 부류가 실제 프레임워크(MCP SDK, AnyIO, D-Bus, KWin 등)의 동작에 달렸으면 stub이 아니라 실제 프레임워크로 돌린다.
+  - **probe**: §14 채널에서 실행한 probe(PRR-57 범위). 결함 부류가 실제 프레임워크(MCP SDK, AnyIO, D-Bus, KWin 등)의 동작에 달렸으면 stub이 아니라 실제 프레임워크로 돌린다.
   - **argument+challenger**: 그 near-miss·인터리빙·경계·setup 타임아웃을 처리하는 정확한 줄을 인용한 코드 경로 논증. 독립 challenger 서브 에이전트에게 논증과 코드 위치만 주고 반례를 만들라고 지시한다(추론만, 실행 없음). challenger가 반례를 만들면 반박이 아니다.
 - 논증은 후보와 같은 인터리빙을 다룬다. 두 임계 구역 사이(예: escalation 단계 사이의 대기, 락을 놓은 상태의 sleep·wait)에서 락이 풀리면, 그 틈에 다른 스레드나 프로세스가 같은 락으로 할 수 있는 일(reap, 등록, 삭제)을 하나씩 적는다. "검사와 실행은 원자적이다"는 단계 사이의 틈을 반박하지 못한다.
 - challenger는 논증을 쓴 서브 에이전트가 아니어야 하고, 버리려는 바로 그 후보를 받아야 한다. `Considered` 항목에는 `argument+challenger(<agent name>)`로 그 challenger를 밝힌다. `<agent name>`은 spawn 도구가 돌려준 서브 에이전트 자신의 이름/id다. "independent reviewer", "challenger" 같은 일반 이름은 세지 않고, 그러면 그 항목은 반박이 아니다. challenger 자신의 답이 후보의 `file:line`을 인용할 때만 반박으로 센다. 그런 challenger의 답이 없으면 `argument+challenger`로 적지 않는다.
@@ -173,19 +173,19 @@ PRR-40의 방법이다. 저장소 지침은 자동으로 로드되지 않으므�
 
 ## 14. 격리 실행 채널
 
-PRR-55 [U]의 방법이다. PR 코드(AST로 뽑은 함수, PR 모듈을 import하는 하네스, PR 스크립트, 테스트, 빌드·설치 도구)는 runner 호스트 셸에서 돌리지 않는다.
+PRR-55 [U]의 방법이다. PR 코드(AST로 뽑은 함수, PR 모듈을 import하는 하네스, PR 스크립트, 테스트, 빌드·설치 도구)는 runner 호스트 셸에서 돌리지 않는다. 이 채널에서 돌리는 것의 범위는 PRR-57의 빠른 targeted check(단일 unit test, lint, 바뀐 모듈 하나의 빠른 build)다. 오래 걸리는 suite(e2e, GUI·Appium, multi-distro·패키지 matrix, 컨테이너 이미지 build, envtest, integration·soak)는 CI가 돌리고 여기서 돌리지 않으며 그 CI 결과는 입력으로만 읽는다(PRR-38). PR의 Dockerfile은 빌드하지 않는다(PRR-57의 컨테이너 이미지 build).
 
 ```sh
 src=/tmp/issue-agent/<worktree-name>/src-<short-sha>
 mkdir -p "$src" && git archive <head-sha> | tar -x -C "$src"
-docker build -t review-<short-sha> -f <Dockerfile> "$src"   # no --allow; network only here
+docker build -t review-<short-sha> -f <scratch-Dockerfile> "$src"   # no --allow; network only here
 docker run --rm --network none -v "$src":/src:ro --tmpfs /tmp \
   -e PYTHONDONTWRITEBYTECODE=1 review-<short-sha> <command>
 ```
 
-- `docker build`: `--allow` entitlement 없음. PR의 Dockerfile이나, 공식 베이스 이미지(`python:3.12-slim`, `golang:<ver>`, `node:<ver>` 등) 위에 에이전트가 쓴 scratch Dockerfile.
+- `docker build`: `--allow` entitlement 없음. 공식 베이스 이미지(`python:3.12-slim`, `golang:<ver>`, `node:<ver>` 등) 위에 에이전트가 쓴 가벼운 scratch Dockerfile만 쓴다.
 - `docker run`: 항상 `--rm --network none`. `--privileged`, `--cap-add`, `--security-opt` 완화, 호스트 네임스페이스 모드, docker 소켓 마운트, 홈 디렉터리 마운트, `--volumes-from`, bind 볼륨 드라이버 옵션은 쓰지 않는다. `-e`는 리터럴 상수만(`-e VAR`로 호스트 값 전달 금지, `--env-file` 금지). 장치는 필요할 때 `/dev/dri`, `/dev/dri/card0`, `/dev/dri/renderD128`만.
 - worktree 디렉터리 자체는 마운트하지 않는다. `git archive` 사본이나 복사본을 `/tmp/issue-agent/<worktree-name>/` 아래에 두고 빌드 컨텍스트로 쓰거나 `:ro`로 마운트한다. 쓰기 가능한 캐시는 `--tmpfs`나 같은 scratch 아래 디렉터리.
 - PR 자신의 docker 래퍼 스크립트(docker·compose를 부르는 스크립트)는 실행하지 않는다. 플래그를 읽어 위 규칙 안에서 재구성하고, 규칙이 막는 플래그(privileged Kind 등)가 필요하면 그 probe는 실행하지 않고 `Not verified`에 적는다.
-- 호스트에서는 읽기, `git`, grep, 실행 없는 파싱만 한다. 컨테이너 안에서 할 수 없는 probe는 §12의 argument+challenger로 대신한다.
+- 호스트에서는 읽기, `git`, grep, 실행 없는 파싱만 한다. 컨테이너 안에서 할 수 없거나 PRR-57 범위를 넘는 probe는 §12의 argument+challenger로 대신한다.
 - 실행 후 컨테이너, 이미지, scratch 디렉터리를 정리한다.

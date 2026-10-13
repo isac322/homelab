@@ -83,4 +83,30 @@ done
 # files next to them carry session recovery state and must stay.
 rm -f "$HAPI_HOME/runner.state.json" "$HAPI_HOME/runner.state.json.lock"
 
+# HAPI shared Codex sessions record thread ownership in
+# $CODEX_HOME/hapi-runtime-owners/<runtime-id>.json (mirrored to
+# $HAPI_HOME/codex-runtimes). withThreadOwnership rejects resuming a thread
+# while a record with a matching active session may still be alive, and its
+# liveness check (pid + `ps -o lstart=` marker) fails closed: a PID this
+# container reused is "alive" whenever the marker probe fails or collides, so
+# one stale record blocks every resume of its threads. The records are keyed
+# by runtime id, not by the process holding them, and no runtime of this
+# generation exists yet, so every record present at this point names a dead
+# process; marker comparison could only keep records that recreate the bug.
+# $HAPI_HOME/codex-runtimes/*.json is kept: findColdBinding reads it without a
+# liveness check and it carries the thread-to-session binding cold resume
+# needs. The `ownership` lock file is kept too; leftover <id>.json.*.tmp files
+# are interrupted saveRuntime writes and are removed with the records.
+owners="$CODEX_HOME/hapi-runtime-owners"
+if [[ -d "$owners" && ! -L "$owners" ]]; then
+  for record in "$owners"/*.json "$owners"/*.json.*.tmp; do
+    if [[ -f "$record" || -L "$record" ]]; then
+      rm -f -- "$record"
+      printf 'runner-bootstrap: removed stale Codex ownership record %s\n' "$record" >&2
+    else
+      fail "unexpected non-file entry in Codex ownership registry: $record"
+    fi
+  done
+fi
+
 exec /usr/local/bin/hapi runner start-sync --workspace-root "$ISSUE_AGENT_CHECKOUTS"

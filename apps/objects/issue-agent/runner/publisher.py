@@ -10,6 +10,7 @@ called only by the bridge (bearer token the agent container cannot read).
   POST /resolve  {repo, branch}                -> {sha}
   POST /push     {repo, branch, expected_sha}  -> {sha}
   POST /cleanup  {repo, worktree, branch, codex_session_ids} -> {removed}
+  POST /worktree/restore {repo, worktree, branch} -> {restored, path, already} | {restored: false, reason}
   POST /janitor/prune-request {lease_until}   -> {requested_at, lease_until}
   GET  /janitor/status                        -> the janitor's status JSON
 
@@ -24,7 +25,11 @@ config file and never logged. /cleanup runs no git at all: it removes a
 worktree, its branch ref and Codex rollouts with plain file operations. Entries
 a Docker container left owned by another uid fail it with ``foreign_owner``
 (409, retryable): the dockerd sidecar's janitor (dockerd-janitor) chowns them
-back to the agent uid. /janitor/prune-request asks that janitor to prune
+back to the agent uid. /worktree/restore re-creates a removed HAPI worktree on
+its retained branch without running git there either: the branch is fetched
+into the mirror, checked out from the mirror into a staging tree, and the
+linked-worktree metadata is written as plain files, so unpushed commits are
+kept and the branch never moves. /janitor/prune-request asks that janitor to prune
 unused Docker data within the bridge's maintenance lease (no dispatch until
 lease_until); /janitor/status returns the janitor's last report (Docker usage,
 last prune and the lease it served). Every route but /healthz needs the token.
@@ -149,7 +154,8 @@ def scrub(text: str, secrets: list[str]) -> str:
     return text.strip()[-2000:]
 
 
-def run_git(args: list[str], *, token: str | None = None, timeout: int = GIT_TIMEOUT) -> subprocess.CompletedProcess:
+def run_git(args: list[str], *, token: str | None = None, timeout: int = GIT_TIMEOUT,
+            extra_env: dict[str, str] | None = None) -> subprocess.CompletedProcess:
     cmd = ["git", "-c", "core.hooksPath=/dev/null", "-c", "credential.helper="]
     if token is not None:
         cmd += auth_header_args(token)
@@ -158,7 +164,7 @@ def run_git(args: list[str], *, token: str | None = None, timeout: int = GIT_TIM
         result = subprocess.run(
             cmd,
             cwd=STATE_DIR,
-            env=git_env(),
+            env=git_env() | (extra_env or {}),
             stdin=subprocess.DEVNULL,
             capture_output=True,
             text=True,
@@ -567,6 +573,146 @@ def do_cleanup(repo: str, worktree: str | None, branch: str | None, codex_ids: l
     return {"removed": removed}
 
 
+def read_admin_file(admin: str, name: str) -> str | None:
+    """Stripped contents of a regular file in a worktree admin dir; None when missing or not a regular file."""
+    path = os.path.join(admin, name)
+    if os.path.islink(path) or not os.path.isfile(path):
+        return None
+    with open(path, encoding="utf-8", errors="replace") as handle:
+        return handle.read(4096).strip()
+
+
+def worktree_conflict(detail: str) -> PublisherError:
+    return PublisherError(HTTPStatus.CONFLICT, "worktree_conflict", detail)
+
+
+def admin_worktrees_root(base: str) -> str:
+    """Resolved ``<base>/.git/worktrees`` (created when missing), confined to the checkouts root."""
+    git_root = confined_root(os.path.join(base, ".git"))
+    if not os.path.isdir(git_root):
+        raise PublisherError(HTTPStatus.CONFLICT, "unsafe_path", f"{git_root} is not a git directory")
+    admin_parent = os.path.join(git_root, "worktrees")
+    if not os.path.lexists(admin_parent):
+        os.mkdir(admin_parent, 0o700)
+    admin_root = confined_root(admin_parent)
+    if os.path.islink(admin_parent) or not os.path.isdir(admin_root) or not inside(admin_root, git_root):
+        raise PublisherError(HTTPStatus.CONFLICT, "unsafe_path", f"{admin_parent} is not a worktrees directory")
+    return admin_root
+
+
+def linked_worktree_branch(base: str, path: str) -> str | None:
+    """Branch checked out in ``path`` when it is a linked worktree of ``base`` whose admin dir names it back."""
+    admin = worktree_admin_dir(path)
+    if admin is None or not os.path.lexists(admin):
+        return None
+    admin_root = confined_root(os.path.join(base, ".git", "worktrees"))
+    real_admin = os.path.realpath(admin)
+    if os.path.islink(admin) or not os.path.isdir(real_admin) or not inside(real_admin, admin_root):
+        raise PublisherError(HTTPStatus.CONFLICT, "unsafe_path", f"{admin} is not a worktree admin directory")
+    gitdir = read_admin_file(real_admin, "gitdir")
+    if gitdir is None or os.path.realpath(gitdir) != os.path.realpath(os.path.join(path, ".git")):
+        return None
+    head = read_admin_file(real_admin, "HEAD") or ""
+    return head.removeprefix("ref: refs/heads/") if head.startswith("ref: refs/heads/") else None
+
+
+def claim_branch(git_root: str, admin_root: str, name: str, branch: str) -> None:
+    """What ``git worktree prune`` + ``git worktree add`` require before adding ``name`` on ``branch``.
+
+    Refuses a branch checked out in the base clone or in a live worktree, and
+    removes stale admin dirs (their worktree is gone) that hold the name or the
+    branch, as prune would.
+    """
+    ref = f"ref: refs/heads/{branch}"
+    if read_admin_file(git_root, "HEAD") == ref:
+        raise worktree_conflict(f"{branch} is checked out in the base checkout")
+    for entry in sorted(os.listdir(admin_root)):
+        admin = os.path.join(admin_root, entry)
+        if os.path.islink(admin) or not os.path.isdir(admin):
+            continue
+        holds_name, holds_branch = entry == name, read_admin_file(admin, "HEAD") == ref
+        if not (holds_name or holds_branch):
+            continue
+        gitdir = read_admin_file(admin, "gitdir")
+        if gitdir and os.path.lexists(gitdir):
+            raise worktree_conflict(f"{branch} or {name} is in use by the worktree at {os.path.dirname(gitdir)}")
+        rmtree_agent(admin)
+
+
+def add_worktree(repo: str, base: str, path: str, name: str, branch: str, sha: str) -> None:
+    """``git worktree add <path> <branch>`` without running git on the agent's checkout.
+
+    The tree and index come from the private mirror (whose config is ours, so
+    no agent-planted filter or fsmonitor runs); the admin dir and ``.git`` file
+    are the layout git itself writes. ``locked`` keeps a concurrent
+    ``git worktree prune`` off the admin dir until the tree is in place.
+    """
+    git_root = confined_root(os.path.join(base, ".git"))
+    admin_root = admin_worktrees_root(base)
+    claim_branch(git_root, admin_root, name, branch)
+    admin = os.path.join(admin_root, name)
+    os.mkdir(admin, 0o700)
+    staging = tempfile.mkdtemp(prefix=f".publisher-restore-{name}-", dir=os.path.dirname(path))
+    tree = os.path.join(staging, "tree")
+    published = False
+    try:
+        locked = os.path.join(admin, "locked")
+        for file_name, text in (("locked", "initializing"), ("commondir", "../.."),
+                                ("gitdir", os.path.join(path, ".git")), ("HEAD", f"ref: refs/heads/{branch}")):
+            with open(os.path.join(admin, file_name), "w", encoding="utf-8") as handle:
+                handle.write(text + "\n")
+        os.mkdir(tree, 0o700)
+        result = run_git(["--git-dir", mirror_path(repo), "--work-tree", tree, "read-tree", "-u", "--reset", sha],
+                         extra_env={"GIT_INDEX_FILE": os.path.join(admin, "index")})
+        if result.returncode != 0:
+            raise PublisherError(HTTPStatus.INTERNAL_SERVER_ERROR, "restore_failed", result.stderr)
+        with open(os.path.join(tree, ".git"), "w", encoding="utf-8") as handle:
+            handle.write(f"gitdir: {admin}\n")
+        if os.path.lexists(path):
+            raise worktree_conflict(f"{path} appeared during the restore")
+        os.rename(tree, path)
+        published = True
+        os.remove(locked)
+    finally:
+        shutil.rmtree(staging, ignore_errors=True)
+        if not published:
+            shutil.rmtree(admin, ignore_errors=True)
+
+
+def do_worktree_restore(repo: str, name: str, branch: str) -> dict:
+    """Re-create the HAPI worktree ``name`` on its retained ``branch`` (never moving the branch)."""
+    base = checkout_path(repo)
+    worktrees_dir = base + "-worktrees"
+    try:
+        if not os.path.lexists(worktrees_dir) and os.path.isdir(base):
+            os.mkdir(worktrees_dir, 0o700)
+        worktrees_root = confined_root(worktrees_dir)
+        path = os.path.join(worktrees_root, name)
+        if os.path.lexists(path):
+            if os.path.islink(path) or not os.path.isdir(path):
+                raise PublisherError(HTTPStatus.CONFLICT, "unsafe_path", f"{path} is not a worktree directory")
+            current = linked_worktree_branch(base, path)
+            if current != branch:
+                raise worktree_conflict(f"{path} is not a worktree of {repo} on {branch} (found {current})")
+            already = True
+        else:
+            try:
+                sha = fetch_branch(repo, branch)
+            except PublisherError as exc:
+                if exc.error in ("checkout_missing", "branch_missing"):
+                    return {"restored": False, "reason": "no_branch"}
+                raise
+            add_worktree(repo, base, path, name, branch, sha)
+            already = False
+    except OSError as exc:
+        raise PublisherError(HTTPStatus.INTERNAL_SERVER_ERROR, "restore_failed",
+                             f"{exc.filename or ''}: {exc.strerror or exc}") from None
+    # As /checkout does before a spawn: the session must not load the repository's .codex/ layer.
+    untrust_checkout(base)
+    log.info("restored %s worktree=%s branch=%s already=%s", repo, name, branch, already)
+    return {"restored": True, "path": path, "already": already}
+
+
 def open_janitor_dir(*, create: bool) -> int:
     """O_NOFOLLOW fd of <checkouts>/.issue-agent-janitor (agent-writable, so never a pathname)."""
     nofollow_dir = os.O_RDONLY | os.O_DIRECTORY | os.O_NOFOLLOW
@@ -775,6 +921,10 @@ class Handler(BaseHTTPRequestHandler):
                 with repo_lock(args["repo"]):
                     self.reply(HTTPStatus.OK, do_cleanup(args["repo"], args["worktree"], args["branch"],
                                                          args["codex_session_ids"]))
+            elif self.path == "/worktree/restore":
+                args = self.body({"repo": REPO_RE, "worktree": WORKTREE_RE, "branch": CLEANUP_BRANCH_RE})
+                with repo_lock(args["repo"]):
+                    self.reply(HTTPStatus.OK, do_worktree_restore(args["repo"], args["worktree"], args["branch"]))
             elif self.path == "/janitor/prune-request":
                 args = self.body({}, ints=("lease_until",))
                 self.reply(HTTPStatus.OK, do_prune_request(args["lease_until"]))

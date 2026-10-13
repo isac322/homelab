@@ -21,7 +21,7 @@ PR마다 하나를 고른다. PRR-24 판정 줄은 오른쪽 열처럼 함께 �
 ## 절차
 
 1. **대상 목록**: 열린 PR 전체를 나열하고 연결 이슈, head SHA, 마지막 갱신, 충돌 상태를 기록한다. 시작과 끝에 다시 확인해 목록이 바뀌지 않았는지 본다. CI 상태는 판정 근거가 아니므로 기록하지 않는다(PRR-38).
-2. **재현**: PR마다 주장된 문제를 merge-base와 현재 main 양쪽에서 재현한다. PR 코드와 받은 아티팩트는 SKILL.md PRR-55의 격리 채널(`references/review-dimensions.md` §14)에서만 실행한다. 연결 이슈가 없어도 같은 순서로 한다(새 이슈는 만들지 않는다, PRR-10).
+2. **재현**: PR마다 주장된 문제를 merge-base와 현재 main 양쪽에서 재현한다. PR 코드와 받은 아티팩트는 SKILL.md PRR-55의 격리 채널(`references/review-dimensions.md` §14)에서만, PRR-57의 로컬 실행 범위(빠른 targeted check) 안에서만 실행한다. 오래 걸리는 suite로만 재현되는 claim은 CI 결과를 입력으로 읽고 `Not verified`로 남긴다. 연결 이슈가 없어도 같은 순서로 한다(새 이슈는 만들지 않는다, PRR-10).
 3. **설계 비교**: PR의 접근을 main의 현재 설계와 비교한다. main이 다른 방식으로 고쳤으면 PR을 머지할 때 그 수정과 충돌하거나 되돌리는지 본다.
 4. **superseded 증명** (PRR-33):
    1. main에서 이를 고친 정확한 커밋을 찾는다(`git log -S '<symbol>'`, `git blame`, `git log --grep`).
