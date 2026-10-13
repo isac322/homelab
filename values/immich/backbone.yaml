@@ -99,7 +99,6 @@ server:
   enabled: true
   controllers:
     main:
-      replicas: 0
       strategy: Recreate
       pod:
         nodeSelector:
