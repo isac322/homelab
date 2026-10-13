@@ -389,6 +389,8 @@ v2는 Runner Pod에 publisher 사이드카를 추가했다. manifest의 값은 C
 
 2026-10-11 재산정(U3): 14일 Runner 메모리는 P50 2.08 GiB, P99 3.59 GiB였고, 최대값은 제한 4Gi에 닿아 잘린 값(censored, ≥3.996 GiB)이라 실제 peak는 더 높을 수 있다. 그래서 manifest의 runner를 메모리 요청 2560Mi·제한 5Gi로, native sidecar `dockerd`를 메모리 요청 160Mi로 올린다(CPU 값과 dockerd 메모리 제한은 그대로). 산정 시 `macmini` node의 메모리 요청 비율은 0.46에서 0.59로, 클러스터 비율은 0.505가 된다. 같은 변경에서 리뷰 동시 실행을 `MAX_ACTIVE_REVIEWS`(2)와 Codex `max_threads`(3, 2026-10-13부터 2)로 제한한다. `model-proxy` sidecar 요청을 포함해 배포 직전에 비율을 다시 계산한다.
 
+2026-10-13 재산정: 업그레이드 뒤 Codex thread마다 뜨는 MCP 서버가 커졌다(로컬 A/B에서 CodeGraph 1.6.2 idle 서버 252→373MiB, Node 26의 context-mode 60→78MiB). `max_threads`를 2로 줄이고 제한을 6Gi로 올린 뒤에도 runner가 10:10Z에 OOMKilled(working set 5.95GiB, 제한에서 잘린 값)됐으므로 제한을 1.25 × 6Gi = 7.5Gi(7680Mi)로 올린다. 14일 P50은 0.74GiB, P99는 3.37GiB이고 요청 2560Mi는 그대로라 node·클러스터 메모리 요청 비율은 바뀌지 않는다.
+
 ## 구현 체크리스트
 
 - [x] 기존 n8n 유무, GitHub App, provider, 이미지 빌드, 저장소·Gateway·metrics 경로 조사
