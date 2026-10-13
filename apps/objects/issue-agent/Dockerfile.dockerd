@@ -3,11 +3,11 @@
 # Build context: apps/objects/issue-agent (see .dockerignore). linux/arm64 only.
 # No credentials are baked in and the sidecar mounts none.
 
-# issue-agent-authz: the Docker authorization plugin (runner/authz). Go 1.27.1
+# issue-agent-authz: the Docker authorization plugin (runner/authz). Go 1.27.2
 # matches Dockerfile.runner's GO_VERSION. Pinned by OCI index digest of
-# golang:1.27.1-alpine3.24. The table tests gate the build; the binary is
+# golang:1.27.2-alpine3.24. The table tests gate the build; the binary is
 # static (CGO_ENABLED=0) so it runs on the dind image's musl userland.
-FROM --platform=$BUILDPLATFORM golang:1.27.1-alpine3.24@sha256:8a5910f31396cd4d89662f56c68b3ae31d374308270a1c3bd96672ee5ed43414 AS authz
+FROM --platform=$BUILDPLATFORM golang:1.27.2-alpine3.24@sha256:f92b6ef800e499660581efdabdf25d9d817a9d124eaf900924f0504e7e27e12d AS authz
 ARG TARGETOS TARGETARCH
 WORKDIR /src
 COPY runner/authz/ ./
@@ -15,8 +15,8 @@ RUN go test ./... \
     && CGO_ENABLED=0 GOOS=$TARGETOS GOARCH=$TARGETARCH \
        go build -trimpath -ldflags='-s -w' -o /out/issue-agent-authz .
 
-# docker:29.8.2-dind (linux/arm64); matches the runner image's docker:29.8.2-cli.
-FROM docker:29.8.2-dind@sha256:7dcdfc4a20246236f558175182ccace1eb15a41bd3eb119dd2284f393498b7c1
+# docker:29.9.0-dind (linux/arm64); matches the runner image's docker:29.9.0-cli.
+FROM docker:29.9.0-dind@sha256:0b6d18a4a222e71c88be6034926b4f6cde2fc33c2218643d03ccfddc65995470
 
 # The dind image already ships iptables/ip6tables on the nf_tables
 # backend; fail the build if they ever resolve to legacy. util-linux provides
@@ -37,7 +37,7 @@ COPY --chmod=0755 --from=authz /out/issue-agent-authz /opt/issue-agent/bin/issue
 # BuildKit RUN steps never pass through the authorization plugin (they travel
 # as /grpc and /session streams), so the daemon's builder entitlements must
 # refuse `--allow network.host`, `--allow device` and `security.insecure`.
-# Keys: moby docker-v29.8.2 daemon/config/builder.go BuilderEntitlements.
+# Keys: moby docker-v29.9.0 daemon/config/builder.go BuilderEntitlements.
 # Fail the build if this dockerd rejects the file.
 COPY --chmod=0644 runner/docker-daemon.json /etc/docker/daemon.json
 RUN dockerd --validate --config-file=/etc/docker/daemon.json

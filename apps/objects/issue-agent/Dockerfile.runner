@@ -4,23 +4,23 @@
 # No repository checkout, credential, or provider config is baked in; the
 # publisher sidecar clones repositories at runtime into the home PVC.
 
-# docker:29.8.2-cli (linux/arm64): Docker CLI plus the buildx/compose plugins.
+# docker:29.9.0-cli (linux/arm64): Docker CLI plus the buildx/compose plugins.
 # Docker 29's `docker build` requires buildx; the daemon is the pod's dockerd
-# sidecar (docker:29.8.2-dind), reached through DOCKER_HOST.
-FROM docker:29.8.2-cli@sha256:b1805116a6a86cc591b5d5f60a910a0715cdcc9d18d866ad68b1457ead25c35c AS docker-cli
+# sidecar (docker:29.9.0-dind), reached through DOCKER_HOST.
+FROM docker:29.9.0-cli@sha256:1a4c7cb63513f349bdad01fcc6e0f3f2f67d37b9da86f14dc0d4a0942eecda00 AS docker-cli
 
-# node:24.21.0-trixie-slim (linux/arm64). Node runs Codex's npm launcher.
-FROM node:24.21.0-trixie-slim@sha256:7da5980a342ed134ad56bb16c918f94548cd15cf3b961aa231c286598accb536
+# node:26.11.1-trixie-slim (linux/arm64). Node runs Codex's npm launcher.
+FROM node:26.11.1-trixie-slim@sha256:193fe51b64e77981119c98c2002c9e32a70e2f006fb4d25068ce0558998917f0
 
 # HAPI v0.30.7 (tiann/hapi commit 0239edf38e2da653d662f31039e24ccea04c7837);
 # must match the hub image. Checksum = release checksums.txt = asset digest.
 ARG HAPI_VERSION=0.30.7
 ARG HAPI_SHA256=4c11ed308412e4510289ed5e5875a43f60f7ee5cee9cbfdc0e2d97f55851a193
-# @openai/codex 0.160.0 (HAPI shared sessions require >= 0.154.0).
+# @openai/codex 0.162.1 (HAPI shared sessions require >= 0.154.0).
 # SHA-256 of the npm tarballs whose sha512 matched the registry `integrity`.
-ARG CODEX_VERSION=0.160.0
-ARG CODEX_SHA256=373517768e912eeb5054024ae9215e2c90a1420957b66fe134ef745a00948d4a
-ARG CODEX_LINUX_ARM64_SHA256=9286a7e01d500ab224c9e5b4b223b7adf5dd901fba23efd6a438316426798b17
+ARG CODEX_VERSION=0.162.1
+ARG CODEX_SHA256=0b4b2e33a65883e4f69c903484d8dd7770b3cb8b324f520068b6fd85d42b65ea
+ARG CODEX_LINUX_ARM64_SHA256=a355051d0c296ed50e42e55aceabf74f017f2f96e223fc7ee2199ea8a60cad4b
 # GitHub CLI 2.102.0; checksum = release checksums.txt = asset digest.
 ARG GH_VERSION=2.102.0
 ARG GH_SHA256=7862c86c72f43df3a2d93ddde6f473285b4e2af61b494849846827e513ef6484
@@ -30,10 +30,10 @@ ARG RUSTUP_SHA256=15f6e4ce9f583b929c996c91562bad6d4454f3281de858b02cdfdef615fac4
 # sccache 0.18.0 (static musl build); checksum = release .sha256 = asset digest.
 ARG SCCACHE_VERSION=0.18.0
 ARG SCCACHE_SHA256=2b3284d5da3b46a47dc4229e75bb7b88ac4aa99c8d754fb7d2f84997e5a4354a
-# Go 1.27.1; checksum from https://go.dev/dl/?mode=json. A go.mod asking for a
+# Go 1.27.2; checksum from https://go.dev/dl/?mode=json. A go.mod asking for a
 # newer toolchain makes go download it into GOPATH (home PVC; GOTOOLCHAIN=auto).
-ARG GO_VERSION=1.27.1
-ARG GO_SHA256=3450b45a3f9ee8568792736a5c5e70a1f2e9b36c35a8f74958c03e51d7d92bec
+ARG GO_VERSION=1.27.2
+ARG GO_SHA256=94f3e30b8e374bc285e7dadc11e0865726b9bc6e85b841ccceaabc0214c6b7c8
 
 SHELL ["/bin/bash", "-o", "pipefail", "-c"]
 
@@ -128,7 +128,8 @@ COPY --chmod=0644 runner/gitconfig /etc/issue-agent/gitconfig
 COPY --chmod=0644 runner/gitignore /etc/issue-agent/gitignore
 # Codex system layer: MCP servers (config.toml), managed, pre-trusted hooks and
 # the MCP allowlist (requirements.toml + scripts in its managed_dir), and the
-# highest-precedence managed layer (effort, sub-agent cap, shell environment).
+# highest-precedence managed layer (effort, Fast mode, sub-agent cap, shell
+# environment).
 COPY --chmod=0644 runner/codex/config.toml runner/codex/requirements.toml runner/codex/managed_config.toml /etc/codex/
 COPY --chmod=0755 runner/codex/hooks/ /etc/codex/hooks/
 COPY --chmod=0755 runner/bootstrap.sh /opt/issue-agent/bin/runner-bootstrap

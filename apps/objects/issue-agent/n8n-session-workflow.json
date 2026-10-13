@@ -61,7 +61,7 @@
       "id": "ecab0cba-e2c5-58ce-b1a2-c22e85d62b43",
       "name": "Ensure session",
       "type": "n8n-nodes-base.httpRequest",
-      "typeVersion": 4.2,
+      "typeVersion": 4.5,
       "position": [
         240,
         0
@@ -87,7 +87,7 @@
                   "caseSensitive": true,
                   "leftValue": "",
                   "typeValidation": "loose",
-                  "version": 2
+                  "version": 3
                 },
                 "conditions": [
                   {
@@ -111,7 +111,7 @@
                   "caseSensitive": true,
                   "leftValue": "",
                   "typeValidation": "loose",
-                  "version": 2
+                  "version": 3
                 },
                 "conditions": [
                   {
@@ -139,7 +139,7 @@
       "id": "52f58391-1bff-57bc-9a57-6d5b7dd1f758",
       "name": "Session status",
       "type": "n8n-nodes-base.switch",
-      "typeVersion": 3.2,
+      "typeVersion": 3.4,
       "position": [
         480,
         0
@@ -152,7 +152,7 @@
             "caseSensitive": true,
             "leftValue": "",
             "typeValidation": "loose",
-            "version": 2
+            "version": 3
           },
           "conditions": [
             {
@@ -173,7 +173,7 @@
       "id": "3fcb854d-2d98-5a5a-9495-3e5ab90c0d16",
       "name": "Session retries left?",
       "type": "n8n-nodes-base.if",
-      "typeVersion": 2.2,
+      "typeVersion": 2.3,
       "position": [
         480,
         220
@@ -215,7 +215,7 @@
       "id": "ca8b7d5e-bdde-5ff4-9daa-ad81a575d827",
       "name": "Send step to agent",
       "type": "n8n-nodes-base.httpRequest",
-      "typeVersion": 4.2,
+      "typeVersion": 4.5,
       "position": [
         720,
         0
@@ -241,7 +241,7 @@
                   "caseSensitive": true,
                   "leftValue": "",
                   "typeValidation": "loose",
-                  "version": 2
+                  "version": 3
                 },
                 "conditions": [
                   {
@@ -265,7 +265,7 @@
                   "caseSensitive": true,
                   "leftValue": "",
                   "typeValidation": "loose",
-                  "version": 2
+                  "version": 3
                 },
                 "conditions": [
                   {
@@ -293,7 +293,7 @@
       "id": "de0fb404-c8dc-597b-84d9-76646355bda2",
       "name": "Send status",
       "type": "n8n-nodes-base.switch",
-      "typeVersion": 3.2,
+      "typeVersion": 3.4,
       "position": [
         960,
         0
@@ -306,7 +306,7 @@
             "caseSensitive": true,
             "leftValue": "",
             "typeValidation": "loose",
-            "version": 2
+            "version": 3
           },
           "conditions": [
             {
@@ -327,7 +327,7 @@
       "id": "f1b3f3df-134b-57b7-9c5a-f9ef271085f7",
       "name": "Send retries left?",
       "type": "n8n-nodes-base.if",
-      "typeVersion": 2.2,
+      "typeVersion": 2.3,
       "position": [
         960,
         220
@@ -384,7 +384,7 @@
       "id": "f44ee81f-eecb-5cef-85e5-f133523bbc32",
       "name": "Check turn",
       "type": "n8n-nodes-base.httpRequest",
-      "typeVersion": 4.2,
+      "typeVersion": 4.5,
       "position": [
         1440,
         0
@@ -407,7 +407,7 @@
                   "caseSensitive": true,
                   "leftValue": "",
                   "typeValidation": "loose",
-                  "version": 2
+                  "version": 3
                 },
                 "conditions": [
                   {
@@ -431,7 +431,7 @@
                   "caseSensitive": true,
                   "leftValue": "",
                   "typeValidation": "loose",
-                  "version": 2
+                  "version": 3
                 },
                 "conditions": [
                   {
@@ -455,7 +455,7 @@
                   "caseSensitive": true,
                   "leftValue": "",
                   "typeValidation": "loose",
-                  "version": 2
+                  "version": 3
                 },
                 "conditions": [
                   {
@@ -479,7 +479,7 @@
                   "caseSensitive": true,
                   "leftValue": "",
                   "typeValidation": "loose",
-                  "version": 2
+                  "version": 3
                 },
                 "conditions": [
                   {
@@ -503,7 +503,7 @@
                   "caseSensitive": true,
                   "leftValue": "",
                   "typeValidation": "loose",
-                  "version": 2
+                  "version": 3
                 },
                 "conditions": [
                   {
@@ -527,7 +527,7 @@
                   "caseSensitive": true,
                   "leftValue": "",
                   "typeValidation": "loose",
-                  "version": 2
+                  "version": 3
                 },
                 "conditions": [
                   {
@@ -555,7 +555,7 @@
       "id": "1a92d703-84dd-5c8a-83fe-ea030958664f",
       "name": "Turn state",
       "type": "n8n-nodes-base.switch",
-      "typeVersion": 3.2,
+      "typeVersion": 3.4,
       "position": [
         1680,
         0
@@ -568,7 +568,7 @@
             "caseSensitive": true,
             "leftValue": "",
             "typeValidation": "loose",
-            "version": 2
+            "version": 3
           },
           "conditions": [
             {
@@ -589,7 +589,7 @@
       "id": "7cbc70fd-8918-55eb-b796-5e52cc6fe3e6",
       "name": "Within time budget?",
       "type": "n8n-nodes-base.if",
-      "typeVersion": 2.2,
+      "typeVersion": 2.3,
       "position": [
         1680,
         220
@@ -670,7 +670,7 @@
       "id": "2b5e1a26-36ec-544e-82a7-4e843843640a",
       "name": "Return failure",
       "type": "n8n-nodes-base.set",
-      "typeVersion": 3.4,
+      "typeVersion": 3.5,
       "position": [
         1920,
         440

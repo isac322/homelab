@@ -1,4 +1,4 @@
-# Codex managed config layer (/etc/codex/managed_config.toml, Codex 0.160.0
+# Codex managed config layer (/etc/codex/managed_config.toml, Codex 0.162.1
 # CODEX_MANAGED_CONFIG_SYSTEM_PATH). A regular config layer, but the highest
 # in precedence: it overrides session flags, a repository's .codex/config.toml,
 # the user config the bootstrap installs and the system config.
@@ -6,14 +6,23 @@
 # Every mode (triage, implement, followup, review), including sub-agents.
 model_reasoning_effort = "high"
 
+# Fast mode for every turn, sub-agents included: "fast" becomes the request
+# tier `priority` while the fast_mode feature is on, and is sent only for
+# models whose catalog entry offers it (Codex 0.162.1 core/src/config/mod.rs,
+# core/src/agent/child_config.rs).
+service_tier = "fast"
+
 [agents]
 default_subagent_reasoning_effort = "high"
 # Spawned sub-agent threads open at once per session (default 6). Runner memory
 # is sized for this together with the bridge's MAX_ACTIVE_REVIEWS.
 max_threads = 3
 
+[features]
+fast_mode = true
+
 # spawn_agent must not lower a sub-agent's effort below the default above
-# (Codex 0.160.0 core/src/agent/child_config.rs prefers an explicit spawn
+# (Codex 0.162.1 core/src/agent/child_config.rs prefers an explicit spawn
 # argument over default_subagent_reasoning_effort).
 [features.multi_agent_v2]
 expose_spawn_agent_model_overrides = false

@@ -14,7 +14,7 @@
       "id": "317dff8a-5c9c-5249-a83f-bf6edfe17829",
       "name": "GitHub delivery",
       "type": "n8n-nodes-base.webhook",
-      "typeVersion": 2,
+      "typeVersion": 2.2,
       "position": [
         0,
         0
@@ -82,7 +82,7 @@
       "id": "0ca39290-b8da-5191-985f-4e7299cb86f8",
       "name": "Forward to bridge",
       "type": "n8n-nodes-base.httpRequest",
-      "typeVersion": 4.2,
+      "typeVersion": 4.5,
       "position": [
         480,
         -100
@@ -106,7 +106,7 @@
       "id": "6670bd83-ff5a-5660-b3a0-6780c2c9a351",
       "name": "Respond with bridge result",
       "type": "n8n-nodes-base.respondToWebhook",
-      "typeVersion": 1.4,
+      "typeVersion": 1.5,
       "position": [
         720,
         -200
@@ -123,7 +123,7 @@
       "id": "d13f01f8-2c3a-50e3-84af-79fe83fc5c65",
       "name": "Respond bridge unavailable",
       "type": "n8n-nodes-base.respondToWebhook",
-      "typeVersion": 1.4,
+      "typeVersion": 1.5,
       "position": [
         720,
         0
@@ -140,7 +140,7 @@
       "id": "cf286983-e6c1-58f0-af17-9187fd9ed6d3",
       "name": "Respond bad signature",
       "type": "n8n-nodes-base.respondToWebhook",
-      "typeVersion": 1.4,
+      "typeVersion": 1.5,
       "position": [
         480,
         140
