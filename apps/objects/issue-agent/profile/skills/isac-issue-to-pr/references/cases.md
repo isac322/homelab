@@ -147,6 +147,19 @@
 - 일반화: global
 - 재발 확인 기준: `enhancement` + `triage:fix-direction-decided` 이슈를 넘기면 트리아지를 다시 요구하지 않고 QA list 단계로 진행한다.
 
+### CASE-20261013-long-suites-to-ci
+- 상태: applied
+- 출처: omp session 01a1333f (2026-10-13 사용자 결정)
+- 상황: krema#99 implement 턴이 I2P-46대로 distro E2E matrix를 로컬에서 직렬로 돌리다 6시간 넘게 걸려 턴 시간 예산에 걸렸고, 결과를 내기 전에 이벤트가 멈췄다.
+- 대상: 이슈→PR 로컬 게이트 / 모든 저장소 / 테스트 실행 범위 / 중간(턴이 끝나지 않으면 PR이 나오지 않는다)
+- 적용 조건: implement·followup·PR repair 턴의 `ready` 전 로컬 게이트. 오래 걸리는 suite의 CI 실패 재현·수정이나 그 harness 자체의 변경은 해당 leg·test만 로컬에서 돌린다
+- 사용자 기대: 모든 프로젝트에서 e2e 같은 오래 걸리는 테스트는 로컬에서 기본으로 돌리지 않는다. CI가 돌리고, 로컬에서는 필요할 때만 돌린다.
+- 실제 행동: I2P-46이 느린 suite까지 포함한 PR CI 게이트 전부의 로컬 실행을 `ready` 조건으로 요구해, 에이전트가 serial distro E2E를 로컬에서 돌렸다.
+- 원인 분류: wrong / 규칙: I2P-13, I2P-24, I2P-46, I2P-50, I2P-54
+- 변경: I2P-46을 빠른 게이트(로컬, `local_checks`)와 오래 걸리는 suite(CI, "left to CI" 보고, 필요할 때만 해당 leg 로컬 실행)로 나눔. I2P-13·24·50·54와 적응 절의 흐름 11도 같은 분담으로 고침
+- 일반화: global
+- 재발 확인 기준: implement 턴의 `local_checks`에 e2e·matrix 실행이 없고(CI 실패 재현 턴 제외), `pr.body`와 `summary`에 CI에 맡긴 suite가 적혀 있다.
+
 ## 출처 색인
 
 형식: 규칙 ID → session 8자 msg id. `ask @시각`은 선택지 질문에 대한 사용자 응답이다. `U2`는 스킬 패밀리 설계 시 사용자가 확정한 결정이다.
@@ -175,7 +188,7 @@
 | I2P-41 | 01a095f6 79d2095e; 01a0d288 ff6e52cc |
 | I2P-42 | 01a0ae59 1edf402d |
 | I2P-44 | 01a095f6 4b6896ab, 91901a18, 865d4073 |
-| I2P-46 | 01a095f6 aefe9972, 79d2095e; 01a0ae59 4a8b7d69; 01a0dbf0 8809e0ec |
+| I2P-46 | 01a095f6 aefe9972, 79d2095e; 01a0ae59 4a8b7d69; 01a0dbf0 8809e0ec; 01a1333f (CASE-20261013-long-suites-to-ci) |
 | I2P-49 | 01a0d288 e94992d7 |
 | I2P-51 | 01a0dbf0 8809e0ec |
 | I2P-52 | 01a0dbf0 8809e0ec; 01a0d288 abcc092b, f54235da; U2 |
@@ -202,3 +215,4 @@
 | 2026-09-30 | I2P-01 | 의미 확장: `isac-issue-triage`에서 승인된 제안(`enhancement` + `triage:fix-direction-decided`)을 진입 조건에 추가 | CASE-20260930-proposal-track |
 | 2026-10-02 | I2P-24, 46, 48 | PR CI 게이트 전부(느린 suite 포함)의 로컬 실행을 `ready` 전 조건으로 명시하고 `local_checks`에 명령·종료 코드를 보고하게 함. 게시 후 GitHub CI는 확인일 뿐(flareway#138: repair가 envtest를 돌리지 않고 `ready`를 냄) | - |
 | 2026-10-03 | I2P-44 | 결과의 `head_sha`를 없앰: `ready` 전에 모든 변경을 브랜치에 커밋하고, 자동화가 턴 뒤 브랜치 head를 직접 읽어 push한다(flareway#138: 손으로 옮긴 SHA가 앞 7자만 맞아 push가 `sha_mismatch`로 멈춤) | - |
+| 2026-10-13 | I2P-13, 24, 46, 50, 54 | 로컬 게이트를 빠른 게이트(format·lint, build, unit, 변경 범위의 빠른 test)로 좁히고, e2e·matrix·VM/컨테이너 integration 같은 오래 걸리는 suite는 CI에 맡겨 `pr.body`·`summary`에 "left to CI"로 적게 함. 그 suite의 CI 실패 재현이나 harness 변경일 때만 해당 leg·test를 로컬에서 돌린다. "GitHub CI에 실패를 찾게 하려고 `ready`를 내지 않는다" 문장 삭제(krema#99: 직렬 distro E2E를 로컬에서 6시간 넘게 돌려 턴 예산에 걸림) | CASE-20261013-long-suites-to-ci |

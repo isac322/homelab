@@ -112,6 +112,20 @@ until [ -S "$AUTHZ_SOCK" ]; do
   sleep 0.2
 done
 
+# Docker janitor (runner/dockerd-janitor.sh): chowns root-written worktree
+# entries back to the agent uid and prunes Docker data on the bridge's idle
+# request. It runs in this mount namespace beside dockerd, never signals it,
+# and this supervisor loop restarts it after a crash; neither can stop dockerd.
+(
+  while :; do
+    status=0
+    ISSUE_AGENT_CHECKOUTS="$CHECKOUTS" ISSUE_AGENT_DOCKER_SOCK="$SOCK" \
+      /opt/issue-agent/bin/dockerd-janitor || status=$?
+    printf 'dockerd-start: janitor exited (status %s); restarting in 60s\n' "$status" >&2
+    sleep 60
+  done
+) </dev/null &
+
 # Keep Docker's DinD mount setup and PID-1 reaping, but bypass the stock
 # dockerd-entrypoint: it probes iptables and may switch to legacy iptables or
 # load legacy modules. Explicit arguments also avoid its default TCP listeners.

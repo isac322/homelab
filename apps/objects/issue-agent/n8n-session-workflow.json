@@ -544,6 +544,30 @@
               },
               "renameOutput": true,
               "outputKey": "lost"
+            },
+            {
+              "conditions": {
+                "options": {
+                  "caseSensitive": true,
+                  "leftValue": "",
+                  "typeValidation": "loose",
+                  "version": 2
+                },
+                "conditions": [
+                  {
+                    "id": "8e9e302f-f95c-50df-b580-4077cb9c1878",
+                    "leftValue": "={{ $json.ok === true ? $json.state : ($json.retryable ? 'retry' : 'error') }}",
+                    "operator": {
+                      "type": "string",
+                      "operation": "equals"
+                    },
+                    "rightValue": "expired"
+                  }
+                ],
+                "combinator": "and"
+              },
+              "renameOutput": true,
+              "outputKey": "expired"
             }
           ]
         },
@@ -573,7 +597,7 @@
           "conditions": [
             {
               "id": "e1f20050-d758-5eb6-9c5f-46e9eca66b32",
-              "leftValue": "={{ $runIndex < 180 }}",
+              "leftValue": "={{ $json.state !== 'expired' && $runIndex < 720 }}",
               "operator": {
                 "type": "boolean",
                 "operation": "true",
@@ -935,6 +959,13 @@
         [
           {
             "node": "Send retries left?",
+            "type": "main",
+            "index": 0
+          }
+        ],
+        [
+          {
+            "node": "Within time budget?",
             "type": "main",
             "index": 0
           }
