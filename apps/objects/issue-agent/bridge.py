@@ -72,8 +72,9 @@ MAX_STAGE_BYTES = 16 * 1024 * 1024
 MAX_OPS_BODY_BYTES = MAX_STAGE_BYTES + 1024 * 1024
 BOT_MARKER_PREFIX = "<!-- issue-agent"
 RESULT_TAG = "ISSUE_AGENT_RESULT"
-MODES = ("triage", "implement", "followup", "review")
-FINISH_OUTCOMES = ("triaged", "implemented", "questioned", "reviewed", "no_change", "replied", "duplicate")
+MODES = ("triage", "implement", "followup", "review", "reopen_check")
+FINISH_OUTCOMES = ("triaged", "implemented", "questioned", "reviewed", "no_change", "replied", "duplicate",
+                   "reopened", "kept_closed")
 TERMINAL_STATES = ("completed", "needs_attention")
 PHASES = ("none", "triaged", "implementing", "reviewing")
 # Intake trust: repository collaborators with write access are trusted (GitHub permission API, cached).
@@ -209,6 +210,12 @@ REVIEW_SWEEP_SECONDS = 600.0
 REVIEW_SWEEP_MAX_AGE_SECONDS = 14 * 86400.0
 REVIEW_SWEEP_MAX_ENQUEUES = 10
 REVIEW_SWEEP_MAX_PAGES = 10
+# github.issue_reopen recovery: a PATCH that GitHub applied but whose answer was lost is recognized on retry when the
+# issue's latest close/reopen event is a `reopened` by the issue App no earlier than the recorded intent (minus
+# REOPEN_CLOCK_SKEW_SECONDS of GitHub/bridge clock difference); the event list is read at most REOPEN_EVENT_MAX_PAGES
+# pages of 100.
+REOPEN_CLOCK_SKEW_SECONDS = 60.0
+REOPEN_EVENT_MAX_PAGES = 10
 # Automatic PR repair bounds. A blocker cause (base, checks, review) that survived MAX_PR_REPAIR_STREAK
 # consecutive repairs does not stop repairs at once: reconciliation waits PR_REPAIR_BACKOFF_SECONDS[i] and then
 # queues exactly one more repair per stage; once every stage is used and the cause still survives, it stops.
@@ -460,7 +467,7 @@ CREATE TABLE IF NOT EXISTS {name} (
     delivery_id     TEXT NOT NULL UNIQUE,
     semantic_key    TEXT NOT NULL UNIQUE,
     repo            TEXT NOT NULL,
-    kind            TEXT NOT NULL CHECK (kind IN ('issue_opened', 'issue_comment', 'issue_edited', 'pr_review', 'pr_repair')),
+    kind            TEXT NOT NULL CHECK (kind IN ('issue_opened', 'issue_comment', 'issue_edited', 'pr_review', 'pr_repair', 'closed_issue_comment')),
     issue_number    INTEGER NOT NULL,
     comment_id      INTEGER,
     actor           TEXT NOT NULL,
@@ -602,7 +609,8 @@ def _rebuild(conn: sqlite3.Connection, table: str, ddl: str, fill: Mapping[str, 
 def migrate(conn: sqlite3.Connection) -> None:
     """Upgrade a v1/v2 state file in place. Idempotent; every existing row is kept."""
     tables = {row[0]: row[1] or "" for row in conn.execute("SELECT name, sql FROM sqlite_master WHERE type = 'table'")}
-    if "events" in tables and any(token not in tables["events"] for token in ("'issue_edited'", "'pr_repair'")):
+    if "events" in tables and any(token not in tables["events"]
+                                   for token in ("'issue_edited'", "'pr_repair'", "'closed_issue_comment'")):
         _rebuild(conn, "events", EVENTS_DDL)  # widen event kinds while preserving existing deliveries
     elif "events" in tables:
         have = set(_columns(conn, "events"))
@@ -715,10 +723,11 @@ class Store:
                                (ev["repo"], ev["issue_number"])).fetchone()
             if row is None or row["phase"] != "implementing":
                 return "edit_ignored"
-        if ev["kind"] == "issue_opened" and not ev.get("trusted"):
+        # Untrusted issues and closed-issue comments each get their own global rolling budget.
+        if ev["kind"] in ("issue_opened", "closed_issue_comment") and not ev.get("trusted"):
             (recent,) = conn.execute(
-                "SELECT COUNT(*) FROM events WHERE kind = 'issue_opened' AND trusted = 0 AND received_at > ?",
-                (now - UNTRUSTED_ISSUE_WINDOW,),
+                "SELECT COUNT(*) FROM events WHERE kind = ? AND trusted = 0 AND received_at > ?",
+                (ev["kind"], now - UNTRUSTED_ISSUE_WINDOW),
             ).fetchone()
             if recent >= UNTRUSTED_ISSUE_LIMIT:
                 seen = conn.execute("SELECT 1 FROM events WHERE delivery_id = ? OR semantic_key = ?",
@@ -1525,6 +1534,14 @@ def classify_event(registry: Registry, event: str, delivery: str, payload: Any, 
                         "manual": {"id": comment_id, "author": login, "body": body}}
             return {**base, "semantic_key": f"{cfg.name}#comment:{comment_id}", "kind": "pr_review",
                     "pr_number": number, "comment_id": comment_id, "body": body, "trusted": is_trusted}
+        # An outside human's comment on a closed issue asks the agent whether the issue's own request is still
+        # unmet (mode `reopen_check`). The owner and trusted collaborators reopen issues themselves, so their
+        # comments keep the open-issue rules below.
+        if issue.get("state") == "closed":
+            owner = cfg.project_owner or cfg.name.split("/", 1)[0]
+            if login.casefold() != owner.casefold() and not trusted(cfg.name, login):
+                return {**base, "semantic_key": f"{cfg.name}#comment:{comment_id}", "kind": "closed_issue_comment",
+                        "comment_id": comment_id, "body": body, "trusted": False}
         # Open-discussion issues take any human's input; elsewhere a trusted collaborator must mention the bot.
         if open_discussion:
             # The verdict only informs the agent (approval vs. information); the comment is queued either way.
@@ -1693,8 +1710,17 @@ _REVIEW_SCHEMA = """\
  "summary":"<=2000",
  "blockers":[strings]}"""
 
+_REOPEN_CHECK_SCHEMA = """\
+{"status":"reopen|keep_closed|blocked",
+ "reason":"English string 1..1000 (internal rationale citing the evidence)",
+ "comment": null | "English markdown 1..4000 (note posted on the issue explaining why it was reopened)" (required non-null iff reopen),
+ "summary":"<=2000",
+ "blockers":[strings <=500] (max 10; non-empty iff blocked)}
+status "reopen" only when the comment shows the closed issue's own request is still unmet; the automation
+reopens the issue and posts comment. status "blocked" = evidence needed to decide could not be obtained."""
+
 RESULT_SCHEMAS = {"triage": _TRIAGE_SCHEMA, "implement": _IMPLEMENT_SCHEMA, "followup": _IMPLEMENT_SCHEMA,
-                  "review": _REVIEW_SCHEMA}
+                  "review": _REVIEW_SCHEMA, "reopen_check": _REOPEN_CHECK_SCHEMA}
 
 
 def build_message(ev: sqlite3.Row, mode: str, branch: str | None, default_branch: str, instructions: str,
@@ -2031,17 +2057,29 @@ def _review(v: dict[str, Any]) -> dict[str, Any]:
             "blockers": _texts(v["blockers"], 2000, 20, "blockers")}
 
 
+def _reopen_check(v: dict[str, Any]) -> dict[str, Any]:
+    status = _choice(v["status"], ("reopen", "keep_closed", "blocked"), "status")
+    comment = _text(v["comment"], 4000, "comment", nullable=True)
+    _require((comment is not None) == (status == "reopen"), "comment is required iff status is reopen")
+    blockers = _texts(v["blockers"], 500, 10, "blockers")
+    _require(bool(blockers) == (status == "blocked"), "blockers must be non-empty iff status is blocked")
+    return {"status": status, "reason": _text(v["reason"], 1000, "reason"), "comment": comment,
+            "summary": _text(v["summary"], 2000, "summary"), "blockers": blockers}
+
+
 RESULT_KEYS = {
     "triage": ("status", "verdict", "fault_domain", "duplicate_of", "labels", "comment", "next_action",
                "implementation_brief", "questions", "summary", "blockers", "security_advisory"),
     "implement": ("status", "pr", "issue_comment", "questions", "summary", "blockers", "local_checks"),
     "review": ("status", "head_sha", "event", "body", "comments", "thread_replies", "open_items", "summary",
                "blockers"),
+    "reopen_check": ("status", "reason", "comment", "summary", "blockers"),
 }
 
 
 def validate_result(mode: str, value: Any, number: int) -> dict[str, Any] | str:
-    """Normalized result for ``mode`` (TriageResult / ImplementResult / ReviewResult), or why it is invalid."""
+    """Normalized result for ``mode`` (TriageResult / ImplementResult / ReviewResult / ReopenResult), or why it
+    is invalid."""
     kind = "implement" if mode == "followup" else mode
     try:
         v = _fields(value, RESULT_KEYS[kind], "result")
@@ -2049,6 +2087,8 @@ def validate_result(mode: str, value: Any, number: int) -> dict[str, Any] | str:
             return _triage(v)
         if kind == "implement":
             return _implement(v, number)
+        if kind == "reopen_check":
+            return _reopen_check(v)
         return _review(v)
     except _Invalid as exc:
         return str(exc)
@@ -2110,6 +2150,7 @@ class Bridge:
             "session_send": self.op_session_send,
             "session_turn": self.op_session_turn,
             "github.comment": self.op_github_comment,
+            "github.issue_reopen": self.op_github_issue_reopen,
             "github.labels": self.op_github_labels,
             "github.review": self.op_github_review,
             "github.security_advisory": self.op_github_security_advisory,
@@ -2187,6 +2228,8 @@ class Bridge:
             return "review"
         if ev["kind"] == "pr_repair":
             return "followup"
+        if ev["kind"] == "closed_issue_comment":
+            return "reopen_check"
         if ev["kind"] in ("issue_comment", "issue_edited") and phase == "implementing":
             return "followup"
         return "triage"
@@ -3555,6 +3598,90 @@ class Bridge:
         if not isinstance(body, str) or not body.strip() or len(body) > 60000:
             raise OpError("bad body")
         return self._comment(ev["repo"], ev["issue_number"], f"{ev['delivery_id']}:{purpose}", body)
+
+    def op_github_issue_reopen(self, req: dict[str, Any]) -> dict[str, Any]:
+        """Reopen a closed issue for an outside comment that showed its request still unmet (mode
+        `reopen_check`). ``apply`` false only checks eligibility; ``apply`` true also requires the recorded
+        ``reopen_result`` verdict to be `reopen`. Idempotent: a recorded ``issue_reopened`` stage answers a retry.
+        An ``issue_reopen_intent`` stage is recorded before the PATCH, so a retry after a reopen whose answer was
+        lost finds the issue App's `reopened` event as the latest transition and completes the reopen instead of
+        reporting `already_open`."""
+        ev = self._event(req)
+        if ev["kind"] != "closed_issue_comment":
+            raise OpError("github.issue_reopen applies only to closed_issue_comment events")
+        apply = req.get("apply")
+        if not isinstance(apply, bool):
+            raise OpError("bad apply")
+        stages = json.loads(ev["stages"])
+        if "issue_reopened" in stages:
+            return {"eligible": True, "changed": True, "reason": "reopened_by_event"}
+        repo, number = ev["repo"], int(ev["issue_number"])
+        issue = self._gh("GET", f"/repos/{repo}/issues/{number}")
+        status, comment = self._gh_raw("GET", f"/repos/{repo}/issues/comments/{int(ev['comment_id'])}")
+        if status not in (200, 404):
+            raise OpError(f"github GET /repos/{repo}/issues/comments HTTP {status}",
+                          retryable=status >= 500 or status == 429)
+        if not isinstance(issue, dict) or (status == 200 and not isinstance(comment, dict)):
+            raise OpError("github issue_reopen: unexpected response", retryable=True)
+        closed_at = _github_time(issue.get("closed_at"))
+        commented_at = _github_time(comment.get("created_at")) if status == 200 else None
+        if issue.get("state") == "open" and self._reopened_by_us(repo, number, stages.get("issue_reopen_intent")):
+            return self._record_reopened(ev, repo, number, "reopened_by_event")
+        if status == 404:
+            reason = "comment_deleted"
+        elif issue.get("state") == "open":
+            reason = "already_open"
+        elif closed_at is not None and commented_at is not None and closed_at > commented_at:
+            reason = "closed_after_comment"  # a maintainer closed it again after the comment
+        else:
+            reason = None
+        if reason is not None:
+            return {"eligible": False, "changed": False, "reason": reason}
+        if not apply:
+            return {"eligible": True, "changed": False, "reason": "eligible"}
+        verdict = stages.get("reopen_result")
+        if not isinstance(verdict, dict) or verdict.get("status") != "reopen":
+            raise OpError("no reopen verdict")
+        self.op_stage({"delivery_id": ev["delivery_id"], "stage": "issue_reopen_intent",
+                       "value": {"at": time.time()}})
+        self._gh("PATCH", f"/repos/{repo}/issues/{number}", {"state": "open"})
+        return self._record_reopened(ev, repo, number, "reopened")
+
+    def _record_reopened(self, ev: sqlite3.Row, repo: str, number: int, reason: str) -> dict[str, Any]:
+        """Record stage ``issue_reopened`` and set the issue phase to `none` in one transaction, so the stage that
+        answers a retry never exists without the phase change."""
+        now = time.time()
+        with self.store.tx() as conn:
+            stages = json.loads(conn.execute("SELECT stages FROM events WHERE seq = ?", (ev["seq"],)).fetchone()[0])
+            if "issue_reopened" not in stages:
+                stages["issue_reopened"] = {"at": now}
+                conn.execute("UPDATE events SET stages = ?, updated_at = ? WHERE seq = ?",
+                             (json.dumps(stages), now, ev["seq"]))
+            conn.execute("UPDATE issues SET phase = 'none', updated_at = ? WHERE repo = ? AND issue_number = ?",
+                         (now, repo, number))
+        return {"eligible": True, "changed": True, "reason": reason}
+
+    def _reopened_by_us(self, repo: str, number: int, intent: Any) -> bool:
+        """The issue's latest state transition (`closed`/`reopened` event, newest ``created_at``, ties by list
+        order) is a `reopened` by the issue App no earlier than the recorded ``issue_reopen_intent``."""
+        at = intent.get("at") if isinstance(intent, dict) else None
+        bot = self.config.github_bot_login
+        if not isinstance(at, (int, float)) or isinstance(at, bool) or not bot:
+            return False
+        latest: tuple[float, dict[str, Any]] | None = None
+        for item in self._paged(f"/repos/{repo}/issues/{number}/events", REOPEN_EVENT_MAX_PAGES, strict=True):
+            if item.get("event") not in ("closed", "reopened"):
+                continue
+            created = _github_time(item.get("created_at"))
+            key = created if created is not None else float("-inf")
+            if latest is None or key >= latest[0]:
+                latest = (key, item)
+        if latest is None or latest[1].get("event") != "reopened":
+            return False
+        actor = latest[1].get("actor")
+        login = actor.get("login") if isinstance(actor, dict) else None
+        return (isinstance(login, str) and login.casefold() == bot
+                and latest[0] >= at - REOPEN_CLOCK_SKEW_SECONDS)
 
     def _ensure_label(self, repo: str, name: str, *, client: GitHub | None = None) -> None:
         """Create a missing catalog label with its catalog description/color; existing labels are reused as-is.
