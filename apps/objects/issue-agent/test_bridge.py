@@ -4329,6 +4329,234 @@ class TimeBudgetTests(BridgeTestCase):
         self.assertNotIn(f"archive {first}", self.fake.calls[calls:])
 
 
+class ProviderErrorTests(BridgeTestCase):
+    """2026-10-13: the model upstream answered 429, Codex ended the turns (`task_failed`) and the agents went idle;
+    the turns were parked as idle-without-result and an operator retry re-read the same idle turn."""
+
+    RATE_LIMITED = "Codex error: exceeded retry limit, last status: 429 Too Many Requests"
+
+    def setUp(self) -> None:
+        super().setUp()
+        self.started()
+        self.sid = self.op("ensure_session")["session_id"]
+        self.lid = bridge.local_id_for("d1", "implement")
+
+    def send(self, delivery: str = "d1", mode: str = "implement") -> dict:
+        return self.op("session_send", delivery, mode=mode, instructions="Implement it.")
+
+    def task_failed(self, sid: str, text: str, *, subagent: bool = False) -> None:
+        """A Codex `task_failed` as HAPI stores it: main thread `message`, sub-agent `agent-run-trace`."""
+        if subagent:
+            msg = self.fake.codex(sid, "agent-run-trace", agentId="a1", cardId="codex-agent:a1",
+                                  message={"type": "message", "message": text})
+        else:
+            msg = self.fake.codex(sid, "message", message=text)
+        msg["localId"] = f"codex:t1:turn1:{msg['id']}:task_failed"
+
+    def failed_turn(self, lid: str, text: str = RATE_LIMITED, delivery: str = "d1") -> dict:
+        self.fake.invoke(self.sid, lid)
+        self.fake.codex(self.sid, "message", message="running the unit suite...")
+        self.task_failed(self.sid, "Codex error: Codex thread entered systemError", subagent=True)
+        self.task_failed(self.sid, text)
+        return self.op("session_turn", delivery)
+
+    def park(self, turn: dict, delivery: str = "d1", node: str = "Turn state (implement)") -> sqlite3.Row:
+        failed = self.op("fail", delivery, node=node, detail=f"{node}: {turn.get('detail')}",
+                         park_class=turn.get("park_class"))
+        self.assertTrue(failed["ok"], failed)
+        return self.store.event(delivery)
+
+    def test_transient_messages_are_classified_from_codex_error_texts(self) -> None:
+        transient = [
+            self.RATE_LIMITED,
+            "Codex error: exceeded retry limit, last status: 503 Service Unavailable, request id: r1",
+            "Codex error: unexpected status 502 Bad Gateway: upstream",
+            "Codex error: stream disconnected before completion: error sending request",
+            "Codex error: rate limit exceeded: try again later",
+            "Codex error: Selected model is at capacity. Please try a different model.",
+            "Codex error: We\u2019re currently experiencing high demand, which may cause temporary errors.",
+            "Codex error: Codex thread entered systemError",
+            "Codex error: Connection failed: dns error",
+            "Codex error: Error while reading the server response: body closed",
+            "Codex error: request timed out",
+        ]
+        permanent = [
+            "Codex error: exceeded retry limit, last status: 401 Unauthorized",
+            "Codex error: unexpected status 400 Bad Request: invalid",
+            "Codex error: stream disconnected before completion: Incomplete response returned, reason: content_filter",
+            "Codex error: Quota exceeded. Check your plan and billing details.",
+            "Codex error: You've hit your usage limit.",
+            "Codex error: Codex ran out of room in the model's context window.",
+            "Codex error: Turn failed",
+            "The upstream said 429 Too Many Requests earlier",
+        ]
+        for text in transient + permanent:
+            with self.subTest(text=text):
+                msg = self.fake.codex(self.sid, "message", message=text)
+                self.assertIsNone(bridge.provider_failure(msg))  # never without the task_failed localId
+                msg["localId"] = "codex:t1:turn1:abc:task_failed"
+                self.assertEqual(bridge.provider_failure(msg), text if text in transient else None)
+        trace = self.fake.codex(self.sid, "agent-run-trace", message={"type": "message", "message": self.RATE_LIMITED})
+        trace["localId"] = "codex:sub:turn1:abc:task_failed"
+        self.assertIsNone(bridge.provider_failure(trace))  # a sub-agent failure never ends our turn
+
+    def test_rate_limited_turn_parks_as_provider_error_with_backoff_and_a_lost_turn(self) -> None:
+        self.send()
+        turn = self.failed_turn(self.lid)  # first idle poll: no IDLE_WITHOUT_RESULT_LIMIT wait
+        self.assertEqual((turn["state"], turn["park_class"]), ("attention", "provider_error"))
+        self.assertIn("429 Too Many Requests", turn["detail"])
+        stored = self.store.turn("d1", "implement")
+        self.assertEqual((stored["state"], stored["local_id"]), ("lost", f"{self.lid}-r1"))
+        before = time.time()
+        ev = self.park(turn)
+        self.assertEqual((ev["state"], ev["park_class"], ev["auto_retries"]), ("needs_attention", "provider_error", 0))
+        self.assertAlmostEqual(ev["auto_retry_at"], before + bridge.PROVIDER_ERROR_BACKOFF[0], delta=5)
+        self.assertEqual(self.store.issue(REPO, 7)["blocked"], 1)
+        self.assertEqual(self.dispatcher.tick(), "idle")  # backoff not due yet
+        self.assertEqual(self.store.event("d1")["state"], "needs_attention")
+
+    def test_dispatcher_resends_after_backoff_and_gives_up_after_the_last_backoff(self) -> None:
+        self.send()
+        lid = self.lid
+        for n, backoff in enumerate(bridge.PROVIDER_ERROR_BACKOFF):
+            before = time.time()
+            ev = self.park(self.failed_turn(lid))
+            self.assertEqual((ev["park_class"], ev["auto_retries"]), ("provider_error", n))
+            self.assertAlmostEqual(ev["auto_retry_at"], before + backoff, delta=5)
+            self.store.update_event("d1", auto_retry_at=0)
+            self.assertEqual(self.dispatcher.tick(), "dispatched")
+            ev = self.store.event("d1")
+            self.assertEqual((ev["auto_retries"], json.loads(ev["stages"])["auto_retry"]["park_class"]),
+                             (n + 1, "provider_error"))
+            self.assertEqual(self.store.issue(REPO, 7)["blocked"], 0)
+            self.assertEqual(self.op("begin", "d1", attempt=1)["status"], "started")
+            self.assertEqual(self.op("ensure_session")["session_id"], self.sid)
+            sent = self.send()
+            self.assertEqual((sent["delivery"], sent["local_id"]), ("sent", f"{self.lid}-r{n + 1}"))
+            self.assertIn(bridge.LOST_TURN_NOTICE, self.fake.message_posts[-1]["text"])
+            lid = sent["local_id"]
+        ev = self.park(self.failed_turn(lid))  # retries exhausted: the park is operator-owned
+        self.assertEqual((ev["state"], ev["park_class"], ev["auto_retry_at"]), ("needs_attention", None, None))
+        self.assertEqual(self.bridge.auto_retry_event("d1"), "skipped")
+
+    def test_auto_retry_waits_while_another_event_on_the_issue_runs(self) -> None:
+        self.send()
+        self.park(self.failed_turn(self.lid))
+        with self.store.tx() as conn:
+            conn.execute("INSERT INTO events (delivery_id, semantic_key, repo, kind, issue_number, actor, title, body,"
+                         " state, received_at, updated_at) VALUES ('x7', 'x7', ?, 'issue_comment', 7, 'someone', '',"
+                         " 't', 'dispatched', 0, 0)", (REPO,))
+        now = time.time()
+        self.assertEqual(self.bridge.auto_retry_event("d1", now), "waiting")
+        ev = self.store.event("d1")
+        self.assertEqual((ev["state"], ev["auto_retries"]), ("needs_attention", 0))
+        self.assertAlmostEqual(ev["auto_retry_at"], now + bridge.DISPATCH_BACKOFF, delta=1)
+        self.store.update_event("x7", state="completed", outcome="replied")
+        self.assertEqual(self.bridge.auto_retry_event("d1", now), "requeued")
+
+    def test_non_transient_task_failure_keeps_the_idle_without_result_path(self) -> None:
+        self.send()
+        self.fake.invoke(self.sid, self.lid)
+        self.task_failed(self.sid, self.RATE_LIMITED, subagent=True)  # only a sub-agent was rate limited
+        self.task_failed(self.sid, "Codex error: You've hit your usage limit.")
+        states = [self.op("session_turn") for _ in range(bridge.IDLE_WITHOUT_RESULT_LIMIT)]
+        self.assertEqual([s["state"] for s in states[:-1]], ["running"] * (bridge.IDLE_WITHOUT_RESULT_LIMIT - 1))
+        self.assertEqual(states[-1]["state"], "attention")
+        self.assertIn("idle but produced no result", states[-1]["detail"])
+        self.assertNotIn("park_class", states[-1])
+        self.assertEqual(self.store.turn("d1", "implement")["local_id"], self.lid)
+        ev = self.park(states[-1])
+        self.assertEqual((ev["park_class"], ev["auto_retry_at"]), (None, None))
+
+    def test_a_later_answer_after_a_recovered_failure_is_still_collected(self) -> None:
+        self.send()
+        self.fake.invoke(self.sid, self.lid)
+        self.task_failed(self.sid, "Codex error: Codex thread entered systemError")
+        self.fake.codex(self.sid, "message", message=f"done.\n{bridge.RESULT_TAG} {self.lid} " + json.dumps(
+            {"status": "no_change", "pr": None, "issue_comment": "nothing needed", "questions": [],
+             "summary": "nothing needed", "blockers": [], "local_checks": []}))
+        self.assertEqual(self.op("session_turn")["state"], "done")
+
+    def test_operator_retry_of_an_idle_unanswered_turn_resends_it(self) -> None:
+        self.send()
+        self.fake.invoke(self.sid, self.lid)
+        self.fake.codex(self.sid, "message", message="I finished but forgot the line")
+        states = [self.op("session_turn")["state"] for _ in range(bridge.IDLE_WITHOUT_RESULT_LIMIT)]
+        self.assertEqual(states[-1], "attention")
+        self.park({"detail": "agent is idle but produced no result line for this step"})
+        self.assertTrue(self.op("retry_event")["ok"])
+        turn = self.store.turn("d1", "implement")
+        self.assertEqual((turn["state"], turn["local_id"]), ("lost", f"{self.lid}-r1"))
+        self.assertEqual(self.dispatcher.tick(), "dispatched")
+        self.assertEqual(self.op("begin", "d1", attempt=1)["status"], "started")
+        self.assertEqual(self.op("ensure_session")["session_id"], self.sid)
+        sent = self.send()
+        self.assertEqual((sent["delivery"], sent["local_id"]), ("sent", f"{self.lid}-r1"))
+        self.assertIn(bridge.LOST_TURN_NOTICE, self.fake.message_posts[-1]["text"])
+
+    def test_operator_retry_keeps_the_localid_of_a_turn_still_running(self) -> None:
+        self.send()
+        self.fake.invoke(self.sid, self.lid)
+        self.fake.sessions[self.sid]["thinking"] = True
+        self.park({"detail": "transport failure"}, node="Check turn")
+        self.assertTrue(self.op("retry_event")["ok"])
+        turn = self.store.turn("d1", "implement")
+        self.assertEqual((turn["state"], turn["local_id"]), ("sent", self.lid))
+        self.assertEqual(self.dispatcher.tick(), "dispatched")
+        self.assertEqual(self.op("begin", "d1", attempt=1)["status"], "started")
+        self.assertEqual(self.send()["delivery"], "already")
+        self.assertEqual(len(self.fake.message_posts), 1)
+
+    def test_operator_retry_keeps_the_localid_of_a_turn_sampled_not_thinking(self) -> None:
+        # A turn parked at its time budget keeps working; `thinking` can flap off between tool calls.
+        self.send()
+        self.fake.invoke(self.sid, self.lid)
+        self.store.put_turn("d1", "implement", self.lid, self.sid, "sent", deadline_at=time.time() - 1)
+        ev = self.park({"detail": "turn still running"}, node="Within time budget? (implement)")
+        self.assertEqual(ev["park_class"], "time_budget")
+        self.assertTrue(self.op("retry_event")["ok"])
+        turn = self.store.turn("d1", "implement")
+        self.assertEqual((turn["state"], turn["local_id"], turn["idle_polls"]), ("sent", self.lid, 0))
+        self.assertEqual(self.dispatcher.tick(), "dispatched")
+        self.assertEqual(self.op("begin", "d1", attempt=1)["status"], "started")
+        self.assertEqual(self.send()["delivery"], "already")
+        self.assertEqual(len(self.fake.message_posts), 1)
+
+    def test_operator_retry_keeps_the_subject_blocked_while_a_sibling_is_parked(self) -> None:
+        self.send()
+        self.fake.invoke(self.sid, self.lid)
+        self.fake.sessions[self.sid]["thinking"] = True
+        self.park({"detail": "transport failure"}, node="Check turn")
+        with self.store.tx() as conn:
+            conn.execute("INSERT INTO events (delivery_id, semantic_key, repo, kind, issue_number, actor, title, body,"
+                         " state, received_at, updated_at) VALUES ('x7', 'x7', ?, 'issue_comment', 7, 'someone', '',"
+                         " 't', 'needs_attention', 0, 0)", (REPO,))
+        self.assertTrue(self.op("retry_event")["ok"])
+        self.assertEqual(self.store.event("d1")["state"], "accepted")
+        self.assertEqual(self.store.issue(REPO, 7)["blocked"], 1)
+
+    def test_rate_limited_review_is_retried_on_the_provider_backoff(self) -> None:
+        self.use_reviewer_app()
+        self.started_review(12, "p1")
+        sid = self.op("ensure_session", "p1")["session_id"]
+        self.assertEqual(self.send("p1", "review")["delivery"], "sent")
+        lid = bridge.local_id_for("p1", "review")
+        self.fake.invoke(sid, lid)
+        self.task_failed(sid, "Codex error: exceeded retry limit, last status: 503 Service Unavailable")
+        turn = self.op("session_turn", "p1")
+        self.assertEqual((turn["state"], turn["park_class"]), ("attention", "provider_error"))
+        before = time.time()
+        ev = self.park(turn, "p1", node="Turn state (review)")
+        self.assertEqual(ev["park_class"], "provider_error")
+        self.assertAlmostEqual(ev["auto_retry_at"], before + bridge.PROVIDER_ERROR_BACKOFF[0], delta=5)
+        self.store.update_event("p1", auto_retry_at=0)
+        self.assertEqual(self.dispatcher.tick(), "dispatched")
+        self.assertEqual(self.op("begin", "p1", attempt=1)["status"], "started")
+        self.assertEqual(self.op("ensure_session", "p1")["session_id"], sid)
+        sent = self.send("p1", "review")
+        self.assertEqual((sent["delivery"], sent["local_id"]), ("sent", f"{lid}-r1"))
+
+
 class ResultValidationTests(unittest.TestCase):
     def assertInvalid(self, mode: str, value: dict, fragment: str) -> None:
         result = bridge.validate_result(mode, value, 7)

@@ -35,7 +35,7 @@ spec:
         # from falling back to the upstream entrypoint's TCP listener.
         - name: dockerd
           restartPolicy: Always
-          image: ghcr.io/isac322/issue-agent-dockerd:29.9.0-20261013-janitor@sha256:94ea89ccd155077bfb9a6d5fcf1f2c30e287072dccdb59c28d15855ad841149e
+          image: ghcr.io/isac322/issue-agent-dockerd:29.9.0-20261013-janitor-pressure@sha256:b8417323336fafa8553b38c136b1d88c987eecdde54c651dee5b6e2a46e0b103
           command:
             - /opt/issue-agent/bin/dockerd-start
           env:
@@ -239,15 +239,16 @@ spec:
             requests:
               cpu: 100m
               memory: 2560Mi
-            # Blast wall: 14d working-set P99 ~3.4Gi. After the 2026-10-13
-            # upgrade (CodeGraph 1.6.2 ~+120MiB and Node 26 context-mode ~+18MiB
-            # per Codex thread, each thread starting its own MCP servers) the
-            # container hit its 6Gi limit (OOMKilled 10:10Z, working set 5.95Gi)
-            # with max_threads=2 under the allowed concurrency (bridge
-            # MAX_ACTIVE_REVIEWS=2 review sessions + up to 3 other events).
-            # 1.25 x 6Gi -> 7.5Gi.
+            # Blast wall sized to the allowed concurrency, measured 2026-10-13:
+            # 14d working-set P99 ~3.4Gi, but the 10:10Z OOMKill (5.95Gi) was
+            # censored at the 6Gi limit. Uncensored model: one codex session
+            # with its MCP servers ~751Mi RSS, each of its max_threads=2
+            # sub-agents adds ~275Mi (own codegraph 1.6.2/context-mode/hapi
+            # mcp), working set ~1.15 x RSS. At MAX_ACTIVE_EVENTS=5 that is
+            # 5 x 1.27Gi RSS -> ~7.4Gi working set (7.5Gi would leave ~1%).
+            # Builds run in dockerd's cgroup, not here. 1.2 x 7.4Gi -> 9Gi.
             limits:
-              memory: 7680Mi
+              memory: 9Gi
           securityContext:
             allowPrivilegeEscalation: false
             capabilities:

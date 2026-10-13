@@ -180,10 +180,24 @@ MAX_ACTIVE_REVIEWS = 2
 # Transient park classes (set only by the bridge or n8n, never from agent text). A parked pr_review event of
 # such a class is re-queued automatically after AUTO_RETRY_BACKOFF[auto_retries], at most AUTO_RETRY_LIMIT
 # times; `stale_dispatch` only once (its cause is unobservable: a runner, hub, n8n or bridge restart).
-TRANSIENT_PARK_CLASSES = ("bridge_unreachable", "hub_5xx", "hub_unreachable", "stale_dispatch")
+# `provider_error` (the model provider ended the agent turn: 429, 5xx, overload, stream loss) is armed for
+# every event kind, after PROVIDER_ERROR_BACKOFF[auto_retries], then becomes operator-owned.
+TRANSIENT_PARK_CLASSES = ("bridge_unreachable", "hub_5xx", "hub_unreachable", "stale_dispatch", "provider_error")
 AUTO_RETRY_LIMIT = 3
 AUTO_RETRY_BACKOFF = (600.0, 1800.0, 5400.0)
 STALE_DISPATCH_RETRY_LIMIT = 1
+PROVIDER_ERROR_BACKOFF = (600.0, 1800.0, 3600.0, 7200.0)
+# Main-thread Codex turn failure the provider caused (HAPI projects a Codex `task_failed` event as an agent
+# message `Codex error: <CodexErr Display>` under a localId ending `:task_failed`; codex-rs core/src/error.rs
+# gives the texts). HAPI already retried `systemError`/at-capacity on the same thread and Codex its own 429/5xx
+# requests, so a turn ending on one of these waits PROVIDER_ERROR_BACKOFF. Usage/quota limits, context window,
+# policy blocks, invalid requests and other 4xx stay operator-owned.
+_PROVIDER_ERROR_RE = re.compile(
+    r"Codex error: (?:exceeded retry limit, last status: (?:429|5\d\d)\b|unexpected status (?:429|5\d\d)\b"
+    r"|stream disconnected before completion: (?!Incomplete response returned, reason: content_filter)"
+    r"|rate limit exceeded:|Selected model is at capacity|We.re currently experiencing high demand"
+    r"|Codex thread entered systemError|Connection failed:|Error while reading the server response:"
+    r"|request timed out|Flex capacity unavailable)")
 # n8n transport failures reaching the bridge (n8n error workflow `error.message`), by failed node.
 _N8N_BRIDGE_NODES = ("Ensure session", "Send step to agent", "Check turn", "Submit review", "Finish reviewed")
 _N8N_TRANSPORT_ERROR_RE = re.compile(
@@ -1718,9 +1732,9 @@ def local_id_for(delivery_id: str, mode: str) -> str:
 
 CORRECTION_SUFFIX = "-fix"
 # Bridge-owned addition to the instructions of a step re-sent after its turn was lost (runner restart,
-# eviction, removed runner machine or an automatic retry of a parked review).
-LOST_TURN_NOTICE = ("\nThis step was interrupted (runner restart or eviction) and is being sent again. "
-                    "Do not reuse conclusions, environment observations or command results from before the "
+# eviction, removed runner machine, model provider error or an automatic or operator retry of a parked event).
+LOST_TURN_NOTICE = ("\nThis step was interrupted (runner restart, eviction or model provider error) and is being "
+                    "sent again. Do not reuse conclusions, environment observations or command results from before the "
                     "interruption: re-check the pull request head SHA and tool availability, and redo your evidence.")
 
 
@@ -1925,6 +1939,18 @@ def assistant_texts(message: Mapping[str, Any]) -> list[str]:
     if isinstance(body, list):
         return [b["text"] for b in body if isinstance(b, dict) and b.get("type") == "text" and isinstance(b.get("text"), str)]
     return []
+
+
+def provider_failure(message: Mapping[str, Any]) -> str | None:
+    """Text of a main-thread Codex ``task_failed`` message a transient provider error caused, else None.
+
+    Sub-agent failures arrive as ``agent-run-trace`` (no final assistant text) and never end our turn."""
+    local_id = message.get("localId")
+    if not isinstance(local_id, str) or not local_id.endswith(":task_failed"):
+        return None
+    texts = assistant_texts(message)
+    return texts[0] if texts and _PROVIDER_ERROR_RE.match(texts[0]) else None
+
 
 
 def find_result(texts: list[str], nonce: str) -> Any:
@@ -2741,24 +2767,28 @@ class Bridge:
         Parking claims the retry slot (``next_attempt_at`` in the future) in the same write, so the
         dispatcher's pending-notice scan cannot pick the event up while this inline notice is in flight.
 
-        A ``pr_review`` park of a transient class (``TRANSIENT_PARK_CLASSES``) with a recorded head is armed for
-        an automatic retry (``Bridge.auto_retry_event``) after AUTO_RETRY_BACKOFF[auto_retries], while fewer than
-        AUTO_RETRY_LIMIT retries (STALE_DISPATCH_RETRY_LIMIT for ``stale_dispatch``) ran. A ``time_budget`` park (its
-        turn outlived the deadline) records its class unarmed: the dispatcher harvests a late result
-        (``harvest_time_budget``). Any other park is operator-owned and records no class.
+        A park of a transient class (``TRANSIENT_PARK_CLASSES``) is armed for an automatic retry
+        (``Bridge.auto_retry_event``) after its backoff, indexed by ``auto_retries``: a ``pr_review`` park with a
+        recorded head after AUTO_RETRY_BACKOFF while fewer than AUTO_RETRY_LIMIT retries
+        (STALE_DISPATCH_RETRY_LIMIT for ``stale_dispatch``) ran; a ``provider_error`` park of any kind after
+        PROVIDER_ERROR_BACKOFF while fewer than its length ran. A ``time_budget`` park (its turn outlived the
+        deadline) records its class unarmed: the dispatcher harvests a late result (``harvest_time_budget``). Any
+        other park is operator-owned and records no class.
         """
         if ev["state"] != "needs_attention":
             retries = int(ev["auto_retries"] or 0)
-            limit = STALE_DISPATCH_RETRY_LIMIT if park_class == "stale_dispatch" else AUTO_RETRY_LIMIT
-            armed = ev["kind"] == "pr_review" and park_class in TRANSIENT_PARK_CLASSES and bool(ev["head_sha"]) \
-                and retries < limit
+            backoff = PROVIDER_ERROR_BACKOFF if park_class == "provider_error" else AUTO_RETRY_BACKOFF
+            limit = STALE_DISPATCH_RETRY_LIMIT if park_class == "stale_dispatch" \
+                else len(PROVIDER_ERROR_BACKOFF) if park_class == "provider_error" else AUTO_RETRY_LIMIT
+            kind_ok = bool(ev["head_sha"]) if ev["kind"] == "pr_review" else park_class == "provider_error"
+            armed = park_class in TRANSIENT_PARK_CLASSES and kind_ok and retries < limit
             now = time.time()
             self.store.update_issue(ev["repo"], ev["issue_number"], blocked=1, detail=detail)
             self.store.update_event(ev["delivery_id"], state="needs_attention", detail=detail,
                                     attention_pending=1, attention_node=node,
                                     next_attempt_at=now + DISPATCH_BACKOFF,
                                     park_class=park_class if armed or park_class == "time_budget" else None,
-                                    auto_retry_at=now + AUTO_RETRY_BACKOFF[retries] if armed else None)
+                                    auto_retry_at=now + backoff[retries] if armed else None)
         LOG.error("%s#%d event %s needs attention: %s", ev["repo"], ev["issue_number"], ev["delivery_id"], detail)
         self.notify_attention(ev["delivery_id"])
 
@@ -2872,7 +2902,7 @@ class Bridge:
         """Re-queue a parked event with its recorded stages (``retry_event``, time-budget harvest).
 
         With ``park_class`` the event is re-queued only while it is still parked under that class; returns whether
-        it was re-queued."""
+        it was re-queued. Retryable turn lookup failures propagate, so the event stays parked."""
         stages = json.loads(ev["stages"])
         stages.pop("started", None)
         if ev["kind"] == "pr_repair" and self.store.turn(ev["delivery_id"]) is None:
@@ -2886,21 +2916,58 @@ class Bridge:
                 if fresh["state"] != "needs_attention" or fresh["park_class"] != park_class:
                     return False
             turn = self.store.turn(ev["delivery_id"])
-            if turn is not None and turn["state"] == "sent" and self._consumed(ev, turn) and self._answered(ev, turn):
-                # The workflow already took this step's result. Re-running it needs a new message: under the old
-                # localId session_send reports 'already' and session_turn re-reads that same result. A turn still
-                # running, or whose result was never consumed (its run was parked at the time budget or lost),
-                # keeps its localId: it is never sent twice, and session_turn harvests a late result.
-                self.store.put_turn(ev["delivery_id"], turn["mode"],
-                                    resend_local_id(ev["delivery_id"], turn["mode"], turn["local_id"]),
-                                    turn["session_id"], "lost")
+            if turn is not None and turn["state"] == "sent":
+                state = self._answered_result(ev, turn)[0]
+                resend = state == "answered" and self._consumed(ev, turn)
+                if state == "unanswered":
+                    # Resend only a turn that cannot still produce its result: one parked by the idle rule
+                    # (polls recorded by session_turn), one whose provider failed it (its text is still the last
+                    # assistant line), or one whose session died. A busy sample taken in the gap between tool
+                    # calls reads 'unanswered' too; that turn keeps its localId so it is never sent twice.
+                    resend = int(turn["idle_polls"] or 0) >= IDLE_WITHOUT_RESULT_LIMIT \
+                        or self._turn_failed_on_provider(ev, turn) is not None or \
+                        self._session_gone(ev, turn)
+                if resend:
+                    # Re-running the step needs a new message: under the old localId session_send reports
+                    # 'already' and session_turn re-reads the same turn.
+                    self.store.put_turn(ev["delivery_id"], turn["mode"],
+                                        resend_local_id(ev["delivery_id"], turn["mode"], turn["local_id"]),
+                                        turn["session_id"], "lost")
             # Drop the parked run's heartbeat and execution: the dispatcher keeps an existing heartbeat, so an
             # old one would make the stale sweep park the retried event again before n8n can begin it.
             self.store.update_event(ev["delivery_id"], state="accepted", stages=json.dumps(stages), attempts=0,
                                     next_attempt_at=0, detail=None, attention_pending=0, attention_node=None,
                                     heartbeat_at=None, execution_id=None, park_class=None, auto_retry_at=None)
-        self.store.update_issue(ev["repo"], ev["issue_number"], blocked=0, detail=None)
+        if not self._other_parked(ev):
+            self.store.update_issue(ev["repo"], ev["issue_number"], blocked=0, detail=None)
         return True
+
+    def _turn_failed_on_provider(self, ev: sqlite3.Row, turn: sqlite3.Row) -> str | None:
+        """The last assistant line of a 'sent' turn when it is a transient provider failure (``provider_failure``),
+        else None. Session lookups that already ran do not repeat."""
+        try:
+            session = self._follow(ev["repo"], ev["issue_number"], turn["session_id"])
+            history = self._history_from(session["id"], turn["local_id"])
+        except OpError:
+            return None
+        if not history:
+            return None
+        last_message: Mapping[str, Any] = {}
+        for m in history[1:]:
+            if message_role(m) == "user" and m.get("localId") != turn["local_id"] and invoked(m):
+                break
+            if assistant_texts(m):
+                last_message = m
+        return provider_failure(last_message)
+
+    def _session_gone(self, ev: sqlite3.Row, turn: sqlite3.Row) -> bool:
+        """Whether the turn's session is out of reach or the agent process is gone."""
+        try:
+            session = self._follow(ev["repo"], ev["issue_number"], turn["session_id"])
+        except OpError as exc:
+            return not exc.retryable
+        return session.get("active") is False
+
 
     def _past_deadline(self, ev: sqlite3.Row, now: float) -> bool:
         """Whether the event's current step is a sent turn, never consumed, whose deadline has passed."""
@@ -2950,13 +3017,6 @@ class Bridge:
             return "expired"
         self.store.update_event(delivery_id, auto_retry_at=now + TIME_BUDGET_CHECK_SECONDS)
         return "waiting"
-
-    def _answered(self, ev: sqlite3.Row, turn: sqlite3.Row) -> bool:
-        """Whether this turn finished with a result line, by session_turn's rule (not while still running).
-
-        Retryable lookup failures propagate, so the event stays parked rather than resuming on a stale turn.
-        """
-        return self._answered_result(ev, turn)[0] == "answered"
 
     def _answered_result(self, ev: sqlite3.Row, turn: sqlite3.Row) -> tuple[str, Any]:
         """(state, raw result) of a sent turn, by session_turn's rule. States: 'answered' (raw is the result
@@ -3018,47 +3078,53 @@ class Bridge:
             self.store.update_issue(ev["repo"], ev["issue_number"], blocked=0, detail=None)
 
     def auto_retry_event(self, delivery_id: str, now: float | None = None) -> str:
-        """Dispatcher: re-queue a transient ``pr_review`` park (``mark_attention`` armed it) once its backoff is due.
+        """Dispatcher: re-queue a transient park (``mark_attention`` armed it) once its backoff is due.
 
-        Only while the pull request is open, not a draft and still at the parked head, and no other event on it
-        is pending, running or parked; a GitHub read failure or a busy pull request waits DISPATCH_BACKOFF
-        without counting. A closed pull request ends the event 'pr_not_open', a moved head 'superseded' (the
-        push queued its own review). A sent turn is settled first:
+        A ``pr_review`` is re-queued only while the pull request is open, not a draft and still at the parked
+        head, and no other event on it is pending, running or parked; a GitHub read failure or a busy pull request
+        waits DISPATCH_BACKOFF without counting. A closed pull request ends the event 'pr_not_open', a moved head
+        'superseded' (the push queued its own review). Any other kind (armed only for ``provider_error``) waits
+        while another event on its subject is running; events queued behind it keep their order (lower ``seq``
+        first). A sent turn is settled first:
 
-        * answered with a valid result for the live head: the turn keeps its localId, so the new execution's
-          session_send reports 'already' and session_turn collects that result for publication;
+        * answered with a valid result (for a review: about the live head): the turn keeps its localId, so the new
+          execution's session_send reports 'already' and session_turn collects that result;
         * answered with an invalid result: never retried automatically; the park becomes operator-owned;
-        * unanswered (or answered about another head): re-sent under a fresh localId with LOST_TURN_NOTICE;
+        * unanswered (or a review answered about another head): re-sent under a fresh localId with
+          LOST_TURN_NOTICE (a ``provider_error`` park already marked its turn lost);
         * still running, queued or out of reach: left alone (session_turn and ensure_session handle it).
 
         The same event is re-queued with its recorded stages (never a new event), and ``auto_retries`` counts it.
         """
         now = time.time() if now is None else now
         ev = self.store.event(delivery_id)
-        if ev is None or ev["state"] != "needs_attention" or ev["kind"] != "pr_review" \
-                or ev["park_class"] not in TRANSIENT_PARK_CLASSES:
+        if ev is None or ev["state"] != "needs_attention" or ev["park_class"] not in TRANSIENT_PARK_CLASSES \
+                or ev["kind"] != "pr_review" and ev["park_class"] != "provider_error":
             return "skipped"
+        review = ev["kind"] == "pr_review"
         repo, number = ev["repo"], int(ev["issue_number"])
+        busy = "'accepted', 'dispatching', 'dispatched', 'needs_attention'" if review else "'dispatching', 'dispatched'"
         if self.store.query(
                 "SELECT 1 FROM events WHERE repo = ? AND issue_number = ? AND delivery_id != ?"
-                " AND state IN ('accepted', 'dispatching', 'dispatched', 'needs_attention') LIMIT 1",
-                (repo, number, delivery_id)):
+                f" AND state IN ({busy}) LIMIT 1", (repo, number, delivery_id)):
             self.store.update_event(delivery_id, auto_retry_at=now + DISPATCH_BACKOFF)
             return "waiting"
-        try:
-            live = self._get_pr(repo, number, client=self.review_github)
-        except (OpError, TransportError) as exc:
-            LOG.warning("automatic retry of %s waits: pull request read failed: %s", delivery_id, exc)
-            self.store.update_event(delivery_id, auto_retry_at=now + DISPATCH_BACKOFF)
-            return "waiting"
-        head = (live.get("head") or {}).get("sha")
-        if live.get("state") != "open" or live.get("draft"):
-            where = "a draft" if live.get("draft") else live.get("state")
-            self._end_parked_review(ev, "pr_not_open", f"pull request is {where} while the review was parked")
-            return "pr_not_open"
-        if head != ev["head_sha"]:
-            self._end_parked_review(ev, "superseded", f"head moved while parked: {ev['head_sha']} -> {head}")
-            return "superseded"
+        head = None
+        if review:
+            try:
+                live = self._get_pr(repo, number, client=self.review_github)
+            except (OpError, TransportError) as exc:
+                LOG.warning("automatic retry of %s waits: pull request read failed: %s", delivery_id, exc)
+                self.store.update_event(delivery_id, auto_retry_at=now + DISPATCH_BACKOFF)
+                return "waiting"
+            head = (live.get("head") or {}).get("sha")
+            if live.get("state") != "open" or live.get("draft"):
+                where = "a draft" if live.get("draft") else live.get("state")
+                self._end_parked_review(ev, "pr_not_open", f"pull request is {where} while the review was parked")
+                return "pr_not_open"
+            if head != ev["head_sha"]:
+                self._end_parked_review(ev, "superseded", f"head moved while parked: {ev['head_sha']} -> {head}")
+                return "superseded"
         with self.session_lock:
             # Same lock as session_send/session_turn/retry_event: nothing changes the turn in between.
             ev = self.store.event(delivery_id)
@@ -3075,12 +3141,12 @@ class Bridge:
                 if state == "answered":
                     result = validate_result(turn["mode"], raw, number)
                     if isinstance(result, str):
-                        # Schema-invalid results are never retried automatically. The notice runs again so the
-                        # review status says an operator is needed.
+                        # Schema-invalid results are never retried automatically. The notice runs again so a
+                        # review's status says an operator is needed.
                         self.store.update_event(delivery_id, park_class=None, auto_retry_at=None,
                                                 attention_pending=1, next_attempt_at=0)
                         return "operator"
-                    if result.get("head_sha") != head:
+                    if review and result.get("head_sha") != head:
                         state = "unanswered"  # a result about another head is never published for this one
                 if state == "unanswered":
                     self.store.put_turn(delivery_id, turn["mode"],
@@ -3096,7 +3162,7 @@ class Bridge:
                                     auto_retry_at=None)
         if not self._other_parked(ev):
             self.store.update_issue(repo, number, blocked=0, detail=None)
-        LOG.info("%s#%d review %s re-queued automatically (retry %d)", repo, number, delivery_id, retries)
+        LOG.info("%s#%d %s %s re-queued automatically (retry %d)", repo, number, ev["kind"], delivery_id, retries)
         return "requeued"
 
     def op_unblock_issue(self, req: dict[str, Any]) -> dict[str, Any]:
@@ -3719,6 +3785,7 @@ class Bridge:
                 return {"state": "queued", "session_id": sid}
             # Final assistant text of our turn: stop at the first other user message the agent received.
             last_text: list[str] = []
+            last_message: Mapping[str, Any] = {}
             for m in later:
                 if message_role(m) == "user" and m.get("localId") != local_id and invoked(m):
                     if find_result(last_text, local_id) is None:
@@ -3726,7 +3793,7 @@ class Bridge:
                     break
                 texts = assistant_texts(m)
                 if texts:
-                    last_text = texts
+                    last_text, last_message = texts, m
             requests = (session.get("agentState") or {}).get("requests") or {}
             # HAPI clears `active` once the agent process is gone; `thinking` may then be stale.
             alive = session.get("active") is not False
@@ -3757,6 +3824,15 @@ class Bridge:
                                     sid, "lost")
                 return {"state": "lost", "session_id": sid,
                         "detail": "agent session ended mid-turn (runner restart or eviction)"}
+            failure = provider_failure(last_message)
+            if failure is not None:
+                # The model provider ended the turn (Codex and HAPI already retried it). Park the turn under a fresh
+                # localId and the event as `provider_error`: the dispatcher re-sends the step after a backoff
+                # instead of waiting IDLE_WITHOUT_RESULT_LIMIT polls on a turn that cannot finish.
+                self.store.put_turn(ev["delivery_id"], mode, resend_local_id(ev["delivery_id"], mode, local_id),
+                                    sid, "lost")
+                return {"state": "attention", "park_class": "provider_error",
+                        "detail": f"model provider error ended the agent turn: {failure[:500]}"}
             idle = turn["idle_polls"] + 1
             self.store.put_turn(ev["delivery_id"], mode, local_id, turn["session_id"], "sent", idle)
             if idle >= IDLE_WITHOUT_RESULT_LIMIT:
@@ -5340,9 +5416,11 @@ class Dispatcher:
             (now,),
         ):
             self.bridge.notify_attention(ev["delivery_id"])
-        # Transient review parks whose notice is out and whose backoff is due (``mark_attention`` armed them).
+        # Transient parks (reviews; provider errors of any kind) whose notice is out and whose backoff is due
+        # (``mark_attention`` armed them).
         for ev in self.store.query(
-            "SELECT delivery_id FROM events WHERE state = 'needs_attention' AND kind = 'pr_review'"
+            "SELECT delivery_id FROM events WHERE state = 'needs_attention'"
+            " AND (kind = 'pr_review' OR park_class = 'provider_error')"
             f" AND attention_pending = 0 AND park_class IN ({', '.join('?' for _ in TRANSIENT_PARK_CLASSES)})"
             " AND auto_retry_at <= ? ORDER BY seq",
             (*TRANSIENT_PARK_CLASSES, now),

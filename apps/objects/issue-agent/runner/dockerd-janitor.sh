@@ -27,9 +27,18 @@
 #     after the age-filtered prune, every unused image and build cache entry
 #     goes. The served lease is recorded as last_prune_lease so the bridge can
 #     end its maintenance window early. No request, no prune.
-#  3. Status: $CHECKOUTS/.issue-agent-janitor/status = {checked_at,
+#  3. Pressure prune, without a lease: under continuous activity the bridge
+#     never grants one, so when /var/lib/docker is above
+#     ISSUE_AGENT_JANITOR_PRESSURE_PCT (default 85) the janitor removes only
+#     what no running work can be using: images no container references that
+#     were created more than 12 h ago (turn images are built locally and are
+#     newer; older pulled base images can be pulled again) and build cache
+#     older than 12 h (BuildKit skips records in use). Volumes, containers and
+#     the lease bookkeeping are left alone; the result is only logged.
+#  4. Status: $CHECKOUTS/.issue-agent-janitor/status = {checked_at,
 #     docker_used_pct, last_prune_at, last_prune_lease, last_prune_result},
-#     served to the bridge by publisher GET /janitor/status.
+#     served to the bridge by publisher GET /janitor/status. These fields
+#     describe lease prunes only.
 #
 # Docker calls use the daemon socket and pass the authz plugin like any client
 # (GET /containers/json, POST /containers/prune, /images/prune, /build/prune
@@ -42,6 +51,8 @@ DOCKER_DATA="${ISSUE_AGENT_DOCKER_DATA:-/var/lib/docker}"
 INTERVAL="${ISSUE_AGENT_JANITOR_INTERVAL:-300}"
 PRUNE_PCT="${ISSUE_AGENT_JANITOR_PRUNE_PCT:-70}"
 FULL_PCT="${ISSUE_AGENT_JANITOR_FULL_PCT:-85}"
+PRESSURE_PCT="${ISSUE_AGENT_JANITOR_PRESSURE_PCT:-85}"
+PRESSURE_AGE=12h
 FS_HELPER=/opt/issue-agent/bin/issue-agent-chown-sweep
 # A prune starts only with this much lease left. The Docker timeouts below sum
 # to 530 s (ps 30 + container prune 60 + 4 image/builder prunes x 110).
@@ -193,6 +204,20 @@ maybe_prune() {
   log "prune done ($result): $DOCKER_DATA ${before}% -> $(usage_pct)%"
 }
 
+pressure_prune() {
+  before="$(usage_pct)"
+  if ! is_uint "$before"; then
+    log "cannot read $DOCKER_DATA usage; skipping the pressure prune"
+    return 0
+  fi
+  [ "$before" -gt "$PRESSURE_PCT" ] || return 0
+  log "pressure prune without a lease: $DOCKER_DATA at ${before}% (> ${PRESSURE_PCT}%)"
+  result=ok
+  docker_step "$PRUNE_TIMEOUT" image prune -af --filter "until=$PRESSURE_AGE" || result=error
+  docker_step "$PRUNE_TIMEOUT" builder prune -af --filter "until=$PRESSURE_AGE" || result=error
+  log "pressure prune done ($result): $DOCKER_DATA ${before}% -> $(usage_pct)%"
+}
+
 write_status() {
   used="$(usage_pct)"
   if ! is_uint "$used"; then
@@ -203,10 +228,16 @@ write_status() {
     "$last_prune_at" "$last_prune_lease" "$last_prune_result"
 }
 
-log "started (interval ${INTERVAL}s, prune above ${PRUNE_PCT}%, full prune above ${FULL_PCT}%)"
+if ! is_uint "$PRESSURE_PCT"; then
+  log "invalid ISSUE_AGENT_JANITOR_PRESSURE_PCT '$PRESSURE_PCT'; using 85"
+  PRESSURE_PCT=85
+fi
+log "started (interval ${INTERVAL}s, prune above ${PRUNE_PCT}%, full prune above ${FULL_PCT}%, pressure prune above ${PRESSURE_PCT}%)"
 while :; do
   fix_ownership || log "ownership sweep failed (status $?)"
+  # Lease prune first: its time budget assumes it starts promptly.
   maybe_prune || log "prune step failed (status $?)"
+  pressure_prune || log "pressure prune failed (status $?)"
   write_status || log "status write failed (status $?)"
   sleep "$INTERVAL"
 done
