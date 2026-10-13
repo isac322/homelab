@@ -14,9 +14,11 @@ service_tier = "fast"
 
 [agents]
 default_subagent_reasoning_effort = "high"
-# Spawned sub-agent threads open at once per session (default 6). Runner memory
-# is sized for this together with the bridge's MAX_ACTIVE_REVIEWS.
-max_threads = 3
+# Spawned sub-agent threads open at once per session (multi-agent v2 default 3).
+# Each one starts its own MCP servers; with CodeGraph 1.6.2 an idle server tree
+# takes about 370MiB, so 3 per session pushed the runner past its 5Gi limit.
+# Runner memory is sized for this together with the bridge's MAX_ACTIVE_REVIEWS.
+max_threads = 2
 
 [features]
 fast_mode = true

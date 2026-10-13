@@ -61,6 +61,8 @@ class Fake:
         self.seq = 0
         self.calls: list[str] = []
         self.delete_status = 200  # DELETE /api/sessions/<id> answers this instead of deleting when not 200
+        self.tier_posts: list[tuple[str, Any]] = []  # (session id, body) of POST /api/sessions/<id>/service-tier
+        self.tier_status = 200  # POST /api/sessions/<id>/service-tier answers this instead of applying when not 200
         # github
         self.gh_token = "ghs-1"
         self.comments: dict[int, list[dict[str, Any]]] = {}
@@ -338,6 +340,7 @@ class Fake:
             if self.spawn_mode == "error":
                 return 200, {"type": "error", "message": "codex not found", "code": "agent_unavailable"}
             sid = self.make_session(body["directory"], body["worktreeName"])
+            self.sessions[sid]["serviceTier"] = body.get("serviceTier")
             if self.spawn_mode == "hang":
                 return -1, 1.5
             return 200, {"type": "success", "sessionId": sid}
@@ -369,6 +372,7 @@ class Fake:
             if machine is not None and machine not in {m["id"] for m in self.machines}:
                 return 503, {"error": "No machine online", "code": "no_machine_online"}
             new = self.make_session(session["metadata"]["worktree"]["basePath"], session["metadata"]["worktree"]["name"])
+            self.sessions[new]["serviceTier"] = session.get("serviceTier")  # the hub resumes with the stored tier
             self.messages[new] = list(self.messages[sid])
             session["metadata"]["supersededBySessionId"] = new
             return 200, {"type": "success", "sessionId": new}
@@ -377,6 +381,14 @@ class Fake:
             if not session["active"]:
                 return 409, {"error": "Session is inactive"}
             session["active"] = False
+            return 200, {"ok": True}
+        if rest == ["service-tier"] and method == "POST":
+            self.tier_posts.append((sid, body))
+            if self.tier_status != 200:
+                return self.tier_status, {"error": "boom"}
+            if not session["active"]:
+                return 409, {"error": "Session is inactive"}
+            session["serviceTier"] = body["serviceTier"]
             return 200, {"ok": True}
         if rest == ["messages"] and method == "POST":
             if not session["active"]:
@@ -3188,7 +3200,8 @@ class SessionTests(BridgeTestCase):
         self.assertTrue(first["ok"], first)
         self.assertEqual(self.fake.spawns[0], {"directory": "/home/agent/checkouts/isac322/cc-lb", "agent": "codex",
                                                "sessionType": "worktree", "worktreeName": "issue-7",
-                                               "startingMode": "remote", "permissionMode": "yolo"})
+                                               "startingMode": "remote", "permissionMode": "yolo",
+                                               "serviceTier": "fast"})
         self.assertEqual(first["branch"], "hapi-issue-7")
         self.assertEqual(self.op("ensure_session", "d1")["session_id"], first["session_id"])
         self.op("finish", "d1", outcome="implemented")
@@ -3237,6 +3250,54 @@ class SessionTests(BridgeTestCase):
         self.assertNotEqual(again["session_id"], old)
         self.assertTrue(again["resumed"])
         self.assertIn(old, json.loads(self.store.issue(REPO, 7)["superseded"]))
+
+    def test_spawn_requests_fast_tier_only_for_codex(self) -> None:
+        self.started(7, "d1")
+        self.assertEqual(self.op("ensure_session", "d1")["ok"], True)
+        self.assertEqual(self.fake.spawns[0]["serviceTier"], bridge.CODEX_SERVICE_TIER)
+        self.op("finish", "d1", outcome="implemented")
+        self.write_registry({"defaults": {"agent": "claude", "model": None, "permission_mode": "yolo",
+                                          "machine_id": None}, "repositories": {REPO: {}}})
+        self.started(8, "d2")
+        self.assertEqual(self.op("ensure_session", "d2")["ok"], True)
+        self.assertEqual(self.fake.spawns[1]["agent"], "claude")
+        self.assertNotIn("serviceTier", self.fake.spawns[1])
+        self.assertEqual(self.fake.tier_posts, [])
+
+    def test_resumed_standard_session_is_switched_to_fast(self) -> None:
+        # Sessions spawned before the bridge pinned the tier store 'standard'; the hub resumes them with it.
+        self.started()
+        old = self.op("ensure_session")["session_id"]
+        self.fake.sessions[old].update(active=False, serviceTier="standard")
+        again = self.op("ensure_session")
+        self.assertTrue(again["ok"], again)
+        self.assertTrue(again["resumed"])
+        self.assertEqual(self.fake.tier_posts, [(again["session_id"], {"serviceTier": "fast"})])
+        self.assertEqual(self.fake.sessions[again["session_id"]]["serviceTier"], "fast")
+
+    def test_active_fast_session_posts_no_service_tier(self) -> None:
+        self.started()
+        sid = self.op("ensure_session")["session_id"]
+        self.assertEqual(self.fake.sessions[sid]["serviceTier"], "fast")
+        again = self.op("ensure_session")
+        self.assertEqual((again["session_id"], again["resumed"]), (sid, False))
+        self.assertEqual(self.fake.tier_posts, [])
+
+    def test_service_tier_refusal_keeps_the_session_and_hub_errors_retry(self) -> None:
+        self.started()
+        sid = self.op("ensure_session")["session_id"]
+        self.fake.sessions[sid]["serviceTier"] = "standard"
+        self.fake.tier_status = 400
+        refused = self.op("ensure_session")
+        self.assertEqual((refused["ok"], refused["session_id"]), (True, sid))
+        self.fake.tier_status = 502
+        failed = self.op("ensure_session")
+        self.assertEqual((failed["ok"], failed["retryable"], failed["park_class"]), (False, True, "hub_5xx"))
+        self.assertEqual(len(self.fake.tier_posts), 2)
+        self.fake.tier_status = 200
+        self.assertEqual(self.op("ensure_session")["session_id"], sid)
+        self.assertEqual(self.fake.sessions[sid]["serviceTier"], "fast")
+        self.assertEqual(len(self.fake.spawns), 1)
 
     def test_session_of_a_removed_runner_machine_is_replaced_instead_of_resumed(self) -> None:
         # Live krema#55: after the runner home was replaced, every resume of an old session answered

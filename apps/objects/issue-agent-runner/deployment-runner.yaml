@@ -177,7 +177,7 @@ spec:
                       - macmini
       containers:
         - name: runner
-          image: ghcr.io/isac322/issue-agent-runner:0.30.7-codex0.162.1-20261013-stall-fix@sha256:c1a9bf329592f4bb17f544376c77ae572fab21a93fd10b40535c907c812d6990
+          image: ghcr.io/isac322/issue-agent-runner:0.30.7-codex0.162.1-20261013-fast-resume@sha256:756b22ef90fc601abc6cd3bc8ed443f4f5249637e7b20c2ebe8b5e88b151257b
           env:
             - name: HOME
               value: /home/agent
@@ -187,6 +187,13 @@ spec:
               value: /home/agent/.codex
             - name: HAPI_API_URL
               value: http://issue-agent-hub.issue-agent.svc.cluster.local:3006
+            # How long the runner waits for a spawned/resumed session to report in
+            # (HAPI default 15s). Resuming a long Codex thread right after a pod
+            # restart took 14s before Codex 0.162.1 and 15.5s+ after it, so the
+            # default made resumes fail. Kept below the hub's 30s machine RPC
+            # timeout and the bridge's 30s HAPI request timeout.
+            - name: HAPI_RUNNER_WEBHOOK_TIMEOUT_MS
+              value: "25000"
             - name: GH_CONFIG_DIR
               value: /run/issue-agent/github
             - name: GH_PROMPT_DISABLED
@@ -270,7 +277,7 @@ spec:
         # Same image as the runner; /checkout also marks the checkout and its
         # worktrees untrusted in CODEX_HOME (codex-untrust).
         - name: publisher
-          image: ghcr.io/isac322/issue-agent-runner:0.30.7-codex0.162.1-20261013-stall-fix@sha256:c1a9bf329592f4bb17f544376c77ae572fab21a93fd10b40535c907c812d6990
+          image: ghcr.io/isac322/issue-agent-runner:0.30.7-codex0.162.1-20261013-fast-resume@sha256:756b22ef90fc601abc6cd3bc8ed443f4f5249637e7b20c2ebe8b5e88b151257b
           command:
             - /usr/bin/tini
             - --
