@@ -3,7 +3,7 @@
 # Build context: apps/objects/issue-agent (see .dockerignore). linux/arm64 only.
 
 # debian:trixie-slim (linux/arm64)
-FROM debian:trixie-slim@sha256:da496358bd6934d2bd6a563a33176a2e50eff5490c54b4ac6fb051b69fef4071
+FROM debian:trixie-slim@sha256:a29215f6a35e51e22adffa17f89e9d2ef06214e64a2bad10d765c46aea49f11f
 
 # HAPI v0.30.7 (tiann/hapi commit 0239edf38e2da653d662f31039e24ccea04c7837).
 # Checksum from the release checksums.txt; equals the GitHub asset digest.

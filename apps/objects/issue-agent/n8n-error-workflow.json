@@ -30,7 +30,7 @@
       "id": "8b3276f8-0691-5437-82a6-d8b1e75b1eab",
       "name": "Fail execution",
       "type": "n8n-nodes-base.httpRequest",
-      "typeVersion": 4.2,
+      "typeVersion": 4.5,
       "position": [
         240,
         0

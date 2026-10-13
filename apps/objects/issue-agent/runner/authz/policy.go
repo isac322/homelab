@@ -14,7 +14,7 @@ import (
 	"strings"
 )
 
-// AuthZRequest mirrors moby pkg/authorization.Request (docker-v29.8.2
+// AuthZRequest mirrors moby pkg/authorization.Request (docker-v29.9.0
 // pkg/authorization/api.go). RequestBody is only populated by dockerd for
 // bodies with Content-Type application/json of at most 4 MiB
 // (pkg/authorization/authz.go sendBody/maxBodySize).

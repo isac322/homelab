@@ -1,7 +1,7 @@
 #!/bin/sh
 # POSIX sh on purpose: the official n8n image is Alpine-based and ships no bash.
 #
-# Starts n8n 2.40.x with issue-agent credentials and workflows provisioned from Git.
+# Starts n8n 2.42.x with issue-agent credentials and workflows provisioned from Git.
 #
 # Credentials: the two header-auth credentials and the GitHub webhook signing secret are
 # machine-owned (values come from Kubernetes Secrets) and are upserted by fixed id on
@@ -55,7 +55,7 @@ fail() {
 
 # Prints "yes" or "no" for workflow $1. Absence is only concluded from a successful
 # full listing: `list:workflow` exits 0 after querying every workflow row, and exits 1
-# on any DB/CLI error. (`export:workflow` cannot be used for this: in n8n 2.40.x it
+# on any DB/CLI error. (`export:workflow` cannot be used for this: in n8n 2.42.x it
 # raises the same exit-1 UserError for "no workflows" as for real failures.)
 # JSON log format makes each listed id an exact `message` field.
 workflow_exists() {

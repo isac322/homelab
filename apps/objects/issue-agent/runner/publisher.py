@@ -159,7 +159,7 @@ def github_repo(repo: str, token: str) -> dict:
             "Accept": "application/vnd.github+json",
             "Authorization": f"Bearer {token}",
             "User-Agent": "issue-agent-publisher",
-            "X-GitHub-Api-Version": "2022-11-28",
+            "X-GitHub-Api-Version": "2026-03-10",
         },
     )
     try:
