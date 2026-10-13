@@ -156,11 +156,13 @@ PR_THREADS_QUERY = """
 query($owner: String!, $name: String!, $number: Int!, $after: String) {
   repository(owner: $owner, name: $name) {
     pullRequest(number: $number) {
+      id
+      reviews(states: PENDING, first: 10) { nodes { id viewerDidAuthor } }
       reviewThreads(first: 50, after: $after) {
         pageInfo { hasNextPage endCursor }
         nodes {
           id isResolved isOutdated path line
-          comments(first: 50) { nodes { databaseId author { login } body createdAt } }
+          comments(first: 50) { nodes { databaseId author { login } body createdAt url } }
         }
       }
     }
@@ -169,6 +171,33 @@ query($owner: String!, $name: String!, $number: Int!, $after: String) {
 RESOLVE_THREAD_MUTATION = """
 mutation($threadId: ID!) {
   resolveReviewThread(input: {threadId: $threadId}) { thread { id isResolved } }
+}"""
+# One review per round: a pending review collects the new inline findings and the thread replies, then one
+# submit publishes them with the verdict (a REST thread reply would wrap itself in its own empty review).
+REVIEW_DELETE_MUTATION = """
+mutation($reviewId: ID!) {
+  deletePullRequestReview(input: {pullRequestReviewId: $reviewId}) { pullRequestReview { id } }
+}"""
+REVIEW_ADD_MUTATION = """
+mutation($pullRequestId: ID!, $commitOID: GitObjectID!) {
+  addPullRequestReview(input: {pullRequestId: $pullRequestId, commitOID: $commitOID}) { pullRequestReview { id } }
+}"""
+REVIEW_THREAD_ADD_MUTATION = """
+mutation($reviewId: ID!, $path: String!, $line: Int!, $side: DiffSide!, $startLine: Int, $startSide: DiffSide,
+         $body: String!) {
+  addPullRequestReviewThread(input: {pullRequestReviewId: $reviewId, path: $path, line: $line, side: $side,
+                                     startLine: $startLine, startSide: $startSide, body: $body}) { thread { id } }
+}"""
+REVIEW_REPLY_ADD_MUTATION = """
+mutation($reviewId: ID!, $threadId: ID!, $body: String!) {
+  addPullRequestReviewThreadReply(input: {pullRequestReviewId: $reviewId, pullRequestReviewThreadId: $threadId,
+                                          body: $body}) { comment { id } }
+}"""
+REVIEW_SUBMIT_MUTATION = """
+mutation($reviewId: ID!, $event: PullRequestReviewEvent!, $body: String!) {
+  submitPullRequestReview(input: {pullRequestReviewId: $reviewId, event: $event, body: $body}) {
+    pullRequestReview { id databaseId url state }
+  }
 }"""
 
 MAX_DISPATCH_ATTEMPTS = 8
@@ -1808,7 +1837,7 @@ _REVIEW_SCHEMA = """\
  "event":"APPROVE|REQUEST_CHANGES|COMMENT" (required iff reviewed),
  "body":"English markdown <=60000 (review body per isac-pr-review comment-template; on re-review first section lists prior findings Closed/Open)",
  "comments":[{"path":"str","line":int>=1,"side":"RIGHT|LEFT","start_line":null | int < line,"body":"<=20000"}] (max 50, new inline findings; start_line null for a single-line comment, first line of the range for a multi-line one),
- "thread_replies":[{"comment_id":int (databaseId of any comment in an existing review thread),"body":"<=20000","resolve":bool}] (max 100),
+ "thread_replies":[{"comment_id":int (databaseId of any comment in an existing review thread),"body":"<=20000","resolve":bool}] (max 100; only for an unresolved thread whose finding changed at this head, or a thread where a human commented after your latest comment; never re-confirm a resolved thread),
  "open_items":[strings <=200] (max 20; one item per maintainer decision, unrefuted P0-P2 concern or uncovered triggered lens that keeps the verdict from APPROVE; only with event COMMENT or REQUEST_CHANGES, may be empty),
  "summary":"<=2000",
  "blockers":[strings]}
@@ -2226,13 +2255,45 @@ def validate_result(mode: str, value: Any, number: int) -> dict[str, Any] | str:
 
 
 def findings_section(comments: list[dict[str, Any]]) -> str:
-    """Inline findings GitHub refused (422), folded into the review body."""
+    """Inline findings GitHub refused (not part of the diff), folded into the review body."""
     lines = ["## Findings outside the diff", ""]
     for c in comments:
         where = f"{c['start_line']}-{c['line']}" if c["start_line"] else str(c["line"])
         text = c["body"].replace("\n", "\n  ")
         lines.append(f"- `{c['path']}` line {where} ({c['side']}): {text}")
     return "\n".join(lines)
+
+
+def replies_section(replies: list[tuple[dict[str, Any], str]]) -> str:
+    """Thread replies (thread, reply text) folded into a pull request comment: each names its thread by the
+    root comment's link when known, else by path and line."""
+    lines = ["## Replies to review threads", ""]
+    for thread, text in replies:
+        root = thread["comments"][0] if thread["comments"] else {}
+        label = f"`{thread.get('path') or 'thread'}`" + (f" line {thread['line']}" if thread.get("line") else "")
+        where = f"[{label}]({root['url']})" if root.get("url") else label
+        text = text.replace("\n", "\n  ")
+        lines.append(f"- {where}: {text}")
+    return "\n".join(lines)
+
+
+def _login_key(login: str | None) -> str:
+    """A login compared across APIs: casefolded, without the ``[bot]`` suffix GraphQL omits for App authors
+    (REST and config say ``<slug>[bot]``, a GraphQL ``author.login`` says ``<slug>``)."""
+    return (login or "").casefold().removesuffix("[bot]")
+
+
+def human_after_bot(thread: Mapping[str, Any], bots: set[str]) -> bool:
+    """Whether a human (author not in ``bots``, compared by ``_login_key``) commented in ``thread`` after its
+    latest bot comment — or at all, when no bot commented. Comments are ordered by createdAt when every one
+    parses, else kept in GitHub's (chronological) order."""
+    bots = {_login_key(b) for b in bots}
+    comments = list(thread["comments"])
+    times = [_github_time(c.get("created_at")) for c in comments]
+    if all(t is not None for t in times):
+        comments = [c for _, _, c in sorted(zip(times, range(len(comments)), comments), key=lambda x: x[:2])]
+    last_bot = max((i for i, c in enumerate(comments) if _login_key(c.get("author")) in bots), default=-1)
+    return any(_login_key(c.get("author")) not in bots for c in comments[last_bot + 1:])
 
 
 def invoked(message: Mapping[str, Any]) -> bool:
@@ -4124,13 +4185,22 @@ class Bridge:
         return out
 
     def _graphql(self, query: str, variables: Mapping[str, Any], *, client: GitHub | None = None) -> dict[str, Any]:
+        data, error = self._graphql_try(query, variables, client=client)
+        if error is not None:
+            raise error
+        return data
+
+    def _graphql_try(self, query: str, variables: Mapping[str, Any], *,
+                     client: GitHub | None = None) -> tuple[dict[str, Any], OpError | None]:
+        """(data, None), or ({}, the error) when GitHub answered with GraphQL errors or no data: a refusal (not
+        retryable) the caller may handle; transport and HTTP failures still raise."""
         data = self._gh("POST", "/graphql", {"query": query, "variables": dict(variables)}, client=client)
         errors = data.get("errors") if isinstance(data, dict) else None
         if errors or not isinstance(data, dict) or not isinstance(data.get("data"), dict):
             first = errors[0] if isinstance(errors, list) and errors and isinstance(errors[0], dict) else {}
-            raise OpError(f"github graphql: {first.get('message') or 'unexpected response'}",
-                          retryable=first.get("type") == "RATE_LIMITED" or not errors)
-        return data["data"]
+            return {}, OpError(f"github graphql: {first.get('message') or 'unexpected response'}",
+                               retryable=first.get("type") == "RATE_LIMITED" or not errors)
+        return data["data"], None
 
     def _comments(self, repo: str, number: int, max_pages: int = 20, *,
                   client: GitHub | None = None) -> list[dict[str, Any]]:
@@ -4383,8 +4453,14 @@ class Bridge:
     def _threads(self, repo: str, number: int, *,
                  client: GitHub | None = None) -> list[dict[str, Any]]:
         """Review threads via GraphQL (bounded pagination)."""
+        return self._review_state(repo, number, client=client)[2]
+
+    def _review_state(self, repo: str, number: int, *,
+                      client: GitHub | None = None) -> tuple[str, list[str], list[dict[str, Any]]]:
+        """(pull request node id, ids of the viewer's own PENDING reviews, review threads) via GraphQL."""
         owner, name = repo.split("/", 1)
         threads: list[dict[str, Any]] = []
+        node_id, pending = None, []
         after = None
         for _ in range(MAX_THREAD_PAGES):
             data = self._graphql(PR_THREADS_QUERY, {"owner": owner, "name": name, "number": number, "after": after},
@@ -4392,6 +4468,10 @@ class Bridge:
             pr = (data.get("repository") or {}).get("pullRequest")
             if not isinstance(pr, dict):
                 raise OpError(f"pull request #{number} not found")
+            if node_id is None:
+                node_id = pr.get("id")
+                pending = [r["id"] for r in (pr.get("reviews") or {}).get("nodes") or []
+                           if isinstance(r, dict) and r.get("viewerDidAuthor") and isinstance(r.get("id"), str)]
             conn = pr.get("reviewThreads") or {}
             for t in conn.get("nodes") or []:
                 if not isinstance(t, dict):
@@ -4404,7 +4484,7 @@ class Bridge:
                     "line": t.get("line"),
                     "comments": [
                         {"comment_id": c.get("databaseId"), "author": (c.get("author") or {}).get("login"),
-                         "body": (c.get("body") or "")[:4000], "created_at": c.get("createdAt")}
+                         "body": (c.get("body") or "")[:4000], "created_at": c.get("createdAt"), "url": c.get("url")}
                         for c in (t.get("comments") or {}).get("nodes") or [] if isinstance(c, dict)
                     ],
                 })
@@ -4412,7 +4492,9 @@ class Bridge:
             if not page.get("hasNextPage") or not page.get("endCursor"):
                 break
             after = page["endCursor"]
-        return threads
+        if not isinstance(node_id, str):
+            raise OpError(f"pull request #{number}: no node id", retryable=True)
+        return node_id, pending, threads
 
     def _get_pr(self, repo: str, number: int, *, client: GitHub | None = None) -> dict[str, Any]:
         pr = self._gh("GET", f"/repos/{repo}/pulls/{number}", client=client)
@@ -4435,14 +4517,14 @@ class Bridge:
         return sha if sha is not None else self.store.review_head(delivery)
 
     def _own_review_of(self, reviews: list[dict[str, Any]], login: str | None, sha: str) -> dict[str, Any] | None:
-        """The latest review ``login`` (the review App) published about head ``sha`` (``_review_head_of``):
-        GitHub lists reviews oldest-first and the latest carries the verdict. Only reviews whose first line is
-        the bridge's marker count; a reply-only review (an empty COMMENTED review GitHub records when a thread
-        reply is posted) is stamped with the head at that moment but reviewed nothing."""
+        """The latest review ``login`` (the review App) submitted about head ``sha`` (``_review_head_of``):
+        GitHub lists reviews oldest-first and the latest carries the verdict. Only submitted reviews whose first
+        line is the bridge's marker count; a reply-only review (an empty COMMENTED review GitHub records for a
+        lone thread reply) is stamped with the head at that moment but reviewed nothing."""
         if not login:
             return None
-        return next((r for r in reversed(reviews)
-                     if _authored_by(r, login) and self._review_head_of(r) == sha), None)
+        return next((r for r in reversed(reviews) if r.get("state") != "PENDING"
+                     and _authored_by(r, login) and self._review_head_of(r) == sha), None)
 
     def _begin_review_head(self, ev: sqlite3.Row) -> str:
         """Record the head a starting review checks out, so a push to another head cancels it.
@@ -4554,10 +4636,12 @@ class Bridge:
             raise OpError(f"invalid review result: {result}")
         if result["status"] != "reviewed":
             raise OpError("review result status is not reviewed")
-        # One publication per delivery at a time: an n8n retry fired while the first request still runs must see
-        # its marker, so the reviews list, the marker check, the POST, the record and the status are one
-        # critical section (blocking: the second caller then reuses the first one's review).
-        with self._keyed_lock(("github-review", delivery)):
+        # One publication per pull request at a time: GitHub keeps one PENDING review per user and pull request,
+        # so two deliveries publishing at once would delete each other's pending review, and an n8n retry fired
+        # while the first request still runs must see its marker. The reviews list, the marker check, the pending
+        # review and its submit, the record and the status are one critical section (blocking: a retry then
+        # reuses the first one's review).
+        with self._keyed_lock(("github-review", ev["repo"], number)):
             return self._publish_review(ev, result)
 
     def _publish_review(self, ev: sqlite3.Row, result: dict[str, Any]) -> dict[str, Any]:
@@ -4571,54 +4655,54 @@ class Bridge:
         stale = head != reviewed
 
         reviewer = self.reviewer_login()
-        reviews = self._paged(f"/repos/{repo}/pulls/{number}/reviews", MAX_IDEMPOTENCY_PAGES, strict=True,
-                              client=gh)
+        # A pending review (left by a run that stopped before submitting) carries no marker and published nothing.
+        reviews = [r for r in self._paged(f"/repos/{repo}/pulls/{number}/reviews", MAX_IDEMPOTENCY_PAGES,
+                                          strict=True, client=gh) if r.get("state") != "PENDING"]
         marker = f"{BOT_MARKER_PREFIX}:{delivery}:review:{reviewed} -->"
-        # This delivery's own review (a retried POST whose reply was lost): posted by the reviewer, its marker names
-        # this delivery, and it is about this head — the marker's SHA, or for a marker written before the SHA was
-        # added, the head this bridge recorded for the delivery. A delivery retargeted since then posts anew.
+        # This delivery's own review (a retried submit whose reply was lost): posted by the reviewer, its marker
+        # names this delivery, and it is about this head — the marker's SHA, or for a marker written before the SHA
+        # was added, the head this bridge recorded for the delivery. A delivery retargeted since then posts anew.
         existing = next((r for r in reviews if _authored_by(r, reviewer) and (m := _review_marker(r)) is not None
                          and m[0] == delivery and self._review_head_of(r) == reviewed), None)
         reused = False
         if existing is None and not self._explicit_review(ev):
             # An automatic request does not post a second review of a head the review App already reviewed:
-            # this delivery may be retrying a POST whose reply was lost after the review landed. That review
-            # belongs to another run, which posted its own thread replies, so this run posts and resolves none.
+            # this delivery may be retrying a submit whose reply was lost after the review landed. That review
+            # belongs to another run, which carried its own thread replies, so this run posts and resolves none.
             existing = self._own_review_of(reviews, reviewer, reviewed)
             reused = existing is not None
 
-        replies: list[int] = []
-        resolved: list[str] = []
-        if result["thread_replies"] and not reused:
-            threads = self._threads(repo, number, client=gh)
+        node_id: str = ""
+        pending: list[str] = []
+        kept: list[tuple[dict[str, Any], dict[str, Any]]] = []  # (thread reply, its thread)
+        dropped: list[int] = []
+        if not reused and (result["thread_replies"] or existing is None):
+            node_id, pending, threads = self._review_state(repo, number, client=gh)
             by_comment = {c["comment_id"]: t for t in threads for c in t["comments"]}
             unknown = [r["comment_id"] for r in result["thread_replies"] if r["comment_id"] not in by_comment]
             if unknown:
                 raise OpError(f"review thread comments not found: {unknown}")
-            posted = [c.get("body") or "" for c in
-                      self._paged(f"/repos/{repo}/pulls/{number}/comments", MAX_IDEMPOTENCY_PAGES, strict=True,
-                                  client=gh)]
+            bots = {_login_key(login) for login in (reviewer, self.config.github_bot_login) if login}
             for r in result["thread_replies"]:
-                cid = r["comment_id"]
-                reply_marker = f"{BOT_MARKER_PREFIX}:{delivery}:reply:{cid} -->"
-                thread = by_comment[cid]
-                # The replies endpoint only accepts a thread's top-level comment; the marker keeps the given id.
-                root = thread["comments"][0]["comment_id"] or cid
-                if not any(reply_marker in b for b in posted):
-                    self._gh("POST", f"/repos/{repo}/pulls/{number}/comments/{root}/replies",
-                             {"body": f"{reply_marker}\n{r['body']}"}, ok=(201,), client=gh)
-                replies.append(cid)
-                if r["resolve"]:
-                    if not thread["is_resolved"]:
-                        self._graphql(RESOLVE_THREAD_MUTATION, {"threadId": thread["thread_id"]}, client=gh)
-                        thread["is_resolved"] = True
-                    resolved.append(thread["thread_id"])
+                thread = by_comment[r["comment_id"]]
+                # A resolved thread gets a reply only to answer a human who commented after the bot; a repeated
+                # "closed" confirmation on it is noise, so it is dropped rather than failing the review.
+                if thread["is_resolved"] and not human_after_bot(thread, bots):
+                    LOG.warning("review of %s#%s: dropped the reply to comment %s: its thread is resolved and no "
+                                "human commented after the bot", repo, number, r["comment_id"])
+                    dropped.append(r["comment_id"])
+                    continue
+                kept.append((r, thread))
+        replies = [r["comment_id"] for r, _ in kept]
 
         if existing is not None:
+            # This delivery's replies are already in that review; resolving is idempotent, so a retry after the
+            # submit landed still resolves the threads it closed.
+            resolved = self._resolve_replied(kept, gh)
             submitted = REVIEW_STATE_EVENTS.get(existing.get("state"), existing.get("state"))
             out = {"review_id": existing.get("id"), "html_url": existing.get("html_url"),
-                   "event_submitted": submitted, "replies": replies, "resolved": resolved,
-                   "created": False, "stale": stale,
+                   "event_submitted": submitted, "replies": replies, "dropped_replies": dropped,
+                   "resolved": resolved, "created": False, "stale": stale,
                    "commit_status": self._record_verdict(repo, delivery, reviewed, head, submitted,
                                                          existing.get("html_url"))}
             out["decision_comment"] = None if stale else self._decision_comment(repo, number, reviewed, result)
@@ -4640,40 +4724,90 @@ class Bridge:
                 again = f" Comment `{command}` to review the new head." if command else ""
             body = (f"**Stale review** — this reviews `{reviewed}`; the pull request head moved to `{head}` "
                     f"while the review ran, so the new head is not reviewed here.{again}\n\n{body}")
-        inline = [
-            {"path": c["path"], "line": c["line"], "side": c["side"], "body": c["body"],
-             **({"start_line": c["start_line"], "start_side": c["side"]} if c["start_line"] else {})}
-            for c in result["comments"]
-        ]
-        payload: dict[str, Any] = {"commit_id": reviewed, "body": f"{marker}\n{body}{tail}", "event": event}
-        if inline:
-            payload["comments"] = inline
-        path = f"/repos/{repo}/pulls/{number}/reviews"
-        status, data = self._gh_raw("POST", path, payload, client=gh)
-        folded = False
-        if status == 422 and inline:
-            # GitHub rejects inline comments outside the diff; keep the findings in the review body.
-            payload = {"commit_id": reviewed, "event": event,
-                       "body": f"{marker}\n{body}\n\n{findings_section(result['comments'])}{tail}"}
-            status, data = self._gh_raw("POST", path, payload, client=gh)
-            folded = True
-        if status == 422 and stale:
+
+        def stale_comment() -> dict[str, Any]:
             # A force-push can drop the reviewed commit from the pull request, and GitHub then refuses a review
-            # anchored to it; keep the verdict and findings as a pull request comment instead.
+            # anchored to it; keep the verdict, findings and thread replies as a pull request comment instead.
             findings = f"\n\n{findings_section(result['comments'])}" if result["comments"] else ""
+            answers = f"\n\n{replies_section([(t, r['body']) for r, t in kept])}" if kept else ""
             posted = self._comment(repo, number, f"{delivery}:review",
-                                   f"**Verdict: {event}**\n\n{body}{findings}{tail}", client=gh)
+                                   f"**Verdict: {event}**\n\n{body}{findings}{answers}{tail}", client=gh)
+            resolved = self._resolve_replied(kept, gh)
             self._record_verdict(repo, delivery, reviewed, head, None, None)
             return {"review_id": None, "html_url": posted["url"], "event_submitted": "COMMENT",
-                    "replies": replies, "resolved": resolved, "created": posted["created"], "stale": True,
-                    "inline_folded": bool(result["comments"]), "commit_status": None}
-        if status != 200 or not isinstance(data, dict):
-            raise OpError(f"github review HTTP {status}", retryable=status >= 500 or status == 429)
-        out = {"review_id": data.get("id"), "html_url": data.get("html_url"), "event_submitted": event,
-               "replies": replies, "resolved": resolved, "created": True, "inline_folded": folded, "stale": stale,
-               "commit_status": self._record_verdict(repo, delivery, reviewed, head, event, data.get("html_url"))}
+                    "replies": replies, "dropped_replies": dropped, "resolved": resolved,
+                    "created": posted["created"], "stale": True, "inline_folded": bool(result["comments"]),
+                    "commit_status": None}
+
+        # GitHub keeps one pending review per user and pull request: drop the one a stopped run left behind.
+        for leftover in pending:
+            _, error = self._graphql_try(REVIEW_DELETE_MUTATION, {"reviewId": leftover}, client=gh)
+            if error is not None and error.retryable:
+                raise error
+            if error is not None:
+                # Already gone (NOT_FOUND / could not resolve): nothing left to clear.
+                LOG.warning("review of %s#%s: leftover pending review %s not deleted: %s",
+                            repo, number, leftover, error)
+        data, error = self._graphql_try(REVIEW_ADD_MUTATION, {"pullRequestId": node_id, "commitOID": reviewed},
+                                        client=gh)
+        if error is not None and stale and not error.retryable:
+            return stale_comment()
+        if error is not None:
+            raise error
+        review_id = ((data.get("addPullRequestReview") or {}).get("pullRequestReview") or {}).get("id")
+        if not isinstance(review_id, str):
+            raise OpError("github review: no pending review id", retryable=True)
+        folded: list[dict[str, Any]] = []
+        for c in result["comments"]:
+            data, error = self._graphql_try(REVIEW_THREAD_ADD_MUTATION, {
+                "reviewId": review_id, "path": c["path"], "line": c["line"], "side": c["side"],
+                "startLine": c["start_line"], "startSide": c["side"] if c["start_line"] else None,
+                "body": c["body"]}, client=gh)
+            if error is not None and error.retryable:
+                raise error
+            # GitHub refuses a line outside the diff (an error, or a null thread); keep the finding in the body.
+            if error is not None or not (data.get("addPullRequestReviewThread") or {}).get("thread"):
+                folded.append(c)
+        for r, thread in kept:
+            self._graphql(REVIEW_REPLY_ADD_MUTATION,
+                          {"reviewId": review_id, "threadId": thread["thread_id"], "body": r["body"]}, client=gh)
+        section = f"\n\n{findings_section(folded)}" if folded else ""
+        data, error = self._graphql_try(REVIEW_SUBMIT_MUTATION, {
+            "reviewId": review_id, "event": event, "body": f"{marker}\n{body}{section}{tail}"}, client=gh)
+        if error is not None and stale and not error.retryable:
+            # The fallback comment must land even when the pending review cannot be cleared.
+            try:
+                _, delete_error = self._graphql_try(REVIEW_DELETE_MUTATION, {"reviewId": review_id}, client=gh)
+            except OpError as exc:
+                delete_error = exc
+            if delete_error is not None:
+                LOG.warning("review of %s#%s: stale pending review %s not deleted: %s",
+                            repo, number, review_id, delete_error)
+            return stale_comment()
+        if error is not None:
+            raise error
+        review = (data.get("submitPullRequestReview") or {}).get("pullRequestReview")
+        if not isinstance(review, dict):
+            raise OpError("github review submit: unexpected response", retryable=True)
+        resolved = self._resolve_replied(kept, gh)
+        out = {"review_id": review.get("databaseId"), "html_url": review.get("url"), "event_submitted": event,
+               "replies": replies, "dropped_replies": dropped, "resolved": resolved, "created": True,
+               "inline_folded": bool(folded), "stale": stale,
+               "commit_status": self._record_verdict(repo, delivery, reviewed, head, event, review.get("url"))}
         out["decision_comment"] = None if stale else self._decision_comment(repo, number, reviewed, result)
         return out
+
+    def _resolve_replied(self, kept: list[tuple[dict[str, Any], dict[str, Any]]],
+                         gh: GitHub | None) -> list[str]:
+        """Resolve the threads of kept replies marked ``resolve`` (already resolved ones are left alone)."""
+        resolved: list[str] = []
+        for r, thread in kept:
+            if r["resolve"]:
+                if not thread["is_resolved"]:
+                    self._graphql(RESOLVE_THREAD_MUTATION, {"threadId": thread["thread_id"]}, client=gh)
+                    thread["is_resolved"] = True
+                resolved.append(thread["thread_id"])
+        return resolved
 
     def _record_verdict(self, repo: str, delivery: str, reviewed: str, head: Any, event: str | None,
                         target_url: Any) -> dict[str, Any] | None:

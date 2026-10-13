@@ -10,6 +10,7 @@ import http.client
 import http.server
 import json
 import os
+import re
 import sqlite3
 import sys
 import tempfile
@@ -40,6 +41,17 @@ NEEDS = bridge.NEEDS_ATTENTION
 def iso_ago(days: float) -> str:
     """GitHub timestamp ``days`` before now."""
     return time.strftime("%Y-%m-%dT%H:%M:%SZ", time.gmtime(time.time() - days * 86400))
+
+
+_GRAPHQL_MUTATION_RE = re.compile(
+    r"\b(resolveReviewThread|deletePullRequestReview|addPullRequestReviewThreadReply|addPullRequestReviewThread"
+    r"|addPullRequestReview|submitPullRequestReview)\(")
+
+
+def graphql_op(body: Any) -> str | None:
+    """The mutation a GraphQL request body runs, else None (a query)."""
+    match = _GRAPHQL_MUTATION_RE.search(body.get("query") or "") if isinstance(body, dict) else None
+    return match.group(1) if match else None
 
 
 class Fake:
@@ -94,11 +106,16 @@ class Fake:
         self.pr_creates: list[dict[str, Any]] = []
         self.pr_patches: list[dict[str, Any]] = []
         self.reviews: list[dict[str, Any]] = []
+        # submitted reviews in the REST shape: commit_id, event, body, plus "comments" (new inline threads) and
+        # "replies" ((thread id, body) of replies to existing threads) when the review carried any
         self.review_posts: list[dict[str, Any]] = []
-        self.reject_inline = False
+        self.pending_reviews: dict[str, dict[str, Any]] = {}  # GraphQL node id -> pending review
+        self.review_deletions: list[str] = []  # pending reviews deleted (GraphQL node ids)
+        self.outside_diff: set[tuple[str, int]] = set()  # (path, line) addPullRequestReviewThread answers null for
         self.reject_review_commits: set[str] = set()  # commits a force-push dropped from the pull request
-        self.review_comments: list[dict[str, Any]] = []
-        self.reply_posts: list[tuple[int, dict[str, Any]]] = []
+        self.reject_submit_commits: set[str] = set()  # pending reviews on these commits fail to submit
+        self.graphql_ops: list[str] = []  # GraphQL mutations in call order
+        self.reply_posts: list[tuple[int, dict[str, Any]]] = []  # REST thread replies (must stay unused)
         self.threads: list[dict[str, Any]] = []
         self.resolved: list[str] = []
         # second App used only for reviews; requests are attributed to the App whose token they carry
@@ -256,6 +273,9 @@ class Fake:
                     if method == "POST" and "/issues/" in parsed.path and parsed.path.endswith("/comments"):
                         gate, fake.comment_gate = fake.comment_gate, None
                     gate = fake.gates.pop((method, parsed.path), None) or gate
+                    if method == "POST" and parsed.path == "/graphql" and isinstance(body, dict):
+                        # ("GRAPHQL", <mutation name>) gates one GraphQL operation
+                        gate = fake.gates.pop(("GRAPHQL", graphql_op(body)), None) or gate
                 if gate is not None:  # held outside the lock so concurrent requests are still served
                     gate[0].set()
                     gate[1].wait(10)
@@ -603,40 +623,31 @@ class Fake:
         if len(rest) == 1:
             return 200, pr
         if rest[1] == "reviews" and method == "GET":
-            # Reviews are scoped to their pull request; seeded reviews without "pull" belong to every one.
-            return 200, [r for r in self.reviews if r.get("pull", pr["number"]) == pr["number"]]
-        if rest[1] == "reviews":
-            self.review_posts.append(body)
-            if body.get("commit_id") in self.reject_review_commits:
-                return 422, {"message": "Unprocessable Entity"}
-            if self.reject_inline and body.get("comments"):
-                return 422, {"message": "Unprocessable Entity"}
-            state = {"APPROVE": "APPROVED", "REQUEST_CHANGES": "CHANGES_REQUESTED", "COMMENT": "COMMENTED"}
-            review = {"id": self._next(), "html_url": f"https://github.com/{repo}/pull/{pr['number']}#r{self.seq}",
-                      "state": state[body["event"]], "body": body["body"], "commit_id": body["commit_id"],
-                      "user": {"login": self.gh_actor}, "pull": pr["number"]}
-            self.reviews.append(review)
-            return 200, review
-        if rest[1] == "comments" and len(rest) == 2:
-            return 200, self.review_comments
+            # Reviews are scoped to their pull request; seeded reviews without "pull" belong to every one. GitHub
+            # also lists the caller's own pending review (no body yet).
+            pending = [{"id": 0, "state": "PENDING", "body": "", "commit_id": p["commit"],
+                        "user": {"login": p["author"]}, "pull": p["pull"]}
+                       for p in self.pending_reviews.values()
+                       if p["pull"] == pr["number"] and p["author"] == self.gh_actor]
+            return 200, [r for r in self.reviews if r.get("pull", pr["number"]) == pr["number"]] + pending
         if rest[1] == "comments" and rest[3:] == ["replies"]:
-            roots = {(t["comments"]["nodes"] or [{}])[0].get("databaseId") for t in self.threads}
-            if int(rest[2]) not in roots:  # GitHub only accepts a thread's top-level comment here
-                return 422, {"message": "Validation Failed"}
             self.reply_posts.append((int(rest[2]), body))
-            c = {"id": self._next(), "body": body["body"], "in_reply_to_id": int(rest[2])}
-            self.review_comments.append(c)
-            return 201, c
+            return 201, {"id": self._next(), "body": body["body"], "in_reply_to_id": int(rest[2])}
         return 404, {"message": "no route"}
 
     def graphql(self, body: Any) -> tuple[int, Any]:
-        if "resolveReviewThread" in body["query"]:
-            tid = body["variables"]["threadId"]
+        op, v = graphql_op(body), body.get("variables") or {}
+        if op is not None:
+            self.graphql_ops.append(op)
+        if op == "resolveReviewThread":
+            tid = v["threadId"]
             self.resolved.append(tid)
             for t in self.threads:
                 if t["id"] == tid:
                     t["isResolved"] = True
             return 200, {"data": {"resolveReviewThread": {"thread": {"id": tid, "isResolved": True}}}}
+        if op is not None:
+            return self.review_mutation(op, v)
         if "mergeStateStatus" in body["query"]:
             number = body["variables"]["number"]
             self.pr_state_reads.append(number)
@@ -666,9 +677,81 @@ class Fake:
                 "defaultBranchRef": {"name": "master", "target": {"oid": self.default_sha}},
                 "pullRequest": state,
             }}}
+        number = body["variables"]["number"]
         return 200, {"data": {"repository": {"pullRequest": {
-            "reviewThreads": {"pageInfo": {"hasNextPage": False, "endCursor": None}, "nodes": self.threads},
+            "id": f"PR_{number}",
+            "reviews": {"nodes": [{"id": p["id"], "viewerDidAuthor": p["author"] == self.gh_actor}
+                                  for p in self.pending_reviews.values() if p["pull"] == number]},
+            "reviewThreads": {"pageInfo": {"hasNextPage": False, "endCursor": None},
+                              "nodes": [graphql_thread(t) for t in self.threads]},
         }}}}
+
+    def review_mutation(self, op: str, v: dict[str, Any]) -> tuple[int, Any]:
+        """GitHub's pending review flow: add a pending review, add threads and replies to it, submit or delete it."""
+        if op == "addPullRequestReview":
+            number = int(v["pullRequestId"].removeprefix("PR_"))
+            if v["commitOID"] in self.reject_review_commits:
+                return 200, {"data": {"addPullRequestReview": None}, "errors": [
+                    {"type": "UNPROCESSABLE", "message": "Commit is not part of the pull request"}]}
+            if any(p["pull"] == number and p["author"] == self.gh_actor for p in self.pending_reviews.values()):
+                return 200, {"data": {"addPullRequestReview": None}, "errors": [
+                    {"type": "UNPROCESSABLE", "message": "User can only have one pending review per pull request"}]}
+            rid = f"PRR_{self._next()}"
+            self.pending_reviews[rid] = {"id": rid, "pull": number, "commit": v["commitOID"], "author": self.gh_actor,
+                                         "threads": [], "replies": []}
+            return 200, {"data": {"addPullRequestReview": {"pullRequestReview": {"id": rid}}}}
+        review = self.pending_reviews.get(v["reviewId"])
+        if review is None:
+            return 200, {"data": {op: None}, "errors": [{"type": "NOT_FOUND", "message": "Could not resolve"}]}
+        if op == "deletePullRequestReview":
+            del self.pending_reviews[review["id"]]
+            self.review_deletions.append(review["id"])
+            return 200, {"data": {op: {"pullRequestReview": {"id": review["id"]}}}}
+        if op == "addPullRequestReviewThread":
+            if (v["path"], v["line"]) in self.outside_diff:
+                return 200, {"data": {op: {"thread": None}}}  # what GitHub answers for a line outside the diff
+            review["threads"].append({"path": v["path"], "line": v["line"], "side": v["side"], "body": v["body"],
+                                      **({"start_line": v["startLine"], "start_side": v["startSide"]}
+                                         if v.get("startLine") else {})})
+            return 200, {"data": {op: {"thread": {"id": f"PRRT_{self._next()}"}}}}
+        if op == "addPullRequestReviewThreadReply":
+            review["replies"].append((v["threadId"], v["body"]))
+            return 200, {"data": {op: {"comment": {"id": f"PRRC_{self._next()}"}}}}
+        # submitPullRequestReview
+        if review["commit"] in self.reject_submit_commits:
+            return 200, {"data": {op: None}, "errors": [
+                {"type": "UNPROCESSABLE", "message": "Commit is not part of the pull request"}]}
+        del self.pending_reviews[review["id"]]
+        post: dict[str, Any] = {"commit_id": review["commit"], "event": v["event"], "body": v["body"]}
+        if review["threads"]:
+            post["comments"] = review["threads"]
+        if review["replies"]:
+            post["replies"] = review["replies"]
+        self.review_posts.append(post)
+        for tid, text in review["replies"]:  # the replies land on their threads, after every earlier comment
+            for t in self.threads:
+                if t["id"] == tid:
+                    t["comments"]["nodes"].append({"databaseId": self._next(), "author": {"login": review["author"]},
+                                                   "body": text, "createdAt": "z"})
+        state = {"APPROVE": "APPROVED", "REQUEST_CHANGES": "CHANGES_REQUESTED", "COMMENT": "COMMENTED"}[v["event"]]
+        submitted = {"id": self._next(), "html_url": f"https://github.com/{REPO}/pull/{review['pull']}#r{self.seq}",
+                     "state": state, "body": v["body"], "commit_id": review["commit"],
+                     "user": {"login": review["author"]}, "pull": review["pull"]}
+        self.reviews.append(submitted)
+        return 200, {"data": {op: {"pullRequestReview": {
+            "id": review["id"], "databaseId": submitted["id"], "url": submitted["html_url"], "state": state}}}}
+
+
+def graphql_thread(thread: dict[str, Any]) -> dict[str, Any]:
+    """``thread`` as GitHub GraphQL renders it: a GitHub App comment author's ``login`` is the bare slug
+    (``haechibot``), not the REST/config form ``haechibot[bot]``."""
+    comments = thread.get("comments")
+    if not isinstance(comments, dict):
+        return thread
+    nodes = [{**c, "author": {**c["author"], "login": c["author"]["login"].removesuffix("[bot]")}}
+             if isinstance(c.get("author"), dict) and isinstance(c["author"].get("login"), str) else c
+             for c in comments.get("nodes") or []]
+    return {**thread, "comments": {**comments, "nodes": nodes}}
 
 
 def repository(repo: str) -> dict:
@@ -2861,7 +2944,7 @@ class ReviewSweepTests(BridgeTestCase):
         original = self.fake.github
 
         def push_during_post(method: str, path: str, query: dict, body: Any) -> tuple[int, Any]:
-            if method == "POST" and path.endswith("/pulls/12/reviews") and self.store.event("s2") is None:
+            if graphql_op(body) == "submitPullRequestReview" and self.store.event("s2") is None:
                 self.fake.prs[12]["head"]["sha"] = SHA_B
                 push_b = pr_payload(12, action="synchronize", sha=SHA_B)
                 self.assertEqual(self.deliver(push_b, event="pull_request", delivery="s1").outcome, "queued")
@@ -2887,7 +2970,7 @@ class ReviewSweepTests(BridgeTestCase):
         original = self.fake.github
 
         def push_during_post(method: str, path: str, query: dict, body: Any) -> tuple[int, Any]:
-            if method == "POST" and path.endswith("/pulls/12/reviews") and self.store.event("s2") is None:
+            if graphql_op(body) == "submitPullRequestReview" and self.store.event("s2") is None:
                 self.fake.prs[12]["head"]["sha"] = SHA_B
                 push_b = pr_payload(12, action="synchronize", sha=SHA_B)
                 self.assertEqual(self.deliver(push_b, event="pull_request", delivery="s1").outcome, "queued")
@@ -2912,7 +2995,7 @@ class ReviewSweepTests(BridgeTestCase):
         self.assertEqual(len(self.fake.review_posts), 1)
 
     def reuse_after_lost_post(self, result: dict[str, Any]) -> dict[str, Any]:
-        """Old A's review POST lands at GitHub but its reply is lost, a push to B cancels old A and the push
+        """Old A's review submit lands at GitHub but its reply is lost, a push to B cancels old A and the push
         back to A queues new A; returns new A's `github.review` result."""
         self.started_review(12, "p1")
         client = self.bridge.review_github or self.bridge.github
@@ -2920,7 +3003,7 @@ class ReviewSweepTests(BridgeTestCase):
 
         def lose_post_reply(method: str, path: str, body: Any = None) -> tuple[int, Any]:
             status, data = real_request(method, path, body)
-            if method == "POST" and path.endswith("/pulls/12/reviews"):
+            if graphql_op(body) == "submitPullRequestReview":
                 raise bridge.TransportError("review reply lost", not_sent=False)
             return status, data
 
@@ -2949,8 +3032,8 @@ class ReviewSweepTests(BridgeTestCase):
         self.assertEqual(json.loads(self.store.event("s2")["stages"])["review_published"]["sha"], SHA_A)
 
     def test_a_reused_review_posts_no_thread_replies_again(self) -> None:
-        # Old A replied to (and resolved) the thread before its review POST; new A reuses that review, so it
-        # neither replies nor resolves again.
+        # Old A's submitted review carried the reply (its resolve never ran: the submit reply was lost); new A
+        # reuses that review, so it neither replies nor resolves.
         self.fake.threads = [{"id": "T1", "isResolved": False, "isOutdated": False, "path": "a.py", "line": 3,
                               "comments": {"nodes": [{"databaseId": 501, "author": {"login": "isac322"},
                                                       "body": "why?", "createdAt": "t"}]}}]
@@ -2958,8 +3041,9 @@ class ReviewSweepTests(BridgeTestCase):
         published = self.reuse_after_lost_post(result)
         self.assertEqual((published["ok"], published["created"], published["replies"], published["resolved"]),
                          (True, False, [], []))
-        self.assertEqual((len(self.fake.reply_posts), self.fake.resolved, len(self.fake.review_posts)),
-                         (1, ["T1"], 1))
+        self.assertEqual((len(self.fake.review_posts), self.fake.review_posts[0]["replies"], self.fake.resolved),
+                         (1, [("T1", "fixed")], []))
+        self.assertEqual(self.fake.reply_posts, [])
 
     def test_a_push_back_to_a_reviewed_head_keeps_a_running_review_comment(self) -> None:
         # Fuzz: A was reviewed, a `review` comment queued, the push to B folded it into B's request, which
@@ -5031,7 +5115,8 @@ class PullRequestOpsTests(BridgeTestCase):
             REVIEW_OK, thread_replies=[{"comment_id": 501, "body": "fixed", "resolve": True}]))
         self.assertTrue(result["ok"], result)
         self.assertEqual({actor for actor, _, _ in self.fake.gh_calls}, {REVIEWER})
-        self.assertEqual((len(self.fake.reply_posts), self.fake.resolved), (1, ["T1"]))
+        self.assertEqual((self.fake.review_posts[0]["replies"], self.fake.reply_posts, self.fake.resolved),
+                         ([("T1", "fixed")], [], ["T1"]))
         self.assertEqual(self.fake.reviews[-1]["user"]["login"], REVIEWER)
         self.assertEqual(self.fake.status_posts, [(SHA_A, {
             "state": "failure", "target_url": result["html_url"], "description": "Changes requested",
@@ -5068,52 +5153,225 @@ class PullRequestOpsTests(BridgeTestCase):
         self.assertEqual([(sha, s["state"], s["description"]) for sha, s in self.fake.status_posts],
                          [(SHA_A, "failure", "Not approved")])
 
-    def test_rejected_inline_comments_are_folded_into_the_body(self) -> None:
-        self.started_review(12)
-        self.fake.reject_inline = True
-        multi = {"path": "b.py", "line": 9, "side": "LEFT", "start_line": 4, "body": "first\nsecond"}
-        result = self.op("github.review", "p1", result=variant(REVIEW_OK, comments=REVIEW_OK["comments"] + [multi]))
-        self.assertTrue(result["inline_folded"])
-        self.assertEqual(len(self.fake.review_posts), 2)
-        retry = self.fake.review_posts[1]
-        self.assertNotIn("comments", retry)
-        self.assertIn("## Findings outside the diff", retry["body"])
-        self.assertIn("- `a.py` line 3 (RIGHT): bug here", retry["body"])
-        self.assertIn("- `b.py` line 4-9 (LEFT): first\n  second", retry["body"])
-        self.assertTrue(retry["body"].endswith(bridge.review_footer(BOT, pushes_reviewed=False)))
+    @staticmethod
+    def thread(tid: str, *comments: tuple[int, str, str], resolved: bool = False,
+               url: str | None = None) -> dict[str, Any]:
+        """A review thread on a.py line 3 with (databaseId, author login, createdAt) comments."""
+        nodes = [{"databaseId": cid, "author": {"login": login}, "body": f"comment {cid}", "createdAt": at}
+                 for cid, login, at in comments]
+        if url is not None:
+            nodes[0]["url"] = url
+        return {"id": tid, "isResolved": resolved, "isOutdated": False, "path": "a.py", "line": 3,
+                "comments": {"nodes": nodes}}
 
-    def test_thread_replies_are_idempotent_and_resolve_threads(self) -> None:
+    def test_one_review_carries_the_findings_the_replies_and_the_verdict(self) -> None:
         self.started_review(12)
-        self.fake.threads = [{"id": "T1", "isResolved": False, "isOutdated": False, "path": "a.py", "line": 3,
-                              "comments": {"nodes": [{"databaseId": 501, "author": {"login": "isac322"},
-                                                      "body": "why?", "createdAt": "t"}]}}]
+        self.fake.threads = [self.thread("T1", (501, BOT, "t")),
+                             self.thread("T2", (511, BOT, "t"), (512, "isac322", "u"))]
+        multi = {"path": "b.py", "line": 9, "side": "LEFT", "start_line": 4, "body": "first\nsecond"}
+        result = self.op("github.review", "p1", result=variant(
+            REVIEW_OK, comments=REVIEW_OK["comments"] + [multi],
+            thread_replies=[{"comment_id": 501, "body": "fixed", "resolve": True},
+                            {"comment_id": 512, "body": "because", "resolve": False}]))
+        self.assertTrue(result["ok"], result)
+        self.assertEqual((result["created"], result["replies"], result["dropped_replies"], result["resolved"],
+                          result["inline_folded"]), (True, [501, 512], [], ["T1"], False))
+        self.assertEqual(len(self.fake.review_posts), 1)
+        post = self.fake.review_posts[0]
+        self.assertEqual((post["commit_id"], post["event"]), (SHA_A, "REQUEST_CHANGES"))
+        self.assertTrue(post["body"].startswith(f"<!-- issue-agent:p1:review:{SHA_A} -->\n"))
+        self.assertEqual(post["comments"], [
+            {"path": "a.py", "line": 3, "side": "RIGHT", "body": "bug here"},
+            {"path": "b.py", "line": 9, "side": "LEFT", "body": "first\nsecond", "start_line": 4, "start_side": "LEFT"},
+        ])
+        self.assertEqual(post["replies"], [("T1", "fixed"), ("T2", "because")])
+        self.assertEqual((self.fake.reply_posts, self.fake.resolved, self.fake.pending_reviews), ([], ["T1"], {}))
+        # the threads are resolved only once the review carrying their replies is submitted
+        self.assertEqual(self.fake.graphql_ops, [
+            "addPullRequestReview", "addPullRequestReviewThread", "addPullRequestReviewThread",
+            "addPullRequestReviewThreadReply", "addPullRequestReviewThreadReply", "submitPullRequestReview",
+            "resolveReviewThread"])
+
+    def test_a_reply_to_a_resolved_thread_the_bot_spoke_last_on_is_dropped(self) -> None:
+        self.use_reviewer_app()
+        self.started_review(12)
+        self.fake.threads = [self.thread("T1", (500, "isac322", "t"), (501, REVIEWER, "u"), resolved=True)]
+        with self.assertLogs("issue-agent-bridge", "WARNING") as logs:
+            result = self.op("github.review", "p1", result=variant(
+                REVIEW_OK, thread_replies=[{"comment_id": 501, "body": "Closed at A", "resolve": True}]))
+        self.assertTrue(result["ok"], result)
+        self.assertIn("501", "\n".join(logs.output))
+        self.assertEqual((result["created"], result["replies"], result["dropped_replies"], result["resolved"]),
+                         (True, [], [501], []))
+        self.assertEqual(len(self.fake.review_posts), 1)
+        self.assertNotIn("replies", self.fake.review_posts[0])
+        self.assertEqual((self.fake.reply_posts, self.fake.resolved), ([], []))
+        self.assertNotIn("addPullRequestReviewThreadReply", self.fake.graphql_ops)
+
+    def test_a_resolved_thread_whose_last_comment_is_the_graphql_bot_login_drops_the_reply(self) -> None:
+        # GitHub GraphQL names an App comment author by its bare slug, while REST and the config say `<slug>[bot]`.
+        self.use_reviewer_app()
+        self.assertEqual(self.bridge.config.github_review_bot_login, "haechibot[bot]")
+        self.started_review(12)
+        self.fake.threads = [self.thread("T1", (500, "isac322", "t"), (501, "haechibot", "u"), resolved=True)]
+        self.assertFalse(bridge.human_after_bot(
+            {"comments": [{"author": "isac322", "created_at": "t"}, {"author": "HaechiBot", "created_at": "u"}]},
+            {"haechibot[bot]"}))
+        with self.assertLogs("issue-agent-bridge", "WARNING"):
+            result = self.op("github.review", "p1", result=variant(
+                REVIEW_OK, thread_replies=[{"comment_id": 501, "body": "Closed at A", "resolve": True}]))
+        self.assertTrue(result["ok"], result)
+        self.assertEqual((result["created"], result["replies"], result["dropped_replies"]), (True, [], [501]))
+        self.assertNotIn("replies", self.fake.review_posts[0])
+        self.assertNotIn("addPullRequestReviewThreadReply", self.fake.graphql_ops)
+
+    def test_a_reply_to_a_human_on_a_resolved_thread_is_kept(self) -> None:
+        # GitHub's list order is not trusted: createdAt puts the human's question after the bot's comment.
+        self.started_review(12)
+        self.fake.threads = [self.thread("T1", (502, "isac322", "2026-01-02T00:00:00Z"),
+                                         (501, BOT, "2026-01-01T00:00:00Z"), resolved=True)]
+        result = self.op("github.review", "p1", result=variant(
+            REVIEW_OK, thread_replies=[{"comment_id": 502, "body": "still fixed", "resolve": True}]))
+        self.assertTrue(result["ok"], result)
+        self.assertEqual((result["replies"], result["dropped_replies"], result["resolved"]), ([502], [], ["T1"]))
+        self.assertEqual(self.fake.review_posts[0]["replies"], [("T1", "still fixed")])
+        self.assertEqual(self.fake.resolved, [])  # already resolved: not resolved again
+
+    def test_a_leftover_pending_review_is_deleted_before_the_new_one(self) -> None:
+        self.started_review(12)
+        stopped = {"id": "PRR_stopped", "pull": 12, "commit": SHA_A, "author": BOT, "threads": [], "replies": []}
+        human = {"id": "PRR_human", "pull": 12, "commit": SHA_A, "author": "maintainer", "threads": [], "replies": []}
+        self.fake.pending_reviews = {"PRR_stopped": stopped, "PRR_human": human}
+        result = self.op("github.review", "p1", result=REVIEW_OK)
+        self.assertTrue(result["ok"], result)
+        self.assertEqual((result["created"], len(self.fake.review_posts)), (True, 1))
+        self.assertEqual(self.fake.review_deletions, ["PRR_stopped"])
+        self.assertEqual(list(self.fake.pending_reviews), ["PRR_human"])  # another user's pending review stays
+        self.assertEqual(self.fake.graphql_ops[:2], ["deletePullRequestReview", "addPullRequestReview"])
+
+    def test_a_leftover_pending_review_that_vanished_before_its_deletion_does_not_stop_the_review(self) -> None:
+        # The stopped run's pending review is gone by the time it is deleted (submitted or deleted elsewhere):
+        # GitHub answers NOT_FOUND, and the review is still published.
+        self.started_review(12)
+        stopped = {"id": "PRR_stopped", "pull": 12, "commit": SHA_A, "author": BOT, "threads": [], "replies": []}
+        self.fake.pending_reviews = {"PRR_stopped": stopped}
+        client = self.bridge.review_github or self.bridge.github
+        real_request = client.request
+
+        def vanish_first(method: str, path: str, body: Any = None) -> tuple[int, Any]:
+            if graphql_op(body) == "deletePullRequestReview":
+                self.fake.pending_reviews.pop("PRR_stopped", None)
+            return real_request(method, path, body)
+
+        with patch.object(client, "request", side_effect=vanish_first), \
+                self.assertLogs("issue-agent-bridge", "WARNING") as logs:
+            result = self.op("github.review", "p1", result=REVIEW_OK)
+        self.assertTrue(result["ok"], result)
+        self.assertIn("PRR_stopped", "\n".join(logs.output))
+        self.assertEqual((result["created"], len(self.fake.review_posts)), (True, 1))
+        self.assertEqual((self.fake.review_deletions, self.fake.pending_reviews), ([], {}))
+        self.assertEqual(self.fake.graphql_ops[:2], ["deletePullRequestReview", "addPullRequestReview"])
+
+    def test_a_retry_after_the_submit_landed_posts_nothing_but_still_resolves(self) -> None:
+        self.started_review(12)
+        self.fake.threads = [self.thread("T1", (501, BOT, "t"))]
         unknown = variant(REVIEW_OK, thread_replies=[{"comment_id": 999, "body": "x", "resolve": False}])
         self.assertIn("999", self.op("github.review", "p1", result=unknown)["error"])
-        self.assertEqual(self.fake.review_posts, [])
-        result = variant(REVIEW_OK, comments=[], thread_replies=[{"comment_id": 501, "body": "fixed", "resolve": True}])
-        first = self.op("github.review", "p1", result=result)
-        self.assertEqual((first["replies"], first["resolved"]), ([501], ["T1"]))
-        self.assertEqual(self.fake.reply_posts[0][0], 501)
-        self.assertTrue(self.fake.reply_posts[0][1]["body"].startswith("<!-- issue-agent:p1:reply:501 -->"))
-        self.op("github.review", "p1", result=result)
-        self.assertEqual((len(self.fake.reply_posts), self.fake.resolved), (1, ["T1"]))
+        self.assertEqual((self.fake.review_posts, self.fake.graphql_ops), ([], []))
+        result = variant(REVIEW_OK, thread_replies=[{"comment_id": 501, "body": "fixed", "resolve": True}])
+        client = self.bridge.review_github or self.bridge.github
+        real_request = client.request
 
-    def test_reply_to_a_later_thread_comment_is_posted_to_the_thread_root(self) -> None:
+        def lose_submit_reply(method: str, path: str, body: Any = None) -> tuple[int, Any]:
+            status, data = real_request(method, path, body)
+            if graphql_op(body) == "submitPullRequestReview":
+                raise bridge.TransportError("review reply lost", not_sent=False)
+            return status, data
+
+        with patch.object(client, "request", side_effect=lose_submit_reply):
+            lost = self.op("github.review", "p1", result=result)
+        self.assertEqual((lost["ok"], lost["retryable"]), (False, True))
+        self.assertEqual((len(self.fake.review_posts), self.fake.resolved), (1, []))
+        retried = self.op("github.review", "p1", result=result)
+        self.assertTrue(retried["ok"], retried)
+        self.assertEqual((retried["created"], retried["review_id"], retried["replies"], retried["resolved"]),
+                         (False, self.fake.reviews[-1]["id"], [501], ["T1"]))
+        self.assertEqual((len(self.fake.review_posts), self.fake.resolved), (1, ["T1"]))
+        self.assertEqual(self.fake.graphql_ops.count("addPullRequestReview"), 1)
+
+    def test_a_finding_outside_the_diff_is_folded_into_the_body(self) -> None:
         self.started_review(12)
-        self.fake.threads = [{"id": "T1", "isResolved": False, "isOutdated": False, "path": "a.py", "line": 3,
-                              "comments": {"nodes": [
-                                  {"databaseId": 501, "author": {"login": "isac322"}, "body": "why?", "createdAt": "t"},
-                                  {"databaseId": 502, "author": {"login": BOT}, "body": "because", "createdAt": "u"},
-                                  {"databaseId": 503, "author": {"login": "isac322"}, "body": "still?", "createdAt": "v"},
-                              ]}}]
-        result = variant(REVIEW_OK, comments=[], thread_replies=[{"comment_id": 503, "body": "yes", "resolve": False}])
-        first = self.op("github.review", "p1", result=result)
-        self.assertTrue(first["ok"], first)
-        self.assertEqual(first["replies"], [503])
-        self.assertEqual(self.fake.reply_posts[0][0], 501)
-        self.assertTrue(self.fake.reply_posts[0][1]["body"].startswith("<!-- issue-agent:p1:reply:503 -->"))
-        self.op("github.review", "p1", result=result)
-        self.assertEqual(len(self.fake.reply_posts), 1)
+        self.fake.outside_diff = {("b.py", 9)}
+        multi = {"path": "b.py", "line": 9, "side": "LEFT", "start_line": 4, "body": "first\nsecond"}
+        result = self.op("github.review", "p1", result=variant(REVIEW_OK, comments=REVIEW_OK["comments"] + [multi]))
+        self.assertTrue(result["ok"], result)
+        self.assertEqual((result["created"], result["inline_folded"]), (True, True))
+        self.assertEqual(len(self.fake.review_posts), 1)
+        post = self.fake.review_posts[0]
+        self.assertEqual(post["comments"], [{"path": "a.py", "line": 3, "side": "RIGHT", "body": "bug here"}])
+        self.assertIn("## Findings outside the diff", post["body"])
+        self.assertIn("- `b.py` line 4-9 (LEFT): first\n  second", post["body"])
+        self.assertNotIn("`a.py` line 3", post["body"])
+        self.assertTrue(post["body"].endswith(bridge.review_footer(BOT, pushes_reviewed=False)))
+
+    def test_a_stale_review_github_refuses_becomes_one_comment_with_the_replies(self) -> None:
+        self.use_reviewer_app()
+        self.started_review(12)
+        self.fake.prs[12]["head"]["sha"] = SHA_B
+        self.fake.reject_review_commits = {SHA_A}
+        url = f"https://github.com/{REPO}/pull/12#discussion_r501"
+        self.fake.threads = [self.thread("T1", (501, REVIEWER, "t"), url=url)]
+        result = self.op("github.review", "p1", result=variant(
+            REVIEW_OK, thread_replies=[{"comment_id": 501, "body": "fixed\nnow", "resolve": True}]))
+        self.assertTrue(result["ok"], result)
+        self.assertEqual((result["stale"], result["created"], result["review_id"], result["replies"],
+                          result["resolved"]), (True, True, None, [501], ["T1"]))
+        self.assertEqual((self.fake.reviews, self.fake.review_posts, self.fake.reply_posts, self.fake.status_posts),
+                         ([], [], [], []))
+        self.assertEqual(len(self.fake.comments[12]), 1)
+        body = self.fake.comments[12][0]["body"]
+        self.assertIn("**Verdict: REQUEST_CHANGES**", body)
+        self.assertIn("- `a.py` line 3 (RIGHT): bug here", body)
+        self.assertIn(f"## Replies to review threads\n\n- [`a.py` line 3]({url}): fixed\n  now", body)
+        self.assertTrue(body.endswith(bridge.review_footer(REVIEWER, pushes_reviewed=True)))
+
+    def test_a_stale_submit_github_refuses_deletes_the_pending_review_and_comments(self) -> None:
+        self.use_reviewer_app()
+        self.started_review(12)
+        self.fake.prs[12]["head"]["sha"] = SHA_B
+        self.fake.reject_submit_commits = {SHA_A}
+        self.fake.threads = [self.thread("T1", (501, REVIEWER, "t"))]
+        result = self.op("github.review", "p1", result=variant(
+            REVIEW_OK, thread_replies=[{"comment_id": 501, "body": "fixed", "resolve": False}]))
+        self.assertTrue(result["ok"], result)
+        self.assertEqual((result["stale"], result["review_id"], result["event_submitted"]), (True, None, "COMMENT"))
+        self.assertEqual((self.fake.pending_reviews, len(self.fake.review_deletions), self.fake.review_posts),
+                         ({}, 1, []))
+        self.assertEqual(len(self.fake.comments[12]), 1)
+        self.assertIn("- `a.py` line 3: fixed", self.fake.comments[12][0]["body"])
+
+    def test_a_stale_pending_review_that_cannot_be_deleted_still_becomes_the_comment(self) -> None:
+        self.use_reviewer_app()
+        self.started_review(12)
+        self.fake.prs[12]["head"]["sha"] = SHA_B
+        self.fake.reject_submit_commits = {SHA_A}
+        client = self.bridge.review_github
+        real_request = client.request
+
+        def vanish_first(method: str, path: str, body: Any = None) -> tuple[int, Any]:
+            if graphql_op(body) == "deletePullRequestReview":
+                self.fake.pending_reviews.clear()  # gone already: GitHub answers NOT_FOUND
+            return real_request(method, path, body)
+
+        with patch.object(client, "request", side_effect=vanish_first), \
+                self.assertLogs("issue-agent-bridge", "WARNING") as logs:
+            result = self.op("github.review", "p1", result=REVIEW_OK)
+        self.assertTrue(result["ok"], result)
+        self.assertIn("not deleted", "\n".join(logs.output))
+        self.assertEqual((result["stale"], result["review_id"], result["event_submitted"]), (True, None, "COMMENT"))
+        self.assertEqual((self.fake.review_deletions, self.fake.review_posts), ([], []))
+        self.assertEqual(len(self.fake.comments[12]), 1)
+        self.assertIn("**Verdict: REQUEST_CHANGES**", self.fake.comments[12][0]["body"])
 
     def test_push_then_pr_upsert_creates_then_updates(self) -> None:
         self.started()
@@ -5300,7 +5558,7 @@ class ReviewGateTests(BridgeTestCase):
         # An n8n engine retry fires while the first request is still posting: both must end with one review.
         self.started_review(12, "p1")
         entered, release = threading.Event(), threading.Event()
-        self.fake.gates[("POST", f"/repos/{REPO}/pulls/12/reviews")] = (entered, release)
+        self.fake.gates[("GRAPHQL", "submitPullRequestReview")] = (entered, release)
         second_blocked, patcher = self.lock_requested("github-review", entered)
         results: dict[str, dict] = {}
 
@@ -5325,13 +5583,59 @@ class ReviewGateTests(BridgeTestCase):
         self.assertEqual((results["first"]["created"], results["second"]["created"]), (True, False))
         self.assertEqual(results["first"]["review_id"], results["second"]["review_id"])
 
+    def test_two_deliveries_on_one_pull_request_publish_one_after_the_other(self) -> None:
+        # GitHub keeps one pending review per user and pull request: a second delivery publishing while the first
+        # one's pending review is open waits for it instead of deleting it, and then posts its own review.
+        self.started_review(12, "p1")
+        command = comment_payload(12, 500, body="@haechibot review", on_pr=True)
+        self.assertEqual(self.deliver(command, event="issue_comment", delivery="c1").outcome, "queued")
+        entered, release = threading.Event(), threading.Event()
+        self.fake.gates[("GRAPHQL", "submitPullRequestReview")] = (entered, release)
+        keys: list[Any] = []
+        second_waiting = threading.Event()
+        original = self.bridge._keyed_lock
+
+        def keyed_lock(key: Any) -> threading.Lock:
+            if isinstance(key, tuple) and key[0] == "github-review":
+                keys.append(key)
+                if entered.is_set():
+                    second_waiting.set()
+            return original(key)
+
+        results: dict[str, dict] = {}
+
+        def publish(delivery: str) -> None:
+            try:
+                results[delivery] = self.op("github.review", delivery, result=REVIEW_OK)
+            finally:
+                second_waiting.set()
+
+        with patch.object(self.bridge, "_keyed_lock", side_effect=keyed_lock):
+            first = threading.Thread(target=publish, args=("p1",))
+            first.start()
+            self.assertTrue(entered.wait(10))  # p1's pending review is open and its submit is in flight
+            second = threading.Thread(target=publish, args=("c1",))
+            second.start()
+            self.assertTrue(second_waiting.wait(10))
+            release.set()
+            first.join(10)
+            second.join(10)
+        self.assertTrue(all(r["ok"] for r in results.values()), results)
+        self.assertEqual((results["p1"]["created"], results["c1"]["created"]), (True, True))
+        self.assertNotEqual(results["p1"]["review_id"], results["c1"]["review_id"])
+        self.assertEqual(keys, [("github-review", REPO, 12)] * 2)
+        self.assertEqual(len(self.fake.review_posts), 2)
+        self.assertEqual([p["body"].split("\n", 1)[0] for p in self.fake.review_posts],
+                         [f"<!-- issue-agent:{d}:review:{SHA_A} -->" for d in ("p1", "c1")])
+        self.assertEqual((self.fake.pending_reviews, self.fake.review_deletions), ({}, []))
+
     def test_a_park_racing_a_publication_never_leaves_error_over_the_verdict(self) -> None:
         # The park's guard passes before the review is recorded, then the publication records and sets its verdict
         # while the park's error status is still in flight: the verdict must be the last status on the head.
         self.started_review(12, "p1")
         review_entered, review_release = threading.Event(), threading.Event()
         status_entered, status_release = threading.Event(), threading.Event()
-        self.fake.gates[("POST", f"/repos/{REPO}/pulls/12/reviews")] = (review_entered, review_release)
+        self.fake.gates[("GRAPHQL", "submitPullRequestReview")] = (review_entered, review_release)
         self.fake.gates[("POST", f"/repos/{REPO}/statuses/{SHA_A}")] = (status_entered, status_release)
         verdict_waiting, patcher = self.lock_requested("review-status", status_entered)
         results: list[dict] = []

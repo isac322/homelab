@@ -133,7 +133,11 @@ PR이 들여온 취약점(기본 브랜치와 최신 릴리스에 없음, PRR-48
 ## 인라인 finding과 스레드 답글
 
 - 새 finding 중 PR diff 안의 줄에 고정할 수 있는 것은 `ReviewResult.comments[]`에 `path`, `line`, `side`(추가·문맥 줄은 `RIGHT`), `start_line`, `body`로 담는다. 한 줄 코멘트는 `start_line: null`이고, 여러 줄 코멘트는 `start_line`이 범위의 첫 줄이며 `line`보다 작다. 본문의 `## Blocking`/`## Non-blocking` 목록에도 같은 finding을 남긴다. diff 밖이면 본문에만 둔다.
-- 재리뷰에서 이 봇이 열었거나 봇에게 물은 기존 스레드마다 `ReviewResult.thread_replies[]`에 `comment_id`와 현재 상태를 담는다. 예: `Fixed at <new-head-sha>: <file:line evidence>.` / `Still open at <new-head-sha>: <why>.` 수정이 새 head에서 확인된 것만 `resolve: true`다.
+- 재리뷰에서 `ReviewResult.thread_replies[]`는 PRR-29 조건에 맞는 스레드에만 `comment_id`와 함께 낸다. `reviewThreads`에서 스레드마다 `isResolved`와 댓글의 `author{login}`·`createdAt`을 읽고 고른다.
+  - 해결되지 않은(`isResolved: false`) 봇 스레드 중 새 head에서 finding 상태가 바뀐 것. 예: `Fixed at <new-head-sha>: <file:line evidence>.`(`resolve: true`) / `Partially fixed at <new-head-sha>: <what remains>.` / `Regressed at <new-head-sha>: <why>.` 수정이 새 head에서 확인된 것만 `resolve: true`다.
+  - 해결 여부와 무관하게 봇의 마지막 댓글 뒤에 사람(리뷰 App·이슈 App 봇이 아닌 계정)이 댓글을 단 스레드. 그 댓글에 답한다.
+- 그 밖의 스레드에는 답글을 내지 않는다. 이미 해결된 스레드를 다시 확인하지 않고(`Closed at …` 금지), 상태가 그대로인 열린 스레드에 `Still open …`을 달지 않는다. 라운드별 상태는 본문 `## Previous findings`의 Closed/Open이 기록한다.
+- 이미 해결된 스레드의 finding이 새 head에서 회귀하면 그 스레드에 답하지 않고 `ReviewResult.comments[]`에 새 인라인 finding으로 내며, 본문에 이전 finding을 언급한다(예: `Regression of the earlier finding <link>: …`).
 
 ## 닫기 권고 (외부·오래된 PR)
 
