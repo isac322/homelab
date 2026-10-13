@@ -82,6 +82,19 @@
 - 일반화: global
 - 재발 확인 기준: 리뷰 턴의 실행 기록에 e2e·matrix 실행, PR Dockerfile이나 배포판 패키지 build가 없고, 리뷰 턴 하나의 단일 명령이 몇 분을 넘지 않는다. 오래 걸리는 suite로만 확인할 수 있는 claim은 `Not verified`나 argument+challenger로 남는다. 롤아웃 뒤 runner 컨테이너 OOMKilled 재시작이 리뷰 실행과 겹쳐 생기지 않는다.
 
+### CASE-20261013-redundant-thread-replies
+- 상태: applied
+- 출처: 2026-10-13 사용자 결정 (cc-lb#936 haechibot 리뷰 기록 감사)
+- 상황: cc-lb#936에서 haechibot이 재리뷰마다 이전 봇 스레드 전부에 답글을 다시 달았다. 답글 184개 중 139개가 이미 resolve된 스레드에 반복한 "Closed at …"였고, 새 사람 댓글이 없는 스레드였다. bridge는 답글마다 REST `POST /repos/{repo}/pulls/{n}/comments/{root}/replies`를 불렀고 GitHub가 그 답글을 각각 빈 `COMMENTED` 리뷰로 감싸, PR 하나에 답글 하나짜리 리뷰 184개와 판정 리뷰 13개가 쌓였다.
+- 대상: 재리뷰 스레드 답글 / 모든 저장소 / `ReviewResult.thread_replies`와 bridge `github.review` 게시 / 중간(리뷰 타임라인이 소음으로 덮여 사람이 판정과 새 finding을 찾지 못한다)
+- 적용 조건: 이 스킬로 이전 봇 리뷰가 있는 PR을 재리뷰하는 모든 경우
+- 사용자 기대: 스레드 답글은 (1) 새 head에서 finding 상태가 바뀐 미해결 스레드, (2) 해결 여부와 무관하게 봇의 마지막 댓글 뒤에 사람이 댓글을 단 스레드에만 단다 [U]. 해결된 스레드는 다시 확인하지 않고, 상태가 그대로인 열린 스레드에도 답하지 않는다. 라운드별 상태는 본문 Closed/Open 절이 기록한다. 해결된 스레드의 finding이 회귀하면 새 인라인 finding으로 낸다. 한 라운드는 GitHub 리뷰 하나로 게시한다.
+- 실제 행동: SKILL.md 재요청 문단, `thread_replies` 표 줄, PRR-29, 완료 조건("재리뷰면 이전 봇 스레드마다 `thread_replies`가 있다"), `comment-template.md`, `defaults.md`, n8n `Prepare review step`("answer existing threads with `thread_replies`")이 모두 이전 봇 스레드마다 답글을 요구했다. `reviewThreads` 지시는 `isResolved`와 댓글 작성자를 읽게 하지 않았다.
+- 원인 분류: wrong(모든 스레드에 답글 요구) / 규칙: PRR-29, 완료 조건
+- 변경: PRR-29 [U](답글 조건 두 가지, 해결된 스레드 재확인 금지, 상태 그대로인 열린 스레드 답글 금지, 해결된 스레드의 회귀는 새 인라인 finding), 입력 문단(`reviewThreads`에서 `isResolved`, 댓글 `author{login}`·`createdAt` 선택), 재요청 문단, `thread_replies` 표 줄, 완료 조건(조건에 맞는 스레드에만 정확히 하나씩), `comment-template.md` 인라인 finding과 스레드 답글 절, `defaults.md` 게시, n8n `Prepare review step` 지시. bridge는 해결됐고 봇의 마지막 댓글 뒤에 사람 댓글이 없는 스레드에 대한 답글을 경고 로그와 함께 버리고(리뷰는 실패시키지 않는다), 남은 pending 리뷰를 먼저 지운 뒤 GraphQL pending 리뷰 하나에 새 인라인 스레드·스레드 답글·판정 본문을 담아 함께 제출하고 그다음 resolve한다.
+- 일반화: global
+- 재발 확인 기준: 롤아웃 뒤 재리뷰 라운드마다 봇 리뷰가 하나만 생기고 답글 하나짜리 빈 `COMMENTED` 리뷰가 없다. 해결된 스레드에 새 사람 댓글 없이 봇 답글이 달리지 않고, 상태가 그대로인 열린 스레드에 "Still open" 답글이 없다. bridge 로그의 답글 버림 경고가 드물다(에이전트가 규칙을 따른다).
+
 ## 출처 색인
 
 `패밀리 설계 요청` = 이 스킬 패밀리 증류를 요청한 사용자 메시지의 PR 리뷰 프레이밍(PR 이해, blast radius, 프로젝트 영향 심각도, 실제 해결 여부, 보안, 성능, 구조, 리뷰 코멘트를 달아야 하고 라벨도 추가하면 좋다). 판정을 라벨 대신 리뷰 이벤트로 표현하라는 이후 교정(CASE-20260927-verdict-as-review-event)이 라벨 부분을 대체한다.
@@ -109,6 +122,7 @@
 | PRR-33 | omp 01a0d288 59de466d (CASE-20260926-reverify-before-close) |
 | PRR-34 | omp 01a0d288 59de466d (CASE-20260926-reverify-before-close) |
 | PRR-24, PRR-29, PRR-30 | omp 01a11ff7 (CASE-20261011-kwin-mcp-review-gate) |
+| PRR-29 [U] (스레드 답글 조건) | 2026-10-13 사용자 결정 (CASE-20261013-redundant-thread-replies) |
 | PRR-38–PRR-56 | omp 01a11ff7 (CASE-20261011-kwin-mcp-review-gate); PRR-38, PRR-48, PRR-55는 그 세션의 사용자 결정 [U] |
 | PRR-57 | omp 01a1333f (CASE-20261013-review-suites-to-ci); 2026-10-13 사용자 결정 [U] |
 
@@ -140,3 +154,4 @@
 | 2026-10-12 | PRR-43 (C3-4) | cycle 3, replay 유래: 한 렌즈의 체크리스트 항목이 ~5개를 넘으면 모듈별 서브 에이전트로 나눈다(동시 최대 2개, 나머지 순차). 나눠도 항목별 근거가 없으면 덮이지 않은 것 | CASE-20261011-kwin-mcp-review-gate |
 | 2026-10-12 | PRR-43, review-dimensions §10 | cycle 3 sign-off 후속: 락·프로세스/스레드·시그널·close/shutdown 상태를 가진 변경 모듈이 둘 이상이면 concurrency/lifecycle 렌즈를 모듈별 서브 에이전트로 나누는 것을 필수로 함(락 틈·close 후 사용 항목별 `file:line` 근거). 다른 렌즈는 ~5개 초과 규칙 유지. f01은 lifecycle 렌즈를 나눴을 때만 찾았다(#90) | CASE-20261011-kwin-mcp-review-gate |
 | 2026-10-13 | PRR-57 신규 [U]; PRR-11, PRR-38, PRR-43, PRR-44, PRR-46, PRR-55, 완료 조건, review-dimensions §1·§7·§9·§10·§12·§14, comment-template, stale-pr-audit, projects/isac322__kwin-mcp §2 | 리뷰어 로컬 실행 범위: 오래 걸리는 suite(e2e, GUI·Appium, multi-distro·패키지 matrix, 컨테이너 이미지 build, envtest, integration·soak)는 CI 몫으로 로컬에서 돌리지 않고 CI 결과는 입력으로만 읽음; 로컬은 특정 claim 확인용 빠른 targeted check만. PRR-55의 "PR의 Dockerfile을 빌드해도 된다" 삭제, "무엇이든" 실행 허용을 PRR-57 범위로 좁힘(krema#101 리뷰의 약 18분 docker 패키지 build와 runner OOM 2회) | CASE-20261013-review-suites-to-ci |
+| 2026-10-13 | PRR-29 [U], 완료 조건, comment-template 인라인 finding과 스레드 답글, defaults 게시 | 스레드 답글은 상태가 바뀐 미해결 스레드와 봇의 마지막 댓글 뒤 사람 댓글이 있는 스레드에만. 해결된 스레드 재확인·상태 그대로인 열린 스레드 답글 금지, 해결된 스레드의 회귀는 새 인라인 finding. bridge는 조건 밖 답글을 버리고 라운드당 리뷰 하나로 게시 | CASE-20261013-redundant-thread-replies |

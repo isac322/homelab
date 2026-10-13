@@ -15,7 +15,7 @@ PR 주장을 claim별로 판정할 때 `issue-validation`의 판정 토큰을 �
 
 ## 게시
 
-- 재리뷰는 새 ReviewResult로 내고, `ReviewResult.body` 첫 섹션에 이전 finding의 Closed/Open을 둔다. 이전 봇 스레드마다 `ReviewResult.thread_replies`를 낸다. 현재 head에 대한 리뷰는 하나다. `open_items`는 상태가 그대로인 항목의 문구를 바꾸지 않는다(bridge 결정 요청 코멘트가 같은 집합에 다시 게시되지 않게).
+- 재리뷰는 새 ReviewResult로 내고, `ReviewResult.body` 첫 섹션에 이전 finding의 Closed/Open을 둔다. 이 절이 라운드별 상태 기록이다. `ReviewResult.thread_replies`는 SKILL.md PRR-29 조건에 맞는 스레드(새 head에서 finding 상태가 바뀐 미해결 봇 스레드, 봇의 마지막 댓글 뒤에 사람이 댓글을 단 스레드)에만 내고, 해결된 스레드를 다시 확인하거나 상태가 그대로인 열린 스레드에 답하지 않는다. 해결된 스레드의 finding이 회귀하면 `ReviewResult.comments`에 새 인라인 finding으로 낸다. 현재 head에 대한 리뷰는 하나이고, bridge가 본문·새 인라인 finding·스레드 답글을 한 리뷰로 함께 게시한다. `open_items`는 상태가 그대로인 항목의 문구를 바꾸지 않는다(bridge 결정 요청 코멘트가 같은 집합에 다시 게시되지 않게).
 - PR 수정 때문에 PR이 하는 일과 제목이 달라졌으면 고칠 제목을 `ReviewResult.body`에 제안한다. 리뷰어는 PR을 편집하지 않는다(PRR-03).
 
 ## 사용자 보고 형식 (`ReviewResult.summary`)
