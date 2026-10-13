@@ -22,6 +22,17 @@
       3
     ];
   };
+  # Monthly scrubs (local time). hot-data and fast share the EX950 SSD, so they
+  # run a week apart; nas (3x HDD raidz1, ~13 h) gets its own day.
+  homelab.zfsScrub = {
+    enable = true;
+    pools = {
+      nas = "*-*-01 05:00:00";
+      hot-data = "*-*-08 05:00:00";
+      fast = "*-*-15 05:00:00";
+      temporal = "*-*-15 05:00:00";
+    };
+  };
   homelab.disabledServices = [
     "bluetooth.service"
     "wpa_supplicant.service"
