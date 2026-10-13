@@ -1,0 +1,3375 @@
+#!/usr/bin/env python3
+"""issue-agent-review-audit: read-only evidence collector and metrics calculator for the
+haechibot review-quality audit (project skill .claude/skills/haechibot-review-audit).
+
+Subcommands
+  collect --since ISO --until ISO --out DIR [--repo OWNER/NAME ...]
+          [--reviewer LOGIN] [--evidence-days H]
+      Pull GitHub evidence for every PR that LOGIN reviewed in [since, until) and write
+      the unit files below. Read-only: every call is a `gh api` REST GET or a GraphQL
+      query; nothing is ever mutated. Prints one short count line to stdout.
+      --since ISO          window start, inclusive (ISO-8601; `Z` or offset; a bare date
+                           means 00:00Z)
+      --until ISO          window end, exclusive
+      --out DIR            new output directory, created 0700; refused if it exists
+      --repo OWNER/NAME    repeatable; default: isac322/cc-lb isac322/flareway
+                           isac322/krema isac322/kwin-mcp isac322/pillar-csi isac322/rkmon
+      --reviewer LOGIN     bot reviewer login (default: haechibot[bot])
+      --evidence-days H    evidence horizon (default 3): a candidate is kept only if its
+                           event time <= anchor + H; the anchor is the attributed bot
+                           review's submitted_at, or merged_at for post-merge commits
+                           (which also bounds the post-merge scan). Use the same H for
+                           both windows; dropped counts go to manifest "evidence".
+
+  metrics --dir DIR [--labels-findings F] [--labels-misses F] [--labels-judge F]
+          [--labels-matcher F] [--exclude-pr [OWNER/]REPO#N ...] [--format md|json]
+      Join label files with the unit files in DIR (plus DIR/panel.json and
+      DIR/coverage.jsonl when present) and print the METRIC_KEYS figures with Wilson 95%
+      intervals (z=1.96), broken down by repo, size_bucket, verdict (body verdict),
+      author_type (owner / implementer_bot / automation / external), file_type and
+      defect_type. Label files default to DIR/labels-*.jsonl. labels-judge.jsonl feeds
+      only judge_bias (judge vs labelerB on irr_sample items); labels-matcher.jsonl feeds
+      only match_kappa.defect_first / .review_first (each matcher order vs final on
+      match_sample rows). --exclude-pr drops a PR
+      and its label rows (repeatable). Rows that fail validation are listed under "bad
+      rows" and excluded; they never abort the run.
+
+  compare --before M.json --after M.json [--format md|json]
+      Two `metrics --format json` outputs -> after - before for the D13 primary endpoints:
+      validity_precision, noise_rate and approve_with_important_miss.per_pr
+      (Newcombe hybrid-score difference CI + two-sided Fisher exact), and
+      important_escaped_per_pr (exact conditional binomial test of equal per-PR rates).
+      Other top-level proportions get a descriptive Newcombe CI. Warns when the two
+      evidence horizons differ.
+
+  kappa --a F --b F [--dir DIR] [--rater-a R] [--rater-b R] [--field NAME ...] [--all-items]
+        [--format md|json]
+      Agreement between two label files per field (validity, severity, bot_match,
+      is_defect, verdict, p2_blocking, important, important_miss): Cohen kappa with a 95%
+      CI, linear weighted kappa for severity (quadratic as an extra), raw agreement, PABAK,
+      positive/negative and per-category specific agreement. p2_blocking uses only items
+      both raters rated P2 (unset counts as false). important / important_miss are derived
+      (P0/P1, or P2 with p2_blocking; null severity is not important) on every shared item.
+      Only irr_sample items unless --all-items. With --dir, miss ids whose @<head> suffix is a
+      GitHub commit_id alias are rewritten to the body head first, so raters pair (N1).
+
+  panel-draw --dir DIR --seed S [--n 10]
+      Seeded stratified draw of N PRs over repo x verdict strata (automation PRs
+      excluded; proportional largest-remainder allocation). Writes DIR/panel.json
+      {seed, n, strata, prs: [{pr_id, target_head_sha, target_rule, stratum}]}; refuses
+      to overwrite. Target head (D8): latest bot-reviewed head before the first
+      non-PR-author fix commit, else the first GREEN head, else the final reviewed head.
+
+Output files (collect). Every *.jsonl line is one JSON object with a stable "id".
+Files are 0600 inside 0700 directories.
+  prs.jsonl         id "<owner>/<repo>#<n>": repo, number, title, author,
+                    author_association, author_type, state, merged, merged_at, closed_at,
+                    base_ref, base_sha_at_merge, final_head_sha, merge_commit_sha, created_at,
+                    changed_files, additions, deletions, size_bucket (S <50 changed lines,
+                    M <400, L >=400 or >=20 files), bot_review_ids, human_reviewers, raw_dir
+  reviews.jsonl     id "<pr-id>@review/<review_id>": every review on the PR (bot and
+                    human): pr_id, review_id, reviewer, event and github_state (raw GitHub
+                    state; superseded bot reviews become DISMISSED), verdict (first
+                    "**Verdict: GREEN|BLOCKING|OPEN**" line mapped to APPROVED /
+                    CHANGES_REQUESTED / COMMENTED; github_state when absent),
+                    is_reply_container (empty-body bot review without root comments; only
+                    carries thread replies; ignored by metrics), reviewed_head_sha (bot
+                    reviews: the head named in the body "reviewed at <sha>" / "re-reviewed
+                    at <sha>", else commit_id), commit_id (GitHub's), body_head_sha,
+                    submitted_at, body, is_bot, in_window, finding_ids,
+                    superseded_by_head, head_is_final
+  findings.jsonl    id "<review-unit-id>/f<k>": one per bot finding (root inline comment,
+                    or body bullet whose first token is P0-P3, outside "Previous findings",
+                    without an inline twin on the same path within [start-3, end+3]):
+                    pr_id, review_id, review_event, review_verdict, reviewed_head_sha,
+                    submitted_at, in_window, file_type, source (inline|body), severity, path,
+                    line, start_line,
+                    side, title, body, comment_id, thread_id, thread_resolved,
+                    thread_outdated, replies, changed_in_vicinity_1, changed_in_vicinity_5,
+                    file_changed_later, vicinity_method (commit-walk|compare-fallback|null),
+                    signal_note, next_bot_review_id, next_bot_review_status
+                    (Closed|Open|absent), next_bot_review_line, author_reply_kind
+                    (none|ack|reject|question)
+  candidates.jsonl  content-addressed ids (stable across re-collection):
+                    <pr-id>/hunk/<commit12|cmp-<a12>-<b12>>/<path>@-a,b+c,d  post_review_hunk
+                    <pr-id>/comment/<review|review_comment|issue_comment>/<id>  human_comment
+                    <pr-id>/postmerge/<sha12>                                post_merge_commit
+                    <pr-id>/xref/<owner>/<repo>#<n>                          cross_reference
+                    Every candidate has anchor_at, event_at, evidence_deadline and
+                    reviewed_head_sha (head of the anchor bot review; post_merge_commit:
+                    the latest bot-reviewed head; a human comment before any bot review:
+                    the first bot-reviewed head).
+                    human_comment adds commenter_kind (human|implementer_bot),
+                    blind_to_bot, head_at_comment and, for human root inline comments,
+                    is_root_inline, changed_in_vicinity_1 and author_reply_kind.
+                    post_review_hunk covers non-merge commits after a bot-reviewed head
+                    and, for reviews on force-pushed heads, the compare diff (source
+                    "compare").
+  coverage.jsonl    id "<pr-id>": heads, bot_reviewed_heads (see bot_reviewed_heads(): one
+                    {sha, first_review_at, review_ids, commit_ids, body_head, in_commits,
+                    merge_base, merge_base_note} per head, ordered by first review; merge_base
+                    only when the PR merged a commit with several parents; a compare 404 (no
+                    common ancestor) leaves merge_base null with merge_base_note, not an
+                    api_error), foreign_fix_commits,
+                    unreviewed_prefix_heads (head before a non-PR-author commit that never
+                    got a bot review), merged_head_reviewed, attention_comments,
+                    attention_only (PR with only bot failure/stop comments), has_gap
+  manifest.json     args, collector_version, generated_at, counts per file, evidence
+                    (evidence_days, dropped_after_horizon, horizon_after_run_time), heads
+                    (reviews_on_force_pushed_heads, reviews_on_vanished_heads),
+                    truncation counts, api_errors, skipped PRs, notes
+  raw/<owner>__<repo>/<n>/
+                    pr.json files.json commits.json reviews.json review_comments.json
+                    issue_comments.json threads.json timeline.json commit-<sha>.json
+                    compare-<sha>.json post_merge_commits.json: the raw API JSON behind
+                    the unit rows
+
+Label files (metrics input; vocabularies are the VOCAB table at the top of this script)
+  labels-findings.jsonl  {id, rater (labelerA|labelerB|final), irr_sample, validity,
+                          adjudicated_severity, p2_blocking, noise_codes, value,
+                          author_action, defect_type, file_type, dedup_key, notes}
+                          INVALID and SEVERITY_INFLATED are derived, never labelled.
+  labels-misses.jsonl    {id "<candidate-id>[.<k>]@<head12>" (panel "<pr-id>/p<k>@<head12>",
+                          owner session "<pr-id>/os<k>@<head12>"), rater, irr_sample,
+                          match_sample, channel, verdict, exposed_by_pr, is_defect,
+                          present_at_reviewed_head, reviewed_head_sha, latest_present_head,
+                          adjudicated_severity, p2_blocking, bot_match, matched_finding_id,
+                          review_id, defect_type, file_type, repo_rule, dedup_key, sources}
+                          One row per (defect, bot-reviewed head where present); rows of
+                          one defect share dedup_key. A partial match may name review_id
+                          instead of matched_finding_id. Only rater "final" rows need
+                          bot_match. not_defect rows may leave adjudicated_severity,
+                          present_at_reviewed_head, latest_present_head, defect_type and
+                          exposed_by_pr null. A head may be named by a review's GitHub
+                          commit_id when the body names another head; metrics maps it to
+                          the body head.
+  labels-judge.jsonl     {id, rater "judge", validity}; labels-matcher.jsonl {id, rater
+                          "matcher-defect_first" | "matcher-review_first" (or order),
+                          bot_match}; both orders may label the same id. Candidate judge
+                          rows live in labels-judge-candidates.jsonl, which metrics does
+                          not read.
+  A miss row with out_of_horizon: true (verdict null) is accepted but excluded from
+  every figure (counted in coverage.miss_rows_out_of_horizon). A row with coverage_only:
+  true (defect introduced and fixed before the first bot-reviewed head or between
+  reviewed heads; heads may be null, id may carry the candidate's @<head12>) is kept out
+  of R_imp and every miss figure and counted in coverage_unreviewed_defects.
+  Rows with rater "final" drive the figures; labelerA/labelerB rows feed irr. Every bad
+  row names its file, line, id, rater and reason. A final miss row matched (hit or
+  partial) to a finding whose final label is invalid is listed under "conflicts" for
+  re-adjudication; it is not a bad row.
+
+Assumptions and heuristics (documented limits, not ground truth)
+  vicinity        changed_in_vicinity_k is true when a later non-merge PR commit,
+                  after the reviewed head and before merge/close, deletes or modifies an
+                  old-side line within +-k of the anchor (start_line..line), or inserts
+                  lines between old lines x and x+1 with min(|anchor-x|, |anchor-x-1|)
+                  <= k. The anchor is carried through every later commit's hunks (merge
+                  commits shift it but are never credited). A deleted or modified anchor
+                  line ends the mapping. A code change near the anchor is a proxy for
+                  "addressed", not proof. When the reviewed head is not in the PR commit
+                  list (rebase/force push) but the commit still exists, the anchor is
+                  mapped through one compare/{reviewed}...{final_head} diff instead
+                  (vicinity_method "compare-fallback"; the three-dot diff starts at the
+                  merge base, so it may include rebased-in changes). Null when that commit
+                  is gone, a later diff is missing, the comment is on the LEFT side, or the
+                  finding has no line.
+  overlap         post_merge_commit.overlaps_pr_lines compares the commit's old-side hunk
+                  ranges with the new-side lines the PR diff added to the same file, with
+                  no rebase or intermediate-commit mapping
+                  (overlap_method "approximate-no-rebase").
+  reply kind      author_reply_kind classifies thread replies by the PR author or the
+                  owner with keyword regexes, newest reply first: reject words win over
+                  ack words, a question mark or question words give "question", no
+                  match gives "none". It is a heuristic.
+  next status     next_bot_review_status reads the next non-container bot review's
+                  "Previous findings"/"Prior findings" items. An item matches when its
+                  severity equals the finding's AND the path basename or >= 2 title tokens
+                  (non-stopword, length >= 4) appear in it; the best-scoring item wins and
+                  is copied to next_bot_review_line. Informational only: it feeds no
+                  addressed definition, because the bot must not judge its own fix.
+  superseded_by_head  the first PR commit after the reviewed head in commit order
+                  (push boundaries are not visible in the API).
+  head at comment / blind_to_bot  issue comments are placed on the last PR commit whose
+                  committer date precedes them; a human comment is blind_to_bot when no
+                  bot review had been submitted before it. capture_recapture counts it
+                  only when its head is at or before the panel target head.
+  file_type       path rules only (tests/, *_test.*, build files, docs/*.md); labels may
+                  override it.
+  limits          the PR commits API returns at most 250 commits and the files API at
+                  most 3000 files; per-file patches may be absent for large or binary
+                  files. These cases are counted in manifest.json "truncation".
+"""
+from __future__ import annotations
+
+import argparse
+import datetime as dt
+import json
+import math
+import os
+import random
+import re
+import subprocess
+import sys
+import time
+from collections import Counter, defaultdict
+from dataclasses import dataclass, field
+
+COLLECTOR_VERSION = "2.1.0"
+
+# ---------------------------------------------------------------------------
+# Constants: label vocabularies and metric definitions. Renaming a label is a
+# one-line change in VOCAB; METRIC_KEYS is the figure -> JSON key table that
+# references/metrics.md mirrors.
+# ---------------------------------------------------------------------------
+OWNER = "isac322"
+IMPLEMENTER_BOT = "bulgasaribot[bot]"
+DEFAULT_REVIEWER = "haechibot[bot]"
+DEFAULT_REPOS = (
+    "isac322/cc-lb",
+    "isac322/flareway",
+    "isac322/krema",
+    "isac322/kwin-mcp",
+    "isac322/pillar-csi",
+    "isac322/rkmon",
+)
+DEFAULT_EVIDENCE_DAYS = 3
+FINAL_RATER = "final"
+IRR_RATERS = ("labelerA", "labelerB")
+JUDGE_RATER = "judge"
+MATCH_ORDERS = ("defect_first", "review_first")
+MATCHER_RATERS = tuple("matcher-%s" % order for order in MATCH_ORDERS)
+# Raters that label only one field (judge: validity; matchers: bot_match).
+PARTIAL_RATERS = frozenset({JUDGE_RATER, *MATCHER_RATERS})
+
+VOCAB = {
+    "validity": ("valid", "invalid", "unverifiable"),
+    "adjudicated_severity": ("P0", "P1", "P2", "P3", "nit", "none"),
+    # Rater-assigned codes. INVALID and SEVERITY_INFLATED are derived (DERIVED_CODES).
+    "noise_codes": ("LOW_VALUE", "NON_ACTIONABLE", "OFF_SCOPE", "STYLE_PREFERENCE", "AUTOMATABLE", "DUPLICATE"),
+    "value": ("high", "normal", "low"),
+    # not_applicable: the review was posted after merge or close (excluded from addressed_rate).
+    "author_action": ("addressed", "rejected", "ignored", "unknown", "not_applicable"),
+    "channel": (
+        "post_review_hunk",
+        "human_comment",
+        "post_merge_commit",
+        "cross_reference",
+        "owner_session",
+        "panel",
+    ),
+    # A defect introduced and fixed before the first bot-reviewed head or between reviewed
+    # heads is verdict defect_fix with coverage_only: true, not a verdict of its own.
+    "verdict": ("defect_fix", "not_defect", "external_cause", "pre_existing", "policy_risk"),
+    "present_at_reviewed_head": ("yes", "no", "unknown"),
+    "bot_match": ("hit", "partial", "miss"),
+    "defect_type": (
+        "functional/resource",
+        "functional/check",
+        "functional/interface",
+        "functional/logic",
+        "functional/timing",
+        "functional/support",
+        "functional/larger",
+        "functional/claim_mismatch",
+        "evolvability/documentation",
+        "evolvability/visual",
+        "evolvability/structure",
+    ),
+    "author_type": ("owner", "implementer_bot", "automation", "external"),
+    "file_type": ("code", "test", "build_config", "docs"),
+}
+GENERATED_CHANNEL = "bot_finding"  # hit rows metrics creates from valid important findings
+INVALID_CODE = "INVALID"
+INFLATED_CODE = "SEVERITY_INFLATED"
+DUPLICATE_CODE = "DUPLICATE"
+DERIVED_CODES = (INVALID_CODE, INFLATED_CODE)
+SEVERITY_RANK = {"P0": 0, "P1": 1, "P2": 2, "P3": 3, "nit": 4, "none": 5}
+KAPPA_SEVERITY_SCALE = ("P0", "P1", "P2", "P3", "nit")
+# Important = adjudicated P0/P1, plus P2 when the row sets p2_blocking: true.
+IMPORTANT_SEVERITIES = frozenset({"P0", "P1"})
+IMPORTANT_IF_BLOCKING = frozenset({"P2"})
+P0P1 = frozenset({"P0", "P1"})
+BLOCKING_FIELD = "p2_blocking"
+IMPORTANT_FIELD = "important"  # derived kappa field, never labelled
+# important_escaped.by_first_source: earliest independent source first (K4). The bot speaks at
+# review time, human re-review (owner session, human comment) during the PR, the panel at audit
+# time; fix evidence alone (post_review_hunk, post_merge_commit, cross_reference) is not independent.
+FIRST_SOURCES = ("bot", "human_review", "panel", "fix_evidence_only")
+# An important defect also needs these miss-row values (policy_risk is never important).
+IMPORTANT_MISS_VERDICT = "defect_fix"
+IMPORTANT_MISS_PRESENT = "yes"
+# Noise = any of these codes; INVALID and SEVERITY_INFLATED are derived, DUPLICATE is
+# excluded from the denominators instead of being noise.
+NOISE_CODES = frozenset({INVALID_CODE, INFLATED_CODE, "LOW_VALUE", "NON_ACTIONABLE", "OFF_SCOPE",
+                         "STYLE_PREFERENCE", "AUTOMATABLE"})
+# SEVERITY_INFLATED (derived, valid findings only): bot rank - adjudicated rank >= 2, or
+# adjudicated nit while the bot said P0-P2. A gap of exactly 1 is over_severity (not noise).
+INFLATION_MIN_LEVELS = 2
+INFLATED_IF_NIT_FROM = frozenset({"P0", "P1", "P2"})
+OVER_SEVERITY_LEVELS = 1
+BOT_MATCH_ORDER = {"hit": 0, "partial": 1, "miss": 2}
+# Verdicts come from the first "**Verdict: X**" body line, mapped to GitHub event names.
+# GitHub rewrites superseded bot reviews to DISMISSED, so the raw state (github_state) is
+# only a fallback when the line is absent.
+VERDICT_RE = re.compile(r"\*\*Verdict:\s*(GREEN|BLOCKING|OPEN)\b", re.I)
+VERDICT_EVENT = {"GREEN": "APPROVED", "BLOCKING": "CHANGES_REQUESTED", "OPEN": "COMMENTED"}
+# The head a bot review names in its body; it wins over GitHub's commit_id, which is the PR
+# head when the review was posted (K2: #94 c3d0208 names a47cc92, #88 c974f36 names fce8827).
+REVIEWED_AT_RE = re.compile(r"\b(?:re-)?reviewed at `?([0-9a-fA-F]{40})\b")
+APPROVE_VERDICT = "APPROVED"
+BLOCKING_VERDICT = "CHANGES_REQUESTED"
+REVIEW_STRATA = ("repo", "size_bucket", "verdict", "author_type")
+STRATA = REVIEW_STRATA + ("file_type", "defect_type")
+FINDING_STRATA = STRATA + ("bot_severity",)
+WILSON_Z = 1.96
+# explicit_not_useful_rate (D12): pool families until n >= 10; probation when the point
+# estimate >= 10%, suppress when the Wilson lower bound > 10%.
+NOT_USEFUL_MIN_N = 10
+NOT_USEFUL_ALARM = 0.10
+MATCH_KAPPA_DEFINITE = 0.80
+MATCH_KAPPA_TENTATIVE = 0.667
+CAPTURE_MIN_RECAPTURES = 7
+# Bot "attention" issue comments (failure/stop notices) carry this marker.
+ATTENTION_RE = re.compile(r"<!--\s*issue-agent:[^:>\s]+:attention\s*-->")
+
+# Figure -> JSON key table (references/metrics.md mirrors this list).
+METRIC_KEYS = (
+    ("validity_precision", "valid / (valid + invalid), first occurrences (no DUPLICATE)"),
+    ("validity_precision_worst", "valid / all first occurrences (unverifiable counted as invalid)"),
+    ("noise_rate", "noise / first occurrences excluding unverifiable"),
+    ("code_rate", "code_rate.<CODE>: findings with CODE / same denominator as noise_rate"),
+    ("duplicate_rate", "DUPLICATE / all labelled in-window findings"),
+    ("over_severity_rate", "valid findings with bot severity exactly 1 rank above adjudicated"),
+    ("severity_inflated_rate", "valid findings with derived SEVERITY_INFLATED"),
+    ("blocking_precision", "validity_precision restricted to bot P0/P1"),
+    ("findings_per_pr", "first-occurrence in-window findings per reviewed PR (mean, no CI)"),
+    ("silent_review_share", "non-container bot reviews with zero findings"),
+    ("nit_share", "valid first occurrences adjudicated nit"),
+    ("addressed_rate", "F_closed findings addressed (author_action, else vicinity_1 OR ack); "
+                       "implementer_bot PRs reported separately; author_action not_applicable excluded"),
+    ("effective_fp_rate", "1 - addressed_rate (record only)"),
+    ("explicit_not_useful_rate", "rejected / (rejected + addressed) per <coarse>.<bot_sev> family"),
+    ("human_addressed_rate", "addressed_rate computed on human root inline comments"),
+    ("important_escaped", "important defects (pr, dedup_key) with no hit at any reviewed head (@H); "
+                          "by_first_source: counts by earliest independent source "
+                          "(bot > human_review > panel > fix_evidence_only)"),
+    ("important_escaped_per_pr", "important_escaped / reviewed PRs, Garwood exact Poisson CI (@H)"),
+    ("important_miss_rate_rel", "(miss + partial) / |R_imp|: all_prs (non-panel) and panel_prs (@H)"),
+    ("important_partial", "important defects whose best match is partial (@H)"),
+    ("subtotal_p0p1", "important_miss_rate_rel restricted to adjudicated P0/P1 (@H)"),
+    ("first_exposure_miss", "important defects not hit at their earliest reviewed head (@H)"),
+    ("approve_with_important_miss", "APPROVE (pr, head) units with an important miss or partial at that head; "
+                                    "per_pr: PRs with such a unit / PRs with an APPROVE unit (primary)"),
+    ("rc_without_valid_blocking", "REQUEST_CHANGES (pr, head) units without a valid important finding"),
+    ("coverage_unreviewed_heads", "PRs with an unreviewed pre-fix or merged head, or attention-only"),
+    ("coverage_unreviewed_defects", "coverage_only miss rows (defects fixed before any bot review), by severity"),
+    ("capture_recapture", "Chapman (2 sources) / Chao2 (>=3) within panel PRs; indicative only"),
+    ("irr", "irr.<field>: labelerA vs labelerB on irr_sample items; important / important_miss: "
+            "derived P0/P1 or P2 with p2_blocking on findings / miss rows"),
+    ("match_kappa", "match_kappa.<defect_first|review_first>: matcher order vs final bot_match (match_sample)"),
+    ("judge_bias", "judge vs labelerB validity on irr_sample items; finding length vs judge 'valid'"),
+)
+# D13 pre-registered primary endpoints for `compare`: key path -> test.
+PRIMARY_ENDPOINTS = (
+    ("validity_precision", ("validity_precision",), "proportion"),
+    ("noise_rate", ("noise_rate",), "proportion"),
+    ("important_escaped_per_pr", ("important_escaped_per_pr",), "count_rate"),
+    ("approve_with_important_miss.per_pr", ("approve_with_important_miss", "per_pr"), "proportion"),
+)
+
+
+def finding_addressed(finding, label=None):
+    """D12 (Turzo & Bosu): an auditor author_action overrides the heuristics; otherwise
+    changed_in_vicinity_1 OR an explicit ack. The bot's own "Closed" status is never used."""
+    action = (label or {}).get("author_action")
+    if action == "addressed":
+        return True
+    if action in ("rejected", "ignored"):
+        return False
+    return finding.get("changed_in_vicinity_1") is True or finding.get("author_reply_kind") == "ack"
+
+
+def finding_rejected(finding, label=None):
+    action = (label or {}).get("author_action")
+    if action in ("addressed", "rejected", "ignored"):
+        return action == "rejected"
+    return finding.get("author_reply_kind") == "reject"
+
+
+# Collector settings.
+GH_RETRIES = 3
+VICINITY_KS = (1, 5)
+TWIN_WINDOW = 3
+PR_COMMITS_LIMIT = 250
+PR_FILES_LIMIT = 3000
+COMPARE_FILES_LIMIT = 300
+GRAPHQL_COMMENTS_PAGE = 100
+EXCERPT_CHARS = 1000
+RANGE_MAP_LIMIT = 400
+REPO_RE = re.compile(r"^[A-Za-z0-9_.-]+/[A-Za-z0-9_.-]+$")
+SPLIT_ID_RE = re.compile(r"^(?P<base>.+)\.(?P<k>\d+)$")
+HEAD_SUFFIX_RE = re.compile(r"^(?P<base>.+)@(?P<head>[0-9a-f]{7,40})$")
+PR_ID_RE = re.compile(r"^([^/#\s]+/[^/#\s]+#\d+)")
+DOC_EXTENSIONS = (".md", ".rst", ".txt", ".adoc")
+BUILD_EXTENSIONS = (".toml", ".yaml", ".yml", ".json", ".cfg", ".ini", ".lock", ".nix", ".mk", ".cmake",
+                    ".gradle", ".bzl", ".bazel", ".spec", ".service")
+BUILD_BASENAMES = frozenset({"makefile", "go.mod", "go.sum", "justfile", "containerfile", "build", "workspace",
+                             "setup.py", "requirements.txt", "renovate.json", "dependabot.yml"})
+TEST_PATH_RE = re.compile(r"(^|/)(tests?|__tests__|spec|testdata|e2e)/")
+TEST_FILE_RE = re.compile(r"^(test_.+|.+_test\.\w+|.+\.(test|spec)\.\w+|conftest\.py)$")
+
+# ---------------------------------------------------------------------------
+# Generic helpers
+# ---------------------------------------------------------------------------
+
+
+def parse_time(value):
+    if value is None:
+        return None
+    text = value.strip()
+    if re.fullmatch(r"\d{4}-\d{2}-\d{2}", text):
+        text += "T00:00:00+00:00"
+    if text.endswith("Z"):
+        text = text[:-1] + "+00:00"
+    parsed = dt.datetime.fromisoformat(text)
+    if parsed.tzinfo is None:
+        parsed = parsed.replace(tzinfo=dt.timezone.utc)
+    return parsed.astimezone(dt.timezone.utc)
+
+
+def fmt_time(value):
+    return value.astimezone(dt.timezone.utc).strftime("%Y-%m-%dT%H:%M:%SZ")
+
+
+def login_of(obj):
+    user = (obj or {}).get("user") or (obj or {}).get("author") or {}
+    return user.get("login")
+
+
+def is_bot_login(login, user_type=None):
+    return bool(login) and (login.endswith("[bot]") or user_type == "Bot")
+
+
+def author_type(login, user_type=None):
+    if login == OWNER:
+        return "owner"
+    if login == IMPLEMENTER_BOT:
+        return "implementer_bot"
+    if is_bot_login(login, user_type):
+        return "automation"
+    return "external"
+
+
+def file_type(path):
+    """code | test | build_config | docs from the path alone (labels may override)."""
+    if not path:
+        return None
+    lower = path.lower()
+    base = lower.rsplit("/", 1)[-1]
+    if TEST_PATH_RE.search(lower) or TEST_FILE_RE.match(base):
+        return "test"
+    if (base in BUILD_BASENAMES or base.startswith(("dockerfile", "containerfile")) or lower.startswith(".github/")
+            or base.endswith(BUILD_EXTENSIONS)):
+        return "build_config"
+    if base.endswith(DOC_EXTENSIONS) or lower.startswith("docs/") or "/docs/" in lower or base in ("license", "notice"):
+        return "docs"
+    return "code"
+
+
+def pr_id_of(item_id):
+    match = PR_ID_RE.match(item_id or "")
+    return match.group(1) if match else None
+
+
+def hunk_range(hunk):
+    return "-%d,%d+%d,%d" % (hunk.old_start, hunk.old_count, hunk.new_start, hunk.new_count)
+
+
+def hunk_candidate_id(pr_id, step_sha, path, hunk):
+    """Content-addressed id: commit (or compare) + path + hunk header range."""
+    if step_sha.startswith("compare:"):
+        base, head = step_sha[len("compare:"):].split("...", 1)
+        step = "cmp-%s-%s" % (base[:12], head[:12])
+    else:
+        step = step_sha[:12]
+    return "%s/hunk/%s/%s@%s" % (pr_id, step, path, hunk_range(hunk) if hunk else "nopatch")
+
+
+def comment_candidate_id(pr_id, source, source_id):
+    return "%s/comment/%s/%s" % (pr_id, source, source_id)
+
+
+def postmerge_candidate_id(pr_id, sha):
+    return "%s/postmerge/%s" % (pr_id, sha[:12])
+
+
+def xref_candidate_id(pr_id, source_repo, source_number):
+    return "%s/xref/%s#%s" % (pr_id, source_repo or "unknown", source_number)
+
+
+def size_bucket(additions, deletions, changed_files):
+    lines = (additions or 0) + (deletions or 0)
+    if lines >= 400 or (changed_files or 0) >= 20:
+        return "L"
+    if lines < 50:
+        return "S"
+    return "M"
+
+
+def write_private(path, text):
+    fd = os.open(path, os.O_WRONLY | os.O_CREAT | os.O_EXCL, 0o600)
+    with os.fdopen(fd, "w", encoding="utf-8") as handle:
+        handle.write(text)
+
+
+def write_jsonl(path, rows):
+    write_private(path, "".join(json.dumps(r, sort_keys=True, ensure_ascii=False) + "\n" for r in rows))
+
+
+def parse_json_stream(text):
+    """Parse one or more concatenated JSON documents (gh --paginate emits one per page)."""
+    decoder = json.JSONDecoder()
+    values, pos, size = [], 0, len(text)
+    while True:
+        while pos < size and text[pos].isspace():
+            pos += 1
+        if pos >= size:
+            return values
+        value, pos = decoder.raw_decode(text, pos)
+        values.append(value)
+
+
+# ---------------------------------------------------------------------------
+# Unified diff parsing and anchor mapping (pure)
+# ---------------------------------------------------------------------------
+HUNK_RE = re.compile(r"^@@ -(\d+)(?:,(\d+))? \+(\d+)(?:,(\d+))? @@")
+
+
+@dataclass
+class Hunk:
+    old_start: int
+    old_count: int
+    new_start: int
+    new_count: int
+    header: str
+    text: str = ""
+    deleted: list = field(default_factory=list)  # old line numbers removed
+    inserted_after: list = field(default_factory=list)  # x: insertion between old x and x+1
+    added_new: list = field(default_factory=list)  # new line numbers added
+    context: dict = field(default_factory=dict)  # old line -> new line
+
+    def old_span(self):
+        """Old-side interval the hunk touches; an insertion-only hunk spans x..x+1."""
+        if self.old_count == 0:
+            return self.old_start, self.old_start + 1
+        return self.old_start, self.old_start + self.old_count - 1
+
+
+def parse_patch(patch):
+    """Parse unified-diff text (one file; extra non-hunk lines are ignored) into Hunks."""
+    hunks = []
+    cur = None
+    old_no = new_no = old_left = new_left = 0
+    body = []
+    for raw in (patch or "").split("\n"):
+        match = HUNK_RE.match(raw)
+        if match:
+            if cur is not None:
+                cur.text = "\n".join(body)
+            os_, oc, ns, nc = match.groups()
+            oc = 1 if oc is None else int(oc)
+            nc = 1 if nc is None else int(nc)
+            cur = Hunk(int(os_), oc, int(ns), nc, raw)
+            hunks.append(cur)
+            body = [raw]
+            old_no = cur.old_start if oc else cur.old_start + 1
+            new_no = cur.new_start if nc else cur.new_start + 1
+            old_left, new_left = oc, nc
+            continue
+        if cur is None:
+            continue
+        if raw.startswith("\\"):
+            body.append(raw)
+            continue
+        if old_left <= 0 and new_left <= 0:
+            continue
+        body.append(raw)
+        tag = raw[:1]
+        if tag == "+":
+            if not cur.inserted_after or cur.inserted_after[-1] != old_no - 1:
+                cur.inserted_after.append(old_no - 1)
+            cur.added_new.append(new_no)
+            new_no += 1
+            new_left -= 1
+        elif tag == "-":
+            cur.deleted.append(old_no)
+            old_no += 1
+            old_left -= 1
+        else:  # context (" " or an empty line whose space was stripped)
+            cur.context[old_no] = new_no
+            old_no += 1
+            new_no += 1
+            old_left -= 1
+            new_left -= 1
+    if cur is not None:
+        cur.text = "\n".join(body)
+    return hunks
+
+
+def map_line(line, hunks):
+    """Map an old-side line through one file diff. None when the line is deleted/modified."""
+    delta = 0
+    for hunk in sorted(hunks, key=lambda h: h.old_start):
+        lo, hi = hunk.old_span()
+        if hunk.old_count == 0:
+            if line <= hunk.old_start:
+                break
+            delta += hunk.new_count
+            continue
+        if line < lo:
+            break
+        if line <= hi:
+            if line in hunk.context:
+                return hunk.context[line]
+            return None
+        delta += hunk.new_count - hunk.old_count
+    return line + delta
+
+
+def map_interval(start, end, hunks):
+    """Map [start, end]; survivors define the new interval; None when all lines are gone."""
+    if end - start > RANGE_MAP_LIMIT:
+        points = (start, end)
+    else:
+        points = range(start, end + 1)
+    mapped = [m for m in (map_line(p, hunks) for p in points) if m is not None]
+    if not mapped:
+        return None
+    return min(mapped), max(mapped)
+
+
+def interval_distance(a_lo, a_hi, b_lo, b_hi):
+    if a_hi < b_lo:
+        return b_lo - a_hi
+    if b_hi < a_lo:
+        return a_lo - b_hi
+    return 0
+
+
+def change_distance(start, end, hunks):
+    """Smallest distance from [start, end] to a changed old-side line; None if no change."""
+    best = None
+    for hunk in hunks:
+        for x in hunk.deleted:
+            d = interval_distance(start, end, x, x)
+            best = d if best is None else min(best, d)
+        for x in hunk.inserted_after:
+            d = interval_distance(start, end, x, x + 1)
+            best = d if best is None else min(best, d)
+    return best
+
+
+def _find_file(files, path):
+    if path in files:
+        return files[path]
+    for entry in files.values():
+        if entry.get("previous_filename") == path:
+            return entry
+    return None
+
+
+def track_anchor(path, start, end, commits, ks=VICINITY_KS):
+    """Carry a finding anchor through later commits.
+
+    commits: ordered list of {"sha", "is_merge", "files": {filename: file-entry} | None}.
+    A file entry has filename, status, optional previous_filename and patch.
+    Returns changed {k: bool|None}, file_changed_later (bool|None), positions
+    {sha: (path, start, end) in that commit's old-side coordinates}, note.
+    """
+    if start is None:  # single-line anchors (GitHub start_line null) use start = end = line
+        start = end
+    elif end is None:
+        end = start
+    has_line = start is not None
+    changed = {k: (False if has_line else None) for k in ks}
+    file_changed = False
+    positions = {}
+    note = None
+    cur_path = path
+    for commit in commits:
+        files = commit.get("files")
+        if files is None:
+            note = "diff unavailable for %s" % commit.get("sha")
+            break
+        if cur_path is None:
+            break
+        if has_line and start is not None:
+            positions[commit["sha"]] = (cur_path, start, end)
+        entry = _find_file(files, cur_path)
+        if entry is None:
+            continue
+        merge = commit.get("is_merge", False)
+        if not merge:
+            file_changed = True
+        status = entry.get("status")
+        patch = entry.get("patch")
+        if status == "removed":
+            if has_line and start is not None and not merge:
+                for k in ks:
+                    changed[k] = True
+            start = end = None
+            cur_path = None
+            break
+        if patch is None:
+            if status == "renamed" and not entry.get("changes"):
+                cur_path = entry.get("filename", cur_path)
+                continue
+            note = "patch missing for %s in %s" % (cur_path, commit.get("sha"))
+            break
+        hunks = parse_patch(patch)
+        if has_line and start is not None:
+            if not merge:
+                dist = change_distance(start, end, hunks)
+                if dist is not None:
+                    for k in ks:
+                        if dist <= k:
+                            changed[k] = True
+            mapped = map_interval(start, end, hunks)
+            if mapped is None:
+                start = end = None
+                note = note or "anchor deleted at %s" % commit.get("sha")
+            else:
+                start, end = mapped
+        cur_path = entry.get("filename", cur_path)
+    if note and note.startswith(("diff unavailable", "patch missing")):
+        changed = {k: (True if v is True else None) for k, v in changed.items()}
+        file_changed = True if file_changed else None
+    return {"changed": changed, "file_changed_later": file_changed, "positions": positions, "note": note}
+
+
+# ---------------------------------------------------------------------------
+# Review text parsing (pure)
+# ---------------------------------------------------------------------------
+SEVERITY_TOKEN = r"(?:\*\*)?\s*\[?(?P<sev>P[0-3])\]?(?=[:\]\s*]|$)"
+BODY_FINDING_RE = re.compile(
+    r"^\s*(?:[-*+]|\d+[.)])\s+" + SEVERITY_TOKEN
+    + r"(?:[^*`\n]*\*\*)?[:\s]*"
+    r"(?:`(?P<path>[^`\s:]+)(?::(?P<line>\d+)(?:[-\u2013](?P<end>\d+))?)?`)?"
+)
+PATHLIKE_RE = re.compile(r"[\w.-]*/[\w./-]+|[\w-][\w.-]*\.\w+")
+INLINE_SEVERITY_RE = re.compile(r"^\s*" + SEVERITY_TOKEN)
+HEADING_RE = re.compile(r"^\s{0,3}#{1,6}\s+(.*?)\s*#*\s*$")
+PREVIOUS_ITEM_RE = re.compile(r"^\s*[-*]\s*(?:\*\*)?\s*(Closed|Open)\b")
+PREVIOUS_HEADINGS = ("previous finding", "prior finding")
+BULLET_START_RE = re.compile(r"^\s*(?:[-*+]|\d+[.)])\s+")
+ANY_SEVERITY_RE = re.compile(r"\b(P[0-3])\b")
+MATCH_STOPWORDS = frozenset(
+    "with that this from when then than into does have been were which while after before only also "
+    "still more should could would there their them they what where must make keep ensure closed open "
+    "previous finding findings fixed remains remain unchanged now".split()
+)
+
+
+def review_verdict(body, github_state):
+    match = VERDICT_RE.search(body or "")
+    if match:
+        return VERDICT_EVENT[match.group(1).upper()]
+    return github_state
+
+
+def body_head(body):
+    """Head named in a bot review body ("reviewed at <40-hex>" / "re-reviewed at <40-hex>")."""
+    match = REVIEWED_AT_RE.search(body or "")
+    return match.group(1).lower() if match else None
+
+
+def review_head(review):
+    """Effective head of a bot review: the body head, else GitHub's commit_id. Works on raw
+    API reviews and on reviews.jsonl rows (2.0.0 rows carry commit_id as reviewed_head_sha)."""
+    return body_head(review.get("body")) or review.get("commit_id") or review.get("reviewed_head_sha")
+
+
+def bot_reviewed_heads(reviews, commit_shas=None):
+    """K2: the canonical bot-reviewed heads of one PR. `reviews` are its bot reviews ({id,
+    body, submitted_at, commit_id or reviewed_head_sha, is_reply_container}); reply
+    containers are skipped, heads outside the commit list (force pushes) are kept. One row
+    per head ordered by first review: {sha, first_review_at, review_ids, commit_ids (GitHub
+    commit_id values of those reviews), body_head (head named in a body, else null),
+    in_commits (null without commit_shas), merge_base (filled by the collector)}."""
+    known = set(commit_shas) if commit_shas is not None else None
+    rows = {}
+    for review in sorted(reviews, key=lambda r: (r.get("submitted_at") or "", str(r.get("id")))):
+        if review.get("is_reply_container"):
+            continue
+        sha = review_head(review)
+        if not sha:
+            continue
+        row = rows.get(sha)
+        if row is None:
+            row = rows[sha] = {"sha": sha, "first_review_at": review.get("submitted_at"), "review_ids": [],
+                               "commit_ids": [], "body_head": None,
+                               "in_commits": (sha in known) if known is not None else None, "merge_base": None,
+                               "merge_base_note": None}
+        row["review_ids"].append(review.get("id"))
+        commit_id = review.get("commit_id") or review.get("reviewed_head_sha")
+        if commit_id and commit_id not in row["commit_ids"]:
+            row["commit_ids"].append(commit_id)
+        named = body_head(review.get("body"))
+        if named:
+            row["body_head"] = named
+    return list(rows.values())
+
+
+def head_aliases(head_rows):
+    """GitHub commit_id -> body head, for commit_ids that are not bot-reviewed heads themselves
+    (labels written against the commit_id resolve to the head the review names)."""
+    heads = {row["sha"] for row in head_rows}
+    return {cid: row["sha"] for row in head_rows for cid in row["commit_ids"] if cid not in heads}
+
+
+def inline_severity(body):
+    match = INLINE_SEVERITY_RE.match(body or "")
+    return match.group("sev") if match else None
+
+
+def _is_previous_heading(heading_text):
+    return heading_text.strip().strip("*").strip().lower().startswith(PREVIOUS_HEADINGS)
+
+
+def first_line(text):
+    for line in (text or "").splitlines():
+        if line.strip():
+            return line.strip()
+    return ""
+
+
+def extract_body_findings(body, inline_anchors, window=TWIN_WINDOW):
+    """Severity-led bullets in a review body that have no inline twin.
+
+    Only bullets whose first token (after optional bold/brackets) is P0-P3 count; the
+    "Previous findings" section is skipped. inline_anchors: iterable of
+    (path, start_line|None, line|None). A bullet is a twin when it names the same path and
+    the inline range is within [start - window, end + window].
+    Returns dicts: severity, path, line, start_line, title, body.
+    """
+    anchors = [(p, s if s is not None else l, l) for p, s, l in inline_anchors if p and l is not None]
+    lines = (body or "").splitlines()
+    out = []
+    inside_previous = False
+    i = 0
+    while i < len(lines):
+        heading = HEADING_RE.match(lines[i])
+        if heading:
+            inside_previous = _is_previous_heading(heading.group(1))
+            i += 1
+            continue
+        match = None if inside_previous else BODY_FINDING_RE.match(lines[i])
+        if not match:
+            i += 1
+            continue
+        block = [lines[i]]
+        j = i + 1
+        while j < len(lines):
+            nxt = lines[j]
+            if not nxt.strip() or BULLET_START_RE.match(nxt) or HEADING_RE.match(nxt):
+                break
+            if not nxt.startswith((" ", "\t")):
+                break
+            block.append(nxt)
+            j += 1
+        path = match.group("path")
+        line = start = None
+        if path and match.group("line"):
+            first = int(match.group("line"))
+            last = int(match.group("end")) if match.group("end") else None
+            if last is not None and last >= first:
+                start, line = first, last
+            else:
+                line = first
+        elif path and not PATHLIKE_RE.fullmatch(path):
+            path = None
+        twin = False
+        if path and line is not None:
+            lo = start if start is not None else line
+            for a_path, a_lo, a_hi in anchors:
+                if a_path == path and interval_distance(lo, line, a_lo, a_hi) <= window:
+                    twin = True
+                    break
+        if not twin:
+            out.append(
+                {
+                    "severity": match.group("sev"),
+                    "path": path,
+                    "line": line,
+                    "start_line": start,
+                    "title": BULLET_START_RE.sub("", lines[i], count=1).strip(),
+                    "body": "\n".join(block).strip(),
+                }
+            )
+        i = j
+    return out
+
+
+def previous_findings(body):
+    """(status, severity|None, text) items of the "Previous findings" section."""
+    items = []
+    inside = False
+    for line in (body or "").splitlines():
+        heading = HEADING_RE.match(line)
+        if heading:
+            inside = _is_previous_heading(heading.group(1))
+            continue
+        if inside:
+            match = PREVIOUS_ITEM_RE.match(line)
+            if match:
+                sev = ANY_SEVERITY_RE.search(line[match.end():])
+                items.append((match.group(1), sev.group(1) if sev else None, line.strip()))
+    return items
+
+
+def _tokens(text):
+    words = re.findall(r"[a-z][a-z0-9_]{3,}", (text or "").lower())
+    return {w for w in words if w not in MATCH_STOPWORDS}
+
+
+def match_previous_status(finding, items):
+    """Best "Previous findings" item for a finding: (status, text) or (None, None).
+
+    An item qualifies when its severity equals the finding's severity AND either the path
+    basename appears in it or at least 2 non-stopword title tokens (length >= 4) do. The
+    highest-scoring item wins; ties keep the earliest. Informational only.
+    """
+    severity = finding.get("severity")
+    path = finding.get("path")
+    base = path.rsplit("/", 1)[-1].lower() if path else None
+    title_tokens = _tokens(finding.get("title"))
+    best = (0, None, None)
+    for status, item_sev, text in items:
+        if item_sev != severity:
+            continue
+        shared = len(title_tokens & _tokens(text))
+        has_base = bool(base) and base in text.lower()
+        if not has_base and shared < 2:
+            continue
+        score = shared + (1 if has_base else 0)
+        if score > best[0]:
+            best = (score, status, text)
+    return best[1], best[2]
+
+
+REPLY_REJECT_RE = re.compile(
+    r"won'?t fix|wontfix|not a bug|not an issue|by design|\bintended\b|intentional|false positive|"
+    r"disagree|not applicable|\binvalid\b|out of scope|no change needed|not needed|\bdeclin|"
+    r"의도|불필요|해당 없",
+    re.I,
+)
+REPLY_ACK_RE = re.compile(
+    r"\bfix(?:ed|es)?\b|\baddressed\b|\bdone\b|\bapplied\b|good catch|will fix|\bupdated\b|"
+    r"\bresolved\b|\bchanged\b|\bthanks?\b|thank you|반영|수정",
+    re.I,
+)
+REPLY_QUESTION_RE = re.compile(r"\?|\b(why|could you|can you|what do you mean|clarify)\b", re.I)
+
+
+def classify_reply(text):
+    if REPLY_REJECT_RE.search(text or ""):
+        return "reject"
+    if REPLY_ACK_RE.search(text or ""):
+        return "ack"
+    if REPLY_QUESTION_RE.search(text or ""):
+        return "question"
+    return None
+
+
+def author_reply_kind(replies, authors):
+    for reply in reversed(replies):
+        if reply.get("author") in authors:
+            kind = classify_reply(reply.get("body"))
+            if kind:
+                return kind
+    return "none"
+
+
+KEYWORD_FLAGS = {
+    "fix": re.compile(r"\bfix", re.I),
+    "bug": re.compile(r"\bbug", re.I),
+    "revert": re.compile(r"\brevert", re.I),
+    "regress": re.compile(r"\bregress", re.I),
+    "hotfix": re.compile(r"\bhot-?fix", re.I),
+}
+
+
+def keyword_flags(message, pr_number):
+    flags = {name: bool(rx.search(message or "")) for name, rx in KEYWORD_FLAGS.items()}
+    flags["pr_ref"] = bool(re.search(r"#%d(?!\d)" % pr_number, message or ""))
+    return flags
+
+
+# ---------------------------------------------------------------------------
+# gh wrapper (read-only)
+# ---------------------------------------------------------------------------
+THREADS_QUERY = """
+query($owner: String!, $name: String!, $number: Int!, $cursor: String) {
+  repository(owner: $owner, name: $name) {
+    pullRequest(number: $number) {
+      reviewThreads(first: 50, after: $cursor) {
+        pageInfo { hasNextPage endCursor }
+        nodes {
+          id isResolved isOutdated path line originalLine startLine originalStartLine diffSide
+          comments(first: %d) {
+            totalCount
+            nodes { databaseId author { login } body createdAt }
+          }
+        }
+      }
+    }
+  }
+}
+""" % GRAPHQL_COMMENTS_PAGE
+
+
+class Gh:
+    def __init__(self, errors, runner=subprocess.run, sleep=time.sleep):
+        self.errors = errors
+        self.runner = runner
+        self.sleep = sleep
+
+    def _run(self, args, what):
+        message, status = "", None
+        for attempt in range(GH_RETRIES + 1):
+            proc = self.runner(args, capture_output=True, text=True)
+            if proc.returncode == 0:
+                try:
+                    return parse_json_stream(proc.stdout)
+                except ValueError as exc:
+                    message, status = "invalid JSON: %s" % exc, None
+                    break
+            message = (proc.stderr or "").strip()
+            found = re.search(r"HTTP (\d{3})", message)
+            status = int(found.group(1)) if found else None
+            lower = message.lower()
+            secondary = "secondary rate limit" in lower or status == 429
+            if attempt < GH_RETRIES and (secondary or (status is not None and status >= 500)):
+                self.sleep(60 * (attempt + 1) if secondary else 2 ** (attempt + 1))
+                continue
+            break
+        self.errors.append({"call": what, "status": status, "message": message[:300]})
+        return None
+
+    def rest(self, endpoint, paginate=False):
+        args = ["gh", "api", "--method", "GET", "-H", "Accept: application/vnd.github+json", endpoint]
+        if paginate:
+            args.append("--paginate")
+        return self._run(args, endpoint)
+
+    def rest_list(self, endpoint, paginate=True):
+        values = self.rest(endpoint, paginate)
+        if values is None:
+            return None
+        out = []
+        for value in values:
+            out.extend(value if isinstance(value, list) else [value])
+        return out
+
+    def rest_obj(self, endpoint, paginate=False):
+        values = self.rest(endpoint, paginate)
+        if not values:
+            return None
+        obj = values[0]
+        for extra in values[1:]:  # paginated commit objects: merge their files
+            if isinstance(obj, dict) and isinstance(extra, dict) and "files" in extra:
+                obj.setdefault("files", []).extend(extra["files"])
+        return obj
+
+    def review_threads(self, owner, name, number):
+        assert THREADS_QUERY.lstrip().startswith("query")
+        threads, cursor = [], None
+        while True:
+            args = [
+                "gh", "api", "graphql",
+                "-f", "query=" + THREADS_QUERY,
+                "-f", "owner=" + owner,
+                "-f", "name=" + name,
+                "-F", "number=%d" % number,
+            ]
+            if cursor:
+                args += ["-f", "cursor=" + cursor]
+            values = self._run(args, "graphql reviewThreads %s/%s#%d" % (owner, name, number))
+            if not values:
+                return None
+            data = values[0]
+            if data.get("errors"):
+                self.errors.append({"call": "graphql reviewThreads %s/%s#%d" % (owner, name, number),
+                                    "status": None, "message": json.dumps(data["errors"])[:300]})
+            pr = (((data.get("data") or {}).get("repository") or {}).get("pullRequest")) or {}
+            conn = pr.get("reviewThreads") or {}
+            threads.extend(conn.get("nodes") or [])
+            info = conn.get("pageInfo") or {}
+            if not info.get("hasNextPage"):
+                return threads
+            cursor = info.get("endCursor")
+
+
+# ---------------------------------------------------------------------------
+# collect
+# ---------------------------------------------------------------------------
+
+
+class Collector:
+    def __init__(self, gh, out, since, until, reviewer, evidence_days, now=None):
+        self.gh = gh
+        self.out = out
+        self.since = since
+        self.until = until
+        self.reviewer = reviewer
+        self.evidence_days = evidence_days
+        self.horizon = dt.timedelta(days=evidence_days)
+        self.now = now or dt.datetime.now(dt.timezone.utc)
+        self.truncation = Counter()
+        self.evidence_dropped = Counter()
+        self.evidence_incomplete = []
+        self.head_counts = Counter()
+        self.notes = []
+        self.skipped = []
+        self.commit_cache = {}
+        self.default_branch = {}
+        self.prs, self.reviews, self.findings, self.candidates, self.coverage = [], [], [], [], []
+
+    # -- raw storage ---------------------------------------------------------
+    def raw(self, rel_dir, name, data):
+        path = os.path.join(self.out, rel_dir)
+        os.makedirs(path, mode=0o700, exist_ok=True)
+        target = os.path.join(path, name)
+        if not os.path.exists(target):
+            write_private(target, json.dumps(data, indent=1, sort_keys=True, ensure_ascii=False) + "\n")
+
+    def commit(self, repo, sha):
+        key = (repo, sha)
+        if key not in self.commit_cache:
+            self.commit_cache[key] = self.gh.rest_obj("repos/%s/commits/%s?per_page=100" % (repo, sha), paginate=True)
+        return self.commit_cache[key]
+
+    def in_window(self, when):
+        stamp = parse_time(when)
+        return stamp is not None and self.since <= stamp < self.until
+
+    def keep_candidate(self, out, cand):
+        """D1 evidence horizon: keep a candidate only if event_at <= anchor_at + H."""
+        anchor, event = parse_time(cand.get("anchor_at")), parse_time(cand.get("event_at"))
+        cand["evidence_deadline"] = fmt_time(anchor + self.horizon) if anchor else None
+        if anchor is not None and event is not None and event > anchor + self.horizon:
+            self.evidence_dropped[cand["kind"]] += 1
+            return
+        out.append(cand)
+
+    # -- discovery -------------------------------------------------------------
+    def discover(self, repo):
+        """PRs updated since `since`: (kept, attention_only).
+
+        kept: PRs with at least one in-window review by the reviewer.
+        attention_only: PRs without one but with an in-window bot attention comment
+        (failure/stop notice); they only feed coverage.jsonl.
+        """
+        kept, attention_only = [], []
+        page = 1
+        while True:
+            items = self.gh.rest_list(
+                "repos/%s/pulls?state=all&sort=updated&direction=desc&per_page=100&page=%d" % (repo, page),
+                paginate=False,
+            )
+            if not items:
+                break
+            stop = False
+            for item in items:
+                if parse_time(item.get("updated_at")) < self.since:
+                    stop = True
+                    break
+                number = item["number"]
+                reviews = self.gh.rest_list("repos/%s/pulls/%d/reviews?per_page=100" % (repo, number))
+                if reviews is None:
+                    self.skipped.append({"pr": "%s#%d" % (repo, number), "reason": "reviews unavailable"})
+                    continue
+                if any(login_of(r) == self.reviewer and self.in_window(r.get("submitted_at")) for r in reviews):
+                    kept.append((number, reviews))
+                    continue
+                comments = self.gh.rest_list("repos/%s/issues/%d/comments?per_page=100" % (repo, number)) or []
+                attention = [c for c in comments if login_of(c) == self.reviewer
+                             and ATTENTION_RE.search(c.get("body") or "") and self.in_window(c.get("created_at"))]
+                if attention:
+                    attention_only.append((item, reviews, attention))
+            if stop or len(items) < 100:
+                break
+            page += 1
+        return kept, attention_only
+
+    def run(self, repos):
+        for repo in repos:
+            kept, attention_only = self.discover(repo)
+            for number, reviews in kept:
+                self.collect_pr(repo, number, reviews)
+            for item, reviews, attention in attention_only:
+                self.coverage.append(self._attention_only_row(repo, item, reviews, attention))
+
+    def _attention_only_row(self, repo, item, reviews, attention):
+        login = login_of(item)
+        return {
+            "id": "%s#%d" % (repo, item["number"]),
+            "repo": repo,
+            "number": item["number"],
+            "author": login,
+            "author_type": author_type(login, (item.get("user") or {}).get("type")),
+            "attention_only": True,
+            "attention_comments": len(attention),
+            "bot_reviews": sum(1 for r in reviews if login_of(r) == self.reviewer and r.get("state") != "PENDING"),
+            "heads": None,
+            "bot_reviewed_heads": [],
+            "reviewed_heads_outside_commits": 0,
+            "foreign_fix_commits": [],
+            "unreviewed_prefix_heads": [],
+            "first_foreign_commit_after_review": None,
+            "merged": bool(item.get("merged_at")),
+            "final_head_sha": (item.get("head") or {}).get("sha"),
+            "merged_head_reviewed": None,
+            "has_gap": True,
+        }
+
+    # -- per PR ----------------------------------------------------------------
+    def collect_pr(self, repo, number, reviews):
+        gh = self.gh
+        owner, name = repo.split("/", 1)
+        pr_id = "%s#%d" % (repo, number)
+        raw_dir = "raw/%s__%s/%d" % (owner, name, number)
+        pr = gh.rest_obj("repos/%s/pulls/%d" % (repo, number))
+        if pr is None:
+            self.skipped.append({"pr": pr_id, "reason": "pull request unavailable"})
+            return
+        files = gh.rest_list("repos/%s/pulls/%d/files?per_page=100" % (repo, number)) or []
+        commits = gh.rest_list("repos/%s/pulls/%d/commits?per_page=100" % (repo, number)) or []
+        review_comments = gh.rest_list("repos/%s/pulls/%d/comments?per_page=100" % (repo, number)) or []
+        issue_comments = gh.rest_list("repos/%s/issues/%d/comments?per_page=100" % (repo, number)) or []
+        timeline = gh.rest_list("repos/%s/issues/%d/timeline?per_page=100" % (repo, number)) or []
+        threads = gh.review_threads(owner, name, number)
+        for fname, data in (
+            ("pr.json", pr), ("files.json", files), ("commits.json", commits), ("reviews.json", reviews),
+            ("review_comments.json", review_comments), ("issue_comments.json", issue_comments),
+            ("threads.json", threads), ("timeline.json", timeline),
+        ):
+            self.raw(raw_dir, fname, data)
+        if len(commits) >= PR_COMMITS_LIMIT:
+            self.truncation["pr_commits_at_250_limit"] += 1
+        if len(files) >= PR_FILES_LIMIT:
+            self.truncation["pr_files_at_3000_limit"] += 1
+        if threads is not None:
+            for thread in threads:
+                total = ((thread.get("comments") or {}).get("totalCount")) or 0
+                if total > GRAPHQL_COMMENTS_PAGE:
+                    self.truncation["thread_comments_over_page"] += 1
+
+        final_head = (pr.get("head") or {}).get("sha")
+        author = login_of(pr)
+        pr_author_type = author_type(author, (pr.get("user") or {}).get("type"))
+        merged = bool(pr.get("merged_at"))
+        sha_index = {c["sha"]: i for i, c in enumerate(commits)}
+        commit_dates = [((c.get("commit") or {}).get("committer") or {}).get("date") for c in commits]
+        roots_by_review = defaultdict(list)
+        rest_replies = defaultdict(list)
+        for comment in review_comments:
+            if comment.get("in_reply_to_id"):
+                rest_replies[comment["in_reply_to_id"]].append(comment)
+            elif login_of(comment) == self.reviewer:
+                roots_by_review[comment.get("pull_request_review_id")].append(comment)
+        # Empty-body bot reviews without root comments only carry thread replies.
+        containers = {r["id"] for r in reviews if login_of(r) == self.reviewer
+                      and not (r.get("body") or "").strip() and not roots_by_review.get(r["id"])}
+        # commit_id below is the effective head (K2: the body head wins); github_commit_id keeps
+        # GitHub's value.
+        bot_reviews = sorted(
+            (dict(r, commit_id=review_head(r), github_commit_id=r.get("commit_id")) for r in reviews
+             if login_of(r) == self.reviewer and r.get("state") != "PENDING" and r["id"] not in containers),
+            key=lambda r: (r.get("submitted_at") or "", r["id"]),
+        )
+        effective_head = {r["id"]: r["commit_id"] for r in bot_reviews}
+        review_uid = lambda r: "%s@review/%d" % (pr_id, r["id"])
+        head_rows = bot_reviewed_heads(
+            [{"id": review_uid(r), "body": r.get("body"), "submitted_at": r.get("submitted_at"),
+              "commit_id": r["github_commit_id"]} for r in bot_reviews],
+            [c["sha"] for c in commits])
+        if any(len(c.get("parents") or []) > 1 for c in commits):
+            base_ref = (pr.get("base") or {}).get("ref")
+            for row in head_rows:
+                if not base_ref:
+                    continue
+                before = len(gh.errors)
+                cmp = gh.rest_obj("repos/%s/compare/%s...%s" % (repo, base_ref, row["sha"]))
+                new = gh.errors[before:]
+                if cmp is None and new and all(e.get("status") == 404 for e in new):
+                    # N5: no common ancestor (force-pushed or vanished head): a fact, not an API failure.
+                    del gh.errors[before:]
+                    row["merge_base_note"] = "compare %s...%s returned 404: %s" % (
+                        base_ref, row["sha"][:12], new[-1].get("message") or "")
+                row["merge_base"] = ((cmp or {}).get("merge_base_commit") or {}).get("sha")
+        human_roots = [c for c in review_comments
+                       if not c.get("in_reply_to_id") and login_of(c) and login_of(c) != author
+                       and not is_bot_login(login_of(c), (c.get("user") or {}).get("type"))]
+
+        # Diffs of every commit after the earliest bot-reviewed or human-commented head.
+        head_positions = [sha_index[r.get("commit_id")] for r in bot_reviews if r.get("commit_id") in sha_index]
+        first_idx = min(head_positions) if head_positions else None
+        starts = head_positions + [sha_index[c.get("original_commit_id")] for c in human_roots
+                                   if c.get("original_commit_id") in sha_index]
+        cdiffs = {}
+        if starts:
+            for commit in commits[min(starts) + 1:]:
+                detail = self.commit(repo, commit["sha"])
+                if detail is not None:
+                    self.raw(raw_dir, "commit-%s.json" % commit["sha"], detail)
+                cdiffs[commit["sha"]] = self._commit_diff(commit, detail)
+
+        def later_commits(head_sha):
+            idx = sha_index[head_sha]
+            return [cdiffs.get(c["sha"], {"sha": c["sha"], "files": None}) for c in commits[idx + 1:]]
+
+        compare_cache = {}
+
+        def compare_steps(head_sha):
+            """A reviewed head outside the PR commit list (rebase/force push): one synthetic
+            non-merge step from compare/{head}...{final_head}. None when the commit is gone."""
+            if head_sha not in compare_cache:
+                result = None
+                if head_sha and final_head and head_sha != final_head and self.commit(repo, head_sha) is not None:
+                    cmp = gh.rest_obj("repos/%s/compare/%s...%s" % (repo, head_sha, final_head))
+                    if cmp is not None:
+                        self.raw(raw_dir, "compare-%s.json" % head_sha, cmp)
+                        cmp_files = cmp.get("files") or []
+                        if len(cmp_files) >= COMPARE_FILES_LIMIT:
+                            self.truncation["compare_files_at_300_limit"] += 1
+                        cmp_commits = cmp.get("commits") or []
+                        event_at = (((cmp_commits[-1].get("commit") or {}).get("committer") or {}).get("date")
+                                    if cmp_commits else None)
+                        result = {"event_at": event_at,
+                                  "step": {"sha": "compare:%s...%s" % (head_sha, final_head), "is_merge": False,
+                                           "files": {f["filename"]: f for f in cmp_files}}}
+                compare_cache[head_sha] = result
+            return compare_cache[head_sha]
+
+        for review in bot_reviews:
+            head = review.get("commit_id")
+            if head and head not in sha_index:
+                key = "reviews_on_force_pushed_heads" if compare_steps(head) else "reviews_on_vanished_heads"
+                self.head_counts[key] += 1
+
+        # Threads keyed by first comment id.
+        thread_by_root = {}
+        for thread in threads or []:
+            nodes = ((thread.get("comments") or {}).get("nodes")) or []
+            if nodes and nodes[0].get("databaseId") is not None:
+                thread_by_root[nodes[0]["databaseId"]] = thread
+
+        reply_authors = {author, OWNER}
+        finding_rows, tracks = [], {}
+        review_findings = defaultdict(list)
+        root_to_finding = {}
+        for pos, review in enumerate(bot_reviews):
+            ruid = review_uid(review)
+            head = review.get("commit_id")
+            next_review = bot_reviews[pos + 1] if pos + 1 < len(bot_reviews) else None
+            prev_items = previous_findings(next_review.get("body")) if next_review else []
+            roots = sorted(roots_by_review.get(review["id"], []), key=lambda c: c["id"])
+            raw_findings = []
+            for comment in roots:
+                thread = thread_by_root.get(comment["id"])
+                if thread is not None:
+                    nodes = (thread.get("comments") or {}).get("nodes") or []
+                    replies = [{"author": (n.get("author") or {}).get("login"), "body": n.get("body"),
+                                "created_at": n.get("createdAt")} for n in nodes[1:]]
+                else:
+                    replies = [{"author": login_of(c), "body": c.get("body"), "created_at": c.get("created_at")}
+                               for c in sorted(rest_replies.get(comment["id"], []), key=lambda c: c["id"])]
+                raw_findings.append({
+                    "source": "inline",
+                    "severity": inline_severity(comment.get("body")),
+                    "path": comment.get("path"),
+                    "line": comment.get("original_line") or comment.get("line"),
+                    "start_line": comment.get("original_start_line") or comment.get("start_line"),
+                    "side": comment.get("side") or "RIGHT",
+                    "title": first_line(comment.get("body")),
+                    "body": comment.get("body"),
+                    "comment_id": comment["id"],
+                    "thread_id": thread.get("id") if thread else None,
+                    "thread_resolved": thread.get("isResolved") if thread else None,
+                    "thread_outdated": thread.get("isOutdated") if thread else None,
+                    "replies": replies,
+                })
+            anchors = [(f["path"], f["start_line"], f["line"]) for f in raw_findings]
+            for item in extract_body_findings(review.get("body"), anchors):
+                item.update({"source": "body", "side": "RIGHT", "comment_id": None, "thread_id": None,
+                             "thread_resolved": None, "thread_outdated": None, "replies": []})
+                raw_findings.append(item)
+            for k, item in enumerate(raw_findings, start=1):
+                fid = "%s/f%d" % (ruid, k)
+                signals = {"changed_in_vicinity_1": None, "changed_in_vicinity_5": None,
+                           "file_changed_later": None, "vicinity_method": None, "signal_note": None}
+                steps = method = None
+                if not item["path"]:
+                    signals["signal_note"] = "no path"
+                elif head in sha_index:
+                    steps, method = later_commits(head), "commit-walk"
+                else:
+                    self.truncation["findings_head_not_in_commits"] += 1
+                    cmp = compare_steps(head)
+                    if cmp is None:
+                        signals["signal_note"] = "reviewed head not in PR commit list and not retrievable"
+                    else:
+                        steps, method = [cmp["step"]], "compare-fallback"
+                if steps is not None:
+                    use_line = item["line"] if item["side"] != "LEFT" else None
+                    track = track_anchor(item["path"], (item["start_line"] or use_line) if use_line else None,
+                                         use_line, steps)
+                    tracks[fid] = {"method": method, "hidx": sha_index.get(head), "head": head, "track": track}
+                    signals["changed_in_vicinity_1"] = track["changed"][1]
+                    signals["changed_in_vicinity_5"] = track["changed"][5]
+                    signals["file_changed_later"] = track["file_changed_later"]
+                    signals["vicinity_method"] = method
+                    signals["signal_note"] = track["note"] or ("LEFT-side comment" if item["side"] == "LEFT" else None)
+                status, status_line = match_previous_status(item, prev_items) if next_review else (None, None)
+                finding_rows.append({
+                    "id": fid,
+                    "pr_id": pr_id,
+                    "review_id": ruid,
+                    "review_event": review.get("state"),
+                    "review_verdict": review_verdict(review.get("body"), review.get("state")),
+                    "reviewed_head_sha": head,
+                    "submitted_at": review.get("submitted_at"),
+                    "in_window": self.in_window(review.get("submitted_at")),
+                    "file_type": file_type(item["path"]),
+                    **item,
+                    **signals,
+                    "next_bot_review_id": review_uid(next_review) if next_review else None,
+                    "next_bot_review_status": status or "absent",
+                    "next_bot_review_line": status_line,
+                    "author_reply_kind": author_reply_kind(item["replies"], reply_authors),
+                })
+                review_findings[review["id"]].append(fid)
+                if item["comment_id"] is not None:
+                    root_to_finding[item["comment_id"]] = fid
+
+        # Addressed signals for human root inline comments (human_addressed_rate).
+        human_signals = {}
+        for comment in human_roots:
+            head = comment.get("original_commit_id")
+            line = comment.get("original_line") or comment.get("line")
+            start = comment.get("original_start_line") or comment.get("start_line")
+            sig = {"is_root_inline": True, "changed_in_vicinity_1": None, "file_changed_later": None,
+                   "vicinity_method": None}
+            if head in sha_index and comment.get("path"):
+                use_line = line if (comment.get("side") or "RIGHT") != "LEFT" else None
+                track = track_anchor(comment["path"], (start or use_line) if use_line else None, use_line,
+                                     later_commits(head))
+                sig.update({"changed_in_vicinity_1": track["changed"][1],
+                            "file_changed_later": track["file_changed_later"], "vicinity_method": "commit-walk"})
+            replies = [{"author": login_of(c), "body": c.get("body"), "created_at": c.get("created_at")}
+                       for c in sorted(rest_replies.get(comment["id"], []), key=lambda c: c["id"])]
+            sig["author_reply_kind"] = author_reply_kind(replies, {author})
+            human_signals[comment["id"]] = sig
+
+        # Reviews (bot and human).
+        review_rows = []
+        for review in sorted(reviews, key=lambda r: (r.get("submitted_at") or "", r["id"])):
+            if review.get("state") == "PENDING":
+                continue
+            head = effective_head.get(review["id"], review.get("commit_id"))
+            idx = sha_index.get(head)
+            superseded = commits[idx + 1]["sha"] if idx is not None and idx + 1 < len(commits) else None
+            reviewer = login_of(review)
+            review_rows.append({
+                "id": review_uid(review),
+                "pr_id": pr_id,
+                "review_id": review["id"],
+                "reviewer": reviewer,
+                "event": review.get("state"),
+                "github_state": review.get("state"),
+                "verdict": review_verdict(review.get("body"), review.get("state")),
+                "is_reply_container": review["id"] in containers,
+                "reviewed_head_sha": head,
+                "commit_id": review.get("commit_id"),
+                "body_head_sha": body_head(review.get("body")) if review["id"] in effective_head else None,
+                "submitted_at": review.get("submitted_at"),
+                "body": review.get("body"),
+                "is_bot": is_bot_login(reviewer, ((review.get("user") or {}).get("type"))),
+                "in_window": self.in_window(review.get("submitted_at")),
+                "finding_ids": review_findings.get(review["id"], []),
+                "superseded_by_head": superseded,
+                "head_is_final": head == final_head,
+            })
+
+        # Candidates (content-addressed ids, D1 evidence horizon).
+        candidates = []
+        candidates += self._post_review_hunks(pr_id, commits, sha_index, bot_reviews, cdiffs, finding_rows, tracks,
+                                              first_idx, review_uid, compare_steps)
+        candidates += self._human_comments(pr_id, reviews, review_comments, issue_comments, bot_reviews,
+                                           root_to_finding, review_uid, human_signals, commits, commit_dates)
+        if merged:
+            candidates += self._post_merge(repo, pr_id, number, pr, files, commits, raw_dir)
+        candidates += self._cross_refs(pr_id, timeline, bot_reviews, review_uid)
+        # K3: every candidate names a bot-reviewed head (hunks already carry their anchor's).
+        head_by_review = {review_uid(r): r["commit_id"] for r in bot_reviews}
+        latest_head = bot_reviews[-1]["commit_id"] if bot_reviews else None
+        first_head = head_rows[0]["sha"] if head_rows else None
+        seen = Counter()
+        for cand in candidates:
+            cand["pr_id"] = pr_id
+            if cand["kind"] == "post_merge_commit":
+                cand["reviewed_head_sha"] = latest_head
+            elif "reviewed_head_sha" not in cand:
+                cand["reviewed_head_sha"] = head_by_review.get(cand.get("bot_review_id"), first_head)
+            seen[cand["id"]] += 1
+            if seen[cand["id"]] > 1:  # same content key twice: keep both, mark the repeat
+                self.notes.append("duplicate candidate id %s" % cand["id"])
+                cand["id"] = "%s~%d" % (cand["id"], seen[cand["id"]])
+
+        # Coverage (D16).
+        reviewed = {row["sha"] for row in head_rows}
+        foreign = []
+        for i, commit in enumerate(commits):
+            login = (commit.get("author") or {}).get("login")
+            if i == 0 or not login or login in (author, self.reviewer) or len(commit.get("parents") or []) > 1:
+                continue
+            foreign.append(i)
+        prefix_heads = []
+        for i in foreign:
+            prev = commits[i - 1]["sha"]
+            if prev not in reviewed and prev not in prefix_heads:
+                prefix_heads.append(prev)
+        attention = [c for c in issue_comments
+                     if login_of(c) == self.reviewer and ATTENTION_RE.search(c.get("body") or "")]
+        merged_head_reviewed = (final_head in reviewed) if merged else None
+        self.coverage.append({
+            "id": pr_id,
+            "repo": repo,
+            "number": number,
+            "author": author,
+            "author_type": pr_author_type,
+            "attention_only": False,
+            "attention_comments": len(attention),
+            "bot_reviews": len(bot_reviews),
+            "heads": [c["sha"] for c in commits],
+            "bot_reviewed_heads": head_rows,
+            "reviewed_heads_outside_commits": sum(1 for row in head_rows if not row["in_commits"]),
+            "foreign_fix_commits": [commits[i]["sha"] for i in foreign],
+            "unreviewed_prefix_heads": prefix_heads,
+            "first_foreign_commit_after_review": next(
+                (commits[i]["sha"] for i in foreign if first_idx is not None and i > first_idx), None),
+            "merged": merged,
+            "final_head_sha": final_head,
+            "merged_head_reviewed": merged_head_reviewed,
+            "has_gap": bool(prefix_heads) or (merged and not merged_head_reviewed),
+        })
+
+        anchors = [parse_time(r.get("submitted_at")) for r in bot_reviews if self.in_window(r.get("submitted_at"))]
+        if merged:
+            anchors.append(parse_time(pr["merged_at"]))
+        if any(a is not None and a + self.horizon > self.now for a in anchors):
+            self.evidence_incomplete.append(pr_id)
+
+        human_reviewers = sorted({login_of(r) for r in reviews
+                                  if login_of(r) and not is_bot_login(login_of(r), (r.get("user") or {}).get("type"))})
+        self.prs.append({
+            "id": pr_id,
+            "repo": repo,
+            "number": number,
+            "title": pr.get("title"),
+            "author": author,
+            "author_association": pr.get("author_association"),
+            "author_type": pr_author_type,
+            "state": pr.get("state"),
+            "merged": merged,
+            "merged_at": pr.get("merged_at"),
+            "closed_at": pr.get("closed_at"),
+            "base_ref": (pr.get("base") or {}).get("ref"),
+            "base_sha_at_merge": (pr.get("base") or {}).get("sha"),
+            "final_head_sha": final_head,
+            "merge_commit_sha": pr.get("merge_commit_sha"),
+            "created_at": pr.get("created_at"),
+            "changed_files": pr.get("changed_files"),
+            "additions": pr.get("additions"),
+            "deletions": pr.get("deletions"),
+            "size_bucket": size_bucket(pr.get("additions"), pr.get("deletions"), pr.get("changed_files")),
+            "bot_review_ids": [review_uid(r) for r in bot_reviews],
+            "human_reviewers": human_reviewers,
+            "raw_dir": raw_dir,
+        })
+        self.reviews += review_rows
+        self.findings += finding_rows
+        self.candidates += candidates
+
+    def _commit_diff(self, commit, detail):
+        parents = (detail or commit).get("parents") or []
+        if detail is None:
+            return {"sha": commit["sha"], "is_merge": len(parents) > 1, "files": None}
+        file_map = {}
+        for entry in detail.get("files") or []:
+            if entry.get("patch") is None and entry.get("changes"):
+                self.truncation["commit_file_patch_missing"] += 1
+            file_map[entry["filename"]] = entry
+        if len(detail.get("files") or []) >= PR_FILES_LIMIT:
+            self.truncation["commit_files_at_3000_limit"] += 1
+        info = detail.get("commit") or {}
+        return {
+            "sha": commit["sha"],
+            "is_merge": len(parents) > 1,
+            "files": file_map,
+            "author": (detail.get("author") or {}).get("login") or (info.get("author") or {}).get("name"),
+            "message": info.get("message"),
+            "date": (info.get("committer") or {}).get("date"),
+        }
+
+    def _post_review_hunks(self, pr_id, commits, sha_index, bot_reviews, cdiffs, finding_rows, tracks,
+                           first_idx, review_uid, compare_steps):
+        """One candidate per hunk of each non-merge commit after a bot-reviewed head, plus the
+        hunks of compare/{reviewed}...{final_head} for reviews on force-pushed heads."""
+        by_id = {f["id"]: f for f in finding_rows}
+        steps = []  # (step_sha, source, diff, latest bot review, prior finding ids)
+        if first_idx is not None:
+            reviewed = [(sha_index[r["commit_id"]], r.get("submitted_at") or "", r) for r in bot_reviews
+                        if r.get("commit_id") in sha_index]
+            for i in range(first_idx + 1, len(commits)):
+                sha = commits[i]["sha"]
+                diff = cdiffs.get(sha)
+                if not diff or diff.get("is_merge") or diff.get("files") is None:
+                    continue
+                latest = max((t for t in reviewed if t[0] < i), key=lambda t: (t[0], t[1]))[2]
+                prior = [fid for fid, t in tracks.items() if t["method"] == "commit-walk" and t["hidx"] < i]
+                steps.append((sha, "commit", diff, latest, prior))
+        vanished = {}
+        for review in bot_reviews:  # latest review per force-pushed head
+            if review.get("commit_id") and review["commit_id"] not in sha_index:
+                vanished[review["commit_id"]] = review
+        for head, review in vanished.items():
+            cmp = compare_steps(head)
+            if not cmp:
+                continue
+            diff = {"files": cmp["step"]["files"], "author": None, "message": None, "date": cmp["event_at"]}
+            prior = [fid for fid, t in tracks.items() if t["head"] == head]
+            steps.append((cmp["step"]["sha"], "compare", diff, review, prior))
+        out = []
+        for sha, source, diff, latest, prior in steps:
+            for path, entry in sorted(diff["files"].items()):
+                names = {path} | ({entry["previous_filename"]} if entry.get("previous_filename") else set())
+                file_has_finding = any(
+                    by_id[fid].get("path") in names
+                    or (tracks[fid]["track"]["positions"].get(sha) or (None,))[0] in names
+                    for fid in prior
+                )
+                hunks = parse_patch(entry.get("patch")) if entry.get("patch") is not None else None
+                base = {
+                    "kind": "post_review_hunk",
+                    "source": source,
+                    "reviewed_head_sha": latest.get("commit_id"),
+                    "bot_review_id": review_uid(latest),
+                    "last_bot_event_before": review_verdict(latest.get("body"), latest.get("state")),
+                    "commit_sha": sha,
+                    "commit_author": diff.get("author"),
+                    "commit_message": diff.get("message"),
+                    "commit_date": diff.get("date"),
+                    "anchor_at": latest.get("submitted_at"),
+                    "event_at": diff.get("date"),
+                    "path": path,
+                    "file_type": file_type(path),
+                    "file_status": entry.get("status"),
+                    "file_has_bot_finding": file_has_finding,
+                }
+                if hunks is None:
+                    self.keep_candidate(out, {
+                        **base, "id": hunk_candidate_id(pr_id, sha, path, None), "patch_missing": True,
+                        "hunk": None, "hunk_header": None, "old_start": None, "old_count": None, "new_start": None,
+                        "new_count": None, "distance_to_nearest_bot_finding": None, "nearest_bot_finding_id": None})
+                    continue
+                for hunk in hunks:
+                    lo, hi = hunk.old_span()
+                    best = None
+                    for fid in prior:
+                        position = tracks[fid]["track"]["positions"].get(sha)
+                        if not position or position[0] not in names:
+                            continue
+                        d = interval_distance(lo, hi, position[1], position[2])
+                        if best is None or d < best[0]:
+                            best = (d, fid)
+                    self.keep_candidate(out, {
+                        **base, "id": hunk_candidate_id(pr_id, sha, path, hunk), "patch_missing": False,
+                        "hunk": hunk.text, "hunk_header": hunk.header, "old_start": hunk.old_start,
+                        "old_count": hunk.old_count, "new_start": hunk.new_start, "new_count": hunk.new_count,
+                        "distance_to_nearest_bot_finding": best[0] if best else None,
+                        "nearest_bot_finding_id": best[1] if best else None})
+        return out
+
+    @staticmethod
+    def _head_at(commits, commit_dates, stamp):
+        """Last PR commit whose committer date is <= stamp (push times are not visible)."""
+        head = None
+        for commit, date in zip(commits, commit_dates):
+            when = parse_time(date)
+            if when is not None and stamp is not None and when <= stamp:
+                head = commit["sha"]
+        return head
+
+    def _human_comments(self, pr_id, reviews, review_comments, issue_comments, bot_reviews, root_to_finding,
+                        review_uid, human_signals, commits, commit_dates):
+        bot_times = [(parse_time(r.get("submitted_at")), r) for r in bot_reviews if r.get("submitted_at")]
+        items = []
+        for review in reviews:
+            if (review.get("body") or "").strip() and review.get("state") != "PENDING":
+                items.append(("review", review, review.get("submitted_at"), None, None, None, review.get("commit_id")))
+        for comment in review_comments:
+            items.append(("review_comment", comment, comment.get("created_at"), comment.get("path"),
+                          comment.get("original_line") or comment.get("line"), comment.get("in_reply_to_id"),
+                          comment.get("original_commit_id")))
+        for comment in issue_comments:
+            items.append(("issue_comment", comment, comment.get("created_at"), None, None, None, None))
+        out = []
+        for source, obj, when, path, line, reply_to, head in sorted(items, key=lambda t: (t[2] or "", t[1]["id"])):
+            login = login_of(obj)
+            if login == IMPLEMENTER_BOT:
+                kind = "implementer_bot"
+            elif is_bot_login(login, (obj.get("user") or {}).get("type")) or not login:
+                continue
+            else:
+                kind = "human"
+            stamp = parse_time(when)
+            before = [(t, r) for t, r in bot_times if stamp is not None and t <= stamp]
+            last = before[-1] if before else None
+            head_at = head or self._head_at(commits, commit_dates, stamp)
+            blind = not before  # no bot review had been submitted when the human commented
+            cand = {
+                "id": comment_candidate_id(pr_id, source, obj["id"]),
+                "kind": "human_comment",
+                "commenter_kind": kind,
+                "source": source,
+                "source_id": obj["id"],
+                "author": login,
+                "body": obj.get("body"),
+                "path": path,
+                "line": line,
+                "file_type": file_type(path),
+                "created_at": when,
+                "head_at_comment": head_at,
+                "blind_to_bot": blind,
+                "in_reply_to_bot_finding": root_to_finding.get(reply_to) if reply_to else None,
+                "bot_reviews_before": len(before),
+                "after_first_bot_review": bool(before),
+                "bot_review_id": review_uid(last[1]) if last else None,
+                "seconds_after_last_bot_review": int((stamp - last[0]).total_seconds()) if last else None,
+                "anchor_at": last[1].get("submitted_at") if last else None,
+                "event_at": when,
+                "is_root_inline": False,
+            }
+            if source == "review_comment" and obj["id"] in human_signals:
+                cand.update(human_signals[obj["id"]])
+            self.keep_candidate(out, cand)
+        return out
+
+    def _post_merge(self, repo, pr_id, number, pr, files, commits, raw_dir):
+        if repo not in self.default_branch:
+            info = self.gh.rest_obj("repos/%s" % repo)
+            self.default_branch[repo] = (info or {}).get("default_branch")
+        branch = self.default_branch[repo] or (pr.get("base") or {}).get("ref")
+        merged_at = parse_time(pr["merged_at"])
+        end = merged_at + self.horizon
+        listing = self.gh.rest_list("repos/%s/commits?sha=%s&since=%s&until=%s&per_page=100"
+                                    % (repo, branch, fmt_time(merged_at), fmt_time(end))) or []
+        pr_shas = {c["sha"] for c in commits} | {pr.get("merge_commit_sha")}
+        added = {}
+        for entry in files:
+            if entry.get("patch") is None:
+                added[entry["filename"]] = None
+                continue
+            lines = set()
+            for hunk in parse_patch(entry["patch"]):
+                lines.update(hunk.added_new)
+            added[entry["filename"]] = lines
+        touched_raw, out = [], []
+        for item in reversed(listing):  # oldest first
+            if item["sha"] in pr_shas or len(item.get("parents") or []) > 1:
+                continue
+            detail = self.commit(repo, item["sha"])
+            if detail is None:
+                continue
+            relevant = [f for f in detail.get("files") or []
+                        if f.get("filename") in added or f.get("previous_filename") in added]
+            if not relevant:
+                continue
+            touched_raw.append(detail)
+            info = detail.get("commit") or {}
+            message = info.get("message") or ""
+            hunks_out, overall, unknown = [], False, False
+            for entry in relevant:
+                pr_lines = added.get(entry.get("previous_filename") or entry["filename"],
+                                     added.get(entry["filename"]))
+                if entry.get("patch") is None:
+                    unknown = True
+                    hunks_out.append({"path": entry["filename"], "hunk": None, "overlaps_pr_lines": None})
+                    continue
+                for hunk in parse_patch(entry["patch"]):
+                    if pr_lines is None:
+                        flag = None
+                        unknown = True
+                    else:
+                        lo, hi = hunk.old_span()
+                        flag = any(lo <= n <= hi for n in pr_lines)
+                        overall = overall or flag
+                    hunks_out.append({"path": entry["filename"], "hunk_header": hunk.header, "hunk": hunk.text,
+                                      "overlaps_pr_lines": flag})
+            date = (info.get("committer") or {}).get("date")
+            paths = sorted({f["filename"] for f in relevant})
+            self.keep_candidate(out, {
+                "id": postmerge_candidate_id(pr_id, item["sha"]),
+                "kind": "post_merge_commit",
+                "sha": item["sha"],
+                "author": (detail.get("author") or {}).get("login") or (info.get("author") or {}).get("name"),
+                "message": message,
+                "date": date,
+                "days_after_merge": round((parse_time(date) - merged_at).total_seconds() / 86400, 2) if date else None,
+                "paths": paths,
+                "file_types": sorted({file_type(p) for p in paths}),
+                "keyword_flags": keyword_flags(message, number),
+                "hunks": hunks_out,
+                "overlaps_pr_lines": True if overall else (None if unknown else False),
+                "overlap_method": "approximate-no-rebase",
+                "anchor_at": pr["merged_at"],
+                "event_at": date,
+            })
+        self.raw(raw_dir, "post_merge_commits.json", touched_raw)
+        return out
+
+    def _cross_refs(self, pr_id, timeline, bot_reviews, review_uid):
+        if not bot_reviews:
+            return []
+        bot_times = [(parse_time(r.get("submitted_at")), r) for r in bot_reviews if r.get("submitted_at")]
+        out = []
+        for event in timeline:
+            if event.get("event") != "cross-referenced":
+                continue
+            stamp = parse_time(event.get("created_at"))
+            before = [(t, r) for t, r in bot_times if stamp is not None and t <= stamp]
+            if not before:
+                continue
+            last = before[-1][1]
+            issue = (event.get("source") or {}).get("issue") or {}
+            source_repo = (issue.get("repository") or {}).get("full_name")
+            self.keep_candidate(out, {
+                "id": xref_candidate_id(pr_id, source_repo, issue.get("number")),
+                "kind": "cross_reference",
+                "source_repo": source_repo,
+                "source_number": issue.get("number"),
+                "source_is_pr": bool(issue.get("pull_request")),
+                "title": issue.get("title"),
+                "state": issue.get("state"),
+                "created_at": event.get("created_at"),
+                "source_created_at": issue.get("created_at"),
+                "html_url": issue.get("html_url"),
+                "body_excerpt": (issue.get("body") or "")[:EXCERPT_CHARS],
+                "bot_review_id": review_uid(last),
+                "anchor_at": last.get("submitted_at"),
+                "event_at": event.get("created_at"),
+            })
+        return out
+
+    def write(self, args):
+        os.makedirs(self.out, mode=0o700, exist_ok=True)
+        outputs = (("prs.jsonl", self.prs), ("reviews.jsonl", self.reviews), ("findings.jsonl", self.findings),
+                   ("candidates.jsonl", self.candidates), ("coverage.jsonl", self.coverage))
+        for fname, rows in outputs:
+            write_jsonl(os.path.join(self.out, fname), rows)
+        manifest = {
+            "args": args,
+            "collector_version": COLLECTOR_VERSION,
+            "generated_at": fmt_time(self.now),
+            "counts": {fname: len(rows) for fname, rows in outputs},
+            "candidate_kinds": dict(Counter(c["kind"] for c in self.candidates)),
+            "evidence": {
+                "evidence_days": self.evidence_days,
+                "dropped_after_horizon": dict(self.evidence_dropped),
+                "horizon_after_run_time": self.evidence_incomplete,
+            },
+            "heads": dict(self.head_counts),
+            "truncation": dict(self.truncation),
+            "api_errors": self.gh.errors,
+            "skipped_prs": self.skipped,
+            "notes": self.notes,
+        }
+        write_private(os.path.join(self.out, "manifest.json"), json.dumps(manifest, indent=1, sort_keys=True) + "\n")
+
+
+def cmd_collect(args):
+    try:
+        since, until = parse_time(args.since), parse_time(args.until)
+    except ValueError as exc:
+        sys.exit("issue-agent-review-audit: invalid --since/--until: %s" % exc)
+    if since >= until:
+        sys.exit("issue-agent-review-audit: --since must be before --until")
+    if args.evidence_days < 0:
+        sys.exit("issue-agent-review-audit: --evidence-days must be >= 0")
+    repos = args.repo or list(DEFAULT_REPOS)
+    for repo in repos:
+        if not REPO_RE.match(repo):
+            sys.exit("issue-agent-review-audit: invalid --repo %r" % repo)
+    if os.path.lexists(args.out):
+        sys.exit("issue-agent-review-audit: --out %s already exists; refusing to overwrite" % args.out)
+    os.umask(0o077)
+    os.mkdir(args.out, 0o700)
+    errors = []
+    collector = Collector(Gh(errors), args.out, since, until, args.reviewer, args.evidence_days)
+    collector.run(repos)
+    collector.write({
+        "since": fmt_time(since), "until": fmt_time(until), "repos": repos,
+        "reviewer": args.reviewer, "evidence_days": args.evidence_days,
+    })
+    print("prs=%d reviews=%d findings=%d candidates=%d coverage=%d api_errors=%d -> %s" % (
+        len(collector.prs), len(collector.reviews), len(collector.findings), len(collector.candidates),
+        len(collector.coverage), len(errors), args.out))
+
+
+# ---------------------------------------------------------------------------
+# statistics (pure)
+# ---------------------------------------------------------------------------
+
+
+def wilson(k, n, z=WILSON_Z):
+    if n <= 0:
+        return (None, None)
+    p = k / n
+    z2 = z * z
+    denom = 1 + z2 / n
+    center = (p + z2 / (2 * n)) / denom
+    half = z * math.sqrt(p * (1 - p) / n + z2 / (4 * n * n)) / denom
+    return (max(0.0, center - half), min(1.0, center + half))
+
+
+def newcombe_diff(k_base, n_base, k_after, n_after, z=WILSON_Z):
+    """Newcombe (1998) hybrid score interval (method 10) for p_after - p_base."""
+    if n_base <= 0 or n_after <= 0:
+        return None
+    p0, p1 = k_base / n_base, k_after / n_after
+    l0, u0 = wilson(k_base, n_base, z)
+    l1, u1 = wilson(k_after, n_after, z)
+    diff = p1 - p0
+    lower = diff - math.sqrt((p1 - l1) ** 2 + (u0 - p0) ** 2)
+    upper = diff + math.sqrt((u1 - p1) ** 2 + (p0 - l0) ** 2)
+    return {"diff": diff, "ci95": [lower, upper], "changed": lower > 0 or upper < 0}
+
+
+def _log_comb(n, k):
+    return math.lgamma(n + 1) - math.lgamma(k + 1) - math.lgamma(n - k + 1)
+
+
+def fisher_exact(a, b, c, d):
+    """Two-sided Fisher exact p for [[a, b], [c, d]]: sum of tables with P <= P(observed)."""
+    row1, row2, col1 = a + b, c + d, a + c
+    total = row1 + row2
+    if total == 0:
+        return 1.0
+    lo, hi = max(0, col1 - row2), min(row1, col1)
+    logp = lambda x: _log_comb(row1, x) + _log_comb(row2, col1 - x) - _log_comb(total, col1)
+    observed = logp(a)
+    p = sum(math.exp(logp(x)) for x in range(lo, hi + 1) if logp(x) <= observed + 1e-7)
+    return min(1.0, p)
+
+
+def conditional_binomial(k_base, t_base, k_after, t_after):
+    """Exact two-sided test of equal Poisson rates (counts k over exposures t, e.g. PRs):
+    given k_base + k_after, k_after ~ Binomial(total, t_after / (t_base + t_after))."""
+    if t_base <= 0 or t_after <= 0:
+        return None
+    total = k_base + k_after
+    rate_base, rate_after = k_base / t_base, k_after / t_after
+    out = {"rate_base": rate_base, "rate_after": rate_after,
+           "rate_ratio": (rate_after / rate_base) if rate_base > 0 else None}
+    if total == 0:
+        out["p_value"] = 1.0
+        return out
+    p = t_after / (t_base + t_after)
+    logpmf = lambda x: _log_comb(total, x) + x * math.log(p) + (total - x) * math.log(1 - p)
+    observed = logpmf(k_after)
+    out["p_value"] = min(1.0, sum(math.exp(logpmf(x)) for x in range(total + 1) if logpmf(x) <= observed + 1e-7))
+    return out
+
+
+def _poisson_cdf(k, mu):
+    """P(X <= k) for X ~ Poisson(mu)."""
+    if k < 0:
+        return 0.0
+    if mu <= 0:
+        return 1.0
+    return min(1.0, sum(math.exp(i * math.log(mu) - mu - math.lgamma(i + 1)) for i in range(k + 1)))
+
+
+def garwood(k, alpha=0.05):
+    """Exact (Garwood 1936) two-sided CI for a Poisson mean given count k:
+    lower solves P(X >= k; mu) = alpha/2 (0 when k = 0), upper solves P(X <= k; mu) = alpha/2."""
+    def solve(predicate, lo, hi):
+        for _ in range(200):  # bisection; predicate is monotone in mu
+            mid = (lo + hi) / 2
+            lo, hi = (mid, hi) if predicate(mid) else (lo, mid)
+        return (lo + hi) / 2
+
+    top = max(10.0, 3.0 * k + 30.0)
+    lower = 0.0 if k == 0 else solve(lambda mu: 1 - _poisson_cdf(k - 1, mu) < alpha / 2, 0.0, top)
+    upper = solve(lambda mu: _poisson_cdf(k, mu) > alpha / 2, 0.0, top)
+    return lower, upper
+
+
+def kappa_stats(pairs, categories, weights=None, positive=None, z=WILSON_Z):
+    """Cohen's kappa (weights None) or weighted kappa (weights "linear" | "quadratic").
+
+    CI: kappa +- z * sqrt(po (1 - po)) / ((1 - pe) sqrt(n)) (Cohen 1960 large-sample form,
+    with weighted po/pe for weighted kappa). Also raw agreement, PABAK = (k po_raw - 1)/(k - 1)
+    over the k vocabulary categories, specific agreement per category 2 n_cc / (row_c + col_c),
+    and pos/neg agreement for `positive` against everything else.
+    """
+    pairs = [(a, b) for a, b in pairs if a in categories and b in categories]
+    n = len(pairs)
+    size = len(categories)
+    out = {"n": n, "weights": weights, "kappa": None, "ci95": [None, None], "raw": None, "pabak": None,
+           "pos": None, "neg": None, "specific": {}}
+    if n == 0 or size < 2:
+        return out
+    index = {c: i for i, c in enumerate(categories)}
+
+    def weight(i, j):
+        if weights == "linear":
+            return 1 - abs(i - j) / (size - 1)
+        if weights == "quadratic":
+            return 1 - ((i - j) / (size - 1)) ** 2
+        return 1.0 if i == j else 0.0
+
+    rows = Counter(index[a] for a, _ in pairs)
+    cols = Counter(index[b] for _, b in pairs)
+    po = sum(weight(index[a], index[b]) for a, b in pairs) / n
+    pe = sum(weight(i, j) * rows[i] * cols[j] for i in rows for j in cols) / (n * n)
+    raw = sum(1 for a, b in pairs if a == b) / n
+    out["raw"] = raw
+    out["pabak"] = (size * raw - 1) / (size - 1)
+    if pe < 1:
+        kappa = (po - pe) / (1 - pe)
+        se = math.sqrt(max(po * (1 - po), 0.0)) / ((1 - pe) * math.sqrt(n))
+        out["kappa"] = kappa
+        out["ci95"] = [max(-1.0, kappa - z * se), min(1.0, kappa + z * se)]
+    for c in categories:
+        both = sum(1 for a, b in pairs if a == c and b == c)
+        margin = rows[index[c]] + cols[index[c]]
+        if margin:
+            out["specific"][str(c)] = 2 * both / margin
+    if positive is not None:
+        pp = sum(1 for a, b in pairs if a == positive and b == positive)
+        nn = sum(1 for a, b in pairs if a != positive and b != positive)
+        disagree = n - pp - nn
+        out["pos"] = (2 * pp / (2 * pp + disagree)) if (2 * pp + disagree) else None
+        out["neg"] = (2 * nn / (2 * nn + disagree)) if (2 * nn + disagree) else None
+    return out
+
+
+def chapman(n1, n2, m):
+    """Chapman's bias-corrected two-source Lincoln-Petersen estimate."""
+    return (n1 + 1) * (n2 + 1) / (m + 1) - 1
+
+
+def chao2(s_obs, q1, q2, k):
+    """Bias-corrected Chao2 for k incidence samples (sources)."""
+    return s_obs + ((k - 1) / k) * q1 * (q1 - 1) / (2 * (q2 + 1))
+
+
+def pearson(xs, ys):
+    n = len(xs)
+    if n < 2:
+        return None
+    mx, my = sum(xs) / n, sum(ys) / n
+    sxy = sum((x - mx) * (y - my) for x, y in zip(xs, ys))
+    sxx = sum((x - mx) ** 2 for x in xs)
+    syy = sum((y - my) ** 2 for y in ys)
+    return None if sxx == 0 or syy == 0 else sxy / math.sqrt(sxx * syy)
+
+
+# ---------------------------------------------------------------------------
+# labels (pure)
+# ---------------------------------------------------------------------------
+
+
+def is_important(severity, blocking):
+    return severity in IMPORTANT_SEVERITIES or (severity in IMPORTANT_IF_BLOCKING and blocking is True)
+
+
+def severity_gap(bot_severity, adjudicated):
+    """adjudicated rank - bot rank (positive: the bot rated it more severe)."""
+    if bot_severity not in IMPORTANT_SEVERITIES | {"P2", "P3"} or adjudicated not in KAPPA_SEVERITY_SCALE:
+        return None
+    return SEVERITY_RANK[adjudicated] - SEVERITY_RANK[bot_severity]
+
+
+def severity_inflated(bot_severity, label):
+    """Derived SEVERITY_INFLATED (D4); raters never assign it."""
+    if label.get("validity") != "valid":
+        return False
+    gap = severity_gap(bot_severity, label.get("adjudicated_severity"))
+    if gap is None:
+        return False
+    return gap >= INFLATION_MIN_LEVELS or (label.get("adjudicated_severity") == "nit"
+                                           and bot_severity in INFLATED_IF_NIT_FROM)
+
+
+def finding_codes(bot_severity, label):
+    """Rater codes plus derived INVALID / SEVERITY_INFLATED, without DUPLICATE."""
+    codes = {c for c in (label.get("noise_codes") or []) if c != DUPLICATE_CODE}
+    if label.get("validity") == "invalid":
+        codes.add(INVALID_CODE)
+    if severity_inflated(bot_severity, label):
+        codes.add(INFLATED_CODE)
+    return codes
+
+
+def is_noise(bot_severity, label):
+    return bool(finding_codes(bot_severity, label) & NOISE_CODES)
+
+
+def load_jsonl(path, bad, label):
+    rows = []
+    with open(path, encoding="utf-8") as handle:
+        for number, line in enumerate(handle, start=1):
+            if not line.strip():
+                continue
+            try:
+                row = json.loads(line)
+            except ValueError as exc:
+                bad.append({"file": label, "line": number, "id": None, "rater": None, "reason": "invalid JSON: %s" % exc})
+                continue
+            if not isinstance(row, dict):
+                bad.append({"file": label, "line": number, "id": None, "rater": None, "reason": "not an object"})
+                continue
+            row["_line"] = number
+            rows.append(row)
+    return rows
+
+
+def _check_enum(row, name, required, errors, vocab=None):
+    value = row.get(name)
+    if value is None:
+        if required:
+            errors.append("missing %s" % name)
+        return
+    if value not in (vocab or VOCAB[name]):
+        errors.append("%s=%r not in vocabulary" % (name, value))
+
+
+def _check_bool(row, name, errors, required=False):
+    if name not in row or row[name] is None:
+        if required:
+            errors.append("missing %s" % name)
+        return
+    if not isinstance(row[name], bool):
+        errors.append("%s must be a boolean" % name)
+
+
+def _check_rater(row, errors):
+    if not isinstance(row.get("rater"), str) or not row["rater"].strip():
+        errors.append("missing rater")
+
+
+def validate_finding_label(row, units):
+    errors = []
+    if not isinstance(row.get("id"), str) or row["id"] not in units["findings"]:
+        errors.append("unknown finding id")
+    _check_rater(row, errors)
+    partial = row.get("rater") in PARTIAL_RATERS
+    _check_enum(row, "validity", True, errors)
+    _check_enum(row, "adjudicated_severity", not partial, errors)
+    for name in ("value", "author_action", "defect_type", "file_type"):
+        _check_enum(row, name, False, errors)
+    for name in (BLOCKING_FIELD, "irr_sample"):
+        _check_bool(row, name, errors)
+    codes = row.get("noise_codes") or []
+    if not isinstance(codes, list):
+        errors.append("noise_codes must be a list")
+    else:
+        for code in codes:
+            if code in DERIVED_CODES:
+                errors.append("%s is derived by metrics and must not be labelled" % code)
+            elif code not in VOCAB["noise_codes"]:
+                errors.append("noise code %r not in vocabulary" % (code,))
+    if row.get("adjudicated_severity") == "none" and row.get("validity") == "valid":
+        errors.append("adjudicated_severity none requires validity != valid")
+    if row.get(BLOCKING_FIELD) is True and row.get("adjudicated_severity") not in IMPORTANT_IF_BLOCKING:
+        errors.append("%s applies only to adjudicated P2" % BLOCKING_FIELD)
+    if row.get("rater") == FINAL_RATER and row.get("author_action") == "not_applicable" \
+            and row.get("id") in units["findings"]:
+        # N6: only a review posted at or after merge/close leaves nobody to act on the finding.
+        finding = units["findings"][row["id"]]
+        review = units["reviews"].get(finding.get("review_id")) or {}
+        pr = units["prs"].get(finding.get("pr_id")) or {}
+        posted = parse_time(review.get("submitted_at") or finding.get("submitted_at"))
+        ended = parse_time(pr.get("merged_at") or pr.get("closed_at"))
+        if posted is None or ended is None or posted < ended:
+            errors.append("author_action not_applicable requires the review at or after the PR's merge/close")
+    key = row.get("dedup_key")
+    if key is not None and not isinstance(key, str):
+        errors.append("dedup_key must be a string")
+    if (row.get("rater") == FINAL_RATER and row.get("validity") == "valid" and not key
+            and is_important(row.get("adjudicated_severity"), row.get(BLOCKING_FIELD))):
+        errors.append("dedup_key required on a final valid important finding (bot_finding hit row)")
+    return errors
+
+
+def miss_base_id(item_id):
+    """Miss-row id without its `@<head12>` suffix (`<candidate-id>[.<k>]@<head12>`)."""
+    match = HEAD_SUFFIX_RE.match(item_id or "")
+    return match.group("base") if match else item_id
+
+
+def canonical_miss_id(item_id, units):
+    """N1: a miss-row id whose `@<head>` suffix names a GitHub commit_id alias is rewritten to
+    the body head the review names (same suffix length); other ids are returned unchanged."""
+    match = HEAD_SUFFIX_RE.match(item_id or "") if isinstance(item_id, str) else None
+    if not match:
+        return item_id
+    head = match.group("head")
+    alias = units.get("_head_alias", {}).get(miss_pr_id(item_id, units), {})
+    for commit_id, body in alias.items():
+        if commit_id.startswith(head):
+            return "%s@%s" % (match.group("base"), body[:len(head)])
+    return item_id
+
+
+def candidate_of(item_id, units):
+    """Candidate for a miss-row id `<candidate-id>[.<k>][@<head12>]`."""
+    base = miss_base_id(item_id)
+    cand = units["candidates"].get(base)
+    if cand is None and base:
+        match = SPLIT_ID_RE.match(base)
+        if match:
+            cand = units["candidates"].get(match.group("base"))
+    return cand
+
+
+def miss_pr_id(item_id, units):
+    cand = candidate_of(item_id, units)
+    return cand["pr_id"] if cand else pr_id_of(item_id)
+
+
+def validate_miss_label(row, units):
+    errors = []
+    pr = None
+    if not isinstance(row.get("id"), str):
+        errors.append("missing id")
+    else:
+        pr = miss_pr_id(row["id"], units)
+        if pr not in units["prs"]:
+            errors.append("id does not resolve to a collected PR")
+    _check_rater(row, errors)
+    _check_bool(row, "out_of_horizon", errors)
+    _check_bool(row, "coverage_only", errors)
+    coverage_only = row.get("coverage_only") is True  # fixed before any published bot review
+    if row.get("out_of_horizon") is True:  # past the evidence horizon: kept for audit, excluded from figures
+        return errors
+    partial = row.get("rater") in PARTIAL_RATERS
+    if row.get("channel") == GENERATED_CHANNEL:
+        errors.append("channel %s is generated by metrics, never labelled" % GENERATED_CHANNEL)
+    else:
+        _check_enum(row, "channel", not partial, errors)
+    _check_enum(row, "verdict", not partial, errors)
+    _check_bool(row, "is_defect", errors, required=not partial)
+    for name in (BLOCKING_FIELD, "irr_sample", "exposed_by_pr", "repo_rule"):
+        _check_bool(row, name, errors)
+    defect = row.get("is_defect") is True and not partial
+    _check_enum(row, "present_at_reviewed_head", defect, errors)
+    _check_enum(row, "adjudicated_severity", defect, errors)
+    _check_enum(row, "bot_match", partial, errors)
+    _check_enum(row, "defect_type", False, errors)
+    _check_enum(row, "file_type", False, errors)
+    if row.get("exposed_by_pr") is True and row.get("verdict") != IMPORTANT_MISS_VERDICT:
+        errors.append("exposed_by_pr requires verdict %s" % IMPORTANT_MISS_VERDICT)
+    heads = units.get("_heads", {}).get(pr, {})
+    aliases = units.get("_head_alias", {}).get(pr, {})
+    for name, required in (("reviewed_head_sha", defect and not coverage_only),
+                           ("latest_present_head", defect and not coverage_only)):
+        value = row.get(name)
+        if value is None:
+            if required:
+                errors.append("missing %s" % name)
+        elif value not in heads and value not in aliases:
+            errors.append("%s is not a bot-reviewed head of the PR" % name)
+    suffix = HEAD_SUFFIX_RE.match(canonical_miss_id(row.get("id") or "", units))
+    reviewed = row.get("reviewed_head_sha")
+    if suffix and reviewed and not aliases.get(reviewed, reviewed).startswith(suffix.group("head")):
+        errors.append("id @<head12> suffix does not match reviewed_head_sha")
+    # The matcher writes bot_match to final rows only; labelerA/labelerB leave it null (K1).
+    if (row.get("rater") == FINAL_RATER and defect and not coverage_only
+            and row.get("verdict") == IMPORTANT_MISS_VERDICT
+            and row.get("present_at_reviewed_head") == IMPORTANT_MISS_PRESENT
+            and is_important(row.get("adjudicated_severity"), row.get(BLOCKING_FIELD))
+            and row.get("bot_match") is None):
+        errors.append("bot_match required for an important defect present at the reviewed head")
+    matched = row.get("matched_finding_id")
+    if matched is not None and matched not in units["findings"]:
+        errors.append("matched_finding_id not in findings.jsonl")
+    if row.get("review_id") is not None and row["review_id"] not in units["reviews"]:
+        errors.append("review_id not in reviews.jsonl")
+    if row.get("bot_match") == "hit" and matched is None:
+        errors.append("bot_match hit requires matched_finding_id")
+    if row.get("bot_match") == "partial" and matched is None and row.get("review_id") is None:
+        errors.append("bot_match partial requires matched_finding_id or review_id")
+    _check_bool(row, "match_sample", errors)
+    sources = row.get("sources")
+    if sources is not None and (not isinstance(sources, list) or any(s not in VOCAB["channel"] for s in sources)):
+        errors.append("sources must be a list of channels")
+    if row.get("dedup_key") is not None and not isinstance(row["dedup_key"], str):
+        errors.append("dedup_key must be a string")
+    return errors
+
+
+def with_head_index(units):
+    """K2/N1: units with bot reviews and findings carrying the body head as reviewed_head_sha
+    (commit_id kept), plus `_heads` (pr -> head -> first review time) and `_head_alias`
+    (pr -> GitHub commit_id -> body head) for label validation and id canonicalisation."""
+    reviews = dict(units["reviews"])
+    for r in [r for r in reviews.values() if r.get("is_bot") and not r.get("is_reply_container")]:
+        reviews[r["id"]] = dict(r, reviewed_head_sha=review_head(r),
+                                commit_id=r.get("commit_id") or r.get("reviewed_head_sha"))
+    findings = {fid: (dict(f, reviewed_head_sha=reviews[f["review_id"]]["reviewed_head_sha"])
+                      if f.get("review_id") in reviews else f) for fid, f in units["findings"].items()}
+    reviews_by_pr = defaultdict(list)
+    for r in reviews.values():
+        if r.get("is_bot") and not r.get("is_reply_container"):
+            reviews_by_pr[r["pr_id"]].append(r)
+    heads, aliases = {}, {}
+    for pr_id, pr_reviews in reviews_by_pr.items():
+        head_rows = bot_reviewed_heads(pr_reviews)
+        heads[pr_id] = {row["sha"]: row["first_review_at"] or "" for row in head_rows}
+        aliases[pr_id] = head_aliases(head_rows)
+    return dict(units, reviews=reviews, findings=findings, _heads=heads, _head_alias=aliases)
+
+
+def split_raters(rows, validator, units, bad, label, canonical_id=None):
+    """Validate rows; return (final rows by id, {rater: {id: row}} for every rater). With
+    canonical_id, rows are keyed (and their id rewritten) by canonical_id(id, units) so raters
+    that wrote a commit_id alias and the body head pair on one item (N1)."""
+    by_rater, seen = defaultdict(dict), set()
+    for row in rows:
+        errors = validator(row, units)
+        item_id = canonical_id(row.get("id"), units) if canonical_id and not errors else row.get("id")
+        key = (item_id, row.get("rater"))
+        if not errors and key in seen:
+            errors = ["duplicate (id, rater)"]
+        if errors:
+            bad.append({"file": label, "line": row.get("_line"), "id": row.get("id"), "rater": row.get("rater"),
+                        "reason": "; ".join(errors)})
+            continue
+        seen.add(key)
+        by_rater[row["rater"]][item_id] = row if item_id == row["id"] else dict(row, id=item_id)
+    return dict(by_rater.get(FINAL_RATER, {})), dict(by_rater)
+
+
+# ---------------------------------------------------------------------------
+# aggregation (pure)
+# ---------------------------------------------------------------------------
+
+
+def summarize(k, n, proportion):
+    out = {"k": k, "n": n, "rate": (k / n) if n else None}
+    if proportion:
+        out["ci95"] = list(wilson(k, n))
+    return out
+
+
+def aggregate(items, proportion=True, count_only=False, dims=STRATA):
+    """items: list of (dims_dict, numerator, denominator)."""
+    def build(subset):
+        k = sum(i[1] for i in subset)
+        if count_only:
+            return {"count": k}
+        return summarize(k, sum(i[2] for i in subset), proportion)
+
+    result = {"overall": build(items), "breakdown": {}}
+    for dim in dims:
+        groups = defaultdict(list)
+        for item in items:
+            groups[str(item[0].get(dim))].append(item)
+        result["breakdown"][dim] = {value: build(group) for value, group in sorted(groups.items())}
+    return result
+
+
+def not_useful_summary(k, n):
+    out = summarize(k, n, True)
+    if n and out["ci95"][0] > NOT_USEFUL_ALARM:
+        out["status"] = "suppress"
+    elif n < NOT_USEFUL_MIN_N:
+        out["status"] = "insufficient"
+    elif out["rate"] >= NOT_USEFUL_ALARM:
+        out["status"] = "probation"
+    else:
+        out["status"] = "ok"
+    return out
+
+
+def pool_families(cells):
+    """cells: {(coarse, sev): [k, n]} -> {"coarse.sev" | "coarse.*" | "*.*": summary},
+    pooling cells with n < NOT_USEFUL_MIN_N first by coarse type, then into *.*."""
+    out, by_coarse, rest = {}, defaultdict(lambda: [0, 0]), [0, 0]
+    for (coarse, sev), (k, n) in sorted(cells.items()):
+        if n >= NOT_USEFUL_MIN_N:
+            out["%s.%s" % (coarse, sev)] = not_useful_summary(k, n)
+        else:
+            by_coarse[coarse][0] += k
+            by_coarse[coarse][1] += n
+    for coarse, (k, n) in sorted(by_coarse.items()):
+        if n >= NOT_USEFUL_MIN_N:
+            out["%s.*" % coarse] = not_useful_summary(k, n)
+        else:
+            rest[0] += k
+            rest[1] += n
+    if rest[1]:
+        out["*.*"] = not_useful_summary(*rest)
+    return out
+
+
+KAPPA_FIELDS = (
+    # (output name, label field, categories, weights, positive category, label file)
+    ("validity", "validity", VOCAB["validity"], None, "valid", "findings"),
+    ("severity", "adjudicated_severity", KAPPA_SEVERITY_SCALE, "linear", None, "findings"),
+    ("bot_match", "bot_match", VOCAB["bot_match"], None, "hit", "misses"),
+    ("is_defect", "is_defect", (True, False), None, True, "misses"),
+    ("verdict", "verdict", VOCAB["verdict"], None, IMPORTANT_MISS_VERDICT, "misses"),
+    # Only items both raters adjudicated P2; an unset p2_blocking counts as false.
+    ("p2_blocking", BLOCKING_FIELD, (True, False), None, True, "findings"),
+    # Derived important flag (P0/P1, or P2 with p2_blocking; null severity counts as not
+    # important) over every shared item; flips at the P2/P3 or p2_blocking boundary show here.
+    ("important", IMPORTANT_FIELD, (True, False), None, True, "findings"),
+    ("important_miss", IMPORTANT_FIELD, (True, False), None, True, "misses"),
+)
+
+
+def agreement(rows_a, rows_b, kinds=("findings", "misses"), irr_only=True):
+    """Per-field agreement between two {id: row} maps (KAPPA_FIELDS). With irr_only, only
+    items whose row in either map sets irr_sample: true are used."""
+    ids = sorted(set(rows_a) & set(rows_b))
+    if irr_only:
+        ids = [i for i in ids if rows_a[i].get("irr_sample") is True or rows_b[i].get("irr_sample") is True]
+    out = {}
+    for name, fld, categories, weights, positive, kind in KAPPA_FIELDS:
+        if kind not in kinds:
+            continue
+        if fld == BLOCKING_FIELD:
+            pairs = [(rows_a[i].get(fld) is True, rows_b[i].get(fld) is True) for i in ids
+                     if rows_a[i].get("adjudicated_severity") == "P2" and rows_b[i].get("adjudicated_severity") == "P2"]
+        elif fld == IMPORTANT_FIELD:
+            flag = lambda row: is_important(row.get("adjudicated_severity"), row.get(BLOCKING_FIELD))
+            pairs = [(flag(rows_a[i]), flag(rows_b[i])) for i in ids]
+        else:
+            pairs = [(rows_a[i].get(fld), rows_b[i].get(fld)) for i in ids
+                     if rows_a[i].get(fld) is not None and rows_b[i].get(fld) is not None]
+        stats = kappa_stats(pairs, categories, weights, positive)
+        if weights == "linear":
+            stats["kappa_quadratic"] = kappa_stats(pairs, categories, "quadratic")["kappa"]
+        out[name] = stats
+    return out
+
+
+def exclude_units(units, exclude_prs):
+    """Drop every unit of the given PR ids (`metrics --exclude-pr`)."""
+    if not exclude_prs:
+        return units
+    excluded = set(exclude_prs)
+    out = dict(units)
+    for name in ("prs", "reviews", "findings", "candidates", "coverage"):
+        rows = units.get(name) or {}
+        out[name] = {k: v for k, v in rows.items() if (v.get("pr_id") or v.get("id")) not in excluded
+                     and pr_id_of(k) not in excluded}
+    if units.get("panel"):
+        out["panel"] = dict(units["panel"], prs=[p for p in units["panel"].get("prs", [])
+                                                 if p["pr_id"] not in excluded])
+    return out
+
+
+def compute_metrics(units, finding_label_rows, miss_label_rows, evidence_days=None, judge_rows=(),
+                    matcher_rows=(), exclude_prs=()):
+    """Pure aggregation over unit dicts and raw label rows. Returns a JSON-able dict whose
+    `figures` keys follow METRIC_KEYS. judge_rows / matcher_rows come from labels-judge.jsonl
+    and labels-matcher.jsonl and feed only judge_bias and match_kappa."""
+    bad = []
+    excluded = set(exclude_prs)
+    keep = lambda row: pr_id_of(row.get("id")) not in excluded
+    excluded_label_rows = sum(1 for rows in (finding_label_rows, miss_label_rows, judge_rows, matcher_rows)
+                              for row in rows if not keep(row))
+    finding_label_rows, miss_label_rows = [r for r in finding_label_rows if keep(r)], [r for r in miss_label_rows
+                                                                                         if keep(r)]
+    judge_rows = [dict(r, rater=r.get("rater") or JUDGE_RATER) for r in judge_rows if keep(r)]
+    matcher_rows = [dict(r, rater=r.get("rater") or ("matcher-%s" % r.get("order"))) for r in matcher_rows if keep(r)]
+    for row in [r for r in matcher_rows if r["rater"] not in MATCHER_RATERS]:
+        bad.append({"file": "labels-matcher", "line": row.get("_line"), "id": row.get("id"), "rater": row["rater"],
+                    "reason": "rater must be one of %s (or set order)" % ", ".join(MATCHER_RATERS)})
+    matcher_rows = [r for r in matcher_rows if r["rater"] in MATCHER_RATERS]
+    units = exclude_units(units, excluded)
+    prs, reviews, findings, candidates = units["prs"], units["reviews"], units["findings"], units["candidates"]
+    coverage_rows = units.get("coverage") or {}
+    panel = units.get("panel")
+    panel_prs = {p["pr_id"] for p in panel.get("prs", [])} if panel else None
+    panel_targets = {p["pr_id"]: p.get("target_head_sha") for p in panel.get("prs", [])} if panel else {}
+
+    units = with_head_index(units)
+    reviews, findings = units["reviews"], units["findings"]
+    heads, aliases = units["_heads"], units["_head_alias"]
+    bot_reviews = [r for r in reviews.values() if r.get("is_bot") and not r.get("is_reply_container")]
+    lf_final, lf_by_rater = split_raters(finding_label_rows, validate_finding_label, units, bad, "labels-findings")
+    lm_final, lm_by_rater = split_raters(miss_label_rows, validate_miss_label, units, bad, "labels-misses",
+                                         canonical_miss_id)
+    conflicts = []  # K6: final miss rows matched to a finding whose final label is invalid
+    for i, r in sorted(lm_final.items()):
+        matched = r.get("matched_finding_id")
+        if r.get("bot_match") in ("hit", "partial") and matched in lf_final \
+                and lf_final[matched].get("validity") == "invalid":
+            conflicts.append({"id": i, "bot_match": r["bot_match"], "matched_finding_id": matched,
+                              "reason": "matched finding is labelled invalid; re-adjudicate the match or the validity"})
+
+    def canonical_heads(row):
+        alias = aliases.get(miss_pr_id(row["id"], units), {})
+        names = ("reviewed_head_sha", "latest_present_head")
+        if not any(row.get(name) in alias for name in names):
+            return row
+        return dict(row, **{name: alias.get(row.get(name), row.get(name)) for name in names})
+
+    lm_final = {i: canonical_heads(r) for i, r in lm_final.items()}
+    lm_by_rater = {rater: {i: canonical_heads(r) for i, r in rows.items()} for rater, rows in lm_by_rater.items()}
+    out_of_horizon_rows = sum(1 for r in lm_final.values() if r.get("out_of_horizon") is True)
+    coverage_only_rows = [r for i, r in sorted(lm_final.items())
+                          if r.get("coverage_only") is True and r.get("out_of_horizon") is not True]
+    in_figures = lambda r: r.get("out_of_horizon") is not True and r.get("coverage_only") is not True
+    lm_final = {i: r for i, r in lm_final.items() if in_figures(r)}
+    lm_by_rater = {rater: {i: r for i, r in rows.items() if in_figures(r)} for rater, rows in lm_by_rater.items()}
+    _, judge_by_rater = split_raters(judge_rows, validate_finding_label, units, bad, "labels-judge")
+    _, matcher_by_rater = split_raters(matcher_rows, validate_miss_label, units, bad, "labels-matcher",
+                                       canonical_miss_id)
+
+    verdict_of = lambda r: r.get("verdict") or review_verdict(r.get("body"), r.get("event"))
+
+    def pr_dims(pr_id):
+        pr = prs.get(pr_id, {})
+        return {"repo": pr.get("repo"), "size_bucket": pr.get("size_bucket"),
+                "author_type": pr.get("author_type") or author_type(pr.get("author"))}
+
+    # (pr, head) units: verdict of the latest review on the head; in window if any review is.
+    head_units = {}
+    for r in sorted(bot_reviews, key=lambda r: (r.get("submitted_at") or "", r["id"])):
+        key = (r["pr_id"], r.get("reviewed_head_sha"))
+        unit = head_units.setdefault(key, {"pr_id": r["pr_id"], "head": key[1], "finding_ids": [],
+                                           "in_window": False, "verdict": None})
+        unit["finding_ids"] += r.get("finding_ids") or []
+        if r.get("in_window", True):
+            unit["in_window"] = True
+            unit["verdict"] = verdict_of(r)
+        elif unit["verdict"] is None:
+            unit["verdict"] = verdict_of(r)
+    unit_dims = lambda key: {**pr_dims(key[0]), "verdict": head_units[key]["verdict"] if key in head_units else None}
+
+    def review_dims(review):
+        return {**pr_dims(review["pr_id"]), "verdict": verdict_of(review)}
+
+    def finding_dims(finding, label=None):
+        review = reviews.get(finding["review_id"]) or {"pr_id": finding["pr_id"], "event": finding.get("review_event"),
+                                                     "verdict": finding.get("review_verdict")}
+        return {**review_dims(review), "file_type": (label or {}).get("file_type") or finding.get("file_type"),
+                "defect_type": (label or {}).get("defect_type"), "bot_severity": finding.get("severity") or "untagged"}
+
+    window_reviews = [r for r in bot_reviews if r.get("in_window", True)]
+    reviewed_prs = sorted({r["pr_id"] for r in window_reviews})
+    last_unit = {}
+    for r in sorted(window_reviews, key=lambda r: r.get("submitted_at") or ""):
+        last_unit[r["pr_id"]] = (r["pr_id"], r.get("reviewed_head_sha"))
+    window_findings = {fid: f for fid, f in findings.items() if f.get("in_window", True)}
+    order = lambda fid: (findings[fid].get("submitted_at") or reviews.get(findings[fid]["review_id"], {})
+                         .get("submitted_at") or "", fid)
+
+    # D3 first occurrence: DUPLICATE code, or an earlier final label with the same (pr, dedup_key).
+    duplicates, first_seen = set(), {}
+    for fid in sorted(lf_final, key=order):
+        row = lf_final[fid]
+        if DUPLICATE_CODE in (row.get("noise_codes") or []):
+            duplicates.add(fid)
+            continue
+        if row.get("dedup_key"):
+            group = (findings[fid]["pr_id"], row["dedup_key"])
+            if group in first_seen:
+                duplicates.add(fid)
+            else:
+                first_seen[group] = fid
+
+    figures = {}
+    labelled = [(window_findings[fid], row) for fid, row in sorted(lf_final.items()) if fid in window_findings]
+    first_occ = [(f, r) for f, r in labelled if f["id"] not in duplicates]
+    decided = [(f, r) for f, r in first_occ if r["validity"] != "unverifiable"]
+    valid = [(f, r) for f, r in decided if r["validity"] == "valid"]
+    fdims = lambda f, r: finding_dims(f, r)
+
+    figures["validity_precision"] = aggregate([(fdims(f, r), int(r["validity"] == "valid"), 1) for f, r in decided],
+                                              dims=FINDING_STRATA)
+    figures["validity_precision"]["unverifiable"] = len(first_occ) - len(decided)
+    figures["validity_precision_worst"] = aggregate(
+        [(fdims(f, r), int(r["validity"] == "valid"), 1) for f, r in first_occ], dims=FINDING_STRATA)
+    figures["noise_rate"] = aggregate([(fdims(f, r), int(is_noise(f.get("severity"), r)), 1) for f, r in decided],
+                                      dims=FINDING_STRATA)
+    figures["code_rate"] = {
+        code: aggregate([(fdims(f, r), int(code in finding_codes(f.get("severity"), r)), 1) for f, r in decided],
+                        dims=FINDING_STRATA)
+        for code in DERIVED_CODES + tuple(c for c in VOCAB["noise_codes"] if c != DUPLICATE_CODE)
+    }
+    figures["duplicate_rate"] = aggregate([(fdims(f, r), int(f["id"] in duplicates), 1) for f, r in labelled],
+                                          dims=FINDING_STRATA)
+    with_gap = [(f, r, severity_gap(f.get("severity"), r.get("adjudicated_severity"))) for f, r in valid]
+    with_gap = [(f, r, g) for f, r, g in with_gap if g is not None]
+    figures["over_severity_rate"] = aggregate(
+        [(fdims(f, r), int(g == OVER_SEVERITY_LEVELS), 1) for f, r, g in with_gap], dims=FINDING_STRATA)
+    figures["severity_inflated_rate"] = aggregate(
+        [(fdims(f, r), int(severity_inflated(f.get("severity"), r)), 1) for f, r, g in with_gap], dims=FINDING_STRATA)
+    figures["blocking_precision"] = aggregate(
+        [(fdims(f, r), int(r["validity"] == "valid"), 1) for f, r in decided if f.get("severity") in P0P1],
+        dims=FINDING_STRATA)
+
+    # Addressed (D12): F_closed = first occurrences on merged/closed PRs with a non-null vicinity
+    # (or an auditor author_action); implementer_bot PRs reported separately.
+    closed = lambda pr_id: prs.get(pr_id, {}).get("state") == "closed"
+    addressed_items, implementer_items, null_vicinity, not_applicable = [], [], 0, 0
+    not_useful_cells, axis_type, axis_sev = defaultdict(lambda: [0, 0]), defaultdict(lambda: [0, 0]), \
+        defaultdict(lambda: [0, 0])
+    for fid, f in sorted(window_findings.items()):
+        if fid in duplicates or not closed(f["pr_id"]):
+            continue
+        label = lf_final.get(fid)
+        action = (label or {}).get("author_action")
+        if action == "not_applicable":  # review posted after merge or close: nobody could act on it
+            not_applicable += 1
+            continue
+        addressed, rejected = finding_addressed(f, label), finding_rejected(f, label)
+        if rejected or addressed:
+            coarse = ((label or {}).get("defect_type") or "unknown").split("/")[0]
+            sev = f.get("severity") or "untagged"
+            for cell in (not_useful_cells[(coarse, sev)], axis_type[coarse], axis_sev[sev]):
+                cell[0] += int(rejected)
+                cell[1] += 1
+        if f.get("changed_in_vicinity_1") is None and action not in ("addressed", "rejected", "ignored"):
+            null_vicinity += 1
+            continue
+        item = (fdims(f, label), int(addressed), 1)
+        (implementer_items if pr_dims(f["pr_id"])["author_type"] == "implementer_bot" else addressed_items).append(item)
+    figures["addressed_rate"] = aggregate(addressed_items, dims=FINDING_STRATA)
+    figures["addressed_rate"]["implementer_bot"] = aggregate(implementer_items, dims=())["overall"]
+    figures["addressed_rate"]["null_vicinity_excluded"] = null_vicinity
+    figures["addressed_rate"]["not_applicable_excluded"] = not_applicable
+    figures["effective_fp_rate"] = aggregate([(d, n - k, n) for d, k, n in addressed_items], dims=FINDING_STRATA)
+    figures["effective_fp_rate"]["note"] = "record only; compare with human_addressed_rate"
+    figures["explicit_not_useful_rate"] = pool_families(not_useful_cells)
+    figures["explicit_not_useful_rate"]["by_axis"] = {
+        "defect_type": {k: not_useful_summary(*v) for k, v in sorted(axis_type.items())},
+        "bot_severity": {k: not_useful_summary(*v) for k, v in sorted(axis_sev.items())},
+    }
+
+    human_items, human_impl, human_null = [], [], 0
+    for cand in sorted(candidates.values(), key=lambda c: c["id"]):
+        if (cand.get("kind") != "human_comment" or not cand.get("is_root_inline")
+                or cand.get("commenter_kind") != "human" or cand["pr_id"] not in reviewed_prs or not closed(cand["pr_id"])):
+            continue
+        if cand.get("changed_in_vicinity_1") is None:
+            human_null += 1
+            continue
+        item = ({**pr_dims(cand["pr_id"]), "file_type": cand.get("file_type")},
+                int(cand["changed_in_vicinity_1"] is True or cand.get("author_reply_kind") == "ack"), 1)
+        (human_impl if item[0]["author_type"] == "implementer_bot" else human_items).append(item)
+    human_dims = ("repo", "size_bucket", "author_type", "file_type")
+    figures["human_addressed_rate"] = aggregate(human_items, dims=human_dims)
+    figures["human_addressed_rate"]["implementer_bot"] = aggregate(human_impl, dims=())["overall"]
+    figures["human_addressed_rate"]["null_vicinity_excluded"] = human_null
+
+    # Misses (D3/D6/D7): defect unit (pr, dedup_key); generated bot_finding hit rows.
+    groups = defaultdict(list)
+    for rid, row in lm_final.items():
+        groups[(miss_pr_id(rid, units), row.get("dedup_key") or miss_base_id(rid))].append(row)
+    for fid, label in lf_final.items():
+        if (label["validity"] == "valid" and label.get("dedup_key")
+                and is_important(label.get("adjudicated_severity"), label.get(BLOCKING_FIELD))):
+            f = findings[fid]
+            groups[(f["pr_id"], label["dedup_key"])].append({
+                "id": fid, "channel": GENERATED_CHANNEL, "verdict": IMPORTANT_MISS_VERDICT, "is_defect": True,
+                "present_at_reviewed_head": IMPORTANT_MISS_PRESENT,
+                "adjudicated_severity": label["adjudicated_severity"], BLOCKING_FIELD: label.get(BLOCKING_FIELD),
+                "bot_match": "hit", "matched_finding_id": fid, "reviewed_head_sha": f.get("reviewed_head_sha"),
+                "latest_present_head": None, "defect_type": label.get("defect_type"),
+                "file_type": label.get("file_type") or f.get("file_type")})
+    defects, out_of_window = [], 0
+    for (pr_id, key), rows in sorted(groups.items(), key=lambda kv: (str(kv[0][0]), str(kv[0][1]))):
+        eligible = [r for r in rows if r.get("is_defect") is True and r.get("verdict") == IMPORTANT_MISS_VERDICT
+                    and r.get("present_at_reviewed_head") == IMPORTANT_MISS_PRESENT
+                    and is_important(r.get("adjudicated_severity"), r.get(BLOCKING_FIELD)) and r.get("bot_match")]
+        if not eligible:
+            continue
+        order_of = heads.get(pr_id, {})
+        status_at = {}
+        for r in eligible:
+            head = r.get("reviewed_head_sha")
+            if head not in status_at or BOT_MATCH_ORDER[r["bot_match"]] < BOT_MATCH_ORDER[status_at[head]]:
+                status_at[head] = r["bot_match"]
+        best = min(status_at.values(), key=BOT_MATCH_ORDER.get)
+        first_head = min(status_at, key=lambda h: (order_of.get(h, ""), str(h)))
+        latest = [r.get("latest_present_head") for r in eligible if r.get("latest_present_head")]
+        anchor = max(latest or list(status_at), key=lambda h: (order_of.get(h, ""), str(h)))
+        unit = head_units.get((pr_id, anchor))
+        if unit is not None and not unit["in_window"]:  # straddling PRs: count each defect in one window
+            out_of_window += 1
+            continue
+        labelled_rows = [r for r in eligible if r.get("channel") != GENERATED_CHANNEL] or eligible
+        severity = min((r["adjudicated_severity"] for r in eligible), key=SEVERITY_RANK.get)
+        hit_gap = [SEVERITY_RANK[severity] - SEVERITY_RANK[findings[r["matched_finding_id"]]["severity"]]
+                   for r in eligible if r["bot_match"] == "hit" and r.get("matched_finding_id") in findings
+                   and findings[r["matched_finding_id"]].get("severity") in SEVERITY_RANK]
+        channels = set()
+        for r in eligible:
+            channels.add(r.get("channel"))
+            channels.update(r.get("sources") or [])
+        target = panel_targets.get(pr_id)
+        commit_order = (coverage_rows.get(pr_id) or {}).get("heads") or []
+        position = lambda sha: commit_order.index(sha) if sha in commit_order else None
+
+        def blind_before_target(row):
+            cand = candidate_of(row["id"], units) or {}
+            if not (cand.get("commenter_kind") == "human" and cand.get("blind_to_bot") is True):
+                return False
+            at, limit = position(cand.get("head_at_comment")), position(target)
+            return at is None or limit is None or at <= limit
+
+        human_blind = any(r.get("channel") == "human_comment" and blind_before_target(r) for r in eligible)
+        human_review = "owner_session" in channels or any(
+            r.get("channel") == "human_comment" and (candidate_of(r["id"], units) or {}).get("commenter_kind") != "implementer_bot"
+            for r in eligible) or any("human_comment" in (r.get("sources") or []) and r.get("channel") != "human_comment"
+                                      for r in eligible)
+        first_source = ("bot" if best == "partial" else "human_review" if human_review
+                        else "panel" if "panel" in channels else "fix_evidence_only")
+        defects.append({
+            "pr_id": pr_id, "key": key, "best": best, "escaped": best != "hit", "status_at": status_at,
+            "first_exposure": status_at[first_head], "severity": severity,
+            "severity_miss": any(g <= -INFLATION_MIN_LEVELS for g in hit_gap),
+            "repo_rule": any(r.get("repo_rule") is True for r in eligible),
+            "non_panel": any(r.get("channel") != "panel" for r in eligible),
+            "channels": channels, "human_blind": human_blind, "first_source": first_source,
+            "dims": {**unit_dims((pr_id, anchor)), "file_type": labelled_rows[0].get("file_type"),
+                     "defect_type": labelled_rows[0].get("defect_type")},
+        })
+    reference = [d for d in defects if d["non_panel"]]
+    escape_note = {"evidence_days": evidence_days}
+    figures["important_escaped"] = aggregate([(d["dims"], int(d["escaped"]), 1) for d in reference], count_only=True)
+    figures["important_escaped"].update(escape_note)
+    figures["important_escaped"]["excluded_out_of_window"] = out_of_window
+    figures["important_escaped"]["severity_miss"] = sum(1 for d in reference if d["best"] == "hit" and d["severity_miss"])
+    figures["important_escaped"]["repo_rule"] = {
+        "escaped": sum(1 for d in reference if d["escaped"] and d["repo_rule"]),
+        "final_rows": sum(1 for r in lm_final.values() if r.get("repo_rule") is True),
+    }
+    first_sources = Counter(d["first_source"] for d in reference if d["escaped"])
+    figures["important_escaped"]["by_first_source"] = {
+        **{source: first_sources[source] for source in FIRST_SOURCES},
+        "note": "escaped defects of the all-PR figure; panel-only defects are counted under panel_only",
+    }
+    # Panel-only defects (found by no other channel) count only for panel-sampled PRs.
+    panel_only = [d for d in defects if not d["non_panel"]]
+    in_panel = [d for d in panel_only if panel_prs is not None and d["pr_id"] in panel_prs]
+    figures["important_escaped"]["panel_only"] = {
+        "escaped": sum(1 for d in in_panel if d["escaped"]),
+        "defects": len(in_panel),
+        "panel_prs": len(panel_prs) if panel_prs is not None else 0,
+        "outside_panel_prs": len(panel_only) - len(in_panel),
+        "note": "panel-sampled PRs only; excluded from all-PR figures",
+    }
+    escaped_by_pr = Counter(d["pr_id"] for d in reference if d["escaped"])
+    figures["important_escaped_per_pr"] = aggregate(
+        [(unit_dims(last_unit[p]), escaped_by_pr.get(p, 0), 1) for p in reviewed_prs], proportion=False,
+        dims=REVIEW_STRATA)
+    per_pr_overall = figures["important_escaped_per_pr"]["overall"]
+    lo, hi = garwood(per_pr_overall["k"])
+    per_pr_overall["ci95"] = [lo / per_pr_overall["n"], hi / per_pr_overall["n"]] if per_pr_overall["n"] else [None, None]
+    per_pr_overall["ci_method"] = "Garwood exact Poisson on the count / n PRs"
+    figures["important_escaped_per_pr"].update(escape_note)
+    panel_defects = [d for d in defects if panel_prs is not None and d["pr_id"] in panel_prs]
+    figures["important_miss_rate_rel"] = {
+        "all_prs": aggregate([(d["dims"], int(d["escaped"]), 1) for d in reference]),
+        "panel_prs": aggregate([(d["dims"], int(d["escaped"]), 1) for d in panel_defects]) if panel_prs else None,
+        **escape_note,
+    }
+    figures["important_partial"] = aggregate([(d["dims"], int(d["best"] == "partial"), 1) for d in reference],
+                                             count_only=True)
+    figures["important_partial"].update(escape_note)
+    figures["subtotal_p0p1"] = aggregate(
+        [(d["dims"], int(d["escaped"]), 1) for d in reference if d["severity"] in P0P1])
+    figures["subtotal_p0p1"].update(escape_note)
+    figures["first_exposure_miss"] = aggregate([(d["dims"], int(d["first_exposure"] != "hit"), 1) for d in reference])
+    figures["first_exposure_miss"].update(escape_note)
+
+    # Verdict metrics over distinct (pr, head) units (D3).
+    statuses = defaultdict(list)
+    for d in reference:
+        for head, status in d["status_at"].items():
+            statuses[(d["pr_id"], head)].append(status)
+    window_units = [key for key, unit in sorted(head_units.items(), key=lambda kv: (kv[0][0], str(kv[0][1])))
+                    if unit["in_window"]]
+    approve_units = [key for key in window_units if head_units[key]["verdict"] == APPROVE_VERDICT]
+    is_final = lambda key: prs.get(key[0], {}).get("merged") and prs[key[0]].get("final_head_sha") == key[1]
+    approve_item = lambda key, wanted: (unit_dims(key), int(any(s in wanted for s in statuses.get(key, []))), 1)
+    fig = aggregate([approve_item(k, ("miss", "partial")) for k in approve_units], dims=REVIEW_STRATA)
+    fig["merged_final"] = aggregate([approve_item(k, ("miss", "partial")) for k in approve_units if is_final(k)],
+                                    dims=REVIEW_STRATA)
+    fig["superseded"] = aggregate([approve_item(k, ("miss", "partial")) for k in approve_units if not is_final(k)],
+                                  dims=REVIEW_STRATA)
+    fig["miss_only"] = aggregate([approve_item(k, ("miss",)) for k in approve_units], dims=())["overall"]
+    approve_by_pr = {}
+    for key in approve_units:  # PR-level: any APPROVE unit with an important miss or partial
+        dims, hit, _ = approve_item(key, ("miss", "partial"))
+        prev = approve_by_pr.get(key[0])
+        approve_by_pr[key[0]] = (dims, max(hit, prev[1] if prev else 0), 1)
+    fig["per_pr"] = aggregate([approve_by_pr[p] for p in sorted(approve_by_pr)], dims=REVIEW_STRATA)
+    fig.update(escape_note)
+    figures["approve_with_important_miss"] = fig
+
+    rc_items, rc_unlabelled, rc_no_findings, prove_or_fix = [], 0, [], []
+    for key in window_units:
+        if head_units[key]["verdict"] != BLOCKING_VERDICT:
+            continue
+        ids = sorted(set(head_units[key]["finding_ids"]))
+        if not ids:  # blocks on carried-over prior findings or untagged prose: adjudicate by hand
+            rc_no_findings.append("%s@%s" % key)
+            continue
+        if any(i not in lf_final for i in ids):
+            rc_unlabelled += 1
+            continue
+        valid_blocking = any(lf_final[i]["validity"] == "valid"
+                             and is_important(lf_final[i].get("adjudicated_severity"), lf_final[i].get(BLOCKING_FIELD))
+                             for i in ids)
+        stated = [i for i in ids if findings[i].get("severity") in P0P1]
+        if (not valid_blocking and pr_dims(key[0])["author_type"] == "implementer_bot" and stated
+                and all(lf_final[i]["validity"] == "unverifiable" for i in stated)):
+            prove_or_fix.append("%s@%s" % key)
+        rc_items.append((unit_dims(key), int(not valid_blocking), 1))
+    fig = aggregate(rc_items, dims=REVIEW_STRATA)
+    fig["excluded_not_fully_labelled"] = rc_unlabelled
+    fig["excluded_no_own_findings"] = rc_no_findings
+    fig["prove_or_fix"] = prove_or_fix
+    figures["rc_without_valid_blocking"] = fig
+
+    per_pr = Counter(f["pr_id"] for fid, f in window_findings.items() if fid not in duplicates)
+    valid_blocking_pr = Counter(f["pr_id"] for f, r in valid
+                                if is_important(r.get("adjudicated_severity"), r.get(BLOCKING_FIELD)))
+    addressed_pr = Counter(f["pr_id"] for fid, f in window_findings.items()
+                           if fid not in duplicates and finding_addressed(f, lf_final.get(fid)))
+    pr_item = lambda counts: [(unit_dims(last_unit[p]), counts.get(p, 0), 1) for p in reviewed_prs]
+    fig = aggregate(pr_item(per_pr), proportion=False, dims=REVIEW_STRATA)
+    fig["valid_blocking"] = aggregate(pr_item(valid_blocking_pr), proportion=False, dims=())["overall"]
+    fig["addressed"] = aggregate(pr_item(addressed_pr), proportion=False, dims=())["overall"]
+    figures["findings_per_pr"] = fig
+    fig = aggregate([(review_dims(r), int(not r.get("finding_ids")), 1) for r in window_reviews], dims=REVIEW_STRATA)
+    fig["verdict_distribution"] = dict(sorted(Counter(str(verdict_of(r)) for r in window_reviews).items()))
+    figures["silent_review_share"] = fig
+
+    escaped_units = {(d["pr_id"], h) for d in reference if d["escaped"] for h in d["status_at"]}
+    fig = aggregate([(fdims(f, r), int(r.get("adjudicated_severity") == "nit"), 1) for f, r in valid],
+                    dims=FINDING_STRATA)
+    per_review = {"with_escaped": [0, 0], "without_escaped": [0, 0]}
+    for review in window_reviews:
+        bucket = per_review["with_escaped" if (review["pr_id"], review.get("reviewed_head_sha")) in escaped_units
+                            else "without_escaped"]
+        bucket[0] += sum(1 for i in review.get("finding_ids") or []
+                         if i in lf_final and lf_final[i].get("adjudicated_severity") == "nit")
+        bucket[1] += 1
+    fig["per_review"] = {k: summarize(v[0], v[1], False) for k, v in per_review.items()}
+    figures["nit_share"] = fig
+
+    cov_items = [({"repo": c.get("repo"), "author_type": c.get("author_type"),
+                   "size_bucket": prs.get(c["id"], {}).get("size_bucket")}, int(bool(c.get("has_gap"))), 1)
+                 for c in coverage_rows.values()]
+    fig = aggregate(cov_items, dims=("repo", "size_bucket", "author_type"))
+    fig["unreviewed_prefix_heads"] = sum(len(c.get("unreviewed_prefix_heads") or []) for c in coverage_rows.values())
+    fig["unreviewed_merged_heads"] = sum(1 for c in coverage_rows.values() if c.get("merged_head_reviewed") is False)
+    fig["attention_only_prs"] = sum(1 for c in coverage_rows.values() if c.get("attention_only"))
+    figures["coverage_unreviewed_heads"] = fig
+
+    # coverage_only defects (fixed before the first bot review): never in R_imp or a miss figure.
+    coverage_groups = {}
+    for row in coverage_only_rows:
+        if row.get("is_defect") is True:
+            coverage_groups.setdefault((miss_pr_id(row["id"], units), row.get("dedup_key") or miss_base_id(row["id"])),
+                                       row)
+    fig = aggregate([({**pr_dims(pr_id), "adjudicated_severity": row.get("adjudicated_severity")}, 1, 1)
+                     for (pr_id, _), row in sorted(coverage_groups.items(), key=lambda kv: str(kv[0]))],
+                    count_only=True, dims=("repo", "author_type", "adjudicated_severity"))
+    fig["important"] = sum(1 for row in coverage_groups.values()
+                           if row.get("verdict") == IMPORTANT_MISS_VERDICT
+                           and is_important(row.get("adjudicated_severity"), row.get(BLOCKING_FIELD)))
+    figures["coverage_unreviewed_defects"] = fig
+
+    figures["capture_recapture"] = capture_recapture(panel_defects if panel_prs else None, panel_targets)
+
+    irr_a, irr_b = (lf_by_rater.get(IRR_RATERS[0], {}), lf_by_rater.get(IRR_RATERS[1], {}))
+    irr = agreement(irr_a, irr_b, kinds=("findings",))
+    irr.update(agreement(lm_by_rater.get(IRR_RATERS[0], {}), lm_by_rater.get(IRR_RATERS[1], {}), kinds=("misses",)))
+    figures["irr"] = irr
+    sampled = {i: r for i, r in lm_final.items() if r.get("match_sample") is True}
+    figures["match_kappa"] = {}
+    for order, rater in zip(MATCH_ORDERS, MATCHER_RATERS):
+        match = agreement(matcher_by_rater.get(rater, {}), sampled, kinds=("misses",), irr_only=False)["bot_match"]
+        kappa = match["kappa"]
+        match["status"] = ("not estimable" if kappa is None else "definite" if kappa >= MATCH_KAPPA_DEFINITE
+                           else "tentative" if kappa >= MATCH_KAPPA_TENTATIVE else "untrusted")
+        figures["match_kappa"][order] = match
+    judge = judge_by_rater.get(JUDGE_RATER, {})
+    bias = agreement(judge, lf_by_rater.get(IRR_RATERS[1], {}), kinds=("findings",))["validity"]
+    joined = [i for i in sorted(judge) if i in findings]
+    bias["length_correlation"] = pearson([len(findings[i].get("body") or "") for i in joined],
+                                         [int(judge[i].get("validity") == "valid") for i in joined])
+    bias["length_n"] = len(joined)
+    figures["judge_bias"] = bias
+
+    counts = {
+        "findings_in_window": len(window_findings),
+        "findings_labelled_final": len(labelled),
+        "findings_first_occurrence": len(first_occ),
+        "findings_label_rows_out_of_window": len(lf_final) - len(labelled),
+        "miss_rows_final": len(lm_final),
+        "important_defects_all_prs": len(reference),
+        "important_defects_panel_prs": len(panel_defects),
+        "bot_reviews_in_window": len(window_reviews),
+        "reviewed_heads_in_window": len(window_units),
+        "reviewed_prs": len(reviewed_prs),
+        "excluded_prs": sorted(excluded),
+        "excluded_label_rows": excluded_label_rows,
+        "miss_rows_out_of_horizon": out_of_horizon_rows,
+        "miss_rows_coverage_only": len(coverage_only_rows),
+    }
+    return {"figures": figures, "coverage": counts, "bad_rows": bad, "conflicts": conflicts,
+            "evidence_days": evidence_days}
+
+
+def capture_recapture(defects, targets=None):
+    """D9: Chapman (2 sources) or Chao2 (>= 3) over important defects of panel PRs that are
+    present at the panel target head. Sources: bot (hit on the target head's row), panel, and
+    humans blind to the bot review. Indicative only; not estimable when m < 7."""
+    if defects is None:
+        return {"status": "no panel", "estimate": None}
+    targets = targets or {}
+    defects = [d for d in defects if targets.get(d["pr_id"]) in d["status_at"]]
+    seen = {
+        "bot": {i for i, d in enumerate(defects) if d["status_at"][targets[d["pr_id"]]] == "hit"},
+        "panel": {i for i, d in enumerate(defects) if "panel" in d["channels"]},
+        "human_blind": {i for i, d in enumerate(defects) if d["human_blind"]},
+    }
+    active = {k: v for k, v in seen.items() if v}
+    out = {"sources": {k: len(v) for k, v in seen.items()}, "s_obs": len(set().union(*seen.values())),
+           "defects_at_target": len(defects), "estimate": None, "note": "indicative only"}
+    if len(active) < 2:
+        out.update(method=None, m=0, status="not estimable")
+        return out
+    hits = Counter(i for v in active.values() for i in v)
+    m = sum(1 for c in hits.values() if c >= 2)
+    if len(active) == 2:
+        (n1, n2) = (len(v) for v in active.values())
+        out.update(method="chapman", m=m)
+        estimate = chapman(n1, n2, m)
+    else:
+        q1 = sum(1 for c in hits.values() if c == 1)
+        q2 = sum(1 for c in hits.values() if c == 2)
+        out.update(method="chao2", m=m, q1=q1, q2=q2)
+        estimate = chao2(len(hits), q1, q2, len(active))
+    if m < CAPTURE_MIN_RECAPTURES:
+        out["status"] = "not estimable"
+    else:
+        out.update(status="ok", estimate=estimate)
+    return out
+
+
+# ---------------------------------------------------------------------------
+# compare, panel-draw (pure)
+# ---------------------------------------------------------------------------
+
+
+def _figure_at(figures, path):
+    node = figures
+    for part in path:
+        if not isinstance(node, dict) or part not in node:
+            return None
+        node = node[part]
+    return node
+
+
+def compare_results(baseline, after):
+    """D13: primary endpoints (Newcombe + Fisher for proportions, conditional binomial for
+    per-PR counts) and Newcombe for every other top-level proportion (descriptive)."""
+    fb, fa = baseline.get("figures", {}), after.get("figures", {})
+    out = {"comparison": {}, "descriptive": {}, "warnings": []}
+    if baseline.get("evidence_days") != after.get("evidence_days"):
+        out["warnings"].append("evidence_days differ: baseline %s, after %s"
+                               % (baseline.get("evidence_days"), after.get("evidence_days")))
+    primary = set()
+    for name, path, test in PRIMARY_ENDPOINTS:
+        primary.add(path[0])
+        b, a = _figure_at(fb, path), _figure_at(fa, path)
+        if not (b and a and "overall" in b and "overall" in a):
+            out["comparison"][name] = {"status": "missing"}
+            continue
+        bo, ao = b["overall"], a["overall"]
+        entry = {"test": test, "baseline": {k: bo.get(k) for k in ("k", "n", "rate")},
+                 "after": {k: ao.get(k) for k in ("k", "n", "rate")}}
+        if test == "proportion":
+            entry["newcombe"] = newcombe_diff(bo["k"], bo["n"], ao["k"], ao["n"])
+            entry["fisher_p"] = fisher_exact(ao["k"], ao["n"] - ao["k"], bo["k"], bo["n"] - bo["k"])
+        else:
+            entry["conditional_binomial"] = conditional_binomial(bo["k"], bo["n"], ao["k"], ao["n"])
+        out["comparison"][name] = entry
+    for name in sorted(set(fa) & set(fb)):
+        b, a = fb[name], fa[name]
+        if name in primary or not (isinstance(a, dict) and isinstance(b, dict)):
+            continue
+        bo, ao = b.get("overall"), a.get("overall")
+        if not (isinstance(bo, dict) and isinstance(ao, dict) and "ci95" in ao and "ci95" in bo):
+            continue
+        out["descriptive"][name] = {"baseline": {k: bo.get(k) for k in ("k", "n", "rate")},
+                                    "after": {k: ao.get(k) for k in ("k", "n", "rate")},
+                                    "newcombe": newcombe_diff(bo["k"], bo["n"], ao["k"], ao["n"])}
+    return out
+
+
+def panel_target_head(coverage_row, pr_reviews):
+    """D8: latest bot-reviewed head before the first non-PR-author fix commit; else the first
+    GREEN head (body verdict); else the final bot-reviewed head. Heads come from
+    bot_reviewed_heads() (the body head wins). Returns (sha, rule)."""
+    commits = (coverage_row or {}).get("heads") or []
+    foreign = (coverage_row or {}).get("first_foreign_commit_after_review")
+    if foreign and foreign in commits:
+        cut = commits.index(foreign)
+        before = [row["sha"] for row in bot_reviewed_heads(pr_reviews)
+                  if row["sha"] in commits and commits.index(row["sha"]) < cut]
+        if before:
+            return max(before, key=commits.index), "pre_foreign_fix"
+    ordered = sorted((r for r in pr_reviews if not r.get("is_reply_container")),
+                     key=lambda r: (r.get("submitted_at") or "", r["id"]))
+    for review in ordered:
+        if (review.get("verdict") or review_verdict(review.get("body"), review.get("event"))) == APPROVE_VERDICT:
+            return review_head(review), "first_green"
+    return (review_head(ordered[-1]), "final_reviewed") if ordered else (None, "none")
+
+
+def draw_panel(units, seed, n):
+    """D8 seeded stratified draw over repo x verdict (last in-window bot verdict), excluding
+    automation PRs; proportional allocation by largest remainder."""
+    reviews = [r for r in units["reviews"].values()
+               if r.get("is_bot") and not r.get("is_reply_container")]
+    by_pr = defaultdict(list)
+    for r in reviews:
+        by_pr[r["pr_id"]].append(r)
+    strata = defaultdict(list)
+    for pr_id, pr_reviews in sorted(by_pr.items()):
+        window = sorted((r for r in pr_reviews if r.get("in_window", True)), key=lambda r: r.get("submitted_at") or "")
+        pr = units["prs"].get(pr_id, {})
+        if not window or pr.get("author_type") == "automation":
+            continue
+        last = window[-1]
+        strata["%s|%s" % (pr.get("repo"), last.get("verdict") or review_verdict(last.get("body"), last.get("event")))
+               ].append(pr_id)
+    total = sum(len(v) for v in strata.values())
+    take = min(n, total)
+    alloc = {}
+    if total:
+        quotas = {s: take * len(v) / total for s, v in strata.items()}
+        alloc = {s: int(math.floor(q)) for s, q in quotas.items()}
+        remainder = take - sum(alloc.values())
+        for s in sorted(quotas, key=lambda s: (-(quotas[s] - alloc[s]), s))[:remainder]:
+            alloc[s] += 1
+    rng = random.Random(seed)
+    chosen, strata_out = [], []
+    for stratum in sorted(strata):
+        members = sorted(strata[stratum])
+        picked = sorted(rng.sample(members, min(alloc.get(stratum, 0), len(members))))
+        strata_out.append({"stratum": stratum, "eligible": len(members), "drawn": len(picked)})
+        for pr_id in picked:
+            head, rule = panel_target_head((units.get("coverage") or {}).get(pr_id), by_pr[pr_id])
+            chosen.append({"pr_id": pr_id, "target_head_sha": head, "target_rule": rule, "stratum": stratum})
+    return {"seed": seed, "n": n, "strata": strata_out, "prs": chosen}
+
+
+# ---------------------------------------------------------------------------
+# IO wrappers
+# ---------------------------------------------------------------------------
+
+
+def load_units(directory):
+    units = {}
+    for name, fname, required in (("prs", "prs.jsonl", True), ("reviews", "reviews.jsonl", True),
+                                  ("findings", "findings.jsonl", True), ("candidates", "candidates.jsonl", True),
+                                  ("coverage", "coverage.jsonl", False)):
+        path = os.path.join(directory, fname)
+        rows = {}
+        if not os.path.exists(path):
+            if required:
+                sys.exit("issue-agent-review-audit: %s is missing" % path)
+        else:
+            with open(path, encoding="utf-8") as handle:
+                for line in handle:
+                    if line.strip():
+                        row = json.loads(line)
+                        rows[row["id"]] = row
+        units[name] = rows
+    for name, fname in (("panel", "panel.json"), ("manifest", "manifest.json")):
+        path = os.path.join(directory, fname)
+        units[name] = json.load(open(path, encoding="utf-8")) if os.path.exists(path) else None
+    return units
+
+
+def _fmt_summary(summary):
+    if summary is None:
+        return "n/a"
+    if "count" in summary:
+        return "%d" % summary["count"]
+    if "kappa" in summary:
+        if summary["kappa"] is None:
+            return "n=%d kappa n/a" % summary["n"]
+        return "n=%d kappa=%.3f [%.3f, %.3f] raw=%.3f pabak=%.3f" % (
+            summary["n"], summary["kappa"], summary["ci95"][0], summary["ci95"][1], summary["raw"], summary["pabak"])
+    if summary.get("rate") is None:
+        return "%s/%s (n/a)" % (summary.get("k"), summary.get("n"))
+    text = "%s/%s = %.3f" % (summary["k"], summary["n"], summary["rate"])
+    ci = summary.get("ci95")
+    if ci and ci[0] is not None:
+        text += " [%.3f, %.3f]" % (ci[0], ci[1])
+    if summary.get("status"):
+        text += " (%s)" % summary["status"]
+    return text
+
+
+def _render(lines, name, node):
+    if isinstance(node, dict) and "overall" in node:
+        lines.append("## %s" % name)
+        lines.append("Overall: " + _fmt_summary(node["overall"]))
+        nested = []
+        for key, value in node.items():
+            if key in ("overall", "breakdown"):
+                continue
+            if isinstance(value, dict) and ("overall" in value or "k" in value or "count" in value):
+                nested.append((key, value))
+            else:
+                lines.append("%s: %s" % (key, json.dumps(value, sort_keys=True)))
+        if node.get("breakdown"):
+            lines += ["", "| dimension | value | figure |", "|---|---|---|"]
+            for dim, values in node["breakdown"].items():
+                for value, summary in values.items():
+                    lines.append("| %s | %s | %s |" % (dim, value, _fmt_summary(summary)))
+        lines.append("")
+        for key, value in nested:
+            if "overall" in value:
+                _render(lines, "%s.%s" % (name, key), value)
+            else:
+                lines += ["## %s.%s" % (name, key), _fmt_summary(value), ""]
+    elif isinstance(node, dict) and ("kappa" in node or "k" in node or "count" in node):
+        lines += ["## %s" % name, _fmt_summary(node), ""]
+    elif isinstance(node, dict) and node:
+        scalars = {k: v for k, v in node.items() if not isinstance(v, dict)}
+        if scalars:
+            lines += ["## %s" % name] + ["%s: %s" % (k, json.dumps(v, sort_keys=True)) for k, v in scalars.items()]
+            lines.append("")
+        for key, value in node.items():
+            if isinstance(value, dict):
+                _render(lines, "%s.%s" % (name, key), value)
+    else:
+        lines += ["## %s" % name, json.dumps(node, sort_keys=True), ""]
+
+
+def render_md(result):
+    lines = ["# haechibot review audit metrics", ""]
+    lines.append("Evidence horizon: %s days" % result.get("evidence_days"))
+    lines.append("Coverage: " + ", ".join("%s=%s" % kv for kv in result["coverage"].items()))
+    lines.append("")
+    for name, _ in METRIC_KEYS:
+        _render(lines, name, result["figures"].get(name))
+    if result["bad_rows"]:
+        lines.append("## bad rows (excluded)")
+        for row in result["bad_rows"]:
+            lines.append("- %s line %s id=%s rater=%s: %s" % (row["file"], row["line"], row["id"], row.get("rater"),
+                                                              row["reason"]))
+    if result.get("conflicts"):
+        lines.append("## conflicts (re-adjudicate; still counted)")
+        for row in result["conflicts"]:
+            lines.append("- %s %s -> %s: %s" % (row["id"], row["bot_match"], row["matched_finding_id"], row["reason"]))
+    return "\n".join(lines) + "\n"
+
+
+def cmd_metrics(args):
+    units = load_units(args.dir)
+    bad = []
+    paths = {
+        "labels_findings": args.labels_findings or os.path.join(args.dir, "labels-findings.jsonl"),
+        "labels_misses": args.labels_misses or os.path.join(args.dir, "labels-misses.jsonl"),
+        "labels_judge": args.labels_judge or os.path.join(args.dir, "labels-judge.jsonl"),
+        "labels_matcher": args.labels_matcher or os.path.join(args.dir, "labels-matcher.jsonl"),
+    }
+    rows = {name: load_jsonl(path, bad, name.replace("_", "-")) if os.path.exists(path) else []
+            for name, path in paths.items()}
+    exclude = [pr if "/" in pr else "%s/%s" % (OWNER, pr) for pr in args.exclude_pr or []]
+    for pr in exclude:
+        if not PR_ID_RE.fullmatch(pr):
+            sys.exit("issue-agent-review-audit: invalid --exclude-pr %r (want [OWNER/]REPO#N)" % pr)
+    evidence_days = (((units.get("manifest") or {}).get("args") or {}).get("evidence_days"))
+    result = compute_metrics(units, rows["labels_findings"], rows["labels_misses"], evidence_days,
+                             judge_rows=rows["labels_judge"], matcher_rows=rows["labels_matcher"],
+                             exclude_prs=exclude)
+    result["bad_rows"] = bad + result["bad_rows"]
+    result["inputs"] = {"dir": args.dir, "panel": bool(units.get("panel")),
+                        **{name: path if rows[name] else None for name, path in paths.items()}}
+    if args.format == "json":
+        print(json.dumps(result, indent=1, sort_keys=True))
+    else:
+        sys.stdout.write(render_md(result))
+
+
+def cmd_compare(args):
+    with open(args.before, encoding="utf-8") as handle:
+        baseline = json.load(handle)
+    with open(args.after, encoding="utf-8") as handle:
+        after = json.load(handle)
+    result = compare_results(baseline, after)
+    if args.format == "json":
+        print(json.dumps(result, indent=1, sort_keys=True))
+        return
+    lines = ["# before/after comparison (after - baseline)", ""]
+    lines += ["warning: %s" % w for w in result["warnings"]]
+    for section in ("comparison", "descriptive"):
+        lines += ["", "## %s" % section]
+        for name, entry in result[section].items():
+            lines.append("- %s: %s" % (name, json.dumps(entry, sort_keys=True)))
+    sys.stdout.write("\n".join(lines) + "\n")
+
+
+def _rows_for_rater(rows, rater, bad, label):
+    """{id: row} for one rater; without --rater, the `final` row or the only row per id."""
+    by_id = defaultdict(list)
+    for row in rows:
+        if isinstance(row.get("id"), str):
+            by_id[row["id"]].append(row)
+    out = {}
+    for item_id, group in by_id.items():
+        picked = [r for r in group if r.get("rater") == rater] if rater else (
+            [r for r in group if r.get("rater") == FINAL_RATER] or group)
+        if len(picked) == 1:
+            out[item_id] = picked[0]
+        elif len(picked) > 1:
+            bad.append({"file": label, "line": picked[1].get("_line"), "id": item_id, "rater": rater,
+                        "reason": "several rows for one rater; pass --rater-a/--rater-b"})
+    return out
+
+
+def canonical_rows(rows, units):
+    """N1: rewrite commit_id-alias `@<head>` suffixes to the body head before pairing raters."""
+    return [dict(r, id=canonical_miss_id(r["id"], units)) if isinstance(r.get("id"), str) else r for r in rows]
+
+
+def cmd_kappa(args):
+    bad = []
+    units = with_head_index(load_units(args.dir)) if args.dir else None
+    rows = [load_jsonl(args.a, bad, "a"), load_jsonl(args.b, bad, "b")]
+    if units:
+        rows = [canonical_rows(r, units) for r in rows]
+    rows_a = _rows_for_rater(rows[0], args.rater_a, bad, "a")
+    rows_b = _rows_for_rater(rows[1], args.rater_b, bad, "b")
+    fields = set(args.field or [f[0] for f in KAPPA_FIELDS])
+    result = {"agreement": {k: v for k, v in agreement(rows_a, rows_b, irr_only=not args.all_items).items()
+                            if v["n"] and k in fields},
+              "irr_sample_only": not args.all_items, "bad_rows": bad}
+    if args.format == "json":
+        print(json.dumps(result, indent=1, sort_keys=True))
+        return
+    lines = ["# agreement (%s)" % ("irr_sample items" if not args.all_items else "all shared items"), ""]
+    for name, stats in result["agreement"].items():
+        lines.append("- %s: %s pos=%s neg=%s" % (name, _fmt_summary(stats), stats["pos"], stats["neg"]))
+    for row in bad:
+        lines.append("- bad row %s line %s id=%s rater=%s: %s" % (row["file"], row["line"], row["id"], row.get("rater"),
+                                                                  row["reason"]))
+    sys.stdout.write("\n".join(lines) + "\n")
+
+
+def cmd_panel_draw(args):
+    units = load_units(args.dir)
+    panel = draw_panel(units, args.seed, args.n)
+    path = os.path.join(args.dir, "panel.json")
+    try:
+        write_private(path, json.dumps(panel, indent=1, sort_keys=True) + "\n")
+    except FileExistsError:
+        sys.exit("issue-agent-review-audit: %s already exists; refusing to overwrite" % path)
+    print("panel prs=%d strata=%d -> %s" % (len(panel["prs"]), len(panel["strata"]), path))
+
+
+def build_parser():
+    parser = argparse.ArgumentParser(
+        prog="issue-agent-review-audit",
+        description=__doc__,
+        formatter_class=argparse.RawDescriptionHelpFormatter,
+    )
+    sub = parser.add_subparsers(dest="command", required=True)
+    collect = sub.add_parser("collect", help="collect read-only GitHub evidence into unit files",
+                             description="Collect read-only GitHub evidence. See the top-level --help for "
+                                         "output files and heuristics.")
+    collect.add_argument("--since", required=True, help="window start, inclusive (ISO-8601)")
+    collect.add_argument("--until", required=True, help="window end, exclusive (ISO-8601)")
+    collect.add_argument("--out", required=True, help="new output directory (0700); refused if it exists")
+    collect.add_argument("--repo", action="append", help="OWNER/NAME, repeatable (default: the six bot repos)")
+    collect.add_argument("--reviewer", default=DEFAULT_REVIEWER, help="bot reviewer login (default %(default)s)")
+    collect.add_argument("--evidence-days", type=float, default=DEFAULT_EVIDENCE_DAYS,
+                         help="evidence horizon H in days: candidates count only if event <= anchor + H "
+                              "(default %(default)s; also the post-merge window)")
+    collect.set_defaults(func=cmd_collect)
+    metrics = sub.add_parser("metrics", help="compute report figures from label files",
+                             description="Join label files with unit files and print the METRIC_KEYS figures "
+                                         "with Wilson 95% intervals. See the top-level --help for definitions.")
+    metrics.add_argument("--dir", required=True, help="directory written by collect")
+    metrics.add_argument("--labels-findings", help="labels-findings.jsonl (default DIR/labels-findings.jsonl)")
+    metrics.add_argument("--labels-misses", help="labels-misses.jsonl (default DIR/labels-misses.jsonl)")
+    metrics.add_argument("--labels-judge", help="labels-judge.jsonl, judge_bias only (default DIR/labels-judge.jsonl)")
+    metrics.add_argument("--labels-matcher",
+                         help="labels-matcher.jsonl, match_kappa only (default DIR/labels-matcher.jsonl)")
+    metrics.add_argument("--exclude-pr", action="append", metavar="[OWNER/]REPO#N",
+                         help="drop a PR and its label rows (repeatable; e.g. the kwin-mcp gold-set PRs)")
+    metrics.add_argument("--format", choices=("md", "json"), default="md", help="output format (default md)")
+    metrics.set_defaults(func=cmd_metrics)
+    compare = sub.add_parser("compare", help="before/after tests on two `metrics --format json` outputs",
+                             description="Newcombe difference CIs, Fisher exact and conditional binomial tests "
+                                         "for the D13 primary endpoints (after - baseline).")
+    compare.add_argument("--before", required=True, help="metrics JSON of the baseline window")
+    compare.add_argument("--after", required=True, help="metrics JSON of the after window")
+    compare.add_argument("--format", choices=("md", "json"), default="md", help="output format (default md)")
+    compare.set_defaults(func=cmd_compare)
+    kappa = sub.add_parser("kappa", help="inter-rater agreement between two label files",
+                           description="Cohen kappa with CI, linear weighted kappa (severity), raw agreement, "
+                                       "PABAK and positive/negative agreement per label field.")
+    kappa.add_argument("--a", required=True, help="first label file (labels-findings or labels-misses)")
+    kappa.add_argument("--b", required=True, help="second label file")
+    kappa.add_argument("--dir", help="directory written by collect: miss ids whose @<head> suffix is a "
+                                     "GitHub commit_id alias pair with the body head the review names")
+    kappa.add_argument("--rater-a", help="rater id to take from --a (default: final, else the only row)")
+    kappa.add_argument("--rater-b", help="rater id to take from --b (default: final, else the only row)")
+    kappa.add_argument("--all-items", action="store_true", help="use every shared id, not only irr_sample rows")
+    kappa.add_argument("--field", action="append", choices=[f[0] for f in KAPPA_FIELDS],
+                       help="restrict to a field (repeatable; default: every field present in both files); "
+                            "p2_blocking compares only items both raters rated P2")
+    kappa.add_argument("--format", choices=("md", "json"), default="md", help="output format (default md)")
+    kappa.set_defaults(func=cmd_kappa)
+    panel = sub.add_parser("panel-draw", help="seeded stratified panel draw; writes DIR/panel.json",
+                           description="Draw N PRs over repo x verdict strata (automation PRs excluded) with "
+                                       "the D8 target head. Refuses to overwrite DIR/panel.json.")
+    panel.add_argument("--dir", required=True, help="directory written by collect")
+    panel.add_argument("--seed", type=int, required=True, help="random seed (record it in versions.json)")
+    panel.add_argument("--n", type=int, default=10, help="PRs to draw (default %(default)s)")
+    panel.set_defaults(func=cmd_panel_draw)
+    return parser
+
+
+def main(argv=None):
+    args = build_parser().parse_args(argv)
+    args.func(args)
+
+
+if __name__ == "__main__":
+    main()
