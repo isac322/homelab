@@ -30,7 +30,7 @@ GitHub에 올리는 본문은 영어다. 문체, 길이, 공개 위생은 `isac-
 - Repository instructions applied (base <sha>): `AGENTS.md`, `CLAUDE.md`, `CONTRIBUTING.md`, <...>.
 
 ## Not verified
-- <area or environment not exercised, and why; probes that could not run in an isolated container and the argument used instead>.
+- <area or environment not exercised, and why; probes that could not run in an isolated container, or long-running suites left to CI (PRR-57), and the argument used instead>.
 
 ## Lenses
 - correctness — always — covered: claim "<claim>" by `src/x.py:40-60` + probe `<command>`.

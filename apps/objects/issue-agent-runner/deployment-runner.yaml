@@ -177,7 +177,7 @@ spec:
                       - macmini
       containers:
         - name: runner
-          image: ghcr.io/isac322/issue-agent-runner:0.30.7-codex0.162.1-20261013-fast-resume@sha256:756b22ef90fc601abc6cd3bc8ed443f4f5249637e7b20c2ebe8b5e88b151257b
+          image: ghcr.io/isac322/issue-agent-runner:0.30.7-codex0.162.1-20261013-resume-fix2@sha256:02b2249f033e209b45ffda4411cb2f3ab76f8b92f8286309b05951399c350ff6
           env:
             - name: HOME
               value: /home/agent
@@ -239,8 +239,12 @@ spec:
             requests:
               cpu: 100m
               memory: 2560Mi
+            # Blast wall: 14d working-set P99 ~2.9Gi, observed max ~5Gi under
+            # allowed concurrency (bridge MAX_ACTIVE_REVIEWS=2 review sessions
+            # + up to 3 other events; one codex session ~1Gi with its MCP
+            # servers and max_threads=2 sub-agents). 1.25 x ~5Gi -> 6Gi.
             limits:
-              memory: 5Gi
+              memory: 6Gi
           securityContext:
             allowPrivilegeEscalation: false
             capabilities:
@@ -277,7 +281,7 @@ spec:
         # Same image as the runner; /checkout also marks the checkout and its
         # worktrees untrusted in CODEX_HOME (codex-untrust).
         - name: publisher
-          image: ghcr.io/isac322/issue-agent-runner:0.30.7-codex0.162.1-20261013-fast-resume@sha256:756b22ef90fc601abc6cd3bc8ed443f4f5249637e7b20c2ebe8b5e88b151257b
+          image: ghcr.io/isac322/issue-agent-runner:0.30.7-codex0.162.1-20261013-resume-fix2@sha256:02b2249f033e209b45ffda4411cb2f3ab76f8b92f8286309b05951399c350ff6
           command:
             - /usr/bin/tini
             - --

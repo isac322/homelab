@@ -1,6 +1,6 @@
 # isac322/kwin-mcp
 
-공개 저장소 isac322/kwin-mcp의 PR 리뷰에만 적용한다. 이 문서는 SKILL.md와 `references/defaults.md`의 기본값을 이 저장소에 맞게 좁히거나 구체화할 뿐, `[U]` 규칙(PRR-38, PRR-48, PRR-55 등)과 전역 가드를 완화하지 못한다. 일반 규칙(최소 런타임·requested vs observed PRR-42, 진입 경로별 적대적 입력 PRR-44, 억제 PRR-45, 보안 정책 우회 PRR-47, 재리뷰 hazard pass PRR-54)은 SKILL.md가 소유하고, 여기에는 이 저장소의 구체 사실과 확인 방법만 적는다. 규칙마다 무엇을 하는지, 왜(한 줄), 어떻게 확인하는지를 적는다. scratch 파일과 산출물은 `/tmp/issue-agent/<worktree-name>/`에 둔다. 경로는 저장소 루트 기준이다.
+공개 저장소 isac322/kwin-mcp의 PR 리뷰에만 적용한다. 이 문서는 SKILL.md와 `references/defaults.md`의 기본값을 이 저장소에 맞게 좁히거나 구체화할 뿐, `[U]` 규칙(PRR-38, PRR-48, PRR-55, PRR-57 등)과 전역 가드를 완화하지 못한다. 일반 규칙(최소 런타임·requested vs observed PRR-42, 진입 경로별 적대적 입력 PRR-44, 억제 PRR-45, 보안 정책 우회 PRR-47, 재리뷰 hazard pass PRR-54)은 SKILL.md가 소유하고, 여기에는 이 저장소의 구체 사실과 확인 방법만 적는다. 규칙마다 무엇을 하는지, 왜(한 줄), 어떻게 확인하는지를 적는다. scratch 파일과 산출물은 `/tmp/issue-agent/<worktree-name>/`에 둔다. 경로는 저장소 루트 기준이다.
 
 ## 0. 직접 읽을 저장소 지침
 
@@ -19,15 +19,15 @@ PRR-40에 따라 아래 지침을 base 브랜치에서 직접 읽는다. 이 저
 - `scripts/check_docs_seo.py`가 보는 것은 SEO 키워드, plugin keyword, SKILL mirror, `server.py`의 `@_tool(` 개수와 `TOOL_COUNT_CANONICAL`의 일치뿐이다. 테스트 파일 목록, 문서 본문의 도구 개수, 동작 설명은 보지 않으므로 KM-D1–D3로 직접 확인한다.
 - 동적 모듈(`gi.repository`, `dbus.bus`)은 `pyproject.toml` `[[tool.ty.overrides]]`에서 파일 단위로만 예외를 둔다. `src`·`tests`의 `# ty: ignore`·`# type: ignore`는 2026-10-11 main 기준 0개이고, `# noqa`는 모두 코드를 명시하며 `cast(`는 소수다.
 
-## 2. 실행 방법 (리뷰어가 필요하다고 판단할 때만)
+## 2. 실행 방법 (리뷰어가 PRR-57 범위의 빠른 targeted check가 필요하다고 판단할 때만)
 
-판정·증거·격리 실행 규칙은 SKILL.md PRR-38, PRR-49–PRR-55를 따른다. 아래는 kwin-mcp의 이미지·런타임·하네스에 관한 실행 방법이다.
+판정·증거·격리 실행 규칙은 SKILL.md PRR-38, PRR-49–PRR-55를 따르고, 로컬 실행 범위는 PRR-57을 따른다. 아래는 kwin-mcp의 이미지·런타임·하네스에 관한 실행 방법이다. 리뷰어가 로컬에서 돌릴 수 있는 것은 PRR-57의 빠른 targeted check(단일 unit test, lint, 바뀐 모듈의 빠른 build)뿐이다. E2E 이미지 build·실행(§2.1, GUI·Appium·multi-distro suite)은 CI가 돌리고, 리뷰어는 그 CI 결과를 입력으로만 읽는다(PRR-38). 실행할 수 없는 것은 `Not verified`에 적고 PRR-50의 argument+challenger로 다룬다.
 
 - PR의 `scripts/run-e2e-docker.sh`는 실행하지 않는다. 왜: docker를 부르는 PR 소유 wrapper이고, worktree를 그대로 마운트한다. 참고로 이 스크립트는 인자를 `pytest tests/e2e -v --junitxml=...` 뒤에 덧붙이므로 `-- tests/e2e/test_x.py`는 집중 실행이 되지 않고 전체 suite를 돈다. 문서나 PR이 그렇게 주장하면 claim으로 검토한다.
 - 러너는 arm64이고 binfmt 에뮬레이션이 없다. Debian(`docker/e2e.Dockerfile`), Fedora(`e2e-fedora.Dockerfile`), openSUSE(`e2e-opensuse.Dockerfile`)는 native arm64로 빌드된다. Arch(`e2e-arch.Dockerfile`)는 `linux/amd64` 전용이라 여기서 돌리지 않고 "cannot run locally"로 적는다. `docker/README.md`의 에뮬레이션 전용 실패(`test_observation_tools.py::test_launch_app_rejects_a_missing_command`)는 native arm64에는 해당하지 않으므로, 여기서 실패하면 원인을 따로 본다.
 - `--privileged`, `--cap-add`, GPU, `/dev/dri`는 필요 없다(이미지가 `LIBGL_ALWAYS_SOFTWARE=1`, `setcap -r /usr/bin/kwin_wayland`). 실행 중 네트워크 때문에만 실패하는 테스트는 네트워크를 열지 말고 환경 한계로 적는다.
 
-### 2.1 Debian E2E 이미지 (git archive한 head에서)
+### 2.1 Debian E2E 이미지 (CI가 돌리는 suite — 로컬 실행 금지, PRR-57)
 
 ```bash
 W=/tmp/issue-agent/<worktree-name>/e2e
@@ -37,22 +37,24 @@ git -C <worktree> archive --format=tar "$SHA" | tar -x -C "$W/ctx"
 # 네트워크는 build 단계에서만 쓴다(Debian snapshot, uv). --allow 엔타이틀먼트를 주지 않는다.
 docker build -f "$W/ctx/docker/e2e.Dockerfile" -t "kwin-mcp-e2e:${SHA:0:12}" "$W/ctx"
 
-# 정적 검사(내부 추론용): src와 tests 모두. ruff 캐시는 끈다.
+# 정적 검사: CI가 이 이미지에서 src와 tests 모두 돌린다(ruff 캐시는 끈다). 리뷰어의 lint는 §2.2 scratch 이미지에서 한다.
 docker run --rm --network none -v "$W/ctx:/workspace:ro" -w /workspace "kwin-mcp-e2e:${SHA:0:12}" \
   /bin/sh -c '/opt/kwin-mcp-venv/bin/ruff check --no-cache src tests &&
               /opt/kwin-mcp-venv/bin/ruff format --check --no-cache src tests &&
               /opt/kwin-mcp-venv/bin/ty check src tests'
 
-# E2E: 이미지에 build 시점의 tests/가 들어 있다. 변경 영역 파일만 지정한다.
+# E2E: 이미지에 build 시점의 tests/가 들어 있다. CI가 이 suite를 돌리고, 리뷰어는 결과를 읽는다.
 docker run --rm --network none "kwin-mcp-e2e:${SHA:0:12}" \
   /opt/kwin-mcp-venv/bin/python -m pytest -p no:cacheprovider -v tests/e2e/test_<area>.py
 ```
 
-Fedora·openSUSE에 닿는 변경(libei, KWin, Qt, 배포판 패키지)은 `-f "$W/ctx/docker/e2e-fedora.Dockerfile"` 또는 `e2e-opensuse.Dockerfile`로 같은 방식으로 만든다. 끝나면 만든 이미지와 `$W`를 지우고 summary에 적는다.
+Fedora·openSUSE에 닿는 변경(libei, KWin, Qt, 배포판 패키지)은 `-f "$W/ctx/docker/e2e-fedora.Dockerfile"` 또는 `e2e-opensuse.Dockerfile`로 CI가 같은 방식으로 만든다. 리뷰어는 로컬에서 이 이미지를 build·실행하지 않고, harness를 검토할 때만 이 명령을 참고한다.
 
-### 2.2 Python 3.12·3.13 scratch 이미지
+### 2.2 Python 3.12·3.13 scratch 이미지 (PRR-57의 빠른 targeted check)
 
 다음을 건드리는 PR은 3.12와 3.13에서 직접 실행해 본다: `typing`/`inspect` introspection(`cli._parse_value`, `cli._parse_args`, `typing.get_type_hints`), engine 메서드의 새 `X | None` 파라미터, 버전마다 동작이 다른 표준 라이브러리. 아래 네 테스트 파일은 dbus와 gi를 stub으로 바꿔도 안전하게 돈다(2026-10-11 main에서 3.12·3.13 모두 60 passed). 다른 파일을 stub으로 돌린 실패는 해석하지 않는다.
+
+lint가 필요하면 E2E 이미지를 만들지 않고, 같은 방식의 `python:3.12-slim` scratch 이미지에 `ruff`와 `ty`만 설치해 `ruff check --no-cache`, `ruff format --check --no-cache`, `ty check`를 바뀐 파일에 돌린다.
 
 ```bash
 P=/tmp/issue-agent/<worktree-name>/py
@@ -118,7 +120,7 @@ done
 
 - **KM-I1 입력 검증은 engine(`core.py` `AutomationEngine`)에 둔다.** engine 메서드에 닿는 경로는 셋이다: (1) MCP stdio — `server.py` `Annotated`로 만든 pydantic schema(`int`에 범위 없음), (2) CLI `key=value` — annotation 기반 변환, (3) CLI JSON 객체 `{...}` — `cli._parse_args`가 `json.loads` 결과를 검증 없이 넘겨 MCP schema를 우회한다. 그래서 타입(`bool`과 `int` 구분 포함), 유한성, 범위(KWin geometry는 int32) 검사는 engine에 있어야 한다. 선례는 `window_set_geometry`의 검증 블록이다.
   - 왜: #97에서 `width=10**400`이 MCP schema를 통과해 KWin JS에서 `Infinity`가 됐고, CLI JSON으로는 NaN, 소수, 문자열 좌표가 KWin에 그대로 닿았다.
-  - 확인: engine 메서드에 `True`, `1.5`, `"10"`, `float("nan")`, `10**400`, 음수, 0을 직접 넘기고, `cli._parse_args(engine.<method>, '{"<name>": 1.5}')`도 본다(§2 컨테이너 안에서).
+  - 확인: engine 메서드에 `True`, `1.5`, `"10"`, `float("nan")`, `10**400`, 음수, 0을 직접 넘기고, `cli._parse_args(engine.<method>, '{"<name>": 1.5}')`도 본다(§2.2 scratch 컨테이너 안에서).
 - **KM-I2 KWin geometry·activation 결과는 readback으로만 성공을 말한다.** KWin은 client가 configure를 ack하고 commit한 뒤에야 변경을 반영하므로, 요청 직후 값은 관측값이 아니다. readback이 다르거나 실패했는데 응답이 "set"/"done"이면 결함이다.
   - 확인: readback을 바뀌지 않은 값과 실패로 stub해 응답 문구를 본다.
 
@@ -152,7 +154,7 @@ done
 
 - **KM-B1 registry lock 아래의 D-Bus 왕복은 처음부터 끝까지 시간 제한이 있어야 한다.** 대상은 `session_stop`, 서버 종료, `OwnedProcessRegistry` lock을 쥔 상태에서 닿는 모든 D-Bus 왕복이고, 연결·인증·name owner 조회·introspection·호출 전부에 제한이 걸려야 한다. dbus-python의 메서드 timeout=과 introspect=False만으로는 연결·인증·name owner 조회까지 제한되지 않는다(`get_object()`는 기본으로 introspect하며 25초 기본 timeout을 쓴다). registry lock 아래에서는 `session._a11y_dbus_send`처럼 전체 subprocess를 wall-clock deadline으로 감싸거나(`dbus-send --reply-timeout`, `_A11Y_CALL_TIMEOUT_S`), 연결·인증·조회·introspection·호출 모두에 동일한 전체 deadline이 실제 적용됨을 입증한 경로만 허용한다. 개별 호출 timeout만 있는 경로(예: `core._DBUS_CALL_TIMEOUT`, `docs/design/dbus-call-call-sites.md`)는 허용 형태가 아니다.
   - 왜: #93(P1)에서 lock을 쥔 채 서버 종료가 25초 넘게 멈췄고, 그 lock 유지는 haechibot이 직전 리뷰에서 권고한 수정이었다.
-  - 확인: 새 D-Bus 호출(`get_object(`, `BusConnection(`, `SessionBus(`, `dbus.Interface(` 등)의 lock 보유자와 연결부터 반환까지의 deadline을 추적한다. probe는 컨테이너 안의 실제 dbus-python/DBusConnection과 응답을 지연·누락하는 D-Bus 서비스로 한다. 연결·이름 조회·Introspect·메서드 호출을 각각 막아 전체 종료 제한을 확인한다. Python setter/BusConnection fake만으로 setup-timeout 후보를 반박하지 않는다. 실행할 수 없으면 PRR-50의 argument+challenger를 쓴다.
+  - 확인: 새 D-Bus 호출(`get_object(`, `BusConnection(`, `SessionBus(`, `dbus.Interface(` 등)의 lock 보유자와 연결부터 반환까지의 deadline을 추적한다. probe는 dbus-python과 `dbus-daemon`만 넣은 가벼운 scratch 컨테이너(PRR-57) 안의 실제 dbus-python/DBusConnection과 응답을 지연·누락하는 D-Bus 서비스로 한다. 연결·이름 조회·Introspect·메서드 호출을 각각 막아 전체 종료 제한을 확인한다. Python setter/BusConnection fake만으로 setup-timeout 후보를 반박하지 않는다. E2E 이미지가 있어야 하거나 실행할 수 없으면 PRR-50의 argument+challenger를 쓴다.
 
 ### 보안 정책과 upstream 의미
 
@@ -161,7 +163,7 @@ done
   - 확인: 거부·실패 시 대체 실행 경로(fallback)가 생겼는지 diff에서 찾는다.
 - **KM-S2 D-Bus `Exec=` 파싱은 upstream 의미와 같아야 한다.** D-Bus `.service`나 `.desktop`의 `Exec=`를 실행하는 대체 경로는 D-Bus `_dbus_shell_parse_argv`와 같은 quoting·escape 규칙으로 인자를 나눠야 한다. bash word splitting(`$launcher &`)은 안 된다.
   - 왜: 다른 규칙으로 나누면 공백·따옴표가 든 경로에서 다른 프로그램이나 인자가 실행된다.
-  - 확인: 공백이 든 quoted 경로와 `--label="two words"`가 든 `Exec=`로 probe를 돌린다(§2 컨테이너 안에서).
+  - 확인: 공백이 든 quoted 경로와 `--label="two words"`가 든 `Exec=`로 probe를 돌린다(§2.2 scratch 컨테이너 안에서).
 
 ### PR 제목과 커밋 subject
 

@@ -1797,7 +1797,12 @@ _REVIEW_SCHEMA = """\
  "thread_replies":[{"comment_id":int (databaseId of any comment in an existing review thread),"body":"<=20000","resolve":bool}] (max 100),
  "open_items":[strings <=200] (max 20; one item per maintainer decision, unrefuted P0-P2 concern or uncovered triggered lens that keeps the verdict from APPROVE; only with event COMMENT or REQUEST_CHANGES, may be empty),
  "summary":"<=2000",
- "blockers":[strings]}"""
+ "blockers":[strings]}
+Local checks: long-running suites (e2e, GUI/Appium, multi-distro/package matrices, container image builds,
+envtest, integration/soak) belong to CI: never run them locally while reviewing; read their CI results as input
+when needed, not as verdict evidence. Locally run only fast, targeted checks (a single unit test, lint, a quick
+build of a touched module) when needed to verify a specific claim, and report what you ran as your own
+evidence."""
 
 _REOPEN_CHECK_SCHEMA = """\
 {"status":"reopen|keep_closed|blocked",
@@ -3177,6 +3182,56 @@ class Bridge:
             return False
         return machine != self._machine(cfg)
 
+    def _drop_session(self, repo: str, number: int, session_id: str, reason: str) -> None:
+        """Give up an unresumable session (caller holds ``session_lock``): its in-flight turns are re-sent
+        under fresh localIds and ``ensure_session`` spawns a replacement (never re-adopting this one, see
+        ``_matching_sessions``). Nothing is archived: the session is already inactive."""
+        LOG.warning("%s#%s session %s %s; starting a new session", repo, number, session_id, reason)
+        self._abandon_turns(repo, number, session_id)
+        self.store.update_issue(repo, number, session_state="none", pending_at=None)
+
+    def _holds_result(self, ev: sqlite3.Row) -> bool:
+        """Whether this event's sent turn has a result nobody consumed yet (a time-budget harvest re-queued it).
+        Its session must not be dropped: session_turn still reads the result from the inactive session's
+        history, while a drop would re-send the step and lose it."""
+        turn = self.store.turn(ev["delivery_id"])
+        if turn is None or turn["state"] != "sent" or self._consumed(ev, turn):
+            return False
+        return self._answered_result(ev, turn)[0] == "answered"
+
+    def _existing_worktree(self, cfg: RepoConfig, issue: sqlite3.Row) -> str | None:
+        """The subject's recorded worktree, restored from its retained branch when the directory is gone, else
+        None (no recorded worktree, or its branch is gone too: a new HAPI worktree then takes the free name).
+
+        A replacement session runs there as a plain (``simple``) HAPI session on the recorded branch: a new
+        ``worktree`` spawn skips a taken name and branch and creates ``<name>-<hex>`` on ``hapi-<name>-<hex>``,
+        stranding the subject's work on the old branch. HAPI's spawn-timeout cleanup removes the directory
+        (``git worktree remove --force``) but keeps the branch, which the publisher checks out again."""
+        path = issue["worktree_path"]
+        if not path or not issue["branch"]:
+            return None
+        machine = self._machine(cfg)
+        # HAPI answers stat().isDirectory() per path (a linked worktree's .git is a file).
+        status, data = self.hapi.request("POST", f"/api/machines/{urllib.parse.quote(machine, safe='')}/paths/exists",
+                                         body={"paths": [path]})
+        exists = data.get("exists") if isinstance(data, dict) else None
+        if status != 200 or not isinstance(exists, dict):
+            raise OpError(f"hapi path check HTTP {status}", retryable=True, park_class=hub_park_class(status))
+        if exists.get(path) is True:
+            return path
+        self._checkout(cfg)
+        restored = self.publisher.request("/worktree/restore", {
+            "repo": cfg.name, "worktree": os.path.basename(path.rstrip("/")), "branch": issue["branch"],
+        }, timeout=PUBLISHER_CHECKOUT_TIMEOUT)
+        if restored.get("restored") is not True:
+            if restored.get("reason") == "no_branch":
+                return None
+            raise OpError(f"publisher worktree restore: {restored.get('reason')!r}", needs_operator=True)
+        if restored.get("path") != path:
+            raise OpError(f"publisher restored {restored.get('path')!r}, not {path}", needs_operator=True)
+        LOG.warning("%s worktree %s restored on retained branch %s", cfg.name, path, issue["branch"])
+        return path
+
     def _abandon_turns(self, repo: str, number: int, session_id: str) -> None:
         """Park this subject's in-flight turns on an abandoned session for a re-send under a fresh localId."""
         chain = {session_id, *json.loads(self.store.issue(repo, number)["superseded"] or "[]")}
@@ -3189,7 +3244,11 @@ class Bridge:
                 self.store.put_turn(delivery, mode, resend_local_id(delivery, mode, turn["local_id"]),
                                     turn["session_id"], "lost")
 
-    def _matching_sessions(self, cfg: RepoConfig, worktree_name: str) -> list[str]:
+    def _matching_sessions(self, cfg: RepoConfig, worktree_name: str, directory: str | None,
+                           exclude: set[str]) -> list[str]:
+        """Hub sessions claiming ``worktree_name`` (or, for a replacement session, running in the subject's
+        worktree ``directory``), except ``exclude`` (sessions the subject already recorded: a dropped or
+        superseded session never comes back through recovery)."""
         status, data = self.hapi.request("GET", "/api/sessions", query={"limit": 500, "order": "updatedAt"})
         sessions = data.get("sessions") if isinstance(data, dict) else None
         if status != 200 or not isinstance(sessions, list):
@@ -3203,8 +3262,12 @@ class Bridge:
             machine = self._session_machine(s)
             if machine is not None and machine not in known:
                 continue  # its machine is gone; it can never resume (see _orphaned)
+            if s.get("id") in exclude:
+                continue
             if isinstance(wt, dict) and wt.get("basePath") == cfg.runner_path \
                     and isinstance(wt.get("name"), str) and name_re.match(wt["name"]):
+                found.append(s["id"])
+            elif wt is None and directory and isinstance(meta, dict) and meta.get("path") == directory:
                 found.append(s["id"])
         return found
 
@@ -3234,23 +3297,33 @@ class Bridge:
             issue = self.store.issue(repo, number)
             if issue["session_state"] == "ready" and issue["session_id"]:
                 session = self._follow(repo, number, issue["session_id"])
-                if not session.get("active") and self._orphaned(cfg, session):
-                    LOG.warning("%s#%s session %s is bound to a removed runner machine; starting a new session",
-                                repo, number, session["id"])
-                    self._abandon_turns(repo, number, session["id"])
-                    self.store.update_issue(repo, number, session_state="none", pending_at=None)
+                resumed = False
+                # Unresumable (removed runner machine, or the hub refuses resume for good): give it up and spawn a
+                # replacement below instead of parking the event.
+                if session.get("active"):
+                    dropped = None
+                elif self._orphaned(cfg, session):
+                    dropped = "is bound to a removed runner machine"
+                elif (current := self._resume(repo, number, session)) is None:
+                    dropped = "cannot be resumed (resume_unavailable)"
                 else:
-                    resumed = False
-                    if not session.get("active"):
-                        session = self._resume(repo, number, session)
-                        resumed = True
+                    # The resumed session is active: _ensure_service_tier below pins its tier.
+                    session, dropped, resumed = current, None, True
+                if dropped is not None and self._holds_result(ev):
+                    LOG.warning("%s#%s session %s %s but holds this step's result; kept for its harvest",
+                                repo, number, session["id"], dropped)
+                    dropped = None
+                if dropped is None:
                     issue = self.store.issue(repo, number)
                     self._ensure_service_tier(cfg, issue["session_id"], session)
                     return {"session_id": issue["session_id"], "worktree_path": issue["worktree_path"],
                             "branch": issue["branch"], "resumed": resumed}
+                self._drop_session(repo, number, session["id"], dropped)
 
             name = self._worktree_name(ev)
-            matches = self._matching_sessions(cfg, name)
+            issue = self.store.issue(repo, number)
+            exclude = {s for s in [issue["session_id"], *json.loads(issue["superseded"] or "[]")] if s}
+            matches = self._matching_sessions(cfg, name, issue["worktree_path"], exclude)
             if len(matches) > 1:
                 raise OpError(f"multiple HAPI sessions claim {name}: {matches}", needs_operator=True)
             if len(matches) == 1:
@@ -3261,7 +3334,7 @@ class Bridge:
                         "branch": issue["branch"], "resumed": False, "recovered": True}
             if issue["session_state"] == "pending" and time.time() - (issue["pending_at"] or 0) < SPAWN_SETTLE_SECONDS:
                 raise OpError("previous spawn outcome still settling", retryable=True)
-            return self._spawn(cfg, repo, number, name)
+            return self._spawn(cfg, repo, number, name, self._existing_worktree(cfg, issue))
 
     def _ensure_service_tier(self, cfg: RepoConfig, session_id: str, session: Mapping[str, Any]) -> None:
         """Pin an active Codex session to CODEX_SERVICE_TIER so later resumes keep Fast mode.
@@ -3283,7 +3356,12 @@ class Bridge:
             raise OpError(f"service tier update HTTP {status}", retryable=True, park_class=hub_park_class(status))
         LOG.warning("session %s service tier %s refused: HTTP %s %s", session_id, CODEX_SERVICE_TIER, status, data)
 
-    def _resume(self, repo: str, number: int, session: Mapping[str, Any]) -> dict[str, Any]:
+    def _resume(self, repo: str, number: int, session: Mapping[str, Any]) -> dict[str, Any] | None:
+        """Resume an inactive session; None when the hub says it can never be resumed (409
+        ``resume_unavailable``: no native thread id, not even one recovered from its messages, and not a
+        never-started session the hub respawns itself), so the caller spawns a replacement. Other refusals keep
+        their class: 503 retryable, 500 ``resume_failed`` (the runner's resume command failed) an operator park
+        that review parks retry automatically as ``hub_5xx``."""
         sid = session["id"]
         try:
             status, data = self.hapi.request("POST", f"/api/sessions/{urllib.parse.quote(sid, safe='')}/resume", body={})
@@ -3298,6 +3376,8 @@ class Bridge:
         code = data.get("code") if isinstance(data, dict) else None
         if status == 503:
             raise OpError(f"resume failed: {code or 'hub unavailable'}", retryable=True, park_class="hub_5xx")
+        if status == 409 and code == "resume_unavailable":
+            return None
         new_id = data.get("sessionId") if isinstance(data, dict) else None
         if status != 200 or data.get("type") != "success" or not isinstance(new_id, str) or not new_id:
             raise OpError(f"resume failed: HTTP {status} {code or ''}".strip(), needs_operator=True,
@@ -3311,7 +3391,10 @@ class Bridge:
             raise OpError(f"publisher checkout path {data.get('path')!r} is not {cfg.runner_path}",
                           needs_operator=True)
 
-    def _spawn(self, cfg: RepoConfig, repo: str, number: int, worktree_name: str) -> dict[str, Any]:
+    def _spawn(self, cfg: RepoConfig, repo: str, number: int, worktree_name: str,
+               directory: str | None) -> dict[str, Any]:
+        """Start the subject's session: a new HAPI worktree, or with ``directory`` (the subject's existing
+        worktree, see ``_existing_worktree``) a replacement session in it that keeps the recorded branch."""
         machine = self._machine(cfg)
         self._checkout(cfg)
         body: dict[str, Any] = {
@@ -3319,6 +3402,11 @@ class Bridge:
             "agent": cfg.agent,
             "sessionType": "worktree",
             "worktreeName": worktree_name,
+            "startingMode": "remote",
+        } if directory is None else {
+            "directory": directory,
+            "agent": cfg.agent,
+            "sessionType": "simple",
             "startingMode": "remote",
         }
         if cfg.model:
@@ -3580,6 +3668,8 @@ class Bridge:
             if 400 <= status < 500:
                 self._unsend(delivery, mode, local_id, session_id)
                 code = data.get("code") if isinstance(data, dict) else None
+                # session_inactive is retried through ensure_session, which resumes the session or, when the hub
+                # answers resume_unavailable, replaces it.
                 raise OpError(f"message rejected: HTTP {status} {code or ''}".strip(),
                               retryable=code == "session_inactive")
             found = self._delivery(session_id, local_id)

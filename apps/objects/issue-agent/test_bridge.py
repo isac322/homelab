@@ -55,6 +55,14 @@ class Fake:
         self.messages: dict[str, list[dict[str, Any]]] = {}
         self.indeterminate: set[str] = set()
         self.spawns: list[dict[str, Any]] = []
+        # Runner git: worktree directory -> branch, and every local branch. Removing a worktree (HAPI's
+        # `git worktree remove --force` after a spawn timeout) keeps its branch; createWorktree skips a taken
+        # directory or branch.
+        self.worktrees: dict[str, str] = {}
+        self.branches: set[str] = set()
+        self.restores: list[dict[str, Any]] = []
+        # Sessions whose resume the hub refuses for good (no native thread id to resume).
+        self.unresumable: set[str] = set()
         self.spawn_mode = "success"
         self.message_posts: list[dict[str, Any]] = []
         self.message_mode = "ok"
@@ -154,16 +162,22 @@ class Fake:
         return self.seq
 
     def make_session(self, directory: str, name: str, *, sid: str | None = None) -> str:
-        sid = sid or f"s{self._next()}"
+        """A HAPI ``worktree`` session: like createWorktree, a taken path or branch gets a ``-<hex>`` suffix."""
         parent, repo = os.path.split(directory)
-        self.sessions[sid] = {
-            "id": sid, "active": True, "thinking": False, "agentState": {"requests": {}},
-            "metadata": {
-                "path": f"{parent}/{repo}-worktrees/{name}",
-                "worktree": {"basePath": directory, "branch": f"hapi-{name}", "name": name,
-                             "worktreePath": f"{parent}/{repo}-worktrees/{name}"},
-            },
-        }
+        base, attempt = name, 0
+        while f"{parent}/{repo}-worktrees/{name}" in self.worktrees or f"hapi-{name}" in self.branches:
+            attempt += 1
+            name = f"{base}-{attempt:04x}"
+        path = f"{parent}/{repo}-worktrees/{name}"
+        self.worktrees[path] = f"hapi-{name}"
+        self.branches.add(f"hapi-{name}")
+        return self._session(sid, {"path": path, "worktree": {"basePath": directory, "branch": f"hapi-{name}",
+                                                             "name": name, "worktreePath": path}})
+
+    def _session(self, sid: str | None, metadata: dict[str, Any]) -> str:
+        sid = sid or f"s{self._next()}"
+        self.sessions[sid] = {"id": sid, "active": True, "thinking": False, "agentState": {"requests": {}},
+                              "metadata": metadata}
         self.messages[sid] = []
         return sid
 
@@ -311,7 +325,20 @@ class Fake:
             self.cleanups.append(body)
             if self.cleanup_error:
                 return 409, {"error": self.cleanup_error}
+            for removed in [p for p in self.worktrees if os.path.basename(p) == body["worktree"]]:
+                self.branches.discard(self.worktrees.pop(removed))
             return 200, {"removed": []}
+        if path == "/worktree/restore":
+            self.restores.append(body)
+            wt = f"/home/agent/checkouts/{body['repo']}-worktrees/{body['worktree']}"
+            if wt in self.worktrees:
+                if self.worktrees[wt] != body["branch"]:
+                    return 409, {"error": "worktree_conflict"}
+                return 200, {"restored": True, "path": wt, "already": True}
+            if body["branch"] not in self.branches:
+                return 200, {"restored": False, "reason": "no_branch"}
+            self.worktrees[wt] = body["branch"]
+            return 200, {"restored": True, "path": wt, "already": False}
         if path == "/janitor/status" and method == "GET":
             if self.janitor_status is None:
                 return 404, {"error": "no_status"}
@@ -339,11 +366,17 @@ class Fake:
             self.spawns.append(body)
             if self.spawn_mode == "error":
                 return 200, {"type": "error", "message": "codex not found", "code": "agent_unavailable"}
-            sid = self.make_session(body["directory"], body["worktreeName"])
+            if body["sessionType"] == "simple":
+                sid = self._session(None, {"path": body["directory"]})  # no worktree metadata
+            else:
+                sid = self.make_session(body["directory"], body["worktreeName"])
             self.sessions[sid]["serviceTier"] = body.get("serviceTier")
             if self.spawn_mode == "hang":
                 return -1, 1.5
             return 200, {"type": "success", "sessionId": sid}
+        if parts[0] == "machines" and parts[2:] == ["paths", "exists"]:
+            # HAPI answers stat().isDirectory().
+            return 200, {"exists": {p: p in self.worktrees for p in body["paths"]}}
         if parts == ["sessions"]:
             # HAPI SessionSummary: pending requests as a count, never agentState; ``limit`` truncates the list.
             self.session_list_queries.append(query)
@@ -371,7 +404,10 @@ class Fake:
             machine = session["metadata"].get("machineId")
             if machine is not None and machine not in {m["id"] for m in self.machines}:
                 return 503, {"error": "No machine online", "code": "no_machine_online"}
-            new = self.make_session(session["metadata"]["worktree"]["basePath"], session["metadata"]["worktree"]["name"])
+            if sid in self.unresumable:
+                return 409, {"error": "Resume session ID unavailable", "code": "resume_unavailable"}
+            # A resumed session runs in the same directory: no new worktree.
+            new = self._session(None, {k: v for k, v in session["metadata"].items() if k != "supersededBySessionId"})
             self.sessions[new]["serviceTier"] = session.get("serviceTier")  # the hub resumes with the stored tier
             self.messages[new] = list(self.messages[sid])
             session["metadata"]["supersededBySessionId"] = new
@@ -3893,6 +3929,136 @@ class TurnTests(BridgeTestCase):
         self.assertEqual((sent["delivery"], sent["session_id"], sent["local_id"]), ("sent", new_sid, f"{self.lid}-r1"))
         self.assertEqual([p["localId"] for p in self.fake.message_posts], [self.lid, f"{self.lid}-r1"])
 
+    def resume_answers(self, status: int, code: str) -> Any:
+        original = self.bridge.hapi.request
+
+        def request(method: str, path: str, **kw: Any) -> tuple[int, Any]:
+            if path.endswith("/resume"):
+                return status, {"error": "resume refused", "code": code}
+            return original(method, path, **kw)
+        return patch.object(self.bridge.hapi, "request", side_effect=request)
+
+    def test_resume_unavailable_session_is_replaced_in_its_worktree_instead_of_parked(self) -> None:
+        recorded = self.store.issue(REPO, 7)
+        self.send()
+        self.fake.invoke(self.sid, self.lid)
+        self.fake.sessions[self.sid]["active"] = False
+        self.fake.unresumable.add(self.sid)
+        fresh = self.op("ensure_session")
+        self.assertTrue(fresh["ok"], fresh)
+        self.assertFalse(fresh["resumed"])
+        self.assertNotEqual(fresh["session_id"], self.sid)
+        # A worktree spawn would skip the taken name and branch (issue-7-0001 on hapi-issue-7-0001); the
+        # replacement runs in the existing worktree and keeps the branch git_push requires.
+        # The replacement spawns in Fast mode too, so no service-tier fix-up follows.
+        self.assertEqual({k: self.fake.spawns[-1][k] for k in ("directory", "sessionType", "serviceTier")},
+                         {"directory": recorded["worktree_path"], "sessionType": "simple",
+                          "serviceTier": bridge.CODEX_SERVICE_TIER})
+        self.assertEqual(len(self.fake.worktrees), 1)
+        issue = self.store.issue(REPO, 7)
+        self.assertEqual((issue["session_id"], issue["worktree_path"], issue["branch"]),
+                         (fresh["session_id"], recorded["worktree_path"], "hapi-issue-7"))
+        self.assertIn(self.sid, json.loads(issue["superseded"]))
+        # The dropped session still claims the worktree name, yet it is never re-adopted.
+        self.assertEqual(self.op("ensure_session")["session_id"], fresh["session_id"])
+        self.assertEqual(len(self.fake.spawns), 2)
+        self.assertEqual(self.fake.tier_posts, [])
+        sent = self.send()
+        self.assertEqual((sent["delivery"], sent["session_id"], sent["local_id"]),
+                         ("sent", fresh["session_id"], f"{self.lid}-r1"))
+        self.assertIn(bridge.LOST_TURN_NOTICE, self.fake.message_posts[-1]["text"])
+
+    def test_unknown_replacement_spawn_outcome_is_recovered_by_its_directory(self) -> None:
+        self.fake.sessions[self.sid]["active"] = False
+        self.fake.unresumable.add(self.sid)
+        bridge.SPAWN_TIMEOUT, saved = 0.3, bridge.SPAWN_TIMEOUT
+        self.addCleanup(setattr, bridge, "SPAWN_TIMEOUT", saved)
+        self.fake.spawn_mode = "hang"
+        self.assertTrue(self.op("ensure_session")["retryable"])
+        self.fake.spawn_mode = "success"
+        recovered = self.op("ensure_session")
+        self.assertTrue(recovered["recovered"], recovered)
+        self.assertEqual(len(self.fake.spawns), 2)
+        self.assertEqual(self.store.issue(REPO, 7)["branch"], "hapi-issue-7")
+
+    def test_replacement_restores_a_removed_worktree_from_its_retained_branch(self) -> None:
+        # HAPI's spawn-timeout cleanup runs `git worktree remove --force`: the directory goes, the branch stays.
+        recorded = self.store.issue(REPO, 7)
+        self.fake.sessions[self.sid]["active"] = False
+        self.fake.unresumable.add(self.sid)
+        self.fake.worktrees.clear()
+        self.assertIn("hapi-issue-7", self.fake.branches)
+        fresh = self.op("ensure_session")
+        self.assertTrue(fresh["ok"], fresh)
+        self.assertEqual(self.fake.restores, [{"repo": REPO, "worktree": "issue-7", "branch": "hapi-issue-7"}])
+        self.assertEqual({k: self.fake.spawns[-1][k] for k in ("directory", "sessionType")},
+                         {"directory": recorded["worktree_path"], "sessionType": "simple"})
+        self.assertEqual(self.fake.worktrees, {recorded["worktree_path"]: "hapi-issue-7"})
+        issue = self.store.issue(REPO, 7)
+        self.assertEqual((issue["worktree_path"], issue["branch"]), (recorded["worktree_path"], "hapi-issue-7"))
+
+    def test_replacement_spawns_a_new_worktree_when_the_branch_is_gone_too(self) -> None:
+        self.fake.sessions[self.sid]["active"] = False
+        self.fake.unresumable.add(self.sid)
+        self.fake.worktrees.clear()
+        self.fake.branches.clear()
+        fresh = self.op("ensure_session")
+        self.assertTrue(fresh["ok"], fresh)
+        self.assertEqual(len(self.fake.restores), 1)
+        self.assertEqual((self.fake.spawns[-1]["sessionType"], self.fake.spawns[-1]["worktreeName"]),
+                         ("worktree", "issue-7"))
+        self.assertEqual(self.store.issue(REPO, 7)["branch"], "hapi-issue-7")  # the canonical branch was free
+
+    def test_replacement_parks_when_the_worktree_path_holds_another_branch(self) -> None:
+        recorded = self.store.issue(REPO, 7)
+        self.fake.sessions[self.sid]["active"] = False
+        self.fake.unresumable.add(self.sid)
+        with patch.object(self.bridge.hapi, "request", side_effect=self._directory_missing()):
+            self.fake.worktrees[recorded["worktree_path"]] = "other"
+            failed = self.op("ensure_session")
+        self.assertEqual((failed["ok"], failed["retryable"]), (False, False))
+        self.assertIn("worktree_conflict", failed["error"])
+        self.assertEqual(len(self.fake.spawns), 1)
+
+    def _directory_missing(self) -> Any:
+        original = self.bridge.hapi.request
+
+        def request(method: str, path: str, **kw: Any) -> tuple[int, Any]:
+            if path.endswith("/paths/exists"):
+                return 200, {"exists": {p: False for p in kw["body"]["paths"]}}
+            return original(method, path, **kw)
+        return request
+
+    def test_resume_failed_stays_a_park_without_a_respawn(self) -> None:
+        self.fake.sessions[self.sid]["active"] = False
+        with self.resume_answers(500, "resume_failed"):
+            failed = self.op("ensure_session")
+        self.assertEqual((failed["ok"], failed["retryable"], failed["needs_operator"], failed["park_class"]),
+                         (False, False, True, "hub_5xx"))
+        self.assertEqual(len(self.fake.spawns), 1)
+        issue = self.store.issue(REPO, 7)
+        self.assertEqual((issue["session_state"], issue["session_id"]), ("ready", self.sid))
+
+    def test_session_inactive_right_after_spawn_resumes_first_then_replaces(self) -> None:
+        # flareway#151: the spawn registered, then the runner's session-webhook timeout killed it before thread
+        # binding; the first send answered 409 session_inactive and the hub refuses its resume for good.
+        self.fake.sessions[self.sid]["active"] = False
+        self.fake.unresumable.add(self.sid)
+        rejected = self.send()
+        self.assertTrue(rejected["retryable"], rejected)
+        self.assertIsNone(self.store.turn("d1", "implement"))
+        resumes = []
+        original = self.bridge._resume
+        with patch.object(self.bridge, "_resume", side_effect=lambda *a: resumes.append(a[2]["id"]) or original(*a)):
+            fresh = self.op("ensure_session")
+        self.assertEqual(resumes, [self.sid])  # the hub decides; a missing codexSessionId proves nothing
+        self.assertTrue(fresh["ok"], fresh)
+        self.assertNotEqual(fresh["session_id"], self.sid)
+        sent = self.send()
+        self.assertEqual((sent["delivery"], sent["session_id"], sent["local_id"]),
+                         ("sent", fresh["session_id"], self.lid))
+        self.assertEqual([p["localId"] for p in self.fake.message_posts], [self.lid])
+
     def test_result_emitted_before_the_session_ended_still_completes(self) -> None:
         self.send()
         self.fake.invoke(self.sid, self.lid)
@@ -4048,6 +4214,22 @@ class TimeBudgetTests(BridgeTestCase):
         turn = self.store.turn("c1", "implement")
         self.assertEqual((turn["state"], turn["local_id"]), ("sent", lid))
         self.assertEqual(self.op("begin", "c1", attempt=1)["mode_hint"], "implement")
+
+    def test_harvest_keeps_an_unresumable_session_that_holds_the_result(self) -> None:
+        sid, lid = self.timed_out_comment()
+        self.answer(sid, lid)
+        self.fake.sessions[sid]["active"] = False  # runner restarted after the agent answered
+        self.fake.unresumable.add(sid)
+        self.assertEqual(self.dispatcher.tick(time.time() + bridge.TIME_BUDGET_CHECK_SECONDS + 1), "dispatched")
+        self.assertEqual(self.op("begin", "c1", attempt=1)["status"], "started")
+        spawns = len(self.fake.spawns)
+        ensured = self.op("ensure_session", "c1")
+        self.assertEqual((ensured["ok"], ensured["session_id"]), (True, sid))
+        self.assertEqual(len(self.fake.spawns), spawns)
+        self.assertEqual(self.op("session_send", "c1", mode="implement", instructions="Implement it.")["delivery"],
+                         "already")
+        done = self.op("session_turn", "c1")
+        self.assertEqual((done["state"], done["result"]["status"]), ("done", "no_change"))
 
     def test_time_budget_park_without_a_result_after_the_grace_period_archives_the_session(self) -> None:
         sid, _ = self.timed_out_comment()
@@ -4852,6 +5034,15 @@ class ReviewGateTests(BridgeTestCase):
         failed = self.op("fail", delivery, node=node, detail=f"{node}: transport failure", park_class=park_class)
         self.assertTrue(failed["ok"], failed)
         return self.store.event(delivery)
+
+    def test_review_step_leaves_long_running_suites_to_ci(self) -> None:
+        # krema#101: a review ran ~18 min of container package builds locally while the runner OOMed.
+        self.review_turn()
+        text = self.fake.message_posts[-1]["text"]
+        for clause in ("e2e, GUI/Appium, multi-distro/package matrices, container image builds",
+                       "envtest", "never run them locally while reviewing",
+                       "Locally run only fast, targeted checks", "to verify a specific claim"):
+            self.assertIn(clause, text)
 
     def come_due(self, delivery: str = "p1") -> None:
         self.store.update_event(delivery, auto_retry_at=0)

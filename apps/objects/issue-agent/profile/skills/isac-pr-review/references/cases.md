@@ -69,6 +69,19 @@
 - 일반화: global
 - 재발 확인 기준: 게시된 리뷰의 판정 줄과 근거에 CI·`PR-ready`가 없다. 트리거된 렌즈마다 트리거와 커버리지가 적혀 있고, 버린 후보가 `Considered` 고정 형식으로 남는다. 결정 항목·hold가 남으면 이벤트가 COMMENT(확인된 PR 도입 취약점만 예외)이고, 그 밖의 미반박 P0–P2 의심은 COMMENT(구현 봇 PR은 "prove or fix" REQUEST_CHANGES)이며, 어느 쪽이든 `open_items`가 그 이유를 담고 본문에 @멘션이 없다. 메인테이너 답은 write 이상 권한이 확인될 때만 항목을 해소한다. PR 코드 실행 기록이 모두 `docker run --rm --network none` 컨테이너 안이다. 롤아웃 후 7일 동안 저장소별 non-draft head 중 COMMENT로 끝난 비율이 30%를 넘으면 PRR-49·PRR-53을 다시 본다.
 
+### CASE-20261013-review-suites-to-ci
+- 상태: applied
+- 출처: omp session 01a1333f (2026-10-13 사용자 결정; isac-issue-to-pr CASE-20261013-long-suites-to-ci와 같은 결정)
+- 상황: homelab #435가 로컬 게이트 분담(빠른 게이트는 로컬, 오래 걸리는 suite는 CI)을 implement·followup·PR repair에만 넣고 review 모드에는 넣지 않았다. krema#101(Ubuntu 26.10 패키징을 distro matrix에 추가하는 PR) 리뷰가 패키징 claim을 확인하려고 runner에서 docker 이미지·패키지 build를 네 번 돌렸다(native-install build 581초, ubuntu-26.10 deb build 216초, ubuntu-26.04 deb build 207초, cross-install build 53초, 합계 약 18분). 함께 돌던 cc-lb#936 리뷰와 겹쳐 runner 컨테이너가 5Gi 한도에서 2026-10-13 06:22Z·06:29Z 두 번 OOMKilled됐고, 두 리뷰 턴이 모두 사라져 `-r2`까지 다시 보내졌다.
+- 대상: PR 리뷰 로컬 실행 범위 / 모든 저장소 / 리뷰어의 테스트·빌드·probe 실행 / 높음(runner OOM이 같은 Pod의 모든 진행 중 턴을 잃게 한다)
+- 적용 조건: 이 스킬로 PR을 리뷰하는 모든 경우. 리뷰어는 오래 걸리는 suite를 필요할 때도 로컬에서 돌리지 않는다(구현 쪽의 CI 실패 재현 예외는 리뷰에 없다)
+- 사용자 기대: 모든 프로젝트에서 e2e 같은 오래 걸리는 테스트는 로컬에서 기본으로 돌리지 않는다. CI가 돌리고, 로컬에서는 필요할 때만 돌린다 [U]. 리뷰어는 오래 걸리는 suite의 CI 결과를 읽고, 특정 claim 확인에 필요한 빠른 targeted check만 로컬에서 돌린다.
+- 실제 행동: PRR-38·PRR-55가 "PRR-55 채널에서 무엇이든 직접 돌릴 수 있다", "PR의 Dockerfile을 빌드해도 된다"고 해 리뷰어가 distro 패키지 matrix와 컨테이너 이미지 build를 로컬에서 돌렸다. n8n `Prepare review step` 지시도 "you may run anything yourself"였다.
+- 원인 분류: missing(리뷰 모드의 로컬 실행 범위) / 규칙: PRR-11, PRR-38, PRR-43, PRR-44, PRR-46, PRR-55
+- 변경: PRR-57 [U] 신규(오래 걸리는 suite — e2e, GUI·Appium, multi-distro·패키지 matrix, 컨테이너 이미지 build, envtest, integration·soak — 는 CI 몫이고 리뷰어는 로컬에서 돌리지 않으며 CI 결과는 입력으로만 읽는다; 로컬은 특정 claim 확인용 빠른 targeted check만). PRR-11, PRR-38, PRR-43, PRR-44, PRR-46, PRR-55(PR Dockerfile build 허용 삭제), 완료 조건, review-dimensions §1·§7·§9·§10·§12·§14, comment-template `Not verified`, stale-pr-audit 재현 단계, `references/projects/isac322__kwin-mcp.md` §2(E2E 이미지는 CI 몫, lint와 probe는 scratch 이미지), n8n `Prepare review step` 지시를 같은 범위로 고침
+- 일반화: global
+- 재발 확인 기준: 리뷰 턴의 실행 기록에 e2e·matrix 실행, PR Dockerfile이나 배포판 패키지 build가 없고, 리뷰 턴 하나의 단일 명령이 몇 분을 넘지 않는다. 오래 걸리는 suite로만 확인할 수 있는 claim은 `Not verified`나 argument+challenger로 남는다. 롤아웃 뒤 runner 컨테이너 OOMKilled 재시작이 리뷰 실행과 겹쳐 생기지 않는다.
+
 ## 출처 색인
 
 `패밀리 설계 요청` = 이 스킬 패밀리 증류를 요청한 사용자 메시지의 PR 리뷰 프레이밍(PR 이해, blast radius, 프로젝트 영향 심각도, 실제 해결 여부, 보안, 성능, 구조, 리뷰 코멘트를 달아야 하고 라벨도 추가하면 좋다). 판정을 라벨 대신 리뷰 이벤트로 표현하라는 이후 교정(CASE-20260927-verdict-as-review-event)이 라벨 부분을 대체한다.
@@ -97,6 +110,7 @@
 | PRR-34 | omp 01a0d288 59de466d (CASE-20260926-reverify-before-close) |
 | PRR-24, PRR-29, PRR-30 | omp 01a11ff7 (CASE-20261011-kwin-mcp-review-gate) |
 | PRR-38–PRR-56 | omp 01a11ff7 (CASE-20261011-kwin-mcp-review-gate); PRR-38, PRR-48, PRR-55는 그 세션의 사용자 결정 [U] |
+| PRR-57 | omp 01a1333f (CASE-20261013-review-suites-to-ci); 2026-10-13 사용자 결정 [U] |
 
 ## 규칙 이력
 
@@ -125,3 +139,4 @@
 | 2026-10-12 | PRR-50, review-dimensions §12, comment-template (C3-3) | cycle 3, replay 유래: `argument+challenger(<name>)`의 이름은 spawn 도구가 돌려준 서브 에이전트 id. 일반 이름이면 반박이 아니고 항목은 덮이지 않은 것 | CASE-20261011-kwin-mcp-review-gate |
 | 2026-10-12 | PRR-43 (C3-4) | cycle 3, replay 유래: 한 렌즈의 체크리스트 항목이 ~5개를 넘으면 모듈별 서브 에이전트로 나눈다(동시 최대 2개, 나머지 순차). 나눠도 항목별 근거가 없으면 덮이지 않은 것 | CASE-20261011-kwin-mcp-review-gate |
 | 2026-10-12 | PRR-43, review-dimensions §10 | cycle 3 sign-off 후속: 락·프로세스/스레드·시그널·close/shutdown 상태를 가진 변경 모듈이 둘 이상이면 concurrency/lifecycle 렌즈를 모듈별 서브 에이전트로 나누는 것을 필수로 함(락 틈·close 후 사용 항목별 `file:line` 근거). 다른 렌즈는 ~5개 초과 규칙 유지. f01은 lifecycle 렌즈를 나눴을 때만 찾았다(#90) | CASE-20261011-kwin-mcp-review-gate |
+| 2026-10-13 | PRR-57 신규 [U]; PRR-11, PRR-38, PRR-43, PRR-44, PRR-46, PRR-55, 완료 조건, review-dimensions §1·§7·§9·§10·§12·§14, comment-template, stale-pr-audit, projects/isac322__kwin-mcp §2 | 리뷰어 로컬 실행 범위: 오래 걸리는 suite(e2e, GUI·Appium, multi-distro·패키지 matrix, 컨테이너 이미지 build, envtest, integration·soak)는 CI 몫으로 로컬에서 돌리지 않고 CI 결과는 입력으로만 읽음; 로컬은 특정 claim 확인용 빠른 targeted check만. PRR-55의 "PR의 Dockerfile을 빌드해도 된다" 삭제, "무엇이든" 실행 허용을 PRR-57 범위로 좁힘(krema#101 리뷰의 약 18분 docker 패키지 build와 runner OOM 2회) | CASE-20261013-review-suites-to-ci |
