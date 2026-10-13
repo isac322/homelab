@@ -14,12 +14,19 @@ cluster:
       memory: 1152Mi
     limits:
       memory: 2Gi
+  # The data and WAL zvols were imported in place into pillar-csi (stage 6). CNPG uses the
+  # class only for claims it creates later; the existing claims were created by hand with
+  # the pillar-csi.bhyoo.com/import-zvol annotation. Pillar PVs carry no node topology, so the
+  # instance is pinned to the storage host to keep the local NVMe/TCP attach it had before.
+  affinity:
+    nodeSelector:
+      kubernetes.io/hostname: rock5bp
   storage:
-    storageClass: ssd-ha-cnpg
+    storageClass: ssd-ha-retain
     size: 10Gi
   walStorage:
     enabled: true
-    storageClass: ssd-ha-cnpg-thin
+    storageClass: ssd-ha-retain
     size: 64Gi
   postgresql:
     shared_preload_libraries:
