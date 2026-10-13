@@ -343,6 +343,9 @@
             assert rock.systemd.timers.homelab-zfs-scrub-nas.wantedBy == [ "timers.target" ];
             assert rock.systemd.timers.homelab-zfs-scrub-nas.timerConfig.Persistent;
             assert lib.hasSuffix " nas" rock.systemd.services.homelab-zfs-scrub-nas.serviceConfig.ExecStart;
+            # A generation switch must never start a scrub outside its timer.
+            assert !rock.systemd.services.homelab-zfs-scrub-nas.restartIfChanged;
+            assert rock.systemd.services.homelab-zfs-scrub-nas.serviceConfig.Type == "exec";
             assert !(builtins.hasAttr "homelab-zfs-scrub-nas" rpi5.systemd.timers);
             assert builtins.length topology.requiredLinks == 36;
             assert !(builtins.hasAttr "wg1" topology);

@@ -69,13 +69,18 @@ in
         description = "Scrub ZFS pool ${pool}";
         requires = [ "zfs.target" ];
         after = [ "zfs.target" ];
+        # system-manager restarts changed units on activation; a scrub must only
+        # start from its timer, never from a generation switch.
+        restartIfChanged = false;
         serviceConfig = {
-          Type = "oneshot";
+          # Not oneshot: systemd skips ExecStop for a oneshot stopped while
+          # ExecStart still runs, and a scrub takes hours. With exec the unit is
+          # active during the scrub, so stopping it (shutdown, systemctl stop)
+          # pauses the scrub and the next run resumes it. After a normal finish
+          # the pause finds no scrub and its error is ignored.
+          Type = "exec";
           ExecStart = "${zfsScrub} ${pool}";
-          # Stopping the unit pauses the scrub; the next run resumes it.
           ExecStop = "-${zpool} scrub -p ${pool}";
-          # A 23 TiB raidz scrub takes more than half a day.
-          TimeoutStartSec = "infinity";
         };
       }
     ) cfg.pools;
