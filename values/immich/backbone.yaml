@@ -90,8 +90,6 @@ valkey:
       type: persistentVolumeClaim
       accessMode: ReadWriteOnce
       storageClass: ssd-ha
-      annotations:
-        pillar-csi.bhyoo.com/import-zvol: hot-data/k8s/pvc-ee3ed006-37a7-41ce-a181-272a7072da61
 
 # Immich components
 

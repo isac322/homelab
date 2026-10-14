@@ -10,8 +10,6 @@ controller:
         name: alloy-data
       spec:
         accessModes: ["ReadWriteOnce"]
-        # alloy-data-alloy-0 was created by democratic-csi and imported into
-        # pillar-csi in place on 2026-10-01.
         storageClassName: ssd-ha
         resources:
           requests:

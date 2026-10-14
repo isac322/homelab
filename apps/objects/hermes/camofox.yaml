@@ -2,10 +2,6 @@ apiVersion: v1
 kind: PersistentVolumeClaim
 metadata:
   name: isacmes-camofox-data
-  annotations:
-    # Created by democratic-csi and imported into pillar-csi in place on
-    # 2026-10-02, so the browser profile kept its contents.
-    pillar-csi.bhyoo.com/import-zvol: hot-data/k8s/pvc-acaac284-bfa8-4e60-807a-0569460693ec
 spec:
   accessModes:
     - ReadWriteOnce
@@ -18,10 +14,6 @@ apiVersion: v1
 kind: PersistentVolumeClaim
 metadata:
   name: isacmes-jay-camofox-data
-  annotations:
-    # Created by democratic-csi and imported into pillar-csi in place on
-    # 2026-10-02, so the browser profile kept its contents.
-    pillar-csi.bhyoo.com/import-zvol: hot-data/k8s/pvc-f6d01e41-ba4e-4857-96a4-9a54ac97d8b2
 spec:
   accessModes:
     - ReadWriteOnce
@@ -34,10 +26,6 @@ apiVersion: v1
 kind: PersistentVolumeClaim
 metadata:
   name: yjyou-camofox-data
-  annotations:
-    # Created by democratic-csi and imported into pillar-csi in place on
-    # 2026-10-02, so the browser profile kept its contents.
-    pillar-csi.bhyoo.com/import-zvol: hot-data/k8s/pvc-e0440911-36f4-4104-bcf0-cc681c61accc
 spec:
   accessModes:
     - ReadWriteOnce
