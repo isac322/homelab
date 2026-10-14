@@ -1,3 +1,20 @@
+apiVersion: v1
+kind: PersistentVolumeClaim
+metadata:
+  name: immich-data
+  annotations:
+    # Created by openebs zfs-localpv (hdd-ha-local: thick, volblocksize 128K, no
+    # compression) and imported into pillar-csi in place, so the library kept its
+    # contents. Stage 7-2 of the pillar-csi migration.
+    pillar-csi.bhyoo.com/import-zvol: nas/k8s/pvc-80cfc77a-6089-4bde-a0af-4f05cd6a3124
+spec:
+  accessModes:
+    - ReadWriteOnce
+  storageClassName: hdd-ha-retain
+  resources:
+    requests:
+      storage: 1536Gi
+---
 # Immich ML model cache. HF revision v2 RKNN downloads are ~12 GiB for
 # nllb-clip alone (every Rockchip SoC variant plus safetensors). On emptyDir
 # they were re-downloaded after every pod restart and filled rock5bp's root
