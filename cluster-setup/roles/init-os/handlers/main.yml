@@ -10,12 +10,6 @@
     enabled: yes
     state: started
 
-- name: Enable and start open-iscsi
-  ansible.builtin.systemd:
-    name: open-iscsi
-    enabled: yes
-    state: started
-
 - name: Reload sysctl
   ansible.builtin.command: sysctl -p /etc/sysctl.d/99-memory.conf
 

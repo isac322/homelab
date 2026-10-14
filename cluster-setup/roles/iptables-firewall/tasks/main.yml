@@ -925,16 +925,6 @@
         comment: Jellyfin
   when: iptables_use_jellyfin
 
-- name: Allow ISCSI
-  ansible.builtin.iptables:
-    chain: TCP
-    protocol: tcp
-    destination_port: 3260
-    jump: ACCEPT
-    source: "{{ __register_k8s_internal_node_ip_cidr }}"
-    comment: ISCSI
-  when: iptables_use_iscsi
-
 # UDP
 
 - name: Tricking UDP port scanner

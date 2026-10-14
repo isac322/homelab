@@ -23,22 +23,6 @@ let
     "systemd-zram-generator"
   ];
   archPresent = [ "zram-generator" ];
-  iscsiClientPresent = lib.optionals hostConfig.iscsiClient (
-    if hostConfig.packageBackend == "pacman" then
-      [
-        "open-iscsi"
-        "lsscsi"
-        "sg3_utils"
-      ]
-    else
-      [
-        "open-iscsi"
-        "lsscsi"
-        "sg3-utils"
-        "scsitools"
-      ]
-  );
-  iscsiServerPresent = lib.optionals (hostConfig.iscsiServer && !preserveNasState) [ "targetcli-fb" ];
   pacmanAbsent = [
     "networkmanager"
     "networkd-dispatcher"
@@ -56,6 +40,7 @@ let
   commonAbsent = [
     "age"
     "htop"
+    "open-iscsi"
   ];
   baseAbsent =
     commonAbsent
@@ -70,6 +55,8 @@ let
           "cron"
           "snapd"
           "ufw"
+          "targetcli-fb"
+          "python3-rtslib-fb"
         ]
     );
   defaultAbsent =
@@ -93,10 +80,7 @@ in
     present = lib.mkOption {
       type = lib.types.listOf lib.types.str;
       default =
-        commonPresent
-        ++ (if hostConfig.packageBackend == "pacman" then archPresent else aptPresent)
-        ++ iscsiClientPresent
-        ++ iscsiServerPresent;
+        commonPresent ++ (if hostConfig.packageBackend == "pacman" then archPresent else aptPresent);
       apply = validateDistroPackages;
     };
     absent = lib.mkOption {

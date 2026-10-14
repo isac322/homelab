@@ -16,5 +16,4 @@
       vars:
         k8s_role: "{{ ('master' if is_k8s_master else 'worker') if is_backbone else '' }}"
         use_k3s_ha_embedded_etcd: "{{ is_backbone }}"
-        iptables_use_iscsi: "{{ (is_iscsi_node or is_iscsi_server) if is_backbone else false }}"
         iptables_reset_all: false

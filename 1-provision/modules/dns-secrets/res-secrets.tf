@@ -33,19 +33,6 @@ resource "aws_ssm_parameter" "cf_account_id" {
   value       = var.cloudflare_account_id
 }
 
-resource "tls_private_key" "democratic_csi" {
-  count     = var.use_democratic_csi ? 1 : 0
-  algorithm = "ED25519"
-}
-
-resource "aws_ssm_parameter" "democratic_csi_ssh_private_key" {
-  count       = var.use_democratic_csi ? 1 : 0
-  name        = "/homelab/cluster/${var.k8s_cluster_name}/ssh/democratic-csi/private-key"
-  description = "SSH private key for Democratic CSI"
-  type        = "SecureString"
-  value       = tls_private_key.democratic_csi[0].private_key_openssh
-}
-
 # --- Hindsight agent memory server ---
 
 resource "aws_ssm_parameter" "hindsight_openai_api_key" {
@@ -189,7 +176,6 @@ data "aws_iam_policy_document" "secret_read" {
         aws_ssm_parameter.cf_account_id.arn,
         "${trimsuffix(aws_ssm_parameter.cf_account_id.arn, "cloudflare/account-id")}token/telegram/*",
       ],
-      var.use_democratic_csi ? [aws_ssm_parameter.democratic_csi_ssh_private_key[0].arn] : [],
       var.openai_api_key == null ? [] : [aws_ssm_parameter.hindsight_openai_api_key[0].arn],
       var.gcp_vertex_ai_sa_key == null ? [] : [aws_ssm_parameter.hindsight_gcp_sa_key[0].arn],
       var.openai_proxy == null ? [] : [aws_ssm_parameter.hermes_openai_proxy[0].arn],

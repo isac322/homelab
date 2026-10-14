@@ -16,12 +16,6 @@ variable "cloudflare_main_zone_id" {
   type        = string
 }
 
-variable "use_democratic_csi" {
-  description = "Whether to create SSH key for Democratic CSI"
-  type        = bool
-  default     = false
-}
-
 variable "openai_api_key" {
   type      = string
   sensitive = true
