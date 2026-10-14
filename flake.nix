@@ -245,11 +245,22 @@
               projectEtcOwnershipIsExplicit = lib.all (
                 hostName: etcOwnershipIsExplicit hostName && etcOwnershipIsExplicit "${hostName}-commit"
               ) (builtins.attrNames linuxHosts);
+              # A server without local-storage disabled re-creates local-path-provisioner and
+              # its default StorageClass beside the pillar-csi default (ssd-ha).
+              k3sServers = builtins.attrNames (lib.filterAttrs (_: host: host.k3sRole == "server") linuxHosts);
+              serversDisableLocalStorage =
+                k3sServers != [ ]
+                && lib.all (
+                  hostName:
+                  lib.hasInfix "\n  - local-storage\n"
+                    self.systemConfigs.${hostName}.config.environment.etc."rancher/k3s/config.yaml".text
+                ) k3sServers;
             in
             assert projectServiceOwnershipIsMinimal;
             assert projectEtcOwnershipIsExplicit;
             assert preservationOwnershipIsExplicit;
             assert globalPackageOwnershipIsExclusive;
+            assert serversDisableLocalStorage;
             assert topology.nodes.rock5bp.preserveNasState;
             assert !(topology.nodes.n2p1.preserveNasState);
             assert topology.nodes.macmini.k3sRole == "agent";

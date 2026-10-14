@@ -31,7 +31,6 @@ deschedulerPolicy:
               config:
                 PodsWithPVC:
                   protectedStorageClasses:
-                    - name: local-path
                     - name: ssd-single
                     - name: ssd-single-retain
                     - name: ssd-ha-local

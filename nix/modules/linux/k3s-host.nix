@@ -128,9 +128,11 @@ let
         disable-network-policy: true
         disable-kube-proxy: true
         disable-helm-controller: true
+        # local-storage: PVCs use pillar-csi (default StorageClass ssd-ha).
         disable:
           - traefik
           - servicelb
+          - local-storage
         advertise-address: ${hostConfig.lanAddress}
         node-external-ip: ${strip wg0Address}
         secrets-encryption: true
