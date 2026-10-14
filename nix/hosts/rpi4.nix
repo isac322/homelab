@@ -1,7 +1,8 @@
 { ... }: {
   homelab.zram = true;
   homelab.disabledServices = [ "wpa_supplicant.service" ];
-  # 3.75 GiB node: live heap peaks near 860 MiB (14-day max next_gc / 2), so a
-  # 2 GiB soft limit let the server grow into zram and thrash.
-  homelab.k3s.goMemLimit = "1280MiB";
+  # 3.75 GiB node: live heap reaches ~920 MiB and non-heap runtime overhead
+  # (span fragmentation, buck_hash_sys, goroutine stacks) adds ~530 MiB; 1536 MiB
+  # keeps next_gc above the live heap without letting K3s spill into zram.
+  homelab.k3s.goMemLimit = "1536MiB";
 }
