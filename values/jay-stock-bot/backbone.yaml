@@ -13,3 +13,8 @@ imagePullSecrets:
 extraEnvFrom:
   - secretRef:
       name: stock-credentials
+
+# xfs (pillar-csi) needs >= 300MiB; the chart default of 100Mi cannot be formatted.
+persistence:
+  storageClass: ssd-ha-retain
+  size: 1Gi
