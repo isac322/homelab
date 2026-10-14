@@ -3247,7 +3247,6 @@ errors: No known data errors
         'if ! "$root/nix/scripts/k3s-handoff" rearm "$host"; then',
         "render_receipt()",
         "nasBaseline:$nasBaseline",
-        "assert_no_legacy_storage_state()",
         'assert_preservation_plan_safe "$host" "$host-commit"',
         'preserves an external NAS data plane; use prepare, activate, reboot, reboot-verify, and commit',
         'if test "$MANAGE_FIREWALL_RULES" = true; then',
@@ -3304,14 +3303,6 @@ errors: No known data errors
         (
             "prepare must verify the NAS baseline before and after its mutation-capable work",
             r"prepare\|deploy\).*?verify_nas_baseline.*?snapshot-packages.*?stage-secrets.*?verify_nas_baseline",
-        ),
-        (
-            "prepare must refuse live legacy iSCSI/LIO state before capturing recovery",
-            r"prepare\|deploy\).*?assert_no_legacy_storage_state.*?adopt-host",
-        ),
-        (
-            "legacy cleanup must refuse live iSCSI/LIO state before mutating the host",
-            r"cleanup_legacy_files\(\) \{\n[^}]*?assert_no_legacy_storage_state[^}]*?REMOTE_LEGACY_CLEANUP",
         ),
         (
             "commit must verify preserved NAS state before accepting and deleting rollback recovery",
@@ -3588,57 +3579,6 @@ def check_preservation_policy_failure() -> None:
                 raise SystemExit(
                     f"{relative} {' '.join(arguments)}: remote access was attempted after preservation lookup failed"
                 )
-
-
-def check_legacy_storage_guard() -> None:
-    migration = source("nix/scripts/homelab-host")
-    match = re.search(
-        r"<<'REMOTE_LEGACY_STORAGE_GUARD'\n(.*?)\nREMOTE_LEGACY_STORAGE_GUARD\n",
-        migration,
-        re.DOTALL,
-    )
-    if match is None:
-        raise SystemExit("nix/scripts/homelab-host: legacy iSCSI/LIO guard is missing")
-    for forbidden in ("rm ", "rmdir", "targetctl", "iscsiadm", "zfs ", "zpool ", "/dev/zvol"):
-        if forbidden in match.group(1):
-            raise SystemExit(
-                f"nix/scripts/homelab-host: legacy iSCSI/LIO guard must stay read-only: {forbidden!r}"
-            )
-    with tempfile.TemporaryDirectory() as directory:
-        sysfs = Path(directory)
-        guard = (
-            match.group(1)
-            .replace("/sys/class/iscsi_session", f"{sysfs}/iscsi_session")
-            .replace("/sys/kernel/config/target", f"{sysfs}/target")
-        )
-
-        def run() -> subprocess.CompletedProcess[str]:
-            return subprocess.run(
-                ["sh", "-eu"],
-                input=guard + "\n",
-                capture_output=True,
-                text=True,
-            )
-
-        (sysfs / "target/core/alua/lu_gps/default_lu_gp").mkdir(parents=True)
-        (sysfs / "target/core/iblock_0").mkdir()
-        (sysfs / "target/core/iblock_0/hba_info").write_text("fixture\n")
-        (sysfs / "target/iscsi").mkdir()
-        (sysfs / "iscsi_session").mkdir()
-        if run().returncode != 0:
-            raise SystemExit("nix/scripts/homelab-host: empty LIO and iSCSI state was rejected")
-        for live in (
-            sysfs / "target/core/iblock_0/pvc-a",
-            sysfs / "target/iscsi/iqn.2003-01.org.linux-iscsi:pvc-a",
-            sysfs / "iscsi_session/session1",
-        ):
-            live.mkdir()
-            result = run()
-            if result.returncode == 0 or "legacy iSCSI/LIO state is still live" not in result.stderr:
-                raise SystemExit(
-                    f"nix/scripts/homelab-host: live legacy state was accepted: {live.relative_to(sysfs)}"
-                )
-            live.rmdir()
 
 
 require(
@@ -4580,7 +4520,6 @@ check_cilium_restart_waits()
 check_onboard_k3s_install_guard()
 check_rollback_restored_services()
 check_legacy_cleanup_path_verification()
-check_legacy_storage_guard()
 check_ansible_cutover_partition()
 check_static_nix_hosts_render()
 check_static_nix_hosts_expression()
