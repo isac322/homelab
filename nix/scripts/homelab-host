@@ -571,7 +571,7 @@ cleanup_legacy_files() {
 REMOTE_LEGACY_CLEANUP
 }
 verify_legacy_cleanup() {
-  local host=$1 role require_k3s_binary=false
+  local host=$1 role require_k3s_binary=false command
   role=$(nix_eval --json "$root#topology.nodes.$host.k3sRole") || return 1
   case "$role" in
     '"server"'|'"agent"') require_k3s_binary=true ;;
@@ -581,7 +581,8 @@ verify_legacy_cleanup() {
       return 1
       ;;
   esac
-  remote "$host" 'sudo -n env REQUIRE_K3S_BINARY=%q sh -seu' "$require_k3s_binary" <<'REMOTE_VERIFY_LEGACY_CLEANUP'
+  printf -v command 'sudo -n env REQUIRE_K3S_BINARY=%q sh -seu' "$require_k3s_binary"
+  remote "$host" "$command" <<'REMOTE_VERIFY_LEGACY_CLEANUP'
     if test "$REQUIRE_K3S_BINARY" = true; then
       test -x /usr/local/bin/k3s
     fi
