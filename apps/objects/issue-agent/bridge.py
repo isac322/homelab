@@ -3095,8 +3095,6 @@ class Bridge:
             return "gone", None  # session gone for good: nothing can be re-read, keep the turn as it is
         sid = session["id"]
         state = self._queued_state(sid, local_id)
-        if state in ("queued", "indeterminate"):
-            return "queued", None
         try:
             history = self._history_from(sid, local_id)
         except OpError as exc:
@@ -3309,13 +3307,69 @@ class Bridge:
             return False
         return machine != self._machine(cfg)
 
-    def _drop_session(self, repo: str, number: int, session_id: str, reason: str) -> None:
-        """Give up an unresumable session (caller holds ``session_lock``): its in-flight turns are re-sent
-        under fresh localIds and ``ensure_session`` spawns a replacement (never re-adopting this one, see
-        ``_matching_sessions``). Nothing is archived: the session is already inactive."""
+    def _subject_holds_unresolved(self, repo: str, number: int) -> bool:
+        """Whether any non-completed event on this subject still owns an unconsumed uncertain turn.
+
+        The source turn is inspected in both its recorded session and the alias reached by following
+        that source: either session may contain the retained native message.  Lookup failures hold the
+        subject closed rather than allowing a replacement to replay the work.
+        """
+        try:
+            rows = self.store.query(
+                "SELECT e.delivery_id, t.mode FROM events e JOIN turns t ON t.delivery_id = e.delivery_id"
+                " WHERE e.repo = ? AND e.issue_number = ? AND e.state != 'completed'"
+                " AND t.state IN ('sending', 'sent')",
+                (repo, number))
+        except Exception as exc:
+            LOG.warning("cannot enumerate turns for %s/%s; holding session: %s", repo, number, exc)
+            return True
+        for row in rows:
+            try:
+                ev = self.store.event(row["delivery_id"])
+                turn = self.store.turn(row["delivery_id"], row["mode"])
+                if ev is None or turn is None or self._consumed(ev, turn):
+                    continue
+                source_sid = turn["session_id"]
+                followed = self._follow(repo, number, source_sid)
+                for sid in dict.fromkeys((source_sid, followed["id"])):
+                    state = self._queued_state(sid, turn["local_id"])
+                    history = self._history_from(sid, turn["local_id"])
+                    if history is None:
+                        # An invoked queued-state is authoritative; unknown with no history is
+                        # absence in this session only.  A queued or indeterminate row remains owned.
+                        if state in ("invoked", "unknown"):
+                            continue
+                        return True
+                    if state != "invoked" and not invoked(history[0]):
+                        return True
+            except Exception as exc:
+                LOG.warning("cannot establish turn ownership for %s/%s: holding session: %s", repo, number, exc)
+                return True
+        return False
+
+    def _drop_session(self, repo: str, number: int, session_id: str, reason: str) -> bool:
+        """Give up an unresumable session (caller holds ``session_lock``) only without unresolved ownership."""
+        if not self._abandon_turns(repo, number, session_id):
+            LOG.warning("%s#%s session %s retained: unresolved turn ownership", repo, number, session_id)
+            return False
         LOG.warning("%s#%s session %s %s; starting a new session", repo, number, session_id, reason)
-        self._abandon_turns(repo, number, session_id)
         self.store.update_issue(repo, number, session_state="none", pending_at=None)
+        return True
+
+    def _abandon_turns(self, repo: str, number: int, session_id: str) -> bool:
+        """Park this subject's in-flight turns only after the subject-wide ownership check passes."""
+        if self._subject_holds_unresolved(repo, number):
+            return False
+        chain = {session_id, *json.loads(self.store.issue(repo, number)["superseded"] or "[]")}
+        keys = {(t["delivery_id"], t["mode"]) for t in self.store.query(
+            "SELECT t.delivery_id, t.mode FROM turns t JOIN events e ON e.delivery_id = t.delivery_id"
+            " WHERE e.repo = ? AND e.issue_number = ? AND e.state != 'completed'", (repo, number))}
+        for delivery, mode in keys:
+            turn = self.store.turn(delivery, mode)
+            if turn["state"] in ("sending", "sent") and turn["session_id"] in chain:
+                self.store.put_turn(delivery, mode, resend_local_id(delivery, mode, turn["local_id"]),
+                                    turn["session_id"], "lost")
+        return True
 
     def _holds_result(self, ev: sqlite3.Row) -> bool:
         """Whether this event's sent turn has a result nobody consumed yet (a time-budget harvest re-queued it).
@@ -3359,17 +3413,6 @@ class Bridge:
         LOG.warning("%s worktree %s restored on retained branch %s", cfg.name, path, issue["branch"])
         return path
 
-    def _abandon_turns(self, repo: str, number: int, session_id: str) -> None:
-        """Park this subject's in-flight turns on an abandoned session for a re-send under a fresh localId."""
-        chain = {session_id, *json.loads(self.store.issue(repo, number)["superseded"] or "[]")}
-        keys = {(t["delivery_id"], t["mode"]) for t in self.store.query(
-            "SELECT t.delivery_id, t.mode FROM turns t JOIN events e ON e.delivery_id = t.delivery_id"
-            " WHERE e.repo = ? AND e.issue_number = ?", (repo, number))}
-        for delivery, mode in keys:
-            turn = self.store.turn(delivery, mode)
-            if turn["state"] in ("sending", "sent") and turn["session_id"] in chain:
-                self.store.put_turn(delivery, mode, resend_local_id(delivery, mode, turn["local_id"]),
-                                    turn["session_id"], "lost")
 
     def _matching_sessions(self, cfg: RepoConfig, worktree_name: str, directory: str | None,
                            exclude: set[str]) -> list[str]:
@@ -3436,16 +3479,25 @@ class Bridge:
                 else:
                     # The resumed session is active: _ensure_service_tier below pins its tier.
                     session, dropped, resumed = current, None, True
-                if dropped is not None and self._holds_result(ev):
-                    LOG.warning("%s#%s session %s %s but holds this step's result; kept for its harvest",
-                                repo, number, session["id"], dropped)
-                    dropped = None
+                if dropped is not None:
+                    try:
+                        hold = self._holds_result(ev) or self._subject_holds_unresolved(repo, number)
+                    except Exception as exc:
+                        LOG.warning("%s#%s session drop lookup failed; retaining identity: %s", repo, number, exc)
+                        hold = True
+                    if hold:
+                        LOG.warning("%s#%s session %s %s but an unresolved turn is retained",
+                                    repo, number, session["id"], dropped)
+                        dropped = None
                 if dropped is None:
                     issue = self.store.issue(repo, number)
                     self._ensure_service_tier(cfg, issue["session_id"], session)
                     return {"session_id": issue["session_id"], "worktree_path": issue["worktree_path"],
                             "branch": issue["branch"], "resumed": resumed}
-                self._drop_session(repo, number, session["id"], dropped)
+                if not self._drop_session(repo, number, session["id"], dropped):
+                    issue = self.store.issue(repo, number)
+                    return {"session_id": issue["session_id"], "worktree_path": issue["worktree_path"],
+                            "branch": issue["branch"], "resumed": resumed}
 
             name = self._worktree_name(ev)
             issue = self.store.issue(repo, number)
@@ -3607,11 +3659,14 @@ class Bridge:
         raise OpError("message not found within history window", needs_operator=True)
 
     def _delivery(self, session_id: str, local_id: str) -> str:
-        """'present' | 'absent' | 'indeterminate' for our localId in this session."""
+        """'present' | 'absent' for our localId in this session.
+
+        ``indeterminate`` is durable presence: the hub knows the message row exists but cannot yet
+        report whether its native invocation has happened.  It is therefore never permission to
+        publish the message again.
+        """
         state = self._queued_state(session_id, local_id)
-        if state == "indeterminate":
-            return "indeterminate"
-        if state in ("queued", "invoked"):
+        if state in ("queued", "invoked", "indeterminate"):
             return "present"
         return "present" if self._history_from(session_id, local_id) is not None else "absent"
 
@@ -3765,8 +3820,6 @@ class Bridge:
                 local_id = turn["local_id"]
             if turn is not None and turn["state"] == "sending":
                 found = self._delivery(turn["session_id"], local_id)
-                if found == "indeterminate":
-                    raise OpError("hub reports message delivery indeterminate", needs_operator=True)
                 if found == "present":
                     self.store.put_turn(delivery, mode, local_id, turn["session_id"], "sent")
                     return {"delivery": "already", "session_id": turn["session_id"], "local_id": local_id,
@@ -3803,8 +3856,6 @@ class Bridge:
             if found == "present":
                 self.store.put_turn(delivery, mode, local_id, session_id, "sent")
                 return {"delivery": "sent", "session_id": session_id, "local_id": local_id, "mode": mode}
-            if found == "indeterminate":
-                raise OpError("hub reports message delivery indeterminate", needs_operator=True)
             raise OpError(f"message delivery unconfirmed (HTTP {status})", retryable=True,
                           park_class=hub_park_class(status))
 
@@ -3833,16 +3884,28 @@ class Bridge:
             session = self._follow(ev["repo"], ev["issue_number"], issue["session_id"])
             sid = session["id"]
             state = self._queued_state(sid, local_id)
-            if state == "indeterminate":
-                return self._attention("hub marked our message delivery indeterminate")
             history = self._history_from(sid, local_id)
             if history is None:
-                if state == "queued":
+                if state in ("queued", "indeterminate"):
+                    deadline_at = turn["deadline_at"]
+                    if deadline_at is None:
+                        return {"state": "attention", "needs_operator": True,
+                                "detail": "queued message has no recorded absolute deadline"}
+                    if time.time() >= deadline_at:
+                        return {"state": "expired", "session_id": sid,
+                                "detail": f"agent turn still queued at the bridge deadline {_utc(deadline_at)}"}
                     return {"state": "queued", "session_id": sid}
                 where = "current" if sid == turn["session_id"] else f"replacement session {sid}"
                 return self._attention(f"our message is missing from the {where} history")
             ours, later = history[0], history[1:]
-            if state == "queued" or not invoked(ours) and state != "invoked":
+            if state != "invoked" and not invoked(ours):
+                deadline_at = turn["deadline_at"]
+                if deadline_at is None:
+                    return {"state": "attention", "needs_operator": True,
+                            "detail": "queued message has no recorded absolute deadline"}
+                if time.time() >= deadline_at:
+                    return {"state": "expired", "session_id": sid,
+                            "detail": f"agent turn still queued at the bridge deadline {_utc(deadline_at)}"}
                 return {"state": "queued", "session_id": sid}
             # Final assistant text of our turn: stop at the first other user message the agent received.
             last_text: list[str] = []
@@ -3869,12 +3932,16 @@ class Bridge:
                 return {"state": "running", "session_id": sid, "pending_requests": len(requests)}
             raw = find_result(last_text, local_id)
             if raw is not None:
-                # The workflow takes this result now (or a correction replaces the turn's localId): a retry must
-                # re-run the step rather than harvest it again.
-                self.store.consume_turn(ev["delivery_id"], mode, local_id)
                 result = validate_result(mode, raw, int(ev["issue_number"]))
                 if isinstance(result, str):
+                    if local_id.endswith(CORRECTION_SUFFIX):
+                        # This invalid correction is definitive; consume it before parking so an operator retry
+                        # cannot replay the same correction indefinitely.
+                        self.store.consume_turn(ev["delivery_id"], mode, local_id)
+                        return self._attention(f"invalid agent result after a correction request: {result}")
                     return self._request_correction(ev, mode, sid, local_id, result)
+                # The workflow takes a valid result now; a retry must re-run the step rather than harvest it again.
+                self.store.consume_turn(ev["delivery_id"], mode, local_id)
                 if mode == "triage" and self.store.issue(ev["repo"], ev["issue_number"])["phase"] != "implementing":
                     self.store.update_issue(ev["repo"], ev["issue_number"], phase="triaged")
                 return {"state": "done", "session_id": sid, "mode": mode, "result": result}
@@ -3904,11 +3971,10 @@ class Bridge:
                             error: str) -> dict[str, Any]:
         """Send the validation error back once under ``<localId>-fix`` and poll that turn; attention otherwise."""
         if local_id.endswith(CORRECTION_SUFFIX):
+            self.store.consume_turn(ev["delivery_id"], mode, local_id)
             return self._attention(f"invalid agent result after a correction request: {error}")
         fix_id = local_id + CORRECTION_SUFFIX
         found = self._delivery(session_id, fix_id)  # a crash after an earlier send must not send it twice
-        if found == "indeterminate":
-            return self._attention(f"invalid agent result: {error}; correction delivery indeterminate")
         if found == "absent":
             path = f"/api/sessions/{urllib.parse.quote(session_id, safe='')}/messages"
             try:
@@ -3921,6 +3987,8 @@ class Bridge:
                 status, data = 0, None
             if not (status == 200 and isinstance(data, dict) and data.get("ok") is True):
                 if 400 <= status < 500:
+                    # The hub definitively rejected the correction; consume the invalid original before parking.
+                    self.store.consume_turn(ev["delivery_id"], mode, local_id)
                     return self._attention(f"invalid agent result: {error}; correction rejected: HTTP {status}")
                 if self._delivery(session_id, fix_id) != "present":
                     raise OpError(f"correction delivery unconfirmed (HTTP {status})", retryable=True,

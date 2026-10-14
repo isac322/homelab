@@ -469,7 +469,7 @@ class Fake:
         if rest == ["messages", "queued-state"]:
             out: dict[str, Any] = {"queuedLocalIds": [], "indeterminateLocalIds": [], "invokedLocalMessages": []}
             for lid in body["localIds"]:
-                if lid in self.indeterminate:
+                if lid in self.indeterminate and any(m["localId"] == lid for m in self.messages[sid]):
                     out["indeterminateLocalIds"].append(lid)
                     continue
                 for m in self.messages[sid]:
@@ -2186,10 +2186,11 @@ class PrRepairTests(BridgeTestCase):
         self.assertEqual(self.op("begin", delivery, attempt=1)["status"], "started")
         self.assertTrue(self.op("ensure_session", delivery)["ok"])
         self.fake.message_mode = "fail_after_store"
-        with patch.object(self.bridge, "_delivery", return_value="indeterminate"):
-            ambiguous = self.op("session_send", delivery, mode="followup", instructions="Repair the blockers.")
-        self.assertFalse(ambiguous["ok"])
-        self.assertTrue(ambiguous["needs_operator"])
+        original_local_id = bridge.local_id_for(delivery, "followup")
+        self.fake.indeterminate.add(original_local_id)
+        ambiguous = self.op("session_send", delivery, mode="followup", instructions="Repair the blockers.")
+        self.assertTrue(ambiguous["ok"], ambiguous)
+        self.assertEqual(self.op("session_turn", delivery, mode="followup")["state"], "queued")
         self.assertEqual(len(self.fake.message_posts), 1)
         original_local_id = self.fake.message_posts[0]["localId"]
         original_snapshot = json.loads(self.store.event(delivery)["stages"])["repair_snapshot"]
@@ -2197,7 +2198,9 @@ class PrRepairTests(BridgeTestCase):
         self.fake.message_mode = "ok"
         for turn_state, head in (("sending", SHA_B), ("sent", "c" * 40)):
             with self.subTest(turn_state=turn_state):
-                self.assertEqual(self.store.turn(delivery, "followup")["state"], turn_state)
+                turn = self.store.turn(delivery, "followup")
+                self.store.put_turn(delivery, "followup", original_local_id, turn["session_id"], turn_state,
+                                    deadline_at=turn["deadline_at"])
                 self.assertTrue(self.op("fail", delivery, detail="Retry the interrupted followup.")["ok"])
                 pr["head"]["sha"] = head
                 self.fake.checks[head] = [{"name": "new-check", "status": "COMPLETED", "conclusion": "FAILURE"}]
@@ -2213,6 +2216,13 @@ class PrRepairTests(BridgeTestCase):
                 self.assertEqual(self.store.turn(delivery, "followup")["state"], "sent")
                 self.assertEqual(len(self.fake.message_posts), 1)
                 self.assertEqual(self.store.pr_state(REPO, 144)["active_delivery"], delivery)
+        sid = self.store.turn(delivery, "followup")["session_id"]
+        self.fake.invoke(sid, original_local_id)
+        result = {"status": "no_change", "pr": None, "issue_comment": "nothing needed", "questions": [],
+                  "summary": "nothing needed", "blockers": [], "local_checks": []}
+        self.fake.codex(sid, "message", message=f"{bridge.RESULT_TAG} {original_local_id} {json.dumps(result)}")
+        self.assertEqual(self.op("session_turn", delivery, mode="followup")["state"], "done")
+        self.assertEqual(len(self.fake.message_posts), 1)
 
 
 class DispatchTests(BridgeTestCase):
@@ -3759,11 +3769,23 @@ class TurnTests(BridgeTestCase):
         self.assertEqual(self.send()["delivery"], "already")
         self.assertEqual(len(self.fake.message_posts), 1)
 
-    def test_indeterminate_delivery_needs_operator(self) -> None:
+    def test_indeterminate_delivery_converges_without_resending(self) -> None:
         self.fake.message_mode = "fail_after_store"
         self.fake.indeterminate.add(self.lid)
-        result = self.send()
-        self.assertTrue(result["needs_operator"])
+        sent = self.send()
+        self.assertEqual((sent["ok"], sent["delivery"], sent["local_id"]), (True, "sent", self.lid))
+        deadline = self.store.turn("d1", "implement")["deadline_at"]
+        for _ in range(3):
+            self.assertEqual(self.op("session_turn")["state"], "queued")
+            self.assertEqual(self.send()["delivery"], "already")
+            self.assertEqual(self.store.turn("d1", "implement")["deadline_at"], deadline)
+            self.assertIsNone(self.store.turn("d1", "implement")["consumed_id"])
+        self.fake.indeterminate.remove(self.lid)
+        self.fake.invoke(self.sid, self.lid)
+        self.say(self.result_line())
+        self.assertEqual(self.op("session_turn")["state"], "done")
+        self.assertEqual([p["localId"] for p in self.fake.message_posts], [self.lid])
+        self.assertEqual(bridge.Store(self.config.state_path).turn("d1", "implement")["consumed_id"], self.lid)
 
     def test_turn_completes_only_with_nonce_result_after_invocation(self) -> None:
         self.send()
@@ -3907,15 +3929,30 @@ class TurnTests(BridgeTestCase):
         self.assertEqual(states[-1], "attention")
         self.assertTrue(all(s == "running" for s in states[:-1]))
 
-    def test_sent_turn_on_a_removed_runner_machine_is_resent_to_the_new_session(self) -> None:
+    def test_queued_owner_on_a_removed_runner_machine_is_held_until_dismissed(self) -> None:
         self.send()
+        turn = dict(self.store.turn("d1", "implement"))
         self.fake.sessions[self.sid]["active"] = False
         self.fake.sessions[self.sid]["metadata"]["machineId"] = "m-old"
-        new_sid = self.op("ensure_session")["session_id"]
+        spawns = len(self.fake.spawns)
+        ensured = self.op("ensure_session")
+        self.assertEqual((ensured["ok"], ensured["session_id"]), (True, self.sid), ensured)
+        self.assertEqual(len(self.fake.spawns), spawns)
+        self.assertEqual(dict(self.store.turn("d1", "implement")), turn)
+        self.assertEqual(self.op("session_turn")["state"], "queued")
+        self.assertEqual(self.send()["delivery"], "already")
+        with patch.object(bridge.time, "time", return_value=turn["deadline_at"] + 1):
+            self.assertEqual(self.op("session_turn")["state"], "expired")
+        self.assertEqual(self.store.turn("d1", "implement")["deadline_at"], turn["deadline_at"])
+        self.assertTrue(self.op("fail", node="Within time budget? (implement)", detail="deadline elapsed")["ok"])
+        self.assertTrue(self.op("dismiss_event", reason="operator resolved the retained turn")["ok"])
+        self.assertEqual(self.deliver(comment_payload(), event="issue_comment", delivery="c1").outcome, "queued")
+        self.assertEqual(self.dispatcher.tick(), "dispatched")
+        self.assertEqual(self.op("begin", "c1", attempt=1)["status"], "started")
+        new_sid = self.op("ensure_session", "c1")["session_id"]
         self.assertNotEqual(new_sid, self.sid)
-        sent = self.send()
-        self.assertEqual((sent["delivery"], sent["session_id"], sent["local_id"]), ("sent", new_sid, f"{self.lid}-r1"))
-        self.assertEqual([p["localId"] for p in self.fake.message_posts], [self.lid, f"{self.lid}-r1"])
+        self.assertEqual(len(self.fake.spawns), spawns + 1)
+        self.assertEqual([p["localId"] for p in self.fake.message_posts], [self.lid])
 
     def test_retry_of_a_parked_step_resends_it_instead_of_rereading_the_result(self) -> None:
         # Live flareway#135: the agent answered 'blocked' (go missing from PATH), the event parked, and after
@@ -4217,6 +4254,362 @@ class TurnTests(BridgeTestCase):
         self.assertIn("are CI's job: do not run them locally by default", text)
         self.assertIn("never report ready with code whose fast gates fail", text)
         self.assertIn("never under /tmp", text)
+
+
+class UnresolvedTurnTests(BridgeTestCase):
+    """Consumer-visible delivery/restart contracts; only HAPI faults and time are controlled."""
+
+    def setUp(self) -> None:
+        super().setUp()
+        self.started()
+        self.sid = self.op("ensure_session")["session_id"]
+        self.lid = bridge.local_id_for("d1", "implement")
+
+    def send(self) -> dict:
+        return self.op("session_send", mode="implement", instructions="Implement it.")
+
+    def answer(self, lid: str | None = None, *, status: str = "no_change") -> None:
+        result = {"status": status, "pr": None, "issue_comment": "nothing needed", "questions": [],
+                  "summary": "nothing needed", "blockers": [], "local_checks": []}
+        self.fake.codex(self.sid, "message", message=f"{bridge.RESULT_TAG} {lid or self.lid} {json.dumps(result)}")
+
+    def restart(self) -> None:
+        self.store = bridge.Store(self.config.state_path)
+        self.bridge = bridge.make_bridge(self.config, self.store)
+        self.dispatcher = bridge.Dispatcher(self.config, self.store, self.bridge)
+
+    def retry(self) -> None:
+        self.assertTrue(self.op("fail", detail="interrupted workflow")["ok"])
+        self.assertTrue(self.op("retry_event")["ok"])
+        self.assertEqual(self.dispatcher.tick(), "dispatched")
+        self.assertEqual(self.op("begin", attempt=1)["status"], "started")
+
+    def test_recovered_sending_observes_retained_indeterminate_id(self) -> None:
+        self.send()
+        original = self.store.turn("d1", "implement")
+        self.store.put_turn("d1", "implement", self.lid, self.sid, "sending",
+                            deadline_at=original["deadline_at"])
+        self.fake.indeterminate.add(self.lid)
+        self.restart()
+        self.assertEqual((self.send()["delivery"], self.op("session_turn")["state"]), ("already", "queued"))
+        self.assertEqual(self.store.turn("d1", "implement")["deadline_at"], original["deadline_at"])
+        self.fake.invoke(self.sid, self.lid)
+        self.answer()
+        # An older queued-state snapshot cannot override the authenticated invocation in fresh history.
+        self.assertEqual(self.op("session_turn")["state"], "done")
+        self.assertEqual([p["localId"] for p in self.fake.message_posts], [self.lid])
+
+    def test_stale_queued_state_uses_invoked_history_but_preserves_busy_gate(self) -> None:
+        self.send()
+        self.fake.invoke(self.sid, self.lid)
+        self.answer()
+        original = self.bridge.hapi.request
+
+        def request(method: str, path: str, **kw: Any) -> tuple[int, Any]:
+            if path.endswith("/queued-state"):
+                return 200, {"queuedLocalIds": [self.lid], "indeterminateLocalIds": [],
+                             "invokedLocalMessages": []}
+            return original(method, path, **kw)
+
+        with patch.object(self.bridge.hapi, "request", side_effect=request):
+            self.fake.sessions[self.sid]["thinking"] = True
+            self.assertEqual(self.op("session_turn")["state"], "running")
+            self.fake.sessions[self.sid]["thinking"] = False
+            self.fake.sessions[self.sid]["agentState"]["requests"] = {"permission": {}}
+            self.assertEqual(self.op("session_turn")["state"], "running")
+            self.assertIsNone(self.store.turn("d1", "implement")["consumed_id"])
+            self.fake.sessions[self.sid]["agentState"]["requests"] = {}
+            self.assertEqual(self.op("session_turn")["state"], "done")
+
+    def test_queued_and_unresolved_polls_expire_at_the_original_absolute_deadline(self) -> None:
+        start = time.time()
+        with patch.object(bridge.time, "time", return_value=start):
+            self.send()
+        deadline = self.store.turn("d1", "implement")["deadline_at"]
+        for unresolved in (False, True):
+            with self.subTest(unresolved=unresolved):
+                self.fake.indeterminate = {self.lid} if unresolved else set()
+                with patch.object(bridge.time, "time", return_value=deadline - 1):
+                    self.assertEqual(self.op("session_turn")["state"], "queued")
+                    self.assertEqual(self.send()["delivery"], "already")
+                with patch.object(bridge.time, "time", return_value=deadline + 1):
+                    self.assertEqual(self.op("session_turn")["state"], "expired")
+                self.assertEqual(self.store.turn("d1", "implement")["deadline_at"], deadline)
+                self.assertIsNone(self.store.turn("d1", "implement")["consumed_id"])
+        self.assertEqual(len(self.fake.message_posts), 1)
+
+    def test_unknown_delivery_late_result_is_harvested_without_replay(self) -> None:
+        self.send()
+        deadline = time.time() - 1
+        self.store.put_turn("d1", "implement", self.lid, self.sid, "sent", deadline_at=deadline)
+        self.fake.indeterminate.add(self.lid)
+        self.assertEqual(self.op("session_turn")["state"], "expired")
+        self.assertTrue(self.op("fail", node="Within time budget? (implement)", detail="deadline elapsed")["ok"])
+        self.assertEqual(self.store.event("d1")["park_class"], "time_budget")
+        self.assertEqual(self.dispatcher.tick(deadline + 2), "idle")
+        self.fake.invoke(self.sid, self.lid)
+        self.answer()
+        self.assertEqual(self.dispatcher.tick(deadline + bridge.TIME_BUDGET_CHECK_SECONDS + 3), "dispatched")
+        self.assertEqual(self.op("begin", attempt=1)["status"], "started")
+        self.assertEqual(self.send()["delivery"], "already")
+        self.assertEqual(self.op("session_turn")["state"], "done")
+        self.assertEqual(self.store.turn("d1", "implement")["deadline_at"], deadline)
+        self.assertEqual(len(self.fake.message_posts), 1)
+
+    def test_correction_crash_before_ownership_record_does_not_replay_original_or_fix(self) -> None:
+        self.send()
+        deadline = self.store.turn("d1", "implement")["deadline_at"]
+        self.fake.invoke(self.sid, self.lid)
+        self.answer(status="bogus")
+        fix = self.lid + bridge.CORRECTION_SUFFIX
+        original = self.bridge.hapi.request
+
+        def request(method: str, path: str, **kw: Any) -> tuple[int, Any]:
+            response = original(method, path, **kw)
+            if method == "POST" and path.endswith("/messages") and kw["body"]["localId"] == fix:
+                self.fake.indeterminate.add(fix)
+                raise SystemExit("process died after Hub retained the correction")
+            return response
+
+        with patch.object(self.bridge.hapi, "request", side_effect=request):
+            with self.assertRaises(SystemExit):
+                self.op("session_turn")
+        self.restart()
+        turn = self.store.turn("d1", "implement")
+        self.assertEqual(turn["local_id"], self.lid)
+        self.assertIsNone(turn["consumed_id"])
+        self.retry()
+        self.assertEqual(self.send()["delivery"], "already")
+        self.assertEqual(self.op("session_turn")["state"], "running")
+        self.assertEqual(self.store.turn("d1", "implement")["local_id"], fix)
+        self.assertEqual(self.store.turn("d1", "implement")["deadline_at"], deadline)
+        self.fake.invoke(self.sid, fix)
+        self.answer(fix)
+        self.assertEqual(self.op("session_turn")["state"], "done")
+        self.assertEqual([p["localId"] for p in self.fake.message_posts], [self.lid, fix])
+        self.assertEqual(bridge.Store(self.config.state_path).turn("d1", "implement")["consumed_id"], fix)
+
+    def test_unknown_correction_post_adopts_retained_fix_without_duplicate_post(self) -> None:
+        self.send()
+        deadline = self.store.turn("d1", "implement")["deadline_at"]
+        self.fake.invoke(self.sid, self.lid)
+        self.answer(status="bogus")
+        fix = self.lid + bridge.CORRECTION_SUFFIX
+        self.fake.message_mode = "fail_after_store"
+        original = self.bridge.hapi.request
+
+        def request(method: str, path: str, **kw: Any) -> tuple[int, Any]:
+            response = original(method, path, **kw)
+            if method == "POST" and path.endswith("/messages") and kw["body"]["localId"] == fix:
+                self.fake.indeterminate.add(fix)
+            return response
+
+        with patch.object(self.bridge.hapi, "request", side_effect=request):
+            self.assertEqual(self.op("session_turn")["state"], "running")
+        self.restart()
+        self.assertEqual(self.op("session_turn")["state"], "queued")
+        self.assertEqual(self.send()["delivery"], "already")
+        self.fake.invoke(self.sid, fix)
+        self.answer(fix)
+        self.assertEqual(self.op("session_turn")["state"], "done")
+        self.assertEqual(self.store.turn("d1", "implement")["deadline_at"], deadline)
+        self.assertEqual([p["localId"] for p in self.fake.message_posts], [self.lid, fix])
+
+    def test_definitive_correction_rejection_consumes_result_before_retry(self) -> None:
+        self.send()
+        self.fake.invoke(self.sid, self.lid)
+        self.answer(status="bogus")
+        original = self.bridge.hapi.request
+        fix = self.lid + bridge.CORRECTION_SUFFIX
+
+        def request(method: str, path: str, **kw: Any) -> tuple[int, Any]:
+            if method == "POST" and path.endswith("/messages") and kw["body"]["localId"] == fix:
+                return 422, {"error": "message rejected"}
+            return original(method, path, **kw)
+
+        with patch.object(self.bridge.hapi, "request", side_effect=request):
+            self.assertEqual(self.op("session_turn")["state"], "attention")
+        self.restart()
+        self.assertEqual(self.store.turn("d1", "implement")["consumed_id"], self.lid)
+        self.retry()
+        self.assertEqual(self.store.turn("d1", "implement")["local_id"], self.lid + "-r1")
+        self.assertEqual(self.send()["local_id"], self.lid + "-r1")
+        self.assertEqual([p["localId"] for p in self.fake.message_posts], [self.lid, self.lid + "-r1"])
+
+    def test_invalid_after_fix_is_consumed_and_retry_uses_one_fresh_original(self) -> None:
+        self.send()
+        self.fake.invoke(self.sid, self.lid)
+        self.answer(status="bogus")
+        self.assertEqual(self.op("session_turn")["state"], "running")
+        fix = self.lid + bridge.CORRECTION_SUFFIX
+        self.fake.invoke(self.sid, fix)
+        self.answer(fix, status="bogus")
+        self.assertEqual(self.op("session_turn")["state"], "attention")
+        self.restart()
+        self.assertEqual(self.store.turn("d1", "implement")["consumed_id"], fix)
+        self.retry()
+        self.assertEqual(self.send()["local_id"], self.lid + "-r1")
+        self.assertEqual([p["localId"] for p in self.fake.message_posts], [self.lid, fix, self.lid + "-r1"])
+
+    def test_missing_active_deadline_is_bounded_without_rewriting_completed_history(self) -> None:
+        self.send()
+        with self.store.tx() as conn:
+            conn.execute("UPDATE turns SET deadline_at = NULL WHERE delivery_id = 'd1'")
+        observed = self.op("session_turn")
+        self.assertEqual((observed.get("state"), observed.get("needs_operator")), ("attention", True), observed)
+        self.assertIsNone(self.store.turn("d1", "implement")["deadline_at"])
+        self.fake.invoke(self.sid, self.lid)
+        self.answer()
+        self.assertEqual(self.op("session_turn")["state"], "done")
+        self.assertTrue(self.op("finish", outcome="no_change")["ok"])
+        before = [tuple(t) for t in self.store.query("SELECT * FROM turns WHERE delivery_id = 'd1'")]
+        self.restart()
+        after = [tuple(t) for t in self.store.query("SELECT * FROM turns WHERE delivery_id = 'd1'")]
+        self.assertEqual(after, before)
+        self.assertIsNone(self.store.turn("d1", "implement")["deadline_at"])
+
+
+class UnresolvedIdentityTests(BridgeTestCase):
+    def setUp(self) -> None:
+        super().setUp()
+        self.started()
+        self.source = self.op("ensure_session")["session_id"]
+        sent = self.op("session_send", mode="implement", instructions="Implement it.")
+        self.lid = sent["local_id"]
+        self.assertEqual(self.deliver(comment_payload(), event="issue_comment", delivery="c1").outcome, "queued")
+
+    def dead(self, *, alias: bool = False) -> str:
+        current = self.source
+        if alias:
+            metadata = dict(self.fake.sessions[self.source]["metadata"])
+            current = self.fake._session("source-alias", metadata)
+            self.fake.sessions[self.source]["metadata"]["supersededBySessionId"] = current
+            self.store.update_issue(REPO, 7, session_id=current, superseded=json.dumps([self.source]))
+        self.fake.sessions[current]["active"] = False
+        self.fake.unresumable.add(current)
+        return current
+
+    def assert_hold(self, current: str) -> None:
+        turn = dict(self.store.turn("d1", "implement"))
+        posts, spawns = len(self.fake.message_posts), len(self.fake.spawns)
+        calls = len(self.fake.calls)
+        response = self.op("ensure_session", "c1")
+        self.assertEqual((self.store.issue(REPO, 7)["session_state"],
+                          self.store.issue(REPO, 7)["session_id"]), ("ready", current), response)
+        self.assertEqual(dict(self.store.turn("d1", "implement")), turn)
+        self.assertEqual((len(self.fake.message_posts), len(self.fake.spawns)), (posts, spawns))
+        self.assertNotIn(f"archive {self.source}", self.fake.calls[calls:])
+
+    def test_other_event_cannot_drop_queued_or_unresolved_source_identity(self) -> None:
+        current = self.dead()
+        for uncertain in (False, True):
+            with self.subTest(uncertain=uncertain):
+                self.fake.indeterminate = {self.lid} if uncertain else set()
+                self.assert_hold(current)
+
+    def test_other_event_cannot_drop_alias_with_unresolved_owned_source_turn(self) -> None:
+        current = self.dead(alias=True)
+        self.fake.indeterminate.add(self.lid)
+        self.assert_hold(current)
+        self.assertEqual(self.store.turn("d1", "implement")["session_id"], self.source)
+
+    def assert_followed_alias_only_hold(self, *, uncertain: bool) -> None:
+        current = self.dead(alias=True)
+        # Resume can move the retained row to the replacement while the source remains
+        # queryable solely as the link to that replacement.
+        self.fake.messages[current] = list(self.fake.messages[self.source])
+        self.fake.messages[self.source] = []
+        if uncertain:
+            self.fake.indeterminate.add(self.lid)
+        self.assertEqual(self.bridge._queued_state(self.source, self.lid), "unknown")
+        self.assertIsNone(self.bridge._history_from(self.source, self.lid))
+        self.assertEqual(self.bridge._queued_state(current, self.lid),
+                         "indeterminate" if uncertain else "queued")
+        self.assertEqual([row["localId"] for row in self.fake.messages[current]], [self.lid])
+        before = dict(self.store.turn("d1", "implement"))
+        posts, spawns = len(self.fake.message_posts), len(self.fake.spawns)
+        calls = len(self.fake.calls)
+        with self.bridge.session_lock:
+            self.assertTrue(self.bridge._subject_holds_unresolved(REPO, 7))
+        self.assert_hold(current)
+        self.assertEqual(dict(self.store.turn("d1", "implement")), before)
+        self.assertEqual((before["state"], before["session_id"], before["local_id"]),
+                         ("sent", self.source, self.lid))
+        self.assertEqual((len(self.fake.message_posts), len(self.fake.spawns)), (posts, spawns))
+        self.assertNotIn(f"archive {current}", self.fake.calls[calls:])
+        self.assertNotIn(f"delete {current}", self.fake.calls[calls:])
+
+    def test_other_event_cannot_drop_alias_with_queued_turn_only_in_followed_session(self) -> None:
+        self.assert_followed_alias_only_hold(uncertain=False)
+
+    def test_other_event_cannot_drop_alias_with_indeterminate_turn_only_in_followed_session(self) -> None:
+        self.assert_followed_alias_only_hold(uncertain=True)
+
+    def test_provider_lookup_failure_holds_identity_fail_closed(self) -> None:
+        current = self.dead()
+        original = self.bridge.hapi.request
+
+        def request(method: str, path: str, **kw: Any) -> tuple[int, Any]:
+            if path.endswith("/queued-state") or path.endswith("/messages"):
+                return 503, {"error": "Hub temporarily unavailable"}
+            return original(method, path, **kw)
+
+        with patch.object(self.bridge.hapi, "request", side_effect=request):
+            self.assert_hold(current)
+
+    def test_grace_expiry_keeps_hold_until_explicit_dismissal(self) -> None:
+        deadline = time.time() - 1
+        self.store.put_turn("d1", "implement", self.lid, self.source, "sent", deadline_at=deadline)
+        self.fake.indeterminate.add(self.lid)
+        self.assertTrue(self.op("fail", node="Within time budget? (implement)", detail="deadline elapsed")["ok"])
+        self.dispatcher.tick(deadline + bridge.TURN_GRACE_SECONDS + 10)
+        self.assertEqual(self.store.event("d1")["park_class"], "time_budget_expired")
+        current = self.dead()
+        self.assert_hold(current)
+        self.assertTrue(self.op("dismiss_event", reason="Hub/operator resolved the retained turn")["ok"])
+        released = self.op("ensure_session", "c1")
+        self.assertTrue(released["ok"], released)
+        self.assertNotEqual(released["session_id"], current)
+        self.assertEqual(self.store.event("d1")["state"], "completed")
+
+    def test_hold_releases_on_consumption_authoritative_invocation_or_absence(self) -> None:
+        current = self.dead(alias=True)
+        self.fake.indeterminate.add(self.lid)
+        self.assert_hold(current)
+        # A different subject stays independently healthy while this subject is held.
+        self.started(8, "independent")
+        healthy = self.op("ensure_session", "independent")
+        self.assertTrue(healthy["ok"], healthy)
+        for release in ("consumed", "invoked", "absent"):
+            with self.subTest(release=release):
+                self.store.update_issue(REPO, 7, session_state="ready", session_id=current,
+                                        superseded=json.dumps([self.source]))
+                self.store.put_turn("d1", "implement", self.lid, self.source, "sent")
+                with self.store.tx() as conn:
+                    conn.execute("UPDATE turns SET consumed_id = NULL WHERE delivery_id = 'd1'")
+                self.fake.messages[self.source] = []
+                self.fake.indeterminate.discard(self.lid)
+                if release != "absent":
+                    self.fake.user_says(self.source, "owned turn", local_id=self.lid,
+                                        invoked=release == "invoked")
+                if release == "consumed":
+                    self.fake.indeterminate.add(self.lid)
+                    self.store.consume_turn("d1", "implement", self.lid)
+                ensured = self.op("ensure_session", "c1")
+                self.assertTrue(ensured["ok"], ensured)
+                self.assertNotEqual(ensured["session_id"], current)
+
+    def test_completed_legacy_turn_does_not_hold_or_change_during_replacement(self) -> None:
+        self.store.update_event("d1", state="completed", outcome="superseded")
+        with self.store.tx() as conn:
+            conn.execute("UPDATE turns SET deadline_at = NULL WHERE delivery_id = 'd1'")
+        before = dict(self.store.turn("d1", "implement"))
+        current = self.dead(alias=True)
+        self.fake.indeterminate.add(self.lid)
+        ensured = self.op("ensure_session", "c1")
+        self.assertTrue(ensured["ok"], ensured)
+        self.assertNotEqual(ensured["session_id"], current)
+        self.assertEqual(dict(self.store.turn("d1", "implement")), before)
 
 
 class TimeBudgetTests(BridgeTestCase):
