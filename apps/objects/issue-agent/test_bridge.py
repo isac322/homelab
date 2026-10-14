@@ -4139,6 +4139,26 @@ class TurnTests(BridgeTestCase):
         self.assertEqual((done["state"], done["result"]["status"]), ("done", "ready"))
         self.assertEqual(bridge.resend_local_id("d1", "implement", fix_lid), f"{self.lid}-r1")
 
+    def test_unsent_correction_is_delivered_when_history_exceeds_page_limit(self) -> None:
+        self.send()
+        self.fake.invoke(self.sid, self.lid)
+        for index in range(2):
+            self.fake.user_says(self.sid, "Older conversation", local_id=f"history-{index}", invoked=True)
+        self.assertEqual(len(self.fake.messages[self.sid]), 3)
+        fix_lid = self.lid + bridge.CORRECTION_SUFFIX
+        with patch.object(bridge, "MAX_HISTORY_PAGES", 1), patch.object(bridge, "HISTORY_PAGE_LIMIT", 1):
+            self.assertIsNone(self.bridge._history_from(self.sid, fix_lid))
+            self.assertEqual(self.bridge._delivery(self.sid, fix_lid), "absent")
+            corrected = self.bridge._request_correction(
+                self.store.event("d1"), "implement", self.sid, self.lid, "invalid result")
+            self.assertEqual(corrected["state"], "running")
+            self.assertEqual(self.fake.message_posts[-1]["localId"], fix_lid)
+            self.assertEqual(self.store.turn("d1", "implement")["local_id"], fix_lid)
+            self.assertEqual(self.bridge._delivery(self.sid, fix_lid), "present")
+            self.bridge._request_correction(
+                self.store.event("d1"), "implement", self.sid, self.lid, "invalid result")
+            self.assertEqual(len(self.fake.message_posts), 2)
+
     def test_agent_reported_head_sha_is_rejected_and_corrected(self) -> None:
         # The push resolves the branch head itself; a hand-typed head_sha (the pre-change contract) is refused.
         ready = {"status": "ready", "pr": {"title": "x", "body": "Fixes #7"},
@@ -5461,6 +5481,21 @@ class ResultValidationTests(unittest.TestCase):
         blocked = variant(IMPLEMENT_OK, status="blocked", pr=None, blockers=["envtest needs KVM"],
                           local_checks=failing)
         self.assertEqual(bridge.validate_result("implement", blocked, 7)["status"], "blocked")
+
+    def test_local_check_commands_allow_two_thousand_characters(self) -> None:
+        command = "docker run " + "x" * (2000 - len("docker run "))
+        checks = [{"command": command, "exit_code": 0}]
+        for mode in ("implement", "followup"):
+            with self.subTest(mode=mode):
+                self.assertEqual(
+                    bridge.validate_result(mode, variant(IMPLEMENT_OK, local_checks=checks), 7)["local_checks"],
+                    checks,
+                )
+                self.assertInvalid(
+                    mode, variant(IMPLEMENT_OK, local_checks=[{"command": command + "x", "exit_code": 0}]),
+                    "local check command",
+                )
+        self.assertIn("<=2000 exact command you ran in this worktree", bridge._IMPLEMENT_SCHEMA)
 
     def test_review_conditional_fields(self) -> None:
         self.assertInvalid("review", variant(REVIEW_OK, head_sha=None), "head_sha")
