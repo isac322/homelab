@@ -1,3 +1,5 @@
+replicaCount: 0
+
 resources:
   requests:
     cpu: 20m
