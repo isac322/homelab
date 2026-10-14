@@ -71,6 +71,7 @@ GITHUB_API = "https://api.github.com"
 MAX_BODY = 16 * 1024
 CLONE_TIMEOUT = 1800
 GIT_TIMEOUT = 600
+PUSH_RETRY_DELAYS = (1.0, 2.0)
 UNTRUST = "/opt/issue-agent/bin/codex-untrust"
 UNTRUST_TIMEOUT = 60
 
@@ -325,20 +326,23 @@ def do_push(repo: str, branch: str, expected_sha: str) -> dict:
     if sha != expected_sha:
         raise PublisherError(HTTPStatus.CONFLICT, "sha_mismatch", f"{branch} is at {sha}, expected {expected_sha}")
 
-    result = run_git(
-        [
-            "--git-dir", mirror_path(repo),
-            "push", "--quiet", "--porcelain", "--no-verify", "--",
-            f"https://github.com/{repo}.git",
-            f"{sha}:refs/heads/{branch}",
-        ],
-        token=token,
-    )
-    if result.returncode != 0:
-        output = f"{result.stdout}\n{result.stderr}"
-        if any(marker in output for marker in ("non-fast-forward", "fetch first", "[rejected]", "stale info")):
-            raise PublisherError(HTTPStatus.CONFLICT, "non_fast_forward", result.stderr or result.stdout)
-        raise PublisherError(HTTPStatus.BAD_GATEWAY, "push_failed", result.stderr or result.stdout)
+    push_args = [
+        "--git-dir", mirror_path(repo),
+        "push", "--quiet", "--porcelain", "--no-verify", "--",
+        f"https://github.com/{repo}.git",
+        f"{sha}:refs/heads/{branch}",
+    ]
+    for attempt in range(len(PUSH_RETRY_DELAYS) + 1):
+        result = run_git(push_args, token=token)
+        output = "\n".join(part for part in (result.stdout.strip(), result.stderr.strip()) if part)
+        if result.returncode == 0:
+            break
+        if any(marker in output for marker in ("non-fast-forward", "fetch first", "[rejected]", "stale info", "cannot lock ref", "failed to update ref")):
+            raise PublisherError(HTTPStatus.CONFLICT, "non_fast_forward", output or "non-fast-forward")
+        if attempt < len(PUSH_RETRY_DELAYS):
+            time.sleep(PUSH_RETRY_DELAYS[attempt])
+            continue
+        raise PublisherError(HTTPStatus.BAD_GATEWAY, "push_failed", output or "git push failed")
     log.info("pushed %s %s -> %s", repo, branch, sha)
     return {"sha": sha}
 

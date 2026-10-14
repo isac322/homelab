@@ -636,9 +636,11 @@ CREATE TABLE IF NOT EXISTS {name} (
     attempted_key   TEXT,
     latest_signal   TEXT,
     last_manual_id  INTEGER,
+    manual_marks    TEXT NOT NULL DEFAULT '{{}}',
     repair_streaks  TEXT NOT NULL DEFAULT '{{}}',
     notified_head   TEXT,
     closed          INTEGER NOT NULL DEFAULT 0,
+    auto_merge      INTEGER NOT NULL DEFAULT 0,
     updated_at      REAL NOT NULL,
     PRIMARY KEY (repo, pr_number)
 )"""
@@ -732,7 +734,9 @@ def migrate(conn: sqlite3.Connection) -> None:
     if "prs" in tables:
         have = set(_columns(conn, "prs"))
         for col, decl in (("latest_signal", "TEXT"), ("last_manual_id", "INTEGER"),
-                          ("repair_streaks", "TEXT NOT NULL DEFAULT '{}'")):
+                          ("manual_marks", "TEXT NOT NULL DEFAULT '{}'"),
+                          ("repair_streaks", "TEXT NOT NULL DEFAULT '{}'"),
+                          ("auto_merge", "INTEGER NOT NULL DEFAULT 0")):
             if col not in have:
                 conn.execute(f"ALTER TABLE prs ADD COLUMN {col} {decl}")
 # Event: accepted -> dispatched -> completed | needs_attention
@@ -798,6 +802,10 @@ class Store:
             numbers = ev.get("pr_numbers", [ev.get("pr_number")])
             for number in numbers:
                 if number:
+                    if ev.get("manual") is not None:
+                        self._supersede_parked_repairs(
+                            conn, ev["repo"], int(number), now,
+                            f"superseded by manual PR signal {ev['delivery_id']}")
                     self._dirty_pr(conn, ev["repo"], number, now, ev.get("manual"))
             if ev.get("head_sha"):
                 conn.execute("UPDATE prs SET dirty = 1, revision = revision + 1, next_reconcile_at = 0,"
@@ -852,6 +860,10 @@ class Store:
             "INSERT OR IGNORE INTO issues (repo, issue_number, subject, updated_at) VALUES (?, ?, ?, ?)",
             (ev["repo"], ev["issue_number"], subject_of(ev["kind"]), now),
         )
+        if ev["kind"] == "issue_comment" and ev.get("trusted"):
+            self._supersede_parked_issue_repairs(
+                conn, ev["repo"], int(ev["issue_number"]), now,
+                f"superseded by trusted issue comment {ev['delivery_id']}")
         if ev["kind"] == "pr_review":
             self._fold_review_requests(conn, ev, now)
             self._cancel_outdated_review(conn, ev, now)
@@ -971,13 +983,32 @@ class Store:
     @staticmethod
     def _dirty_pr(conn: sqlite3.Connection, repo: str, number: int, now: float,
                   manual: dict[str, Any] | None = None) -> None:
-        manual_id = manual["id"] if manual is not None else None
-        conn.execute("UPDATE prs SET dirty = 1, revision = revision + 1, next_reconcile_at = 0,"
-                     " latest_signal = COALESCE(?, latest_signal), last_manual_id = COALESCE(?, last_manual_id),"
-                     " updated_at = ? WHERE repo = ? AND pr_number = ?"
-                     " AND (? IS NULL OR last_manual_id IS NULL OR last_manual_id < ?)",
-                     (json.dumps(manual) if manual is not None else None, manual_id, now, repo, number,
-                      manual_id, manual_id))
+        if manual is None:
+            conn.execute("UPDATE prs SET dirty = 1, revision = revision + 1, next_reconcile_at = 0,"
+                         " updated_at = ? WHERE repo = ? AND pr_number = ?", (now, repo, number))
+            return
+        row = conn.execute("SELECT last_manual_id, manual_marks FROM prs WHERE repo = ? AND pr_number = ?",
+                           (repo, number)).fetchone()
+        if row is None:
+            return
+        manual_id = int(manual["id"])
+        kind = str(manual.get("kind") or "issue_comment")
+        marks = json.loads(row["manual_marks"] or "{}")
+        floor = int(marks.get(kind, (row["last_manual_id"] or 0) if not marks and kind == "issue_comment" else 0))
+        if manual_id <= floor:
+            conn.execute("UPDATE prs SET dirty = 1, revision = revision + 1, next_reconcile_at = 0,"
+                         " updated_at = ? WHERE repo = ? AND pr_number = ?", (now, repo, number))
+            return
+        marks[kind] = manual_id
+        conn.execute(
+            "UPDATE prs SET dirty = 1, revision = revision + 1, next_reconcile_at = 0,"
+            " latest_signal = ?, last_manual_id = ?, manual_marks = ?,"
+            " auto_merge = CASE WHEN ? THEN 0 WHEN ? THEN 1 ELSE auto_merge END,"
+            " updated_at = ? WHERE repo = ? AND pr_number = ?",
+            (json.dumps(manual), manual_id, json.dumps(marks, sort_keys=True),
+             1 if manual.get("cancel_merge") else 0, 1 if manual.get("merge_requested") else 0,
+             now, repo, number),
+        )
 
     def dirty_pr(self, repo: str, number: int) -> None:
         with self.tx() as conn:
@@ -1032,6 +1063,64 @@ class Store:
         with self.tx() as conn:
             conn.execute("UPDATE prs SET notified_head = ?, updated_at = ? WHERE repo = ? AND pr_number = ?",
                          (head_sha, time.time(), repo, pr_number))
+
+    @staticmethod
+    def _supersede_parked_repairs(conn: sqlite3.Connection, repo: str, pr_number: int,
+                                   now: float, reason: str) -> None:
+        row = conn.execute("SELECT issue_number, active_delivery FROM prs WHERE repo = ? AND pr_number = ?",
+                           (repo, pr_number)).fetchone()
+        if row is None:
+            return
+        issue_number = int(row["issue_number"])
+        parked = conn.execute(
+            "SELECT delivery_id FROM events WHERE repo = ? AND (issue_number = ? OR pr_number = ?)"
+            " AND state = 'needs_attention' AND kind != 'pr_review'", (repo, issue_number, pr_number)).fetchall()
+        if not parked:
+            return
+        conn.execute(
+            "UPDATE events SET state = 'completed', outcome = 'superseded', attention_pending = 0,"
+            " next_attempt_at = 0, detail = ?, updated_at = ? WHERE repo = ?"
+            " AND (issue_number = ? OR pr_number = ?) AND state = 'needs_attention' AND kind != 'pr_review'",
+            (reason, now, repo, issue_number, pr_number),
+        )
+        conn.execute("UPDATE issues SET blocked = 0, detail = NULL, updated_at = ?"
+                     " WHERE repo = ? AND issue_number = ?", (now, repo, issue_number))
+        active = row["active_delivery"]
+        if active:
+            active_row = conn.execute("SELECT state FROM events WHERE delivery_id = ?", (active,)).fetchone()
+            if active_row is None or active_row["state"] not in ACTIVE_EVENT_STATES:
+                conn.execute("UPDATE prs SET active_delivery = NULL, attempted_key = NULL, dirty = 1,"
+                             " next_reconcile_at = 0, updated_at = ? WHERE repo = ? AND pr_number = ?",
+                             (now, repo, pr_number))
+
+    @staticmethod
+    def _supersede_parked_issue_repairs(conn: sqlite3.Connection, repo: str, issue_number: int,
+                                         now: float, reason: str) -> None:
+        parked = conn.execute(
+            "SELECT delivery_id FROM events WHERE repo = ? AND issue_number = ?"
+            " AND state = 'needs_attention' AND kind != 'pr_review'", (repo, issue_number)).fetchall()
+        if not parked:
+            return
+        conn.execute(
+            "UPDATE events SET state = 'completed', outcome = 'superseded', attention_pending = 0,"
+            " next_attempt_at = 0, detail = ?, updated_at = ? WHERE repo = ? AND issue_number = ?"
+            " AND state = 'needs_attention' AND kind != 'pr_review'",
+            (reason, now, repo, issue_number),
+        )
+        conn.execute("UPDATE issues SET blocked = 0, detail = NULL, updated_at = ?"
+                     " WHERE repo = ? AND issue_number = ?", (now, repo, issue_number))
+        issue = conn.execute("SELECT pr_number FROM issues WHERE repo = ? AND issue_number = ?",
+                             (repo, issue_number)).fetchone()
+        if issue is not None and issue["pr_number"]:
+            active = conn.execute("SELECT active_delivery FROM prs WHERE repo = ? AND pr_number = ?",
+                                  (repo, issue["pr_number"])).fetchone()
+            if active and active["active_delivery"]:
+                active_row = conn.execute("SELECT state FROM events WHERE delivery_id = ?",
+                                          (active["active_delivery"],)).fetchone()
+                if active_row is None or active_row["state"] not in ACTIVE_EVENT_STATES:
+                    conn.execute("UPDATE prs SET active_delivery = NULL, attempted_key = NULL, dirty = 1,"
+                                 " next_reconcile_at = 0, updated_at = ? WHERE repo = ? AND pr_number = ?",
+                                 (now, repo, issue["pr_number"]))
 
     @staticmethod
     def maintenance_until_in(conn: sqlite3.Connection) -> float | None:
@@ -1189,13 +1278,14 @@ def http_json(method: str, url: str, *, headers: Mapping[str, str], body: Any = 
 
 class OpError(Exception):
     def __init__(self, error: str, *, retryable: bool = False, needs_operator: bool = False,
-                 park_class: str | None = None):
+                 park_class: str | None = None, detail: str | None = None):
         super().__init__(error)
         self.error = error
         self.retryable = retryable
         self.needs_operator = needs_operator
         # A TRANSIENT_PARK_CLASSES member when the event this failure parks may be re-queued automatically.
         self.park_class = park_class
+        self.detail = detail
 
 
 class HubTransportError(TransportError):
@@ -1313,8 +1403,11 @@ class Publisher:
         message = error if isinstance(error, str) and error else f"publisher {path} HTTP {status}"
         if error == "foreign_owner" and isinstance(detail, str) and detail:
             message = f"{error}: {detail[:500]}"
+        if error == "push_failed" and isinstance(detail, str) and detail.strip():
+            message = f"push_failed: {detail.strip()[:1500]}"
         # foreign_owner (409): a worktree entry another uid owns; the dockerd janitor chowns it within minutes.
-        raise OpError(message, retryable=status >= 500 or status == 429 or error == "foreign_owner")
+        raise OpError(message, retryable=status >= 500 or status == 429 or error == "foreign_owner",
+                      detail=detail if isinstance(detail, str) else None)
 
 
 # --------------------------------------------------------------------------
@@ -1391,6 +1484,67 @@ def mentions(body: str, bot_login: str | None) -> bool:
         return False
     slug = re.escape(bot_login.removesuffix("[bot]"))
     return re.search(rf"(?<![\w/-])@{slug}(?![\w-])", body, re.IGNORECASE) is not None
+
+DO_NOT_MERGE_RE = re.compile(
+    r"\b(?:do\s+not\s+merge|don't\s+merge|cancel\s+(?:auto[- ]?)?merge|stop\s+(?:auto[- ]?)?merge)\b"
+    r"|머지\s*하지\s*마|머지\s*취소|병합\s*하지\s*마",
+    re.IGNORECASE,
+)
+MERGE_CMD_RE = re.compile(
+    r"(?:^|[.;,!\n]|\b(?:and|then|please)\b)\s*(?:please\s+)?(?:auto[- ]?)?merge"
+    r"(?:\s+(?:it|this(?:\s+pr|\s+pull\s+request)?|the\s+(?:pr|pull\s+request)|pr|now|when\s+ready))?"
+    r"(?=\s*(?:$|[.!,\n]|\b(?:once|when|after)\b))"
+    r"|(?:머지|병합)\s*(?:해(?:\s*줘|\s*주세요|\s*라)?|진행\s*해(?:\s*줘|\s*주세요)?|부탁(?:\s*해|\s*합니다)?)"
+    r"(?=\s*(?:$|[.!,\n]))",
+    re.IGNORECASE,
+)
+
+
+def is_merge_requested(body: str, bot_login: str | None = None) -> bool:
+    if "?" in body or "？" in body or DO_NOT_MERGE_RE.search(body):
+        return False
+    text = body
+    if bot_login:
+        slug = re.escape(bot_login.removesuffix("[bot]"))
+        text = re.sub(rf"(?<![\w/-])@{slug}(?![\w-])", " ", text, flags=re.IGNORECASE)
+    return bool(MERGE_CMD_RE.search(text))
+
+
+_PURE_MERGE_WORDS = {
+    "please", "now", "it", "this", "pr", "the", "pull", "request", "when", "ready", "auto",
+    "automatically", "go", "ahead", "and", "merge", "해", "해줘", "해주세요", "해라", "부탁",
+    "부탁해", "진행", "진행해", "진행해줘", "머지", "머지해", "머지해줘", "병합", "병합해",
+    "병합해줘", "바로", "지금",
+}
+
+
+def is_pure_merge_request(body: str, bot_login: str | None) -> bool:
+    if not is_merge_requested(body, bot_login):
+        return False
+    text = body
+    if bot_login:
+        slug = re.escape(bot_login.removesuffix("[bot]"))
+        text = re.sub(rf"(?<![\w/-])@{slug}(?![\w-])", " ", text, flags=re.IGNORECASE)
+    text = re.sub(r"[^\w\s가-힣]", " ", text, flags=re.UNICODE).casefold()
+    return not [word for word in text.split() if word not in _PURE_MERGE_WORDS]
+
+
+def _manual_signal(item_id: int, login: str, body: str, event_kind: str, *,
+                   allow_merge_control: bool = False, path: str | None = None,
+                   line: int | None = None, review_state: str | None = None,
+                   bot_login: str | None = None) -> dict[str, Any]:
+    return {
+        "id": item_id,
+        "author": login,
+        "body": body,
+        "kind": event_kind,
+        "path": path,
+        "line": line,
+        "review_state": review_state,
+        "merge_requested": allow_merge_control and is_merge_requested(body, bot_login),
+        "pure_merge": allow_merge_control and is_pure_merge_request(body, bot_login),
+        "cancel_merge": allow_merge_control and bool(DO_NOT_MERGE_RE.search(body)),
+    }
 
 
 def _labels(issue: Mapping[str, Any]) -> set[str]:
@@ -1565,6 +1719,30 @@ def classify_event(registry: Registry, event: str, delivery: str, payload: Any, 
             return "malformed"
         if action not in ("submitted", "edited", "dismissed"):
             return "action_ignored"
+        if action in ("submitted", "edited"):
+            review_id = _positive_int(review.get("id"))
+            rbody = review.get("body") or ""
+            if isinstance(rbody, str) and rbody.strip() and review_id is not None \
+                    and not is_agent_text(rbody) and sender.get("type") == "User" \
+                    and not login.endswith("[bot]") and not is_self and mentions(rbody, bot_login):
+                pr_author = (pr.get("user") or {}).get("login") if isinstance(pr.get("user"), dict) else None
+                is_author = isinstance(pr_author, str) and login.casefold() == pr_author.casefold()
+                is_trusted = not is_author and trusted(cfg.name, login)
+                can_merge = (action in ("created", "submitted")) and (
+                    is_trusted or (
+                        is_author
+                        and (is_merge_requested(rbody, bot_login) or bool(DO_NOT_MERGE_RE.search(rbody)))
+                        and trusted(cfg.name, login)
+                    )
+                )
+                if not is_author and not is_trusted:
+                    return "actor_not_allowed"
+                signal = _pr_signal(cfg, delivery, login, default_branch, pr, kind="pr_signal", body=rbody)
+                if isinstance(signal, str):
+                    return signal
+                return {**signal, "manual": _manual_signal(
+                    review_id, login, rbody, "pull_request_review",
+                    allow_merge_control=can_merge, review_state=review.get("state"), bot_login=bot_login)}
         return _pr_signal(cfg, delivery, login, default_branch, pr, kind="pr_signal", body="")
 
     if event in ("check_run", "check_suite", "status", "push", "pull_request_review_comment"):
@@ -1580,8 +1758,40 @@ def classify_event(registry: Registry, event: str, delivery: str, payload: Any, 
             return {**base_signal, "head_sha": sha}
         if event == "pull_request_review_comment":
             pr = payload.get("pull_request")
+            comment = payload.get("comment")
             if not isinstance(pr, dict):
                 return "malformed"
+            if action in ("created", "edited") and isinstance(comment, dict):
+                comment_id = _positive_int(comment.get("id"))
+                body = comment.get("body")
+                if isinstance(body, str) and comment_id is not None and not is_agent_text(body) \
+                        and sender.get("type") == "User" and not login.endswith("[bot]") and not is_self:
+                    command = review_command(bot_login)
+                    repair_mention = mentions(body, bot_login) and (
+                        reviewer_login is not None or command is None or command not in body.casefold())
+                    if repair_mention:
+                        pr_author = (pr.get("user") or {}).get("login") if isinstance(pr.get("user"), dict) else None
+                        is_author = isinstance(pr_author, str) and login.casefold() == pr_author.casefold()
+                        is_trusted = not is_author and trusted(cfg.name, login)
+                        can_merge = (action == "created") and (
+                            is_trusted or (
+                                is_author
+                                and (is_merge_requested(body, bot_login) or bool(DO_NOT_MERGE_RE.search(body)))
+                                and trusted(cfg.name, login)
+                            )
+                        )
+                        if not is_author and not is_trusted:
+                            return "actor_not_allowed"
+                        signal = _pr_signal(cfg, delivery, login, default_branch, pr, kind="pr_signal", body=body)
+                        if isinstance(signal, str):
+                            return signal
+                        return {**signal, "comment_id": comment_id,
+                                "manual": _manual_signal(
+                                    comment_id, login, body, "pull_request_review_comment",
+                                    allow_merge_control=can_merge, path=comment.get("path"),
+                                    line=_positive_int(comment.get("line"))
+                                    or _positive_int(comment.get("original_line")),
+                                    bot_login=bot_login)}
             return _pr_signal(cfg, delivery, login, default_branch, pr, kind="pr_signal", body="")
         check = payload.get(event)
         if not isinstance(check, dict):
@@ -1650,15 +1860,26 @@ def classify_event(registry: Registry, event: str, delivery: str, payload: Any, 
         if on_pr:
             review_mention = mentions(body, reviewer_login or bot_login)
             repair_mention = reviewer_login is not None and mentions(body, bot_login)
+            if reviewer_login is None and mentions(body, bot_login) \
+                    and (is_merge_requested(body, bot_login) or DO_NOT_MERGE_RE.search(body)):
+                repair_mention = True
             if not review_mention and not repair_mention:
                 return "pull_request_comment_ignored"
             is_author = isinstance(issue_author_login, str) and login.casefold() == issue_author_login.casefold()
             is_trusted = not is_author and trusted(cfg.name, login)
+            can_merge = (action == "created") and (
+                is_trusted or (
+                    is_author
+                    and (is_merge_requested(body, bot_login) or bool(DO_NOT_MERGE_RE.search(body)))
+                    and trusted(cfg.name, login)
+                )
+            )
             if not is_author and not is_trusted:
                 return "actor_not_allowed"
             if repair_mention:
-                return {**base, "kind": "pr_signal", "pr_number": number,
-                        "manual": {"id": comment_id, "author": login, "body": body}}
+                return {**base, "kind": "pr_signal", "pr_number": number, "comment_id": comment_id,
+                        "manual": _manual_signal(comment_id, login, body, "issue_comment",
+                                                  allow_merge_control=can_merge, bot_login=bot_login)}
             return {**base, "semantic_key": f"{cfg.name}#comment:{comment_id}", "kind": "pr_review",
                     "pr_number": number, "comment_id": comment_id, "body": body, "trusted": is_trusted}
         # An outside human's comment on a closed issue asks the agent whether the issue's own request is still
@@ -1745,6 +1966,19 @@ def handle_webhook(config: Config, store: Store, collaborators: Collaborators, h
         classified["managed_issue"] = mapped
         classified["head_sha"] = head["sha"]
     outcome = store.enqueue(classified)
+    if outcome in ("queued", "reconcile_pending") and event in ("issue_comment", "pull_request_review_comment") \
+            and (classified.get("comment_id") or (classified.get("manual") or {}).get("id")):
+        cid = classified.get("comment_id") or classified["manual"]["id"]
+        endpoint = (f"/repos/{classified['repo']}/pulls/comments/{cid}/reactions"
+                    if event == "pull_request_review_comment"
+                    else f"/repos/{classified['repo']}/issues/comments/{cid}/reactions")
+        client = (GitHub(config.github_api_url, config.github_review_token_dir, config.http_timeout)
+                  if classified["kind"] == "pr_review" and config.github_review_token_dir
+                  else GitHub(config.github_api_url, config.github_token_dir, config.http_timeout))
+        try:
+            client.request("POST", endpoint, {"content": "eyes"})
+        except (OpError, TransportError, OSError, ConfigError) as exc:
+            LOG.warning("delivery %s eyes reaction failed: %s", delivery, exc)
     LOG.info("delivery %s %s#%s %s: %s", delivery, classified["repo"], classified["issue_number"],
              classified["kind"], outcome)
     return Intake(200 if outcome == "duplicate" else 202, outcome)
@@ -2411,6 +2645,12 @@ class Bridge:
         return branch
 
     @staticmethod
+    def _event_target_number(ev: Mapping[str, Any] | sqlite3.Row) -> int:
+        if ev["kind"] == "pr_repair" and ev["pr_number"]:
+            return int(ev["pr_number"])
+        return int(ev["issue_number"])
+
+    @staticmethod
     def _worktree_name(ev: sqlite3.Row) -> str:
         prefix = "review-pr" if subject_of(ev["kind"]) == "pull_request" else "issue"
         return f"{prefix}-{ev['issue_number']}"
@@ -2505,8 +2745,8 @@ class Bridge:
                                             next_attempt_at=time.time() + DISPATCH_BACKOFF)
                     status = "retry"
                 else:
-                    repair = {**repair, "state": current, "findings": findings}
                     manual = stages.get("repair_input", {}).get("manual")
+                    repair = {**repair, "state": current, "findings": findings, "manual": manual}
                     if not current["known"] or current["state"] != "OPEN" or current["draft"] \
                             or (current["ready"] and not manual) or not (self._actionable(findings) or manual):
                         self.store.update_event(ev["delivery_id"], state="completed", outcome="no_change",
@@ -2588,7 +2828,8 @@ class Bridge:
                          " WHERE seq = ?", (outcome, detail[:2000] if isinstance(detail, str) else None,
                                             json.dumps(stages), time.time(), ev["seq"]))
         self._archive_session(ev)
-        self._clear_attention_label(ev["repo"], int(ev["issue_number"]))
+        self._clear_attention_label(ev["repo"], int(ev["issue_number"]),
+                                     target=self._event_target_number(ev))
         if pr_number:
             if ev["kind"] == "pr_repair":
                 self.store.release_pr_repair(ev["repo"], int(pr_number), ev["delivery_id"], success=True)
@@ -2685,19 +2926,20 @@ class Bridge:
         no-change repair: it reviews the live head even when the review App already reviewed it."""
         return ev["comment_id"] is not None or ":rereview:" in (ev["semantic_key"] or "")
 
-    def _clear_attention_label(self, repo: str, number: int, *, client: GitHub | None = None) -> None:
-        """A successful run clears the failure notice the bridge put on the subject, if it put one there.
-
-        Best effort: the flag stays set when GitHub refuses the removal, so the next finish retries it."""
+    def _clear_attention_label(self, repo: str, number: int, target: int | None = None,
+                               *, client: GitHub | None = None) -> None:
+        """Clear the failure notice from the issue and, for PR repairs, the PR surface."""
         issue = self.store.issue(repo, number)
         if issue is None or not issue["attention_label"]:
             return
-        try:
-            self._gh("DELETE", f"/repos/{repo}/issues/{number}/labels/"
-                               f"{urllib.parse.quote(NEEDS_ATTENTION, safe='')}", ok=(200, 404), client=client)
-        except (OpError, TransportError) as exc:
-            LOG.warning("%s#%d %s not removed (next finish retries): %s", repo, number, NEEDS_ATTENTION, exc)
-            return
+        for current in dict.fromkeys(num for num in (target, issue["pr_number"], number) if num is not None):
+            try:
+                self._gh("DELETE", f"/repos/{repo}/issues/{current}/labels/"
+                                   f"{urllib.parse.quote(NEEDS_ATTENTION, safe='')}", ok=(200, 404), client=client)
+            except (OpError, TransportError) as exc:
+                LOG.warning("%s#%d %s not removed (next finish retries): %s",
+                            repo, current, NEEDS_ATTENTION, exc)
+                return
         self.store.update_issue(repo, number, attention_label=0)
 
     def _archive_session(self, ev: sqlite3.Row) -> None:
@@ -2789,7 +3031,7 @@ class Bridge:
 
     def attention_body(self, ev: sqlite3.Row, detail: str, node: str | None) -> str:
         issue = self.store.issue(ev["repo"], ev["issue_number"])
-        subject = "pull request" if subject_of(ev["kind"]) == "pull_request" else "issue"
+        subject = "pull request" if ev["kind"] in ("pr_review", "pr_repair") else "issue"
         stages = [k for k in json.loads(ev["stages"] or "{}") if k != "started"]
         where = f"n8n node `{node}`" if node else f"after stage `{stages[-1]}`" if stages else "the bridge"
         lines = [
@@ -2878,14 +3120,16 @@ class Bridge:
             gh = self.review_github if ev["kind"] == "pr_review" else None
             done = True
             try:
-                self._comment(ev["repo"], ev["issue_number"], f"{delivery_id}:attention",
+                target = self._event_target_number(ev)
+                self._comment(ev["repo"], target, f"{delivery_id}:attention",
                               self.attention_body(ev, ev["detail"] or "needs attention", ev["attention_node"]),
                               client=gh)
             except (OpError, TransportError) as exc:
                 LOG.error("attention notice for %s not posted (will retry): %s", delivery_id, exc)
                 done = False
             try:
-                self._apply_labels(ev["repo"], ev["issue_number"], [NEEDS_ATTENTION], [], client=gh)
+                target = self._event_target_number(ev)
+                self._apply_labels(ev["repo"], target, [NEEDS_ATTENTION], [], client=gh)
             except (OpError, TransportError) as exc:
                 LOG.error("attention label for %s not applied (will retry): %s", delivery_id, exc)
                 done = False
@@ -4303,7 +4547,8 @@ class Bridge:
             raise OpError("bad purpose")
         if not isinstance(body, str) or not body.strip() or len(body) > 60000:
             raise OpError("bad body")
-        return self._comment(ev["repo"], ev["issue_number"], f"{ev['delivery_id']}:{purpose}", body)
+        target = self._event_target_number(ev)
+        return self._comment(ev["repo"], target, f"{ev['delivery_id']}:{purpose}", body)
 
     def op_github_issue_reopen(self, req: dict[str, Any]) -> dict[str, Any]:
         """Reopen a closed issue for an outside comment that showed its request still unmet (mode
@@ -4440,7 +4685,8 @@ class Bridge:
         problem = label_change_error(add, remove)
         if problem is not None:
             raise OpError(problem)
-        return self._apply_labels(ev["repo"], ev["issue_number"], add, remove)
+        target = self._event_target_number(ev)
+        return self._apply_labels(ev["repo"], target, add, remove)
 
     # -- security advisories -----------------------------------------------
 
@@ -5015,8 +5261,23 @@ class Bridge:
                 self.store.dirty_pr(ev["repo"], int(pr_number))
                 return {"branch": branch, "sha": remote, "superseded": True}
         # expected_sha refuses the push if the branch moved after it was resolved.
-        data = self.publisher.request("/push", {"repo": ev["repo"], "branch": branch, "expected_sha": head},
-                                      timeout=PUBLISHER_PUSH_TIMEOUT)
+        for attempt in range(3):
+            try:
+                data = self.publisher.request(
+                    "/push", {"repo": ev["repo"], "branch": branch, "expected_sha": head},
+                    timeout=PUBLISHER_PUSH_TIMEOUT)
+                break
+            except OpError as exc:
+                if exc.error == "non_fast_forward" and ev["kind"] == "pr_repair" and pr_number:
+                    fresh = self._get_pr(ev["repo"], int(pr_number))
+                    remote = (fresh.get("head") or {}).get("sha")
+                    if remote not in (ev["head_sha"], head) or fresh.get("state") != "open":
+                        self.store.dirty_pr(ev["repo"], int(pr_number))
+                        return {"branch": branch, "sha": remote, "superseded": True}
+                    raise
+                if not exc.retryable or attempt == 2:
+                    raise
+                self.sleep(1.0)
         if data.get("sha") != head:
             raise OpError(f"publisher pushed {data.get('sha')!r}, expected {head}", needs_operator=True)
         pr_number = ev["pr_number"] or self.store.issue(ev["repo"], ev["issue_number"])["pr_number"]
@@ -5213,6 +5474,31 @@ class Bridge:
             self.store.mark_pr_notified(repo, number, expected_head)
             return {"ready": True, "owner": owner, "mentioned": posted["created"], "assigned": True}
 
+
+    def _merge_pr_when_ready(self, repo: str, number: int, state: Mapping[str, Any],
+                             row: sqlite3.Row) -> str:
+        status, data = self._gh_raw("PUT", f"/repos/{repo}/pulls/{number}/merge",
+                                    {"sha": state["head_sha"], "merge_method": "squash"})
+        if status == 200 and isinstance(data, dict) and data.get("merged") is True:
+            self._comment(repo, number, f"pr-merged:{number}:{state['head_sha']}",
+                          f"Merged this pull request at `{state['head_sha']}` as requested.")
+            with self.store.tx() as conn:
+                conn.execute(
+                    "UPDATE prs SET closed = 1, dirty = 0, head_sha = ?, auto_merge = 0,"
+                    " latest_signal = NULL, attempted_key = NULL, repair_streaks = '{}'"
+                    " WHERE repo = ? AND pr_number = ? AND revision = ?",
+                    (state["head_sha"], repo, number, row["revision"]),
+                )
+            return "merged"
+        with self.store.tx() as conn:
+            conn.execute("UPDATE prs SET auto_merge = 0, latest_signal = NULL"
+                         " WHERE repo = ? AND pr_number = ?", (repo, number))
+        self._notify_pr_ready(repo, number, state)
+        with self.store.tx() as conn:
+            conn.execute("UPDATE prs SET dirty = 0, head_sha = ?, attempted_key = NULL,"
+                         " repair_streaks = '{}' WHERE repo = ? AND pr_number = ? AND revision = ?",
+                         (state["head_sha"], repo, number, row["revision"]))
+        return "ready"
 
     def op_github_pr_upsert(self, req: dict[str, Any]) -> dict[str, Any]:
         ev = self._event(req)
@@ -5461,8 +5747,8 @@ class Bridge:
             state = self._pr_state(repo, number)
             if state["state"] != "OPEN":
                 with self.store.tx() as conn:
-                    conn.execute("UPDATE prs SET closed = 1, dirty = 0, head_sha = ? "
-                                 "WHERE repo = ? AND pr_number = ? AND revision = ?",
+                    conn.execute("UPDATE prs SET closed = 1, dirty = 0, head_sha = ?, auto_merge = 0,"
+                                 " latest_signal = NULL WHERE repo = ? AND pr_number = ? AND revision = ?",
                                  (state["head_sha"], repo, number, row["revision"]))
                 return "closed"
             if not state["known"] or state["draft"]:
@@ -5470,14 +5756,21 @@ class Bridge:
             if state["head_branch"] != f"hapi-issue-{row['issue_number']}":
                 raise OpError("managed PR no longer uses its issue worktree branch", needs_operator=True)
             manual = json.loads(row["latest_signal"]) if row["latest_signal"] else None
-            if state["ready"] and not manual:
-                self._notify_pr_ready(repo, number, state)
-                with self.store.tx() as conn:
-                    conn.execute("UPDATE prs SET dirty = 0, head_sha = ?, latest_signal = NULL, attempted_key = NULL,"
-                                 " repair_streaks = '{}' "
-                                 "WHERE repo = ? AND pr_number = ? AND revision = ?",
-                                 (state["head_sha"], repo, number, row["revision"]))
-                return "ready"
+            auto_merge = bool(row["auto_merge"]) or bool(manual and manual.get("merge_requested"))
+            pure_merge = bool(manual and manual.get("pure_merge"))
+            if state["ready"] and (not manual or pure_merge):
+                if self._checks_pending(state):
+                    pass
+                elif auto_merge:
+                    return self._merge_pr_when_ready(repo, number, state, row)
+                else:
+                    self._notify_pr_ready(repo, number, state)
+                    with self.store.tx() as conn:
+                        conn.execute("UPDATE prs SET dirty = 0, head_sha = ?, latest_signal = NULL, attempted_key = NULL,"
+                                     " repair_streaks = '{}' "
+                                     "WHERE repo = ? AND pr_number = ? AND revision = ?",
+                                     (state["head_sha"], repo, number, row["revision"]))
+                    return "ready"
             if self._checks_pending(state):
                 # Repair only finished CI: a push while a run is in flight cancels the run whose failure the
                 # repair should see. The periodic reconcile re-checks; a manual signal stays recorded.
