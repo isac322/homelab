@@ -87,6 +87,10 @@ postgresql:
 
 existingSecret: hindsight-secrets
 
+# Bump in Git after hindsight-secrets changes; API and control plane read envFrom at pod start.
+podAnnotations:
+  kubectl.kubernetes.io/restartedAt: "2026-10-14T05:02:24Z"
+
 ingress:
   enabled: false
   className: traefik
