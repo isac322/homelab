@@ -2050,7 +2050,7 @@ _IMPLEMENT_SCHEMA = """\
  "questions":[strings <=500, max 5] (non-empty iff needs_info),
  "summary":"<=2000",
  "blockers":[strings] (non-empty iff blocked),
- "local_checks":[{"command":"<=500 exact command you ran in this worktree","exit_code":int}] (max 30; when ready: non-empty and every exit_code 0)}
+ "local_checks":[{"command":"<=2000 exact command you ran in this worktree","exit_code":int}] (max 30; when ready: non-empty and every exit_code 0)}
 Before reporting ready, run the repository's fast gates locally in this worktree: format/lint, build/compile,
 unit tests, and fast tests scoped to your change (take the commands from .github/workflows/* and the
 Makefile/justfile targets they call). Fix failures and rerun until they pass, and record each command with its
@@ -2404,7 +2404,7 @@ def _implement(v: dict[str, Any], number: int) -> dict[str, Any]:
         _fields(check, ("command", "exit_code"), "local check")
         code = check["exit_code"]
         _require(isinstance(code, int) and not isinstance(code, bool), "local check exit_code must be an int")
-        local_checks.append({"command": _text(check["command"], 500, "local check command"), "exit_code": code})
+        local_checks.append({"command": _text(check["command"], 2000, "local check command"), "exit_code": code})
     if ready:
         # n8n pushes only a ready head; it must have passed the repository's CI gates locally first.
         _require(bool(local_checks), "local_checks must list the CI gates run locally when status is ready")
@@ -3902,7 +3902,7 @@ class Bridge:
             if not page.get("hasMore") or page.get("nextBeforeSeq") is None:
                 return None
             query = {"limit": HISTORY_PAGE_LIMIT, "beforeSeq": page["nextBeforeSeq"], "beforeAt": page["nextBeforeAt"]}
-        raise OpError("message not found within history window", needs_operator=True)
+        return None
 
     def _delivery(self, session_id: str, local_id: str) -> str:
         """'present' | 'absent' for our localId in this session.
