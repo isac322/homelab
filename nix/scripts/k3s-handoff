@@ -260,77 +260,6 @@ case "$k3s_binary_present" in true|false) ;; *) exit 2 ;; esac
 if test "$preserve_nas_state" = true; then test "$manage_firewall_rules" = false; fi
 exec >> "$dir/rollback.log" 2>&1
 printf 'rollback started %s\n' "$(date -u +%FT%TZ)"
-normalize_nas_manifest() {
-  normalize_input=$1
-  normalize_output=$2
-  normalize_work="${normalize_output}.normalize.$$"
-  rm -rf "$normalize_work"
-  mkdir -m 0700 "$normalize_work"
-  normalize_nonpath="$normalize_work/nonpath"
-  normalize_paths="$normalize_work/paths"
-  : > "$normalize_nonpath"
-  : > "$normalize_paths"
-  chmod 0600 "$normalize_nonpath" "$normalize_paths"
-  if ! awk -v nonpath="$normalize_nonpath" -v paths="$normalize_paths" '
-    function fail(message) {
-      print "NAS manifest normalization failed: " message > "/dev/stderr"
-      failed = 1
-      exit 2
-    }
-    /^path=/ {
-      records[++record_count] = $0
-      prefix = "path=/sys/kernel/config/target/core/"
-      if (index($0, prefix) == 1 && $0 ~ /\|type=directory\|/) {
-        remainder = substr($0, length(prefix) + 1)
-        if (remainder ~ /^iblock_[0-9]+\//) {
-          split(remainder, components, "/")
-          hba = components[1]
-          object = components[2]
-          sub(/\|.*/, "", object)
-          if (objects[hba] != "" && objects[hba] != object)
-            fail(hba " contains multiple storage objects")
-          objects[hba] = object
-        }
-      }
-      next
-    }
-    { print >> nonpath }
-    END {
-      if (failed)
-        exit 2
-      for (record_index = 1; record_index <= record_count; record_index++) {
-        line = records[record_index]
-        if (match(line, /\/core\/iblock_[0-9]+(\/|\|)/)) {
-          matched = substr(line, RSTART, RLENGTH)
-          hba = matched
-          sub(/^\/core\//, "", hba)
-          sub(/[\/|]$/, "", hba)
-          if (objects[hba] != "") {
-            separator = substr(matched, length(matched), 1)
-            replacement = "/core/iblock[" objects[hba] "]" separator
-            line = substr(line, 1, RSTART - 1) replacement substr(line, RSTART + RLENGTH)
-          }
-        }
-        if (line ~ /^path=\/sys\/kernel\/config\/target\/core\/alua\/lu_gps\/default_lu_gp\/members\|/ ||
-            line ~ /^path=\/sys\/kernel\/config\/target\/core\/iblock\[[^]]+\]\/hba_info\|/ ||
-            line ~ /^path=\/sys\/kernel\/config\/target\/core\/iblock\[[^]]+\]\/[^\/|]+\/info\|/ ||
-            (line ~ /^path=\/sys\/kernel\/config\/target\/iscsi\// &&
-             line ~ /\/tpgt_[0-9]+\/lun\/lun_[0-9]+\/[^\/|]+\|type=symbolic link\|/))
-          sub(/\|sha256=[^|]*$/, "|sha256=<runtime-index>", line)
-        print line >> paths
-      }
-    }
-  ' "$normalize_input"; then
-    rm -rf "$normalize_work"
-    return 1
-  fi
-  if ! LC_ALL=C sort "$normalize_paths" >> "$normalize_nonpath" \
-    || ! mv -f "$normalize_nonpath" "$normalize_output"; then
-    rm -rf "$normalize_work"
-    return 1
-  fi
-  rm -rf "$normalize_work"
-}
 verify_nas_manifest() {
   test -s "$dir/manifest.txt"
   test -s "$dir/manifest.sha256"
@@ -338,20 +267,16 @@ verify_nas_manifest() {
   command -v bash >/dev/null
   (cd "$dir" && sha256sum -c manifest.sha256 >/dev/null)
   current="$dir/manifest.current"
-  expected="$dir/manifest.expected"
-  actual="$dir/manifest.actual"
   if ! bash "$dir/manifest-remote" > "$current" \
-    || ! normalize_nas_manifest "$dir/manifest.txt" "$expected" \
-    || ! normalize_nas_manifest "$current" "$actual" \
-    || ! cmp -s "$expected" "$actual"; then
+    || ! cmp -s "$dir/manifest.txt" "$current"; then
     echo "external NAS state changed; refusing rollback mutation" >&2
     printf 'baseline-sha256=%s current-sha256=%s\n' \
       "$(sha256sum "$dir/manifest.txt" | awk '{print $1}')" \
       "$(sha256sum "$current" | awk '{print $1}')" >&2
-    rm -f "$current" "$expected" "$actual"
+    rm -f "$current"
     return 1
   fi
-  rm -f "$current" "$expected" "$actual"
+  rm -f "$current"
 }
 if test "$preserve_nas_state" = true; then verify_nas_manifest; fi
 mkdir -p "$stages"
@@ -411,8 +336,6 @@ if ! test -e "$stages/archive-restored"; then
     tar -C / \
       --exclude=etc/zfs \
       --exclude=etc/default/zfs \
-      --exclude=etc/target \
-      --exclude=etc/rtslib-fb-target \
       --exclude=etc/samba \
       --exclude=etc/exports \
       --exclude=etc/exports.d \
@@ -423,9 +346,6 @@ if ! test -e "$stages/archive-restored"; then
       --exclude=etc/default/samba \
       --exclude=etc/iptables/rules.v4 \
       --exclude=etc/iptables/iptables.rules \
-      --exclude=home/democratic-csi/.ssh \
-      --exclude=etc/ssh/authorized_keys.d/democratic-csi \
-      --exclude=etc/sudoers.d/democratic-csi \
       --exclude=etc/crontab \
       --exclude=etc/cron.d \
       --exclude=etc/cron.daily \
@@ -434,9 +354,6 @@ if ! test -e "$stages/archive-restored"; then
       --exclude=etc/cron.weekly \
       --exclude=var/spool/cron \
       --exclude='etc/systemd/system/zfs*' \
-      --exclude='etc/systemd/system/target.service*' \
-      --exclude='etc/systemd/system/targetclid.service*' \
-      --exclude='etc/systemd/system/rtslib-fb-targetctl.service*' \
       --exclude='etc/systemd/system/smbd.service*' \
       --exclude='etc/systemd/system/nmbd.service*' \
       --exclude='etc/systemd/system/samba.service*' \
@@ -447,9 +364,6 @@ if ! test -e "$stages/archive-restored"; then
       --exclude='etc/systemd/system/iptables.service*' \
       --exclude='etc/systemd/system/netfilter-persistent.service*' \
       --exclude='etc/systemd/system/*/zfs*' \
-      --exclude='etc/systemd/system/*/target.service' \
-      --exclude='etc/systemd/system/*/targetclid.service' \
-      --exclude='etc/systemd/system/*/rtslib-fb-targetctl.service' \
       --exclude='etc/systemd/system/*/smbd.service' \
       --exclude='etc/systemd/system/*/nmbd.service' \
       --exclude='etc/systemd/system/*/samba.service' \
@@ -460,7 +374,6 @@ if ! test -e "$stages/archive-restored"; then
       --exclude='etc/systemd/system/*/iptables.service' \
       --exclude='etc/systemd/system/*/netfilter-persistent.service' \
       --exclude='etc/init.d/zfs*' \
-      --exclude='etc/init.d/target*' \
       --exclude='etc/init.d/smb*' \
       --exclude='etc/init.d/nmb*' \
       --exclude='etc/init.d/nfs*' \
@@ -468,7 +381,6 @@ if ! test -e "$stages/archive-restored"; then
       --exclude='etc/init.d/iptables*' \
       --exclude='etc/init.d/netfilter-persistent' \
       --exclude='etc/rc*.d/*zfs*' \
-      --exclude='etc/rc*.d/*target*' \
       --exclude='etc/rc*.d/*smb*' \
       --exclude='etc/rc*.d/*nmb*' \
       --exclude='etc/rc*.d/*nfs*' \
@@ -656,11 +568,6 @@ fi
 for unit in ksm.service thp-madvise.service; do
   if systemctl is-enabled "$unit" >/dev/null 2>&1; then systemctl start "$unit"; fi
 done
-if test "$preserve_nas_state" != true; then
-  for unit in iscsid.service open-iscsi.service; do
-    if systemctl is-enabled "$unit" >/dev/null 2>&1; then systemctl start "$unit"; fi
-  done
-fi
 if test "$k3s_state_present" = false; then
   for unit in k3s.service k3s-agent.service homelab-k3s.service; do
     test "$(systemctl is-active "$unit" 2>/dev/null || true)" != active

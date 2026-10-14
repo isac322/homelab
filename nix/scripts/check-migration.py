@@ -508,10 +508,10 @@ set -euo pipefail
 {match.group(1)}
 receipt() {{ printf '%s/receipt.json' "$STATE"; }}
 current_revision() {{ printf test-revision; }}
-write_receipt test-host prepared "" legacy recovery secret store "" nas-baseline storage-inventory
-jq -e '.previousGeneration == "" and .bootId == "" and .nasBaseline == "nas-baseline" and .storageInventory == "storage-inventory"' "$STATE/receipt.json" >/dev/null
-write_receipt test-host rebooting "" legacy recovery secret store boot-1 nas-baseline storage-inventory
-jq -e '.phase == "rebooting" and .bootId == "boot-1" and .nasBaseline == "nas-baseline" and .storageInventory == "storage-inventory"' "$STATE/receipt.json" >/dev/null
+write_receipt test-host prepared "" legacy recovery secret store "" nas-baseline
+jq -e '.previousGeneration == "" and .bootId == "" and .nasBaseline == "nas-baseline" and (has("storageInventory") | not)' "$STATE/receipt.json" >/dev/null
+write_receipt test-host rebooting "" legacy recovery secret store boot-1 nas-baseline
+jq -e '.phase == "rebooting" and .bootId == "boot-1" and .nasBaseline == "nas-baseline"' "$STATE/receipt.json" >/dev/null
 """
         result = subprocess.run(
             ["bash"],
@@ -566,7 +566,7 @@ verify_receipt_nas_baseline() {{ printf 'baseline-verified\\n' >> "$BASELINE_LOG
 {write_match.group(1)}
 {sync_match.group(1)}
 seed() {{
-  write_receipt test-host activated "" k3s.service recovery secret store "" nas-baseline storage-inventory
+  write_receipt test-host activated "" k3s.service recovery secret store "" nas-baseline
 }}
 seed
 ROLLBACK_STATUS=restored
@@ -574,7 +574,6 @@ export ROLLBACK_STATUS
 sync_completed_rollback test-host
 test "$(jq -r .phase "$(receipt test-host)")" = rolled-back
 test "$(jq -r .nasBaseline "$(receipt test-host)")" = nas-baseline
-test "$(jq -r .storageInventory "$(receipt test-host)")" = storage-inventory
 test "$(cat "$ACCEPT_LOG")" = cleanup-restored
 
 rm -f "$ACCEPT_LOG"
@@ -619,7 +618,7 @@ fi
 test "$(jq -r .phase "$(receipt test-host)")" = activated
 
 rm -f "$ACCEPT_LOG"
-write_receipt test-host prepared "" k3s.service recovery secret store "" nas-baseline storage-inventory
+write_receipt test-host prepared "" k3s.service recovery secret store "" nas-baseline
 ROLLBACK_STATUS=absent
 export ROLLBACK_STATUS
 sync_completed_rollback test-host
@@ -688,7 +687,7 @@ current_revision() {{ printf test-revision; }}
 verify_receipt_nas_baseline() {{ :; }}
 {write_match.group(1)}
 {record_match.group(1)}
-write_receipt test-host activated "" k3s.service recovery secret store "" nas-baseline storage-inventory
+write_receipt test-host activated "" k3s.service recovery secret store "" nas-baseline
 ACCEPT_FAIL=1
 export ACCEPT_FAIL
 if record_rolled_back test-host "" k3s.service recovery secret; then
@@ -697,7 +696,6 @@ if record_rolled_back test-host "" k3s.service recovery secret; then
 fi
 test "$(jq -r .phase "$TEST_RECEIPT")" = rolled-back
 test "$(jq -r .nasBaseline "$TEST_RECEIPT")" = nas-baseline
-test "$(jq -r .storageInventory "$TEST_RECEIPT")" = storage-inventory
 test "$(cat "$ACCEPT_LOG")" = cleanup-restored
 unset ACCEPT_FAIL
 record_rolled_back test-host "" k3s.service recovery secret
@@ -1002,7 +1000,6 @@ require_receipt_phase() {{
 }}
 assert_host_rebooted() {{ printf 'boot\\n' >> "$EVENTS"; }}
 verify_nas_baseline() {{ :; }}
-verify_storage_recovery() {{ printf 'storage\\n' >> "$EVENTS"; }}
 verify_armed() {{ printf 'verify\\n' >> "$EVENTS"; }}
 rollback_armed_host() {{ printf 'rollback\\n' >> "$EVENTS"; return 1; }}
 record_rolled_back() {{ printf 'rolled-back\\n' >> "$EVENTS"; }}
@@ -1045,7 +1042,7 @@ set -- reboot-verify test-host
         if (
             result.returncode
             or events.read_text()
-            != "sync\nrearm\nsync\nguard\nboot\nverify\nstorage\ndisarm\nreceipt:reboot-verified\n"
+            != "sync\nrearm\nsync\nguard\nboot\nverify\ndisarm\nreceipt:reboot-verified\n"
         ):
             raise SystemExit(
                 "nix/scripts/homelab-host: reboot-verify armed ordering is unsafe\n"
@@ -1802,152 +1799,6 @@ def check_rollback_stage_resume() -> None:
             raise SystemExit(
                 "nix/scripts/k3s-handoff: rollback archive fixture was not restored"
             )
-
-def check_nas_manifest_runtime_index_normalization() -> None:
-    manifests = {
-        "baseline": """\
-target-saveconfig-sha256=stable
-target-saveconfig-json-begin
-{"storage_objects":["pvc-a"]}
-target-saveconfig-json-end
-path=/sys/kernel/config/target/core/iblock_0|type=directory|mode=755|uid=0|gid=0|sha256=-
-path=/sys/kernel/config/target/core/iblock_0/hba_info|type=regular file|mode=444|uid=0|gid=0|size=4096|sha256=old-hba
-path=/sys/kernel/config/target/core/iblock_0/pvc-a|type=directory|mode=755|uid=0|gid=0|sha256=-
-path=/sys/kernel/config/target/core/iblock_0/pvc-a/info|type=regular file|mode=444|uid=0|gid=0|size=4096|sha256=old-info
-path=/sys/kernel/config/target/core/iblock_0/pvc-a/attrib/block_size|type=regular file|mode=644|uid=0|gid=0|size=4096|sha256=stable-attribute
-path=/sys/kernel/config/target/core/alua/lu_gps/default_lu_gp/members|type=regular file|mode=444|uid=0|gid=0|size=4096|sha256=old-members
-path=/sys/kernel/config/target/iscsi/iqn.example:pvc-a/tpgt_1/lun/lun_0/link|type=symbolic link|mode=777|uid=0|gid=0|sha256=old-link
-path=/etc/samba/smb.conf|type=regular file|mode=644|uid=0|gid=0|size=20|sha256=stable-samba
-listener=t|3260|present|endpoints=192.0.2.1:3260
-""",
-        "reordered": """\
-target-saveconfig-sha256=stable
-target-saveconfig-json-begin
-{"storage_objects":["pvc-a"]}
-target-saveconfig-json-end
-path=/etc/samba/smb.conf|type=regular file|mode=644|uid=0|gid=0|size=20|sha256=stable-samba
-path=/sys/kernel/config/target/iscsi/iqn.example:pvc-a/tpgt_1/lun/lun_0/link|type=symbolic link|mode=777|uid=0|gid=0|sha256=new-link
-path=/sys/kernel/config/target/core/alua/lu_gps/default_lu_gp/members|type=regular file|mode=444|uid=0|gid=0|size=4096|sha256=new-members
-path=/sys/kernel/config/target/core/iblock_11/pvc-a/attrib/block_size|type=regular file|mode=644|uid=0|gid=0|size=4096|sha256=stable-attribute
-path=/sys/kernel/config/target/core/iblock_11/pvc-a/info|type=regular file|mode=444|uid=0|gid=0|size=4096|sha256=new-info
-path=/sys/kernel/config/target/core/iblock_11/pvc-a|type=directory|mode=755|uid=0|gid=0|sha256=-
-path=/sys/kernel/config/target/core/iblock_11/hba_info|type=regular file|mode=444|uid=0|gid=0|size=4096|sha256=new-hba
-path=/sys/kernel/config/target/core/iblock_11|type=directory|mode=755|uid=0|gid=0|sha256=-
-listener=t|3260|present|endpoints=192.0.2.1:3260
-""",
-        "drifted": """\
-target-saveconfig-sha256=stable
-target-saveconfig-json-begin
-{"storage_objects":["pvc-a"]}
-target-saveconfig-json-end
-path=/etc/samba/smb.conf|type=regular file|mode=644|uid=0|gid=0|size=20|sha256=stable-samba
-path=/sys/kernel/config/target/iscsi/iqn.example:pvc-a/tpgt_1/lun/lun_0/link|type=symbolic link|mode=777|uid=0|gid=0|sha256=new-link
-path=/sys/kernel/config/target/core/alua/lu_gps/default_lu_gp/members|type=regular file|mode=444|uid=0|gid=0|size=4096|sha256=new-members
-path=/sys/kernel/config/target/core/iblock_11/pvc-a/attrib/block_size|type=regular file|mode=644|uid=0|gid=0|size=4096|sha256=changed-attribute
-path=/sys/kernel/config/target/core/iblock_11/pvc-a/info|type=regular file|mode=444|uid=0|gid=0|size=4096|sha256=new-info
-path=/sys/kernel/config/target/core/iblock_11/pvc-a|type=directory|mode=755|uid=0|gid=0|sha256=-
-path=/sys/kernel/config/target/core/iblock_11/hba_info|type=regular file|mode=444|uid=0|gid=0|size=4096|sha256=new-hba
-path=/sys/kernel/config/target/core/iblock_11|type=directory|mode=755|uid=0|gid=0|sha256=-
-listener=t|3260|present|endpoints=192.0.2.1:3260
-""",
-        "ambiguous": """\
-path=/sys/kernel/config/target/core/iblock_0|type=directory|mode=755|uid=0|gid=0|sha256=-
-path=/sys/kernel/config/target/core/iblock_0/pvc-a|type=directory|mode=755|uid=0|gid=0|sha256=-
-path=/sys/kernel/config/target/core/iblock_0/pvc-b|type=directory|mode=755|uid=0|gid=0|sha256=-
-""",
-        "empty": """\
-path=/sys/kernel/config/target/core/iblock_7|type=directory|mode=755|uid=0|gid=0|sha256=-
-path=/sys/kernel/config/target/core/iblock_7/hba_info|type=regular file|mode=444|uid=0|gid=0|size=4096|sha256=empty-hba
-""",
-    }
-    sources = {
-        "nix/scripts/homelab-host": source("nix/scripts/homelab-host"),
-        "nix/scripts/k3s-handoff rollback": source("nix/scripts/k3s-handoff").split(
-            'cat > "$dir/rollback" <<\'ROLLBACK\'\n', 1
-        )[1].split("\nROLLBACK\n", 1)[0],
-    }
-    with tempfile.TemporaryDirectory() as directory:
-        directory_path = Path(directory)
-        for name, content in manifests.items():
-            (directory_path / name).write_text(content)
-        failing_bin = directory_path / "failing-bin"
-        failing_bin.mkdir()
-        failing_sort = failing_bin / "sort"
-        failing_sort.write_text("#!/bin/sh\nexit 43\n")
-        failing_sort.chmod(0o700)
-        for script_name, text in sources.items():
-            match = re.search(
-                r"(normalize_nas_manifest\(\) \{\n.*?^\})",
-                text,
-                re.MULTILINE | re.DOTALL,
-            )
-            if match is None:
-                raise SystemExit(f"{script_name}: NAS manifest normalizer missing")
-            environment = {
-                **os.environ,
-                "BASELINE": str(directory_path / "baseline"),
-                "REORDERED": str(directory_path / "reordered"),
-                "DRIFTED": str(directory_path / "drifted"),
-                "AMBIGUOUS": str(directory_path / "ambiguous"),
-                "EMPTY": str(directory_path / "empty"),
-                "BASELINE_NORMALIZED": str(directory_path / "baseline.normalized"),
-                "REORDERED_NORMALIZED": str(directory_path / "reordered.normalized"),
-                "DRIFTED_NORMALIZED": str(directory_path / "drifted.normalized"),
-                "AMBIGUOUS_NORMALIZED": str(directory_path / "ambiguous.normalized"),
-                "EMPTY_NORMALIZED": str(directory_path / "empty.normalized"),
-            }
-            result = subprocess.run(
-                ["bash", "--noprofile", "--norc", "-ceu", match.group(1) + """
-normalize_nas_manifest "$BASELINE" "$BASELINE_NORMALIZED"
-normalize_nas_manifest "$REORDERED" "$REORDERED_NORMALIZED"
-cmp -s "$BASELINE_NORMALIZED" "$REORDERED_NORMALIZED"
-normalize_nas_manifest "$DRIFTED" "$DRIFTED_NORMALIZED"
-if cmp -s "$BASELINE_NORMALIZED" "$DRIFTED_NORMALIZED"; then
-  exit 41
-fi
-if normalize_nas_manifest "$AMBIGUOUS" "$AMBIGUOUS_NORMALIZED"; then
-  exit 42
-fi
-normalize_nas_manifest "$EMPTY" "$EMPTY_NORMALIZED"
-grep -F 'path=/sys/kernel/config/target/core/iblock_7|' "$EMPTY_NORMALIZED" >/dev/null
-grep -F 'path=/sys/kernel/config/target/core/iblock_7/hba_info|' "$EMPTY_NORMALIZED" >/dev/null
-"""],
-                capture_output=True,
-                text=True,
-                env=environment,
-            )
-            if result.returncode != 0:
-                raise SystemExit(
-                    f"{script_name}: NAS runtime-index normalization contract failed\n"
-                    f"{result.stderr.strip()}"
-                )
-            failure_environment = {
-                **environment,
-                "PATH": f"{failing_bin}:{os.environ.get('PATH', '')}",
-                "SORT_FAILURE_OUTPUT": str(directory_path / "sort-failure.normalized"),
-            }
-            failure_result = subprocess.run(
-                [
-                    "bash",
-                    "--noprofile",
-                    "--norc",
-                    "-ceu",
-                    match.group(1)
-                    + """
-if normalize_nas_manifest "$BASELINE" "$SORT_FAILURE_OUTPUT"; then
-  exit 43
-fi
-""",
-                ],
-                capture_output=True,
-                text=True,
-                env=failure_environment,
-            )
-            if failure_result.returncode != 0:
-                raise SystemExit(
-                    f"{script_name}: NAS normalizer accepted a failed sort\n"
-                    f"{failure_result.stdout}{failure_result.stderr}"
-                )
 
 
 def check_preserved_rollback_manifest_guard() -> None:
@@ -3060,150 +2911,6 @@ def check_onboard_k3s_install_guard() -> None:
                 f"{result.stderr.strip()}"
             )
 
-def check_iscsi_service_verification() -> None:
-    migration = source("nix/scripts/homelab-host")
-    try:
-        section = migration.split("stage=iscsi-client", 1)[1].split(
-            "stage=iscsi-server", 1
-        )[0]
-    except IndexError as error:
-        raise SystemExit("nix/scripts/homelab-host: iSCSI service verification missing") from error
-    match = re.search(
-        r'(if test "\$ISCSI_CLIENT" = true; then\n.*?^fi)',
-        section,
-        re.DOTALL | re.MULTILINE,
-    )
-    if match is None:
-        raise SystemExit("nix/scripts/homelab-host: iSCSI service verification missing")
-    block = match.group(1).replace("/etc/iscsi/nodes", '"$TEST_NODES"')
-    with tempfile.TemporaryDirectory() as directory:
-        directory_path = Path(directory)
-        mock_bin = directory_path / "bin"
-        nodes = directory_path / "nodes"
-        events = directory_path / "events"
-        mock_bin.mkdir()
-        nodes.mkdir()
-        systemctl = mock_bin / "systemctl"
-        systemctl.write_text(
-            "#!/bin/sh\n"
-            'printf "%s\\n" "$*" >> "$EVENTS"\n'
-            'if test "$1:$2" = "is-active:iscsid.service"; then\n'
-            '  test "$ISCSID_ACTIVE" = yes\n'
-            'elif test "$1:$2" = "is-enabled:$LOGIN_SERVICE"; then\n'
-            '  test "$LOGIN_ENABLED" = yes\n'
-            'elif test "$1:$2" = "is-active:$LOGIN_SERVICE"; then\n'
-            '  test "$LOGIN_ACTIVE" = yes\n'
-            "else\n"
-            "  exit 2\n"
-            "fi\n"
-        )
-        systemctl.chmod(0o755)
-        environment = {
-            **os.environ,
-            "PATH": f"{mock_bin}:{os.environ['PATH']}",
-            "TEST_NODES": str(nodes),
-            "EVENTS": str(events),
-        }
-
-        def run(
-            login_service: str,
-            *,
-            has_nodes: bool,
-            iscsid: str,
-            enabled: str,
-            active: str,
-        ) -> subprocess.CompletedProcess[str]:
-            shutil.rmtree(nodes)
-            nodes.mkdir()
-            if has_nodes:
-                (nodes / "target").write_text("fixture\n")
-            events.unlink(missing_ok=True)
-            return subprocess.run(
-                ["sh"],
-                input=(
-                    "set -eu\n"
-                    "ISCSI_CLIENT=true\n"
-                    f"ISCSI_LOGIN_SERVICE={login_service}\n"
-                    f"{block}\n"
-                ),
-                text=True,
-                capture_output=True,
-                env={
-                    **environment,
-                    "LOGIN_SERVICE": login_service,
-                    "ISCSID_ACTIVE": iscsid,
-                    "LOGIN_ENABLED": enabled,
-                    "LOGIN_ACTIVE": active,
-                },
-            )
-
-        for login_service in ("open-iscsi.service", "iscsi.service"):
-            result = run(
-                login_service,
-                has_nodes=False,
-                iscsid="yes",
-                enabled="yes",
-                active="no",
-            )
-            if result.returncode != 0:
-                raise SystemExit(
-                    f"nix/scripts/homelab-host: target-free {login_service} client was rejected"
-                )
-            if f"is-active {login_service}" in events.read_text():
-                raise SystemExit(
-                    f"nix/scripts/homelab-host: target-free {login_service} was required active"
-                )
-            if (
-                run(
-                    login_service,
-                    has_nodes=True,
-                    iscsid="yes",
-                    enabled="yes",
-                    active="no",
-                ).returncode
-                == 0
-            ):
-                raise SystemExit(
-                    f"nix/scripts/homelab-host: configured {login_service} target may be inactive"
-                )
-            if (
-                run(
-                    login_service,
-                    has_nodes=True,
-                    iscsid="yes",
-                    enabled="yes",
-                    active="yes",
-                ).returncode
-                != 0
-            ):
-                raise SystemExit(
-                    f"nix/scripts/homelab-host: active configured {login_service} client was rejected"
-                )
-            if (
-                run(
-                    login_service,
-                    has_nodes=False,
-                    iscsid="no",
-                    enabled="yes",
-                    active="no",
-                ).returncode
-                == 0
-            ):
-                raise SystemExit("nix/scripts/homelab-host: inactive iscsid was accepted")
-            if (
-                run(
-                    login_service,
-                    has_nodes=False,
-                    iscsid="yes",
-                    enabled="no",
-                    active="no",
-                ).returncode
-                == 0
-            ):
-                raise SystemExit(
-                    f"nix/scripts/homelab-host: disabled {login_service} was accepted"
-                )
-
 
 def check_rollback_restored_services() -> None:
     handoff = source("nix/scripts/k3s-handoff")
@@ -3431,14 +3138,7 @@ def check_nas_preservation_contracts() -> None:
         "zpool status -v | stable_zpool_status",
         "zpool get -H guid",
         "zfs list -Hp -t filesystem,volume -o name,type,mountpoint,volsize",
-        "inventory_tree /sys/kernel/config/target target-configfs",
-        'saveconfig=/etc/rtslib-fb-target/saveconfig.json',
-        'sha256sum "$saveconfig"',
-        'cat "$saveconfig"',
         "testparm -s",
-        "/home/democratic-csi/.ssh/authorized_keys",
-        "/etc/ssh/authorized_keys.d/democratic-csi",
-        "/etc/sudoers.d/democratic-csi",
         "/etc/exports.d",
         "/etc/iptables/rules.v4",
         "/var/spool/cron",
@@ -3448,8 +3148,6 @@ def check_nas_preservation_contracts() -> None:
         "cron.service",
         "iptables.service",
         "manifest-remote",
-        "identity-passwd=",
-        "listener_state t 3260",
         "listener_state t 445",
         "listener_state u 137",
         "listener_state u 138",
@@ -3533,17 +3231,6 @@ errors: No known data errors
         raise SystemExit(
             "nix/scripts/adopt-host: zpool filter hides device error counter changes"
         )
-    if re.search(r"\btargetcli\b", adopt):
-        raise SystemExit("nix/scripts/adopt-host: NAS baseline may not invoke targetcli")
-    if re.search(
-        r"(?:>|tee|install|cp|mv|truncate)[^\n]*(?:/etc/rtslib-fb-target/saveconfig\.json|\"\$saveconfig\")",
-        adopt,
-    ):
-        raise SystemExit("nix/scripts/adopt-host: NAS baseline may not write saveconfig.json")
-    if adopt.count('"$saveconfig"') != 3:
-        raise SystemExit(
-            "nix/scripts/adopt-host: saveconfig.json use must remain existence check, SHA-256, and cat only"
-        )
     if re.search(
         r"zpool (?:list|get)[^\n]*\b(alloc|allocated|free|size|capacity|fragmentation|expandsize)\b",
         adopt,
@@ -3551,48 +3238,20 @@ errors: No known data errors
         raise SystemExit("nix/scripts/adopt-host: NAS equality baseline includes volatile pool capacity")
     if re.search(r"zfs list[^\n]*\b(used|available|avail|usedby)\b", adopt):
         raise SystemExit("nix/scripts/adopt-host: NAS equality baseline includes volatile dataset capacity")
-    for excluded in (
-        "*/action|*/action/*",
-        "*/fabric_statistics|*/fabric_statistics/*",
-        "*/pr|*/pr/*",
-        "*/statistics|*/statistics/*",
-        "*/dynamic_sessions",
-        "*/control",
-        "*/acls/*/info",
-    ):
-        if excluded not in adopt:
-            raise SystemExit(
-                f"nix/scripts/adopt-host: configfs capture does not exclude {excluded!r}"
-            )
-    if "iscsiadm -m session" in adopt:
-        raise SystemExit("nix/scripts/adopt-host: NAS equality baseline includes active iSCSI sessions")
     if "mtime=%Y" in adopt:
         raise SystemExit("nix/scripts/adopt-host: NAS equality baseline includes volatile file mtimes")
 
     for needle in (
         "assert_preservation_plan_safe()",
         "verify_nas_baseline()",
-        "storage_impact_json()",
-        "verify_storage_recovery()",
-        "storage_recovery_required()",
-        'deadline=$((SECONDS + 600))',
         'if ! "$root/nix/scripts/k3s-handoff" rearm "$host"; then',
-        'timeout --foreground --kill-after=10s "${capture_timeout}s" "$0" storage-impact "$host"',
         "render_receipt()",
-        "verify_storage_inventory_integrity()",
         "nasBaseline:$nasBaseline",
-        "storageInventory:$storageInventory",
+        "assert_no_legacy_storage_state()",
         'assert_preservation_plan_safe "$host" "$host-commit"',
         'preserves an external NAS data plane; use prepare, activate, reboot, reboot-verify, and commit',
         'if test "$MANAGE_FIREWALL_RULES" = true; then',
-        "org.democratic-csi.",
-        "volumeattachments.storage.k8s.io",
-        "/sys/class/iscsi_session/session*/targetname",
-        "select(.value.iscsiClient == true)",
         "systemd/system/smbd.service*",
-        'sha256sum -c "$name.sha256"',
-        "$capturedPvNames",
-        "$capturedPvcNames",
         'if test "$MANAGE_FIREWALL_RULES" = true; then test -s "$FIREWALL_RULES"; fi',
     ):
         if needle not in migration:
@@ -3606,40 +3265,6 @@ errors: No known data errors
             raise SystemExit(
                 f"nix/scripts/homelab-host: preservation workflow contains mutating command {forbidden}"
             )
-    storage_match = re.search(
-        r"storage_impact_json\(\) \{\n.*?^}",
-        migration,
-        re.DOTALL | re.MULTILINE,
-    )
-    if storage_match is None:
-        raise SystemExit("nix/scripts/homelab-host: storage impact helper is missing")
-    for line in storage_match.group(0).splitlines():
-        if "kubectl " in line and not re.search(r"\bkubectl\b.*\bget\b", line):
-            raise SystemExit(
-                f"nix/scripts/homelab-host: storage inventory uses a non-read-only Kubernetes command: {line.strip()}"
-            )
-    recovery_match = re.search(
-        r"verify_storage_recovery\(\) \{\n.*?^}",
-        migration,
-        re.DOTALL | re.MULTILINE,
-    )
-    if recovery_match is None or not re.search(
-        r"deadline=\$\(\(SECONDS \+ 600\)\).*?while :; do.*?k3s-handoff.*?rearm.*?"
-        r"capture_timeout.*?timeout --foreground --kill-after=10s.*?storage-impact",
-        recovery_match.group(0) if recovery_match else "",
-        re.DOTALL,
-    ):
-        raise SystemExit(
-            "nix/scripts/homelab-host: storage recovery is not bounded and rearmed inside the polling loop"
-        )
-    for function_name, function_match in (
-        ("storage_impact_json", storage_match),
-        ("verify_storage_recovery", recovery_match),
-    ):
-        if "storage_recovery_required" not in function_match.group(0):
-            raise SystemExit(
-                f"nix/scripts/homelab-host: {function_name} does not cover iSCSI client recovery"
-            )
     lifecycle_match = re.search(
         r"  prepare\|deploy\).*?^  onboard-k3s-node\)",
         migration,
@@ -3647,15 +3272,6 @@ errors: No known data errors
     )
     if lifecycle_match is None:
         raise SystemExit("nix/scripts/homelab-host: guarded preservation lifecycle is missing")
-    if not re.search(
-        r"prepare\|deploy\).*?storage_required=\$\(storage_recovery_required.*?"
-        r'if \[ "\$storage_required" = true \]; then.*?capture_storage_impact',
-        lifecycle_match.group(0),
-        re.DOTALL,
-    ):
-        raise SystemExit(
-            "nix/scripts/homelab-host: prepare does not capture storage recovery for iSCSI clients"
-        )
     for pattern in (
         r"\bkubectl\b[^\n]*\bapply\b",
         r"\bkubectl\b[^\n]*\bcreate\b",
@@ -3690,12 +3306,12 @@ errors: No known data errors
             r"prepare\|deploy\).*?verify_nas_baseline.*?snapshot-packages.*?stage-secrets.*?verify_nas_baseline",
         ),
         (
-            "activate must verify preserved storage recovery before recording activation",
-            r"  activate\).*?k3s-handoff.*?arm.*?activate_registered_system.*?verify_storage_recovery.*?write_receipt.*?activated",
+            "prepare must refuse live legacy iSCSI/LIO state before capturing recovery",
+            r"prepare\|deploy\).*?assert_no_legacy_storage_state.*?adopt-host",
         ),
         (
-            "commit must verify preserved storage recovery before staging acceptance",
-            r"  commit\).*?k3s-handoff.*?rearm.*?activate_registered_system.*?verify_storage_recovery.*?render_receipt.*?committed",
+            "legacy cleanup must refuse live iSCSI/LIO state before mutating the host",
+            r"cleanup_legacy_files\(\) \{\n[^}]*?assert_no_legacy_storage_state[^}]*?REMOTE_LEGACY_CLEANUP",
         ),
         (
             "commit must verify preserved NAS state before accepting and deleting rollback recovery",
@@ -3706,8 +3322,8 @@ errors: No known data errors
             r"  commit\).*?render_receipt.*?k3s-handoff.*?accept.*?mv -f \"\$staged_receipt\" \"\$\(receipt \"\$host\"\)\"",
         ),
         (
-            "reboot verification must verify bounded NAS and preserved storage recovery before disarming rollback",
-            r"  reboot-verify\).*?require_receipt_phase.*?yes.*?HOMELAB_STORAGE_WAIT=yes.*?verify_nas_baseline.*?yes.*?verify_storage_recovery.*?yes.*?k3s-handoff.*?disarm",
+            "reboot verification must verify bounded NAS state before disarming rollback",
+            r"  reboot-verify\).*?require_receipt_phase.*?yes.*?HOMELAB_STORAGE_WAIT=yes.*?verify_nas_baseline.*?yes.*?k3s-handoff.*?disarm",
         ),
     )
     for description, pattern in ordering_contracts:
@@ -3779,7 +3395,6 @@ errors: No known data errors
         "PRESERVE_NAS_STATE",
         "MANAGE_FIREWALL_RULES",
         'if test "$preserve_nas_state" = true; then test "$manage_firewall_rules" = false; fi',
-        'if test "$preserve_nas_state" != true; then',
         'if test "$manage_firewall_rules" = true; then',
         'test -z "$install_packages"',
         "verify_nas_manifest()",
@@ -3810,8 +3425,6 @@ errors: No known data errors
     expected_exclusions = {
         "etc/zfs",
         "etc/default/zfs",
-        "etc/target",
-        "etc/rtslib-fb-target",
         "etc/samba",
         "etc/exports",
         "etc/exports.d",
@@ -3822,9 +3435,6 @@ errors: No known data errors
         "etc/default/samba",
         "etc/iptables/rules.v4",
         "etc/iptables/iptables.rules",
-        "home/democratic-csi/.ssh",
-        "etc/ssh/authorized_keys.d/democratic-csi",
-        "etc/sudoers.d/democratic-csi",
         "etc/crontab",
         "etc/cron.d",
         "etc/cron.daily",
@@ -3833,9 +3443,6 @@ errors: No known data errors
         "etc/cron.weekly",
         "var/spool/cron",
         "etc/systemd/system/zfs*",
-        "etc/systemd/system/target.service*",
-        "etc/systemd/system/targetclid.service*",
-        "etc/systemd/system/rtslib-fb-targetctl.service*",
         "etc/systemd/system/smbd.service*",
         "etc/systemd/system/nmbd.service*",
         "etc/systemd/system/samba.service*",
@@ -3846,9 +3453,6 @@ errors: No known data errors
         "etc/systemd/system/iptables.service*",
         "etc/systemd/system/netfilter-persistent.service*",
         "etc/systemd/system/*/zfs*",
-        "etc/systemd/system/*/target.service",
-        "etc/systemd/system/*/targetclid.service",
-        "etc/systemd/system/*/rtslib-fb-targetctl.service",
         "etc/systemd/system/*/smbd.service",
         "etc/systemd/system/*/nmbd.service",
         "etc/systemd/system/*/samba.service",
@@ -3859,7 +3463,6 @@ errors: No known data errors
         "etc/systemd/system/*/iptables.service",
         "etc/systemd/system/*/netfilter-persistent.service",
         "etc/init.d/zfs*",
-        "etc/init.d/target*",
         "etc/init.d/smb*",
         "etc/init.d/nmb*",
         "etc/init.d/nfs*",
@@ -3867,7 +3470,6 @@ errors: No known data errors
         "etc/init.d/iptables*",
         "etc/init.d/netfilter-persistent",
         "etc/rc*.d/*zfs*",
-        "etc/rc*.d/*target*",
         "etc/rc*.d/*smb*",
         "etc/rc*.d/*nmb*",
         "etc/rc*.d/*nfs*",
@@ -3901,12 +3503,10 @@ errors: No known data errors
     require(
         "nix/modules/linux/base.nix",
         "preserveNasState",
-        "democratic-csi",
     )
     require(
         "nix/modules/linux/packages.nix",
         "preserveNasState",
-        "targetcli-fb",
     )
     require(
         "nix/modules/linux/firewall.nix",
@@ -3968,7 +3568,7 @@ def check_preservation_policy_failure() -> None:
         recovery.mkdir()
         cases = (
             ("nix/scripts/adopt-host", ("manifest", "rock5bp")),
-            ("nix/scripts/homelab-host", ("storage-impact", "rock5bp")),
+            ("nix/scripts/homelab-host", ("reconcile", "rock5bp")),
             ("nix/scripts/k3s-handoff", ("snapshot-packages", "rock5bp", str(recovery))),
         )
         for relative, arguments in cases:
@@ -3990,165 +3590,56 @@ def check_preservation_policy_failure() -> None:
                 )
 
 
-def check_storage_inventory_failure_propagation() -> None:
+def check_legacy_storage_guard() -> None:
     migration = source("nix/scripts/homelab-host")
-    if migration.count('if ! session_nodes=$(') != 1 or migration.count(
-        'done <<< "$session_nodes"'
-    ) != 1:
-        raise SystemExit(
-            "nix/scripts/homelab-host: iSCSI node enumeration failures are not propagated"
-        )
-    with tempfile.TemporaryDirectory() as directory:
-        directory_path = Path(directory)
-        fake_bin = directory_path / "bin"
-        fake_bin.mkdir()
-        event = directory_path / "remote"
-        fake_nix = fake_bin / "nix"
-        fake_nix.write_text(
-            "#!/bin/sh\n"
-            "case \"$*\" in\n"
-            "  *topology.nodes.rock5bp.preserveNasState*) printf 'true\\n' ;;\n"
-            "  *topology.nodes) exit 91 ;;\n"
-            "  *) printf 'unexpected nix invocation: %s\\n' \"$*\" >&2; exit 92 ;;\n"
-            "esac\n"
-        )
-        fake_nix.chmod(0o755)
-        fake_kubectl = fake_bin / "kubectl"
-        fake_kubectl.write_text(
-            "#!/bin/sh\n"
-            "case \"$*\" in\n"
-            "  *' get pv -o json'*) printf '{\"items\":[]}\\n' ;;\n"
-            "  *' get pvc --all-namespaces -o json'*) printf '{\"items\":[]}\\n' ;;\n"
-            "  *' get pods --all-namespaces -o json'*) printf '{\"items\":[]}\\n' ;;\n"
-            "  *' get volumeattachments.storage.k8s.io -o json'*) printf '{\"items\":[]}\\n' ;;\n"
-            "  *) printf 'unexpected kubectl invocation: %s\\n' \"$*\" >&2; exit 93 ;;\n"
-            "esac\n"
-        )
-        fake_kubectl.chmod(0o755)
-        fake_ssh = fake_bin / "ssh"
-        fake_ssh.write_text(
-            "#!/bin/sh\n"
-            "printf 'remote access attempted\\n' >> \"$REMOTE_EVENT\"\n"
-            "exit 94\n"
-        )
-        fake_ssh.chmod(0o755)
-        result = subprocess.run(
-            [
-                "bash",
-                str(root / "nix/scripts/homelab-host"),
-                "storage-impact",
-                "rock5bp",
-            ],
-            capture_output=True,
-            text=True,
-            env={
-                **os.environ,
-                "PATH": f"{fake_bin}:{os.environ['PATH']}",
-                "HOMELAB_REPO_ROOT": str(root),
-                "HOMELAB_STATE_DIR": str(directory_path / "state"),
-                "REMOTE_EVENT": str(event),
-            },
-        )
-        if result.returncode == 0:
-            raise SystemExit(
-                "nix/scripts/homelab-host: failed topology evaluation produced a partial storage inventory"
-            )
-        if event.exists():
-            raise SystemExit(
-                "nix/scripts/homelab-host: storage inventory continued after topology evaluation failed"
-            )
-
-
-
-def check_storage_capture_readiness_guard() -> None:
-    migration = source("nix/scripts/homelab-host")
-    capture_match = re.search(
-        r"capture_storage_impact\(\) \{\n.*?^}",
+    match = re.search(
+        r"<<'REMOTE_LEGACY_STORAGE_GUARD'\n(.*?)\nREMOTE_LEGACY_STORAGE_GUARD\n",
         migration,
-        re.DOTALL | re.MULTILINE,
+        re.DOTALL,
     )
-    if capture_match is None:
-        raise SystemExit("nix/scripts/homelab-host: storage capture helper is missing")
+    if match is None:
+        raise SystemExit("nix/scripts/homelab-host: legacy iSCSI/LIO guard is missing")
+    for forbidden in ("rm ", "rmdir", "targetctl", "iscsiadm", "zfs ", "zpool ", "/dev/zvol"):
+        if forbidden in match.group(1):
+            raise SystemExit(
+                f"nix/scripts/homelab-host: legacy iSCSI/LIO guard must stay read-only: {forbidden!r}"
+            )
     with tempfile.TemporaryDirectory() as directory:
-        directory_path = Path(directory)
-        fixture = directory_path / "fixture.json"
-        output = directory_path / "storage-consumers.json"
-        harness = directory_path / "capture-storage-impact"
-        harness.write_text(
-            "#!/usr/bin/env bash\n"
-            "set -euo pipefail\n"
-            'storage_impact_json() { cat "$FIXTURE"; }\n'
-            f"{capture_match.group(0)}\n"
-            'capture_storage_impact rock5bp "$OUTPUT"\n'
+        sysfs = Path(directory)
+        guard = (
+            match.group(1)
+            .replace("/sys/class/iscsi_session", f"{sysfs}/iscsi_session")
+            .replace("/sys/kernel/config/target", f"{sysfs}/target")
         )
-        harness.chmod(0o755)
-        environment = {
-            **os.environ,
-            "FIXTURE": str(fixture),
-            "OUTPUT": str(output),
-        }
-        fixture.write_text(
-            json.dumps(
-                {
-                    "pods": [
-                        {
-                            "phase": "Running",
-                            "ready": False,
-                        }
-                    ]
-                }
+
+        def run() -> subprocess.CompletedProcess[str]:
+            return subprocess.run(
+                ["sh", "-eu"],
+                input=guard + "\n",
+                capture_output=True,
+                text=True,
             )
-        )
-        result = subprocess.run(
-            ["bash", str(harness)],
-            capture_output=True,
-            text=True,
-            env=environment,
-        )
-        if (
-            result.returncode == 0
-            or "unready democratic-csi storage consumers" not in result.stderr
-            or output.exists()
-            or Path(f"{output}.sha256").exists()
+
+        (sysfs / "target/core/alua/lu_gps/default_lu_gp").mkdir(parents=True)
+        (sysfs / "target/core/iblock_0").mkdir()
+        (sysfs / "target/core/iblock_0/hba_info").write_text("fixture\n")
+        (sysfs / "target/iscsi").mkdir()
+        (sysfs / "iscsi_session").mkdir()
+        if run().returncode != 0:
+            raise SystemExit("nix/scripts/homelab-host: empty LIO and iSCSI state was rejected")
+        for live in (
+            sysfs / "target/core/iblock_0/pvc-a",
+            sysfs / "target/iscsi/iqn.2003-01.org.linux-iscsi:pvc-a",
+            sysfs / "iscsi_session/session1",
         ):
-            raise SystemExit(
-                "nix/scripts/homelab-host: prepare did not fail closed on an unready storage consumer\n"
-                f"stdout:\n{result.stdout}\nstderr:\n{result.stderr}"
-            )
-        fixture.write_text(
-            json.dumps(
-                {
-                    "pods": [
-                        {
-                            "phase": "Running",
-                            "ready": True,
-                        },
-                        {
-                            "phase": "Succeeded",
-                            "ready": False,
-                        },
-                    ]
-                }
-            )
-        )
-        result = subprocess.run(
-            ["bash", str(harness)],
-            capture_output=True,
-            text=True,
-            env=environment,
-        )
-        checksum = subprocess.run(
-            ["sha256sum", "-c", output.name + ".sha256"],
-            cwd=directory_path,
-            capture_output=True,
-            text=True,
-        )
-        if result.returncode != 0 or checksum.returncode != 0:
-            raise SystemExit(
-                "nix/scripts/homelab-host: ready storage consumers were rejected or not checksummed\n"
-                f"stdout:\n{result.stdout}\nstderr:\n{result.stderr}"
-                f"checksum:\n{checksum.stdout}{checksum.stderr}"
-            )
+            live.mkdir()
+            result = run()
+            if result.returncode == 0 or "legacy iSCSI/LIO state is still live" not in result.stderr:
+                raise SystemExit(
+                    f"nix/scripts/homelab-host: live legacy state was accepted: {live.relative_to(sysfs)}"
+                )
+            live.rmdir()
+
 
 require(
     "nix/modules/linux/base.nix",
@@ -4174,7 +3665,6 @@ require(
     "if cfg.allowDestructiveCommit then",
     '".ssh/authorized_keys /etc/ssh/authorized_keys.d/%u"',
     '"/etc/ssh/authorized_keys.d/%u"',
-    "ssh/authorized_keys.d/democratic-csi",
     "PermitRootLogin no",
     '"sudoers.d/homelab-admin"',
     "replaceExisting = true;",
@@ -4212,7 +3702,6 @@ forbid(
     "apt-get upgrade",
     "pacman -Syu",
     "homelab-distro-packages",
-    "homelab-iscsi-client",
 )
 forbid("nix/modules/linux/base.nix", "environment.systemPackages")
 require(
@@ -4426,8 +3915,6 @@ require(
     "/var/lib/homelab-secrets/active/k3s-token.cred",
     "PATH=/usr/local/sbin:/usr/local/bin:/usr/sbin:/usr/bin:/sbin:/bin HOST_NAME=",
     'iptables --wait -D "$chain" "$index"',
-    'systemctl enable iscsid.service "$ISCSI_LOGIN_SERVICE"',
-    'systemctl start iscsid.service "$ISCSI_LOGIN_SERVICE"',
     "reconcile_distro_packages",
     "--version 1.20.1",
     "etc-state.tar",
@@ -4510,27 +3997,12 @@ forbid(
     "nix/scripts/homelab-host",
     "systemctl is-active k3s.service k3s-agent.service homelab-k3s.service",
 )
-require(
-    "ssh_pub_keys/democratic-csi.pub",
-    "ssh-ed25519 AAAAC3NzaC1lZDI1NTE5AAAAIE5qnSjgYu7YDfPDhESjZXQE+n9Jm/PUGfo8ROpjkI2T",
-)
 forbid("nix/scripts/homelab-host", "--version 1.19.6")
 forbid(
     "nix/scripts/homelab-host",
     "update-alternatives",
     "iptables-legacy",
     "ip6tables-legacy",
-)
-require(
-    "nix/scripts/homelab-host",
-    "systemctl is-active iscsid.service",
-    'systemctl is-enabled "$ISCSI_LOGIN_SERVICE"',
-    "find /etc/iscsi/nodes -mindepth 1 -print -quit",
-    'systemctl is-active "$ISCSI_LOGIN_SERVICE"',
-)
-forbid(
-    "nix/scripts/homelab-host",
-    "systemctl is-active iscsid.service open-iscsi.service",
 )
 forbid(
     "nix/scripts/k3s-handoff",
@@ -4780,7 +4252,8 @@ for needle in (
     'role=$(nix_eval --json "$root#topology.nodes.$host.k3sRole") || return 1',
     '\'"server"\'|\'"agent"\') require_k3s_binary=true',
     'null) ;;',
-    'REQUIRE_K3S_BINARY=$require_k3s_binary',
+    "REQUIRE_K3S_BINARY=%q",
+    '"$require_k3s_binary"',
 ):
     if needle not in verify_cleanup_block:
         raise SystemExit(
@@ -5093,7 +4566,6 @@ check_accept_rearms_before_cleanup()
 check_armed_verify_entrypoint()
 check_rollback_restore_failure()
 check_rollback_stage_resume()
-check_nas_manifest_runtime_index_normalization()
 check_preserved_rollback_manifest_guard()
 check_authorized_keys_verification()
 check_ssh_strict_modes_guard()
@@ -5106,16 +4578,14 @@ check_wireguard_rollback_failure_continuation()
 check_firewall_restore_waits()
 check_cilium_restart_waits()
 check_onboard_k3s_install_guard()
-check_iscsi_service_verification()
 check_rollback_restored_services()
 check_legacy_cleanup_path_verification()
+check_legacy_storage_guard()
 check_ansible_cutover_partition()
 check_static_nix_hosts_render()
 check_static_nix_hosts_expression()
 check_nas_preservation_contracts()
 check_preservation_policy_failure()
-check_storage_inventory_failure_propagation()
-check_storage_capture_readiness_guard()
 check_edge_secret_bundle()
 check_shell_syntax()
 print("migration-contracts: ok")

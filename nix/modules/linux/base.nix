@@ -37,7 +37,6 @@ let
     ../../../ssh_pub_keys/tablet.pub
     ../../../ssh_pub_keys/office.pub
   ];
-  democraticCsiKey = builtins.readFile ../../../ssh_pub_keys/democratic-csi.pub;
   authorizedKeysFile =
     if preserveNasState then
       ".ssh/authorized_keys /etc/ssh/authorized_keys.d/%u"
@@ -180,11 +179,6 @@ in
         '';
         replaceExisting = true;
       };
-      "sudoers.d/democratic-csi" = lib.mkIf (hostConfig.iscsiServer && !preserveNasState) {
-        text = "democratic-csi ALL=(ALL) NOPASSWD: ALL\n";
-        mode = "0440";
-        replaceExisting = true;
-      };
       "sudoers.d/homelab-admin" = lib.mkIf (sshUser != "root") {
         text = "${sshUser} ALL=(ALL) NOPASSWD: ALL\n";
         mode = "0440";
@@ -250,11 +244,6 @@ in
         mode = "0644";
         replaceExisting = true;
       };
-      "ssh/authorized_keys.d/democratic-csi" = lib.mkIf (hostConfig.iscsiServer && !preserveNasState) {
-        text = democraticCsiKey;
-        mode = "0644";
-        replaceExisting = true;
-      };
       "sysctl.d/99-kubernetes-network.conf" = lib.mkIf k8sMember {
         text = ''
           net.ipv4.neigh.default.gc_thresh1=4096
@@ -292,32 +281,18 @@ in
       };
     };
 
-    users.groups = lib.mkMerge [
-      { bhyoo.gid = 1000; }
-      (lib.mkIf (hostConfig.iscsiServer && !preserveNasState) { democratic-csi.gid = 1001; })
-    ];
-    users.users = lib.mkMerge [
-      {
-        root.shell = "/bin/bash";
-        bhyoo = {
-          isNormalUser = true;
-          uid = 1000;
-          group = "bhyoo";
-          home = "/home/bhyoo";
-          shell = pkgs.bashInteractive;
-          extraGroups = [ "sudo" ];
-        };
-      }
-      (lib.mkIf (hostConfig.iscsiServer && !preserveNasState) {
-        democratic-csi = {
-          isNormalUser = true;
-          uid = 1001;
-          group = "democratic-csi";
-          home = "/home/democratic-csi";
-          shell = pkgs.bashInteractive;
-        };
-      })
-    ];
+    users.groups.bhyoo.gid = 1000;
+    users.users = {
+      root.shell = "/bin/bash";
+      bhyoo = {
+        isNormalUser = true;
+        uid = 1000;
+        group = "bhyoo";
+        home = "/home/bhyoo";
+        shell = pkgs.bashInteractive;
+        extraGroups = [ "sudo" ];
+      };
+    };
 
     systemd.tmpfiles.rules = [
       "d /etc 0755 root root -"

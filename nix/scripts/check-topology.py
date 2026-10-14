@@ -44,8 +44,6 @@ if "PrivateKey = " in text or "PresharedKey = " in text:
     raise SystemExit("topology contains plaintext secret")
 if not re.search(r"secretRecipients\s*=\s*\{.*?operator\s*=.*?recovery\s*=", text, re.S):
     raise SystemExit("operator and recovery recipient contracts missing")
-if text.count("iscsiClient = true;") != 6:
-    raise SystemExit("all six live backbone Kubernetes hosts must be iSCSI clients")
 if 'lifecycle = extra.lifecycle or "active";' not in text:
     raise SystemExit("node lifecycle state is not declarative")
 if '"provisioning"' not in text or '"decommissioning"' not in text:
@@ -64,20 +62,15 @@ if not re.search(r'rock5bp\s*=\s*mkNode.*?"eth0"\s+32768\s+\{', text, re.S):
     raise SystemExit("rock5bp memory topology must match the live ~32 GiB host")
 if not re.search(
     r'macmini\s*=.*?k3sRole\s*=\s*"agent";.*?'
-    r'k3sServer\s*=\s*"https://k8s\.backbone\.homelab\.bhyoo\.com:6443";.*?'
-    r"iscsiClient\s*=\s*true;",
+    r'k3sServer\s*=\s*"https://k8s\.backbone\.homelab\.bhyoo\.com:6443";',
     text,
     re.S,
 ):
-    raise SystemExit("macmini K3s worker and iSCSI client topology changed")
+    raise SystemExit("macmini K3s worker topology changed")
 if 'managed = pair.a != "bhyoo-macbook-pro" && pair.b != "bhyoo-macbook-pro";' not in text:
     raise SystemExit("MacBook links must remain outside repository-owned PSK rotation")
 if "k3sVersion" in text:
     raise SystemExit("Rancher system-upgrade-controller, not Nix topology, owns K3s versions")
-if not re.search(
-    r'rock5bp\s*=.*?preserveNasState\s*=\s*true;.*?iscsiServer\s*=\s*true;.*?iscsiClient\s*=\s*true;',
-    text,
-    re.S,
-):
-    raise SystemExit("rock5bp NAS preservation and iSCSI roles changed")
+if not re.search(r"rock5bp\s*=.*?preserveNasState\s*=\s*true;", text, re.S):
+    raise SystemExit("rock5bp NAS preservation changed")
 print("topology: ok")

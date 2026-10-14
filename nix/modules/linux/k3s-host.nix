@@ -46,12 +46,6 @@ let
   wg0Address = topology.wg0.nodes.${name}.address or null;
   strip = address: if address == null then null else builtins.head (lib.splitString "/" address);
   tokenPath = config.homelab.k3s.tokenPath;
-  iscsiLoginService =
-    if hostConfig.packageBackend == "pacman" then "iscsi.service" else "open-iscsi.service";
-  iscsiServices = lib.optionals hostConfig.iscsiClient [
-    "iscsid.service"
-    iscsiLoginService
-  ];
   manageRules = config.homelab.firewall.manageRules;
   firewallReconcile = pkgs.writeShellScript "homelab-k3s-firewall-reconcile" (
     if manageRules then
@@ -262,13 +256,11 @@ in
         "systemd-networkd.service"
         firewallService
       ]
-      ++ lib.optionals config.homelab.zram [ "dev-zram0.swap" ]
-      ++ iscsiServices;
+      ++ lib.optionals config.homelab.zram [ "dev-zram0.swap" ];
       wants = [
         "network-online.target"
       ]
-      ++ lib.optionals config.homelab.zram [ "dev-zram0.swap" ]
-      ++ iscsiServices;
+      ++ lib.optionals config.homelab.zram [ "dev-zram0.swap" ];
       path = [
         pkgs.coreutils
         pkgs.systemd

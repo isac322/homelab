@@ -40,8 +40,6 @@ let
       firewall = extra.firewall or { };
       tuning = extra.tuning or { };
       preserveNasState = extra.preserveNasState or false;
-      iscsiServer = extra.iscsiServer or false;
-      iscsiClient = extra.iscsiClient or false;
     };
 
   nodes = {
@@ -60,7 +58,6 @@ let
             "homelab.bhyoo.com/cilium-envoy=true"
           ];
           tuning.emmcIoScheduler = true;
-          iscsiClient = true;
         };
     n2p2 =
       mkNode "node-n2p2" "n2p2" "aarch64-linux" "debian" "apt" "bhyoo@192.168.219.4" "192.168.219.4"
@@ -77,7 +74,6 @@ let
             "homelab.bhyoo.com/cilium-envoy=true"
           ];
           tuning.emmcIoScheduler = true;
-          iscsiClient = true;
         };
     rpi4 =
       mkNode "node-rpi4" "rpi4" "aarch64-linux" "debian" "apt" "bhyoo@192.168.219.7" "192.168.219.7"
@@ -93,7 +89,6 @@ let
             zram = true;
             disabledServices = [ "wpa_supplicant.service" ];
           };
-          iscsiClient = true;
         };
     rpi5 =
       mkNode "node-rpi5" "rpi5" "aarch64-linux" "debian" "apt" "bhyoo@192.168.219.5" "192.168.219.5"
@@ -118,7 +113,6 @@ let
               "wpa_supplicant.service"
             ];
           };
-          iscsiClient = true;
         };
     rock5bp =
       mkNode "node-rock5bp" "rock5bp" "aarch64-linux" "debian" "apt" "bhyoo@192.168.219.6" "192.168.219.6"
@@ -134,7 +128,6 @@ let
             "homelab.bhyoo.com/gpu=mali"
             "homelab.bhyoo.com/nn-sdk=rknn"
             "homelab.bhyoo.com/media-api=rkmpp"
-            "homelab.bhyoo.com/zfs-node=true"
             "homelab.bhyoo.com/cilium-envoy=true"
           ];
           tuning = {
@@ -147,8 +140,6 @@ let
             ];
           };
           preserveNasState = true;
-          iscsiServer = true;
-          iscsiClient = true;
         };
     macmini =
       mkNode "node-macmini" "macmini" "aarch64-linux" "arch" "pacman" "bhyoo@192.168.219.8"
@@ -162,7 +153,6 @@ let
           wireguard = [ "wg0" ];
           k3sRole = "agent";
           k3sServer = "https://k8s.backbone.homelab.bhyoo.com:6443";
-          iscsiClient = true;
         };
     bhyoo-macbook-pro =
       mkNode "node-bhyoo-macbook-pro" "bhyoo-macbook-pro" "aarch64-darwin" "darwin" "darwin" null null

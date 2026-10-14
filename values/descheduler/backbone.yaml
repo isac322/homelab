@@ -11,8 +11,8 @@ deschedulerPolicy:
   maxNoOfPodsToEvictTotal: 5
   # LowNodeUtilization balances on pod requests (the same ledger the scheduler
   # uses), not live metrics. PVC protection covers only node-bound or
-  # unverified storage classes; pillar-csi ssd-ha*/hdd-ha* and democratic-csi
-  # *-xfs volumes attach on every node, so those pods stay evictable.
+  # unverified storage classes; pillar-csi ssd-ha*/hdd-ha* volumes attach on
+  # every node, so those pods stay evictable.
   # Preferred node affinity is re-applied, so pods drift back to their
   # preferred node after it reboots.
   profiles:
@@ -31,9 +31,6 @@ deschedulerPolicy:
               config:
                 PodsWithPVC:
                   protectedStorageClasses:
-                    - name: ssd-ha-cnpg
-                    - name: ssd-ha-cnpg-thin
-                    - name: hdd-ha-local
                     - name: local-path
                     - name: ssd-single
                     - name: ssd-single-retain

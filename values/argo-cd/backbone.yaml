@@ -38,10 +38,6 @@ configs:
       name: emberstack
       type: helm
       url: ghcr.io/emberstack/helm-charts
-    democratic-csi:
-      name: democratic-csi
-      type: helm
-      url: https://democratic-csi.github.io/charts/
     cosi-git:
       name: cosi-git
       type: git

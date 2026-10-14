@@ -69,7 +69,6 @@ module "dns_secrets" {
   cloudflare_account_id                       = var.cloudflare_account_id
   cloudflare_main_zone_id                     = var.cloudflare_main_zone_id
   aws_iam_group_name_cf_origin_ca_cert_issuer = var.aws_iam_group_name_cf_origin_ca_cert_issuer
-  use_democratic_csi                          = true
   openai_api_key                              = var.openai_api_key
   openai_proxy                                = var.openai_proxy
   gemini_api_key                              = var.gemini_api_key
