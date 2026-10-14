@@ -11,9 +11,11 @@ api:
     limits:
       memory: 1Gi
   env:
-    # LLM — Google Generative API (Gemini API key via existingSecret)
-    HINDSIGHT_API_LLM_PROVIDER: "gemini"
+    # LLM: Vertex AI using the existing service-account mount through ADC
+    HINDSIGHT_API_LLM_PROVIDER: "vertexai"
     HINDSIGHT_API_LLM_MODEL: "gemini-3.5-flash-lite"
+    HINDSIGHT_API_LLM_VERTEXAI_PROJECT_ID: "runbear"
+    HINDSIGHT_API_LLM_VERTEXAI_REGION: "global"
     # Vector extension
     HINDSIGHT_API_VECTOR_EXTENSION: "vchord"
     # Retain
