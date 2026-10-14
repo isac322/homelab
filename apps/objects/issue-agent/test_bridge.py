@@ -2237,6 +2237,9 @@ class PrRepairTests(BridgeTestCase):
         self.assertEqual((sent["ok"], sent["delivery"]), (True, "sent"), sent)
         self.assertEqual(len(self.fake.pr_state_reads), reads)
         text = self.fake.message_posts[0]["text"]
+        self.assertIn("unpushed commits ahead of origin/hapi-issue-141", text)
+        self.assertIn("reset to origin/hapi-issue-141 first", text)
+        self.assertIn("origin/hapi-issue-141..HEAD touching .github/workflows/*", text)
         context = json.loads(text.split(" CONTEXT_JSON\n", 1)[1].rsplit("\n", 1)[0])
         self.assertEqual([check["name"] for check in context["repair"]["findings"]["failed_checks"]],
                          ["begin-check"])

@@ -2120,6 +2120,8 @@ def build_message(ev: sqlite3.Row, mode: str, branch: str | None, default_branch
         "- Never write to GitHub: do not push, open or edit pull requests, post comments or reviews, reply to or",
         "  resolve review threads, change labels, or close or merge anything. Your GitHub token is read-only;",
         "  the automation publishes your result.",
+        "- Never create, edit, or delete files under .github/workflows/: the GitHub App push token has no workflows "
+        "permission, so GitHub rejects any push touching .github/workflows/*.",
     ]
     if mode in ("implement", "followup"):
         lines.append(f"- Commit all your changes locally on branch {branch or f'hapi-issue-{n}'} before reporting "
@@ -4019,9 +4021,13 @@ class Bridge:
             manual = json.loads(ev["stages"]).get("repair_input", {}).get("manual")
             context = self._repair_context(context, snapshot, findings, manual)
             instructions += (
-                "\nPR repair preparation: fetch origin and synchronize this issue worktree with the current PR "
-                "head using fast-forward or merge only; never reset, rebase, or force-push. Check whether the branch "
-                "contains the freshly fetched default branch, and if behind merge origin/"
+                "\nPR repair preparation: fetch origin; if this local branch has unpushed commits ahead of "
+                f"origin/hapi-issue-{ev['issue_number']} from a failed push (or any commit in "
+                f"origin/hapi-issue-{ev['issue_number']}..HEAD touching .github/workflows/*), reset to "
+                f"origin/hapi-issue-{ev['issue_number']} first, then synchronize with the current PR head using "
+                "fast-forward or merge only (never rewrite commits already on the remote PR branch, and never "
+                "touch .github/workflows/* because the push token lacks workflows permission). Check whether the "
+                "branch contains the freshly fetched default branch, and if behind merge origin/"
                 f"{snapshot['default_branch']} FIRST, resolving conflicts before handling findings. "
                 "Evaluate ALL currently observed CI failures and review findings together in this ONE followup "
                 "with receiving-code-review. Read current CI logs, reviews and threads yourself, verify claims, "
