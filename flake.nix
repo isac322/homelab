@@ -271,10 +271,6 @@
             assert lib.hasInfix "node-ip: 192.168.219.8" macminiK3s;
             assert lib.hasInfix "node-external-ip: 10.222.0.6" macminiK3s;
             assert lib.hasInfix "exec /usr/local/bin/k3s agent" macmini.systemd.services.homelab-k3s.script;
-            assert !(builtins.elem "open-iscsi" macmini.homelab.distroPackages.present);
-            assert builtins.elem "open-iscsi" macmini.homelab.distroPackages.absent;
-            assert builtins.elem "open-iscsi" n2p1.homelab.distroPackages.absent;
-            assert builtins.elem "targetcli-fb" n2p1.homelab.distroPackages.absent;
             assert builtins.elem "curl" n2p1.homelab.distroPackages.present;
             assert builtins.elem "wireguard-tools" n2p1.homelab.distroPackages.present;
             assert builtins.elem "nvme-cli" n2p1.homelab.distroPackages.present;
@@ -290,8 +286,6 @@
             assert !(builtins.elem "curl" n2p1NixPackages);
             assert !(builtins.elem "wireguard-tools" n2p1NixPackages);
             assert builtins.elem "iptables.service" macmini.systemd.services.homelab-k3s.requires;
-            assert !(builtins.elem "iscsid.service" macmini.systemd.services.homelab-k3s.after);
-            assert !(builtins.elem "iscsi.service" macmini.systemd.services.homelab-k3s.after);
             assert rock.homelab.firewall.manageRules == false;
             assert rpi5.homelab.firewall.manageRules;
             assert !(builtins.elem "cron" rock.homelab.distroPackages.absent);
@@ -398,8 +392,6 @@
             assert lib.hasInfix "exec /usr/local/bin/k3s server" rock.systemd.services.homelab-k3s.script;
             assert
               !(lib.hasInfix "${topology.wg0.edgeNetwork} -d ${topology.wg0.edgeNetwork} -j ACCEPT" firewall);
-            assert !(builtins.elem "open-iscsi" rock.homelab.distroPackages.present);
-            assert builtins.elem "targetcli-fb" rock.homelab.distroPackages.absent;
             assert !(builtins.elem "acl" rock.homelab.distroPackages.present);
             assert lib.hasInfix "AuthorizedKeysFile .ssh/authorized_keys /etc/ssh/authorized_keys.d/%u"
               rock.environment.etc."ssh/sshd_config".text;
@@ -427,8 +419,6 @@
             assert
               rock.systemd.services.homelab-k3s.serviceConfig.LoadCredentialEncrypted
               == [ "k3s-token:/var/lib/homelab-secrets/active/k3s-token.cred" ];
-            assert !(builtins.elem "iscsid.service" rock.systemd.services.homelab-k3s.after);
-            assert !(builtins.elem "open-iscsi.service" rock.systemd.services.homelab-k3s.after);
             assert
               lib.count (line: lib.hasSuffix " k8s.backbone.homelab.bhyoo.com" line) (lib.splitString "\n" hosts)
               == 3;

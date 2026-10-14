@@ -56,10 +56,6 @@ preserve_nas_state() {
 }
 manage_firewall_rules() { nix_eval --json "$root#systemConfigs.$1.config.homelab.firewall.manageRules"; }
 receipt_nas_baseline() { jq -r '.nasBaseline // empty' "$(receipt "$1")"; }
-# Decommissioned democratic-csi/open-iscsi/LIO host state, removed by
-# cleanup_legacy_files on every host. Never ZFS datasets, zvols, or /dev/zvol.
-legacy_storage_units='iscsid.socket iscsid.service iscsiuio.socket iscsiuio.service open-iscsi.service iscsi.service targetclid.socket targetclid.service rtslib-fb-targetctl.service target.service'
-legacy_storage_paths='/etc/sudoers.d/democratic-csi /etc/ssh/authorized_keys.d/democratic-csi /home/democratic-csi /usr/local/sbin/homelab-lio-restore-check /etc/iscsi /etc/target /etc/rtslib-fb-target'
 
 assert_preservation_plan_safe() {
   local host=$1 config_attribute=${2:-$1} names name preserve
@@ -551,40 +547,10 @@ restore_previous_secrets() {
     rm -f "$base/previous"
   '\'''
 }
-assert_no_legacy_storage_state() {
-  remote "$1" 'sudo -n sh -seu' <<'REMOTE_LEGACY_STORAGE_GUARD'
-found=
-for path in /sys/class/iscsi_session/session*; do
-  if test -e "$path"; then found="$found iscsi-session:${path##*/}"; fi
-done
-for path in /sys/kernel/config/target/core/*_[0-9]*/*; do
-  if test -d "$path"; then found="$found lio-backstore:${path#/sys/kernel/config/target/core/}"; fi
-done
-for path in /sys/kernel/config/target/iscsi/iqn.*; do
-  if test -d "$path"; then found="$found lio-target:${path##*/}"; fi
-done
-if test -n "$found"; then
-  echo "legacy iSCSI/LIO state is still live; clear it manually before Nix decommissions it:$found" >&2
-  exit 1
-fi
-REMOTE_LEGACY_STORAGE_GUARD
-}
 cleanup_legacy_files() {
-  local host=$1 command
-  assert_no_legacy_storage_state "$host" || return 1
-  printf -v command 'sudo -n env LEGACY_STORAGE_UNITS=%q LEGACY_STORAGE_PATHS=%q sh -seu' \
-    "$legacy_storage_units" "$legacy_storage_paths"
-  remote "$host" "$command" <<'REMOTE_LEGACY_CLEANUP'
+  local host=$1
+  remote "$host" 'sudo -n sh -seu' <<'REMOTE_LEGACY_CLEANUP'
     test -d /etc/systemd/system
-    for unit in $LEGACY_STORAGE_UNITS; do
-      systemctl disable --now "$unit" >/dev/null 2>&1 || true
-      rm -rf "/etc/systemd/system/$unit.d"
-    done
-    if getent passwd democratic-csi >/dev/null; then userdel democratic-csi; fi
-    if getent group democratic-csi >/dev/null; then groupdel democratic-csi; fi
-    for path in $LEGACY_STORAGE_PATHS; do
-      rm -rf -- "$path"
-    done
     for unit in k3s.service k3s-agent.service zram-swap.service ksm.service thp-madvise.service; do
       systemctl disable --now "$unit" >/dev/null 2>&1 || true
       fragment=$(systemctl show -p FragmentPath --value "$unit" 2>/dev/null || true)
@@ -615,9 +581,7 @@ verify_legacy_cleanup() {
       return 1
       ;;
   esac
-  assert_no_legacy_storage_state "$host" || return 1
-  printf -v command 'sudo -n env REQUIRE_K3S_BINARY=%q LEGACY_STORAGE_UNITS=%q LEGACY_STORAGE_PATHS=%q sh -seu' \
-    "$require_k3s_binary" "$legacy_storage_units" "$legacy_storage_paths"
+  printf -v command 'sudo -n env REQUIRE_K3S_BINARY=%q sh -seu' "$require_k3s_binary"
   remote "$host" "$command" <<'REMOTE_VERIFY_LEGACY_CLEANUP'
     if test "$REQUIRE_K3S_BINARY" = true; then
       test -x /usr/local/bin/k3s
@@ -637,23 +601,6 @@ verify_legacy_cleanup() {
       do
         assert_path_absent "$link"
       done
-    done
-    for unit in $LEGACY_STORAGE_UNITS; do
-      test "$(systemctl is-active "$unit" 2>/dev/null || true)" != active
-      case "$(systemctl is-enabled "$unit" 2>/dev/null || true)" in
-        enabled|enabled-runtime|linked|linked-runtime)
-          echo "legacy storage unit $unit is still enabled" >&2
-          exit 1
-          ;;
-      esac
-      assert_path_absent "/etc/systemd/system/$unit.d"
-    done
-    if getent passwd democratic-csi >/dev/null || getent group democratic-csi >/dev/null; then
-      echo "legacy democratic-csi identity still exists" >&2
-      exit 1
-    fi
-    for path in $LEGACY_STORAGE_PATHS; do
-      assert_path_absent "$path"
     done
 REMOTE_VERIFY_LEGACY_CLEANUP
 }
@@ -1016,7 +963,6 @@ case "${1:-}" in
       exit 1
     }
     "$root/nix/scripts/k3s-handoff" preflight "$host" ""
-    assert_no_legacy_storage_state "$host"
     recovery=$(capture_managed_recovery "$host")
     "$root/nix/scripts/k3s-handoff" snapshot-packages "$host" "$recovery"
     reconcile_distro_packages "$host" no
@@ -1056,7 +1002,6 @@ case "${1:-}" in
     esac
     sync_completed_rollback "$host"
     assert_preservation_plan_safe "$host"
-    assert_no_legacy_storage_state "$host"
     legacy_unit=$(remote "$host" 'for unit in k3s.service k3s-agent.service; do test "$(systemctl is-active "$unit" 2>/dev/null || true)" = active && { printf "%s" "$unit"; exit; }; done; true')
     "$root/nix/scripts/k3s-handoff" preflight "$host" "$legacy_unit"
     recovery=$("$root/nix/scripts/adopt-host" "$host")

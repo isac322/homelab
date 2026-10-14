@@ -40,7 +40,6 @@ let
   commonAbsent = [
     "age"
     "htop"
-    "open-iscsi"
   ];
   baseAbsent =
     commonAbsent
@@ -55,8 +54,6 @@ let
           "cron"
           "snapd"
           "ufw"
-          "targetcli-fb"
-          "python3-rtslib-fb"
         ]
     );
   defaultAbsent =
