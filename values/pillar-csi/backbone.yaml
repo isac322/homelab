@@ -88,8 +88,6 @@ agent:
         volumeType: zvol
         pool: fast
         parentDataset: k8s
-    # hot-data/k8s and nas/k8s are where democratic-csi and openebs
-    # zfs-localpv keep their zvols, so pillar can import them in place.
     - zfs:
         volumeType: zvol
         pool: hot-data

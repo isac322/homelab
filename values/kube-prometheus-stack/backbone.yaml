@@ -1816,10 +1816,6 @@ prometheus:
 
     ## Prometheus StorageSpec for persistent data
     ## ref: https://github.com/prometheus-operator/prometheus-operator/blob/main/Documentation/user-guides/storage.md
-    ##
-    ## prometheus-shared-db-prometheus-shared-0 was created by democratic-csi
-    ## (16K volblocksize, lz4) and imported into pillar-csi in place on
-    ## 2026-10-01, so it keeps those zvol properties.
     storageSpec:
       volumeClaimTemplate:
         spec:

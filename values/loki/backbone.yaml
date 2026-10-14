@@ -86,8 +86,6 @@ singleBinary:
       memory: 384Mi # 1.18x 14d P50 (325Mi)
     limits:
       memory: 1Gi
-  # storage-loki-0 was created by democratic-csi and imported into
-  # pillar-csi in place on 2026-10-01.
   persistence:
     enabled: true
     storageClass: ssd-ha

@@ -26,11 +26,8 @@ spec:
       pool: fast
       parentDataset: k8s
 ---
-# Replicated pools (raidz1) on rock5bp, shared with democratic-csi and openebs
-# zfs-localpv. The parent dataset is the one those drivers use, so their
-# existing zvols can be imported without copying (pillar-csi.bhyoo.com/
-# import-zvol). Imported zvols keep their own properties; new volumes follow
-# the same thick default as rock5bp-fast.
+# Replicated pools (raidz1) on rock5bp. New volumes follow the same thick
+# default as rock5bp-fast.
 apiVersion: pillar-csi.bhyoo.com/v1alpha1
 kind: PillarStore
 metadata:
