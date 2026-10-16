@@ -29,6 +29,7 @@ spec:
           TARGET_COMMIT="460994653a2970f5f1012b625ea85be5e1fd433f"
           TARGET_SHA256="4e65211d0d42171f9c2b8a4dac3b749324d5246e8fda7222bc4c56abe0ea6581"
           RECEIPT_FILE="$TARGET_DIR/.version"
+          rm -f /opt/data/plugins/hindsight/pyproject.toml "$TARGET_DIR/pyproject.toml"
 
           if [ -f "$RECEIPT_FILE" ] && [ "$(cat "$RECEIPT_FILE")" = "$TARGET_COMMIT" ]; then
             echo "hermes-lcm ($TARGET_COMMIT) is already installed. Skipping."
@@ -46,6 +47,7 @@ spec:
           echo "${TARGET_SHA256}  ${TMP_TAR}" | sha256sum -c -
 
           tar -xzf "$TMP_TAR" -C "$TARGET_DIR" --strip-components=1
+          rm -f "$TARGET_DIR/pyproject.toml"
           echo "$TARGET_COMMIT" > "$RECEIPT_FILE"
           echo "hermes-lcm successfully installed."
       resources:
@@ -55,6 +57,8 @@ spec:
         limits:
           memory: 64Mi
       volumeMounts:
+        - name: data
+          mountPath: /opt/data
         - name: hermes-lcm
           mountPath: /lcm
     - name: install-default-skills
