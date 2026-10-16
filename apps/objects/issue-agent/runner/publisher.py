@@ -44,6 +44,7 @@ last prune and the lease it served). Every route but /healthz needs the token.
 from __future__ import annotations
 
 import base64
+import hmac
 import glob
 import hashlib
 import json
