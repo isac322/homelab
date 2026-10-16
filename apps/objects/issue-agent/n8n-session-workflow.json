@@ -632,6 +632,19 @@
     },
     {
       "parameters": {
+        "jsCode": "\nconst output = { ...($json || {}) };\nif (output.result && typeof output.result === 'object' && !Array.isArray(output.result)) {\n  output.result = { ...output.result, visual_evidence: Array.isArray(output.result.visual_evidence) ? output.result.visual_evidence : [] };\n}\nreturn [{ json: output }];\n"
+      },
+      "id": "issue-agent-preserve-visual-evidence",
+      "name": "Preserve visual evidence",
+      "type": "n8n-nodes-base.code",
+      "typeVersion": 2,
+      "position": [
+        2160,
+        0
+      ]
+    },
+    {
+      "parameters": {
         "jsCode": "\n// Error output of a bridge HTTP node (neverError: only thrown failures land here).\n// n8n merges the node's input item into this item, so drop every inherited field\n// and keep only a fresh envelope: transport failures are retryable with\n// park_class bridge_unreachable; anything else (credentials, configuration) stays permanent.\nconst TRANSIENT = /ECONNREFUSED|ECONNRESET|ETIMEDOUT|ECONNABORTED|EHOSTUNREACH|ENETUNREACH|EPIPE|EAI_AGAIN|socket hang up|refused the connection|closed unexpectedly|timed out|timeout of|host is unreachable|DNS server returned an error/i;\nreturn $input.all().map((item, index) => {\n  const j = item.json || {};\n  const e = j.error;\n  const parts = typeof e === 'string'\n    ? [e]\n    : [e && e.message, e && e.description, e && e.code, e && e.cause && e.cause.code, e && e.cause && e.cause.message];\n  parts.push(j.message, j.code);\n  const text = parts.filter(Boolean).map(String).join(' ');\n  const transient = TRANSIENT.test(text);\n  return {\n    json: {\n      ok: false,\n      retryable: transient,\n      park_class: transient ? 'bridge_unreachable' : '',\n      error: (text || 'request failed without a bridge response').slice(0, 1500),\n    },\n    pairedItem: { item: index },\n  };\n});\n"
       },
       "id": "f42ba6f1-3b89-5771-88cc-ff8bcf9e793c",
@@ -973,6 +986,17 @@
         [
           {
             "node": "Return failure",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Return turn": {
+      "main": [
+        [
+          {
+            "node": "Preserve visual evidence",
             "type": "main",
             "index": 0
           }

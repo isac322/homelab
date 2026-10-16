@@ -323,6 +323,11 @@ _DELIVERY_RE = re.compile(r"^[A-Za-z0-9-]{1,64}$")
 _PURPOSE_RE = re.compile(r"^[a-z0-9_-]{1,32}$")
 _STAGE_RE = re.compile(r"^[a-z0-9_]{1,40}$")
 _SHA_RE = re.compile(r"^[0-9a-f]{40}$")
+_VISUAL_EVIDENCE_SECTION_RE = re.compile(
+    r"(?P<start><!-- issue-agent:visual-evidence:[^>]+ -->).*?"
+    r"(?P<end><!-- issue-agent:visual-evidence-end:[^>]+ -->)",
+    re.DOTALL,
+)
 _EXECUTION_RE = re.compile(r"^[A-Za-z0-9_-]{1,64}$")
 _UUID_RE = re.compile(r"^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$")
 _OAUTH_RE = re.compile(r"^\s*oauth_token:\s*\"?([^\"\s]+)\"?\s*$", re.MULTILINE)
@@ -438,7 +443,7 @@ def read_github_token(token_dir: str) -> str:
 
 
 CHECKOUT_ROOT = "/home/agent/checkouts"
-REGISTRY_KEYS = ("agent", "model", "permission_mode", "machine_id", "project_owner")
+REGISTRY_KEYS = ("agent", "model", "permission_mode", "machine_id", "project_owner", "visual_paths")
 
 
 @dataclass(frozen=True)
@@ -450,7 +455,7 @@ class RepoConfig:
     permission_mode: str | None
     machine_id: str | None
     project_owner: str | None = None
-
+    visual_paths: tuple[str, ...] = ()
 
 def valid_repo_name(name: Any) -> bool:
     return isinstance(name, str) and bool(_REPO_RE.match(name)) \
@@ -476,6 +481,16 @@ def _repo_config(name: str, settings: Mapping[str, Any]) -> RepoConfig:
         if value is not None and (not isinstance(value, str) or not value):
             raise ConfigError(f"{name}: {key} must be a string or null")
         optional[key] = value
+    visual_paths_in = settings.get("visual_paths", [])
+    if (not isinstance(visual_paths_in, list) or len(visual_paths_in) > 100
+            or any(not isinstance(pattern, str) or not pattern.strip() or len(pattern) > 512
+                   or pattern.startswith(("/", "\\")) or "\x00" in pattern
+                   or any(part == ".." for part in pattern.replace("\\", "/").split("/"))
+                   for pattern in visual_paths_in)):
+        raise ConfigError(f"{name}: visual_paths must be a list of safe relative glob patterns")
+    visual_paths = tuple(pattern.strip() for pattern in visual_paths_in)
+    if len(set(visual_paths)) != len(visual_paths):
+        raise ConfigError(f"{name}: visual_paths must not contain duplicates")
     owner = settings.get("project_owner")
     if owner is not None and (not isinstance(owner, str) or not _LOGIN_RE.fullmatch(owner)):
         raise ConfigError(f"{name}: project_owner must be a GitHub user login or null")
@@ -487,6 +502,7 @@ def _repo_config(name: str, settings: Mapping[str, Any]) -> RepoConfig:
         permission_mode=optional["permission_mode"],
         machine_id=optional["machine_id"],
         project_owner=owner,
+        visual_paths=visual_paths,
     )
 
 
@@ -2050,7 +2066,10 @@ _IMPLEMENT_SCHEMA = """\
  "questions":[strings <=500, max 5] (non-empty iff needs_info),
  "summary":"<=2000",
  "blockers":[strings] (non-empty iff blocked),
- "local_checks":[{"command":"<=2000 exact command you ran in this worktree","exit_code":int}] (max 30; when ready: non-empty and every exit_code 0)}
+ "local_checks":[{"command":"<=2000 exact command you ran in this worktree","exit_code":int}] (max 30; when ready: non-empty and every exit_code 0),
+ "visual_evidence":[{"id":"<=64 safe id","role":"before|after|control","relpath":"relative path under worktree",
+   "sha256":"64-hex","bytes":positive int,"media_type":"image/png|image/jpeg|image/gif|image/webp|video/mp4|video/webm|video/quicktime",
+   "source_sha":"40-hex","caption":"English <=500"}] (required; empty for non-visual changes)
 Before reporting ready, run the repository's fast gates locally in this worktree: format/lint, build/compile,
 unit tests, and fast tests scoped to your change (take the commands from .github/workflows/* and the
 Makefile/justfile targets they call). Fix failures and rerun until they pass, and record each command with its
@@ -2379,6 +2398,45 @@ def security_advisory(value: Any) -> dict[str, Any]:
             "description": _text(v["description"], 60000, "security_advisory.description"),
             "severity": _choice(v["severity"], ADVISORY_SEVERITIES, "security_advisory.severity"),
             "cwe_ids": list(cwes), "vulnerabilities": vulns}
+VISUAL_MEDIA_TYPES = ("image/png", "image/jpeg", "image/gif", "image/webp",
+                      "video/mp4", "video/webm", "video/quicktime")
+_VISUAL_ID_RE = re.compile(r"^[A-Za-z0-9][A-Za-z0-9_.-]{0,63}$")
+
+
+def _visual_evidence(value: Any) -> list[dict[str, Any]]:
+    _require(isinstance(value, list) and len(value) <= 20,
+             "visual_evidence must be a list of at most 20")
+    out = []
+    ids: set[str] = set()
+    paths: set[str] = set()
+    for item in value:
+        _fields(item, ("id", "role", "relpath", "sha256", "bytes", "media_type", "source_sha", "caption"),
+                "visual evidence")
+        ident = item["id"]
+        _require(isinstance(ident, str) and _VISUAL_ID_RE.fullmatch(ident) and ident not in ids,
+                 "visual_evidence id must be safe, <=64 chars, and unique")
+        role = _choice(item["role"], ("before", "after", "control"), "visual_evidence role")
+        relpath = _text(item["relpath"], 1000, "visual_evidence relpath")
+        _require(not relpath.startswith(("/", "\\")) and "\x00" not in relpath
+                 and all(part not in ("", ".", "..") for part in relpath.replace("\\", "/").split("/")),
+                 "visual_evidence relpath must be relative and confined")
+        _require(relpath not in paths, "visual_evidence relpath must be unique")
+        sha256 = item["sha256"]
+        _require(isinstance(sha256, str) and re.fullmatch(r"[0-9a-f]{64}", sha256),
+                 "visual_evidence sha256 must be 64-hex")
+        size = item["bytes"]
+        _require(isinstance(size, int) and not isinstance(size, bool) and size > 0
+                 and size <= 10 * 1024 * 1024, "visual_evidence bytes must be positive and <= 10 MiB")
+        media_type = _choice(item["media_type"], VISUAL_MEDIA_TYPES, "visual_evidence media_type")
+        source_sha = _sha(item["source_sha"], "visual_evidence source_sha")
+        caption = _text(item["caption"], 500, "visual_evidence caption")
+        ids.add(ident)
+        paths.add(relpath)
+        out.append({"id": ident, "role": role, "relpath": relpath, "sha256": sha256,
+                    "bytes": size, "media_type": media_type, "source_sha": source_sha, "caption": caption})
+    return out
+
+
 
 
 def _implement(v: dict[str, Any], number: int) -> dict[str, Any]:
@@ -2410,8 +2468,10 @@ def _implement(v: dict[str, Any], number: int) -> dict[str, Any]:
         _require(bool(local_checks), "local_checks must list the CI gates run locally when status is ready")
         failing = [c["command"] for c in local_checks if c["exit_code"] != 0]
         _require(not failing, f"local_checks must all exit 0 when status is ready; failing: {failing}"[:1000])
+    visual_evidence = _visual_evidence(v["visual_evidence"])
     return {"status": status, "pr": pr, "issue_comment": note, "questions": questions,
-            "summary": _text(v["summary"], 2000, "summary"), "blockers": blockers, "local_checks": local_checks}
+            "summary": _text(v["summary"], 2000, "summary"), "blockers": blockers, "local_checks": local_checks,
+            "visual_evidence": visual_evidence}
 
 
 def _review(v: dict[str, Any]) -> dict[str, Any]:
@@ -2466,7 +2526,8 @@ def _reopen_check(v: dict[str, Any]) -> dict[str, Any]:
 RESULT_KEYS = {
     "triage": ("status", "verdict", "fault_domain", "duplicate_of", "labels", "comment", "next_action",
                "implementation_brief", "questions", "summary", "blockers", "security_advisory"),
-    "implement": ("status", "pr", "issue_comment", "questions", "summary", "blockers", "local_checks"),
+    "implement": ("status", "pr", "issue_comment", "questions", "summary", "blockers", "local_checks",
+                  "visual_evidence"),
     "review": ("status", "head_sha", "event", "body", "comments", "thread_replies", "open_items", "summary",
                "blockers"),
     "reopen_check": ("status", "reason", "comment", "summary", "blockers"),
@@ -2582,6 +2643,7 @@ class Bridge:
             "github.labels": self.op_github_labels,
             "github.review": self.op_github_review,
             "github.security_advisory": self.op_github_security_advisory,
+            "github.visual_evidence": self.op_github_visual_evidence,
             "github.pr_upsert": self.op_github_pr_upsert,
             "git.push": self.op_git_push,
             "dismiss_event": self.op_dismiss_event,
@@ -4007,6 +4069,11 @@ class Bridge:
         if not isinstance(instructions, str) or not instructions.strip() or len(instructions) > 16000:
             raise OpError("instructions required (<= 16000 chars)")
         context = req.get("context")
+        cfg = self._repo(ev)
+        if cfg.visual_paths:
+            context = dict(context) if isinstance(context, dict) else {}
+            if not isinstance(context.get("visual_paths"), list) or not context["visual_paths"]:
+                context["visual_paths"] = list(cfg.visual_paths)
         if ev["kind"] == "pr_repair":
             lease = self.store.pr_state(ev["repo"], int(ev["pr_number"]))
             if lease is None or lease["active_delivery"] != ev["delivery_id"]:
@@ -5506,6 +5573,91 @@ class Bridge:
                          (state["head_sha"], repo, number, row["revision"]))
         return "ready"
 
+    def op_github_visual_evidence(self, req: dict[str, Any]) -> dict[str, Any]:
+        """Attach validated GUI evidence and replace only this PR body's marker section."""
+        ev = self._event(req)
+        repo = ev["repo"]
+        pr_number = _positive_int(req.get("pr_number"))
+        requested_head = req.get("head_sha")
+        worktree = req.get("worktree")
+        body = req.get("body")
+        artifacts = req.get("artifacts")
+        if pr_number is None or (requested_head is not None
+                                 and (not isinstance(requested_head, str) or not _SHA_RE.fullmatch(requested_head))):
+            raise OpError("bad visual evidence PR head")
+        if not isinstance(worktree, str) or not re.fullmatch(r"(?:issue|review-pr)-[0-9]+(?:-[0-9a-f]{4})?", worktree):
+            raise OpError("bad visual evidence worktree")
+        if not isinstance(body, str) or not body.strip() or len(body) > 60000:
+            raise OpError("bad visual evidence body")
+        if not isinstance(artifacts, list) or not artifacts:
+            raise OpError("visual evidence artifacts are required")
+        if ev["pr_number"] is not None and int(ev["pr_number"]) != pr_number:
+            raise OpError("visual evidence PR does not match event")
+        if ev["pr_number"] is None:
+            issue = self.store.issue(repo, int(ev["issue_number"]))
+            if issue is not None and issue["pr_number"] is not None and int(issue["pr_number"]) != pr_number:
+                raise OpError("visual evidence PR does not match issue")
+        current = self._get_pr(repo, pr_number)
+        current_head = (current.get("head") or {}).get("sha") if isinstance(current, dict) else None
+        base_sha = (current.get("base") or {}).get("sha") if isinstance(current, dict) else None
+        if (not isinstance(current_head, str) or not _SHA_RE.fullmatch(current_head)
+                or str(current.get("state", "")).lower() != "open"
+                or (requested_head is not None and current_head != requested_head)):
+            raise OpError(f"pull request head {current_head} is not {requested_head}", retryable=True)
+        head_sha = current_head
+        marker = f"pr-{pr_number}-head-{head_sha}"
+        allowed_source_shas = [head_sha]
+        roles = {item.get("role") for item in artifacts if isinstance(item, dict)}
+        if {"before", "after"} <= roles and isinstance(base_sha, str) and _SHA_RE.fullmatch(base_sha):
+            allowed_source_shas.append(base_sha)
+        published = self.publisher.request(
+            "/visual-evidence",
+            {"repo": repo, "worktree": worktree, "pr_number": pr_number, "head_sha": head_sha,
+             "allowed_source_shas": allowed_source_shas, "marker": marker, "body": body, "artifacts": artifacts},
+            timeout=PUBLISHER_PUSH_TIMEOUT,
+        )
+        comment_url = published.get("url")
+        asset_urls = published.get("asset_urls") if isinstance(published.get("asset_urls"), list) else []
+        begin = f"<!-- issue-agent:visual-evidence:{marker} -->"
+        end = f"<!-- issue-agent:visual-evidence-end:{marker} -->"
+        lines = [begin, "## Visual evidence", ""]
+        for item in artifacts:
+            caption = item.get("caption") if isinstance(item, dict) else None
+            lines.append(f"- {caption or 'Visual evidence'}")
+        if isinstance(comment_url, str) and comment_url:
+            lines.append(f"- [Open attached evidence]({comment_url})")
+        for url in asset_urls:
+            if isinstance(url, str) and url:
+                lines.append(f"- [Attached asset]({url})")
+        lines.append(end)
+        section = "\n".join(lines)
+        fresh = self._get_pr(repo, pr_number)
+        fresh_head = (fresh.get("head") or {}).get("sha") if isinstance(fresh, dict) else None
+        if fresh_head != head_sha:
+            raise OpError(f"pull request head moved to {fresh_head}", retryable=True)
+        prior_body = fresh.get("body") if isinstance(fresh.get("body"), str) else ""
+        pattern = re.compile(re.escape(begin) + r".*?" + re.escape(end), re.DOTALL)
+        updated_body = pattern.sub(section, prior_body, count=1)
+        if updated_body == prior_body:
+            updated_body = f"{prior_body.rstrip()}\n\n{section}" if prior_body.strip() else section
+        updated = self._gh("PATCH", f"/repos/{repo}/pulls/{pr_number}", {"body": updated_body})
+        if not isinstance(updated, dict):
+            raise OpError("github visual evidence PR body update: unexpected response", retryable=True)
+        return {"pr_number": pr_number, "head_sha": head_sha, "marker": marker,
+                "created": bool(published.get("created")), "comment_url": comment_url,
+                "body_updated": updated_body != prior_body, "asset_urls": asset_urls}
+
+    @staticmethod
+    def _preserve_visual_evidence_sections(existing: str, requested: str) -> str:
+        sections = []
+        for match in _VISUAL_EVIDENCE_SECTION_RE.finditer(existing):
+            if match.group("start") not in requested:
+                sections.append(match.group(0))
+        if not sections:
+            return requested
+        suffix = "\n\n".join(sections)
+        return f"{requested.rstrip()}\n\n{suffix}" if requested.strip() else suffix
+
     def op_github_pr_upsert(self, req: dict[str, Any]) -> dict[str, Any]:
         ev = self._event(req)
         repo, n = ev["repo"], int(ev["issue_number"])
@@ -5566,6 +5718,10 @@ class Bridge:
                               retryable=status >= 500 or status == 429)
         if existing is not None:
             existing = await_head(existing)
+            prior_body = existing.get("body") if isinstance(existing.get("body"), str) else ""
+            body = self._preserve_visual_evidence_sections(prior_body, body)
+            if len(body) > 60000:
+                raise OpError("body with preserved visual evidence exceeds 60000 chars")
             pr = self._gh("PATCH", f"/repos/{repo}/pulls/{existing['number']}", {"title": title, "body": body})
             if not isinstance(pr, dict):
                 raise OpError("github pull request update: unexpected response", retryable=True)

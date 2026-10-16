@@ -74,3 +74,9 @@ GitHub에 쓰는 모든 행위의 공통 절차. 각 호출 스킬(`isac-issue-t
 ## 게시 주체
 
 - **GHP-15** GitHub에는 지정된 게시 주체 하나만 쓴다. 이 자동화에서 게시 주체는 n8n(bridge를 통한 GitHub App)뿐이다. 메인 에이전트와 서브에이전트, 헬퍼는 모두 초안만 만들고, 메인 에이전트가 최종 초안을 결과 필드에 넣는다. 결과에 넣기 전에는 초안 작성자가 아닌 독립 검토자가 초안의 주장을 실행 결과와 대조한다(단독 작업이면 메인 에이전트가 수행). 게시 후 대조와 게시 기록은 자동화가 맡는다.
+
+## Visual evidence
+
+- **GHP-16** For GUI or web-facing changes, the implementation result may include `visual_evidence` items. Each item must contain exactly `id`, `role` (`before`, `after`, or `control`), `relpath`, `sha256`, `bytes`, `media_type`, `source_sha`, and a concise English `caption`. Use paths relative to the current worktree; never include absolute paths, `..`, base64, or external storage.
+- **GHP-17** n8n submits visual evidence through the bridge only after the PR exists at the confirmed head. The bridge publishes native image/video attachments with its dedicated GitHub comment credential and updates the PR body through its visual-evidence marker. Do not upload evidence from the agent or use repository commits as a media store.
+- **GHP-18** Place visual evidence in the pull request Conversation as one native attachment comment, with a short explanation and clear before/after/control captions. Keep implementation discussion, review replies, and visual evidence separate; do not put raw attachment URLs in issue comments or inline review threads.

@@ -11,6 +11,8 @@ called only by the bridge (bearer token the agent container cannot read).
   POST /push     {repo, branch, expected_sha}  -> {sha}
   POST /cleanup  {repo, worktree, branch, codex_session_ids} -> {removed}
   POST /worktree/restore {repo, worktree, branch} -> {restored, path, already} | {restored: false, reason}
+  POST /visual-evidence {repo, worktree, pr_number, head_sha, allowed_source_shas, marker, body, artifacts}
+                                             -> {created, url, body, asset_urls}
   POST /janitor/prune-request {lease_until}   -> {requested_at, lease_until}
   GET  /janitor/status                        -> the janitor's status JSON
 
@@ -43,7 +45,7 @@ from __future__ import annotations
 
 import base64
 import glob
-import hmac
+import hashlib
 import json
 import logging
 import os
@@ -64,6 +66,9 @@ from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 PORT = int(os.environ.get("PUBLISHER_PORT", "8090"))
 AUTH_TOKEN_FILE = os.environ.get("PUBLISHER_TOKEN_FILE", "/run/issue-agent/publisher/token")
 PUSH_TOKEN_FILE = os.environ.get("GITHUB_PUSH_TOKEN_FILE", "/run/issue-agent/push/token")
+COMMENT_TOKEN_FILE = os.environ.get("GITHUB_COMMENT_TOKEN_FILE", "/run/issue-agent/comment/token")
+MAX_VISUAL_ARTIFACTS = 20
+MAX_VISUAL_ARTIFACT_BYTES = 10 * 1024 * 1024
 CHECKOUTS = os.environ.get("ISSUE_AGENT_CHECKOUTS", "/home/agent/checkouts")
 CODEX_HOME = os.environ.get("CODEX_HOME", "/home/agent/.codex")
 STATE_DIR = os.environ.get("PUBLISHER_STATE_DIR", "/var/lib/issue-agent-publisher")
@@ -80,6 +85,13 @@ BRANCH_RE = re.compile(r"^hapi-issue-[0-9]+$")
 SHA_RE = re.compile(r"^[0-9a-f]{40}$")
 WORKTREE_RE = re.compile(r"^(issue|review-pr)-[0-9]+(-[0-9a-f]{4})?$")
 CLEANUP_BRANCH_RE = re.compile(r"^hapi-(issue|review-pr)-[0-9]+(-[0-9a-f]{4})?$")
+VISUAL_ID_RE = re.compile(r"^[A-Za-z0-9][A-Za-z0-9_.-]{0,63}$")
+VISUAL_MARKER_RE = re.compile(r"^[A-Za-z0-9_.:-]{1,200}$")
+VISUAL_MEDIA_TYPES = {
+    "image/png", "image/jpeg", "image/gif", "image/webp",
+    "video/mp4", "video/webm", "video/quicktime",
+}
+VISUAL_MARKER_LITERAL = "<!-- issue-agent:visual-evidence -->"
 CODEX_ID_RE = re.compile(r"^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$")
 MAX_CODEX_IDS = 50
 PACKED_REF_RE = re.compile(r"^[0-9a-f]{40,64} (refs/\S+)$")
@@ -124,6 +136,19 @@ def read_secret(path: str, what: str) -> str:
     if not value:
         raise PublisherError(HTTPStatus.SERVICE_UNAVAILABLE, "credential_unavailable", f"{what} is empty")
     return value
+def gh_env(token: str) -> dict[str, str]:
+    return git_env() | {"GH_TOKEN": token, "GH_PROMPT_DISABLED": "1", "GH_NO_UPDATE_NOTIFIER": "1"}
+
+
+def run_gh(args: list[str], *, token: str, timeout: int = 120) -> subprocess.CompletedProcess:
+    try:
+        return subprocess.run(
+            ["gh", *args], cwd=STATE_DIR, env=gh_env(token), stdin=subprocess.DEVNULL,
+            capture_output=True, text=True, timeout=timeout, check=False,
+        )
+    except subprocess.TimeoutExpired:
+        raise PublisherError(HTTPStatus.GATEWAY_TIMEOUT, "gh_timeout", f"gh {args[0]} exceeded {timeout}s") from None
+
 
 
 def git_env() -> dict[str, str]:
@@ -358,6 +383,188 @@ def confined_root(path: str) -> str:
     if not inside(root, os.path.realpath(CHECKOUTS)):
         raise PublisherError(HTTPStatus.CONFLICT, "unsafe_path", f"{path} resolves outside the checkouts root")
     return root
+def visual_worktree_path(repo: str, name: str) -> str:
+    if not WORKTREE_RE.fullmatch(name):
+        raise PublisherError(HTTPStatus.BAD_REQUEST, "invalid_request", "invalid worktree")
+    root = confined_root(checkout_path(repo) + "-worktrees")
+    path = os.path.realpath(os.path.join(root, name))
+    if not inside(path, root) or not os.path.isdir(path):
+        raise PublisherError(HTTPStatus.CONFLICT, "unsafe_path", "worktree is missing or outside checkout")
+    try:
+        if stat.S_ISLNK(os.lstat(os.path.join(root, name)).st_mode):
+            raise PublisherError(HTTPStatus.CONFLICT, "unsafe_path", "worktree is a symlink")
+    except FileNotFoundError:
+        raise PublisherError(HTTPStatus.CONFLICT, "unsafe_path", "worktree is missing") from None
+    return path
+def visual_worktree_head(worktree: str) -> str:
+    result = run_git(["-C", worktree, "rev-parse", "--verify", "HEAD"])
+    head = result.stdout.strip()
+    if result.returncode != 0 or not SHA_RE.fullmatch(head):
+        raise PublisherError(HTTPStatus.CONFLICT, "worktree_head_unavailable", "cannot resolve worktree HEAD")
+    return head
+
+
+
+def visual_artifact_path(root: str, relpath: str) -> str:
+    if not isinstance(relpath, str) or not relpath or os.path.isabs(relpath) or "\x00" in relpath:
+        raise PublisherError(HTTPStatus.BAD_REQUEST, "invalid_request", "invalid artifact relpath")
+    parts = relpath.replace("\\", "/").split("/")
+    if any(part in ("", ".", "..") for part in parts):
+        raise PublisherError(HTTPStatus.BAD_REQUEST, "invalid_request", "invalid artifact relpath")
+    path = os.path.realpath(os.path.join(root, *parts))
+    if not inside(path, root):
+        raise PublisherError(HTTPStatus.CONFLICT, "unsafe_path", "artifact resolves outside worktree")
+    try:
+        st = os.lstat(path)
+    except OSError:
+        raise PublisherError(HTTPStatus.NOT_FOUND, "artifact_missing", relpath) from None
+    if stat.S_ISLNK(st.st_mode) or not stat.S_ISREG(st.st_mode):
+        raise PublisherError(HTTPStatus.CONFLICT, "unsafe_path", "artifact is not a regular file")
+    return path
+
+
+def visual_magic(media_type: str, prefix: bytes) -> bool:
+    if media_type == "image/png":
+        return prefix.startswith(b"\x89PNG\r\n\x1a\n")
+    if media_type == "image/jpeg":
+        return prefix.startswith(b"\xff\xd8\xff")
+    if media_type == "image/gif":
+        return prefix.startswith((b"GIF87a", b"GIF89a"))
+    if media_type == "image/webp":
+        return len(prefix) >= 12 and prefix[:4] == b"RIFF" and prefix[8:12] == b"WEBP"
+    if media_type == "video/webm":
+        return prefix.startswith(b"\x1aE\xdf\xa3")
+    if media_type in ("video/mp4", "video/quicktime"):
+        return len(prefix) >= 12 and prefix[4:8] == b"ftyp" and (
+            media_type == "video/mp4" or prefix[8:12] == b"qt  "
+        )
+    return False
+
+
+def validate_visual_artifacts(root: str, artifacts: Any, allowed_source_shas: set[str] | None = None) -> list[tuple[dict[str, Any], str]]:
+    allowed_source_shas = None if allowed_source_shas is None else set(allowed_source_shas)
+    if not isinstance(artifacts, list) or not artifacts or len(artifacts) > MAX_VISUAL_ARTIFACTS:
+        raise PublisherError(HTTPStatus.BAD_REQUEST, "invalid_request", "artifacts must be a non-empty list")
+    seen_ids: set[str] = set()
+    seen_paths: set[str] = set()
+    validated: list[tuple[dict[str, Any], str]] = []
+    for item in artifacts:
+        if not isinstance(item, dict):
+            raise PublisherError(HTTPStatus.BAD_REQUEST, "invalid_request", "invalid visual artifact")
+        expected = {"id", "role", "relpath", "sha256", "bytes", "media_type", "source_sha", "caption"}
+        if set(item) != expected:
+            raise PublisherError(HTTPStatus.BAD_REQUEST, "invalid_request", "invalid visual artifact fields")
+        ident = item["id"]
+        role = item["role"]
+        relpath = item["relpath"]
+        if not isinstance(ident, str) or not VISUAL_ID_RE.fullmatch(ident) or ident in seen_ids:
+            raise PublisherError(HTTPStatus.BAD_REQUEST, "invalid_request", "invalid or repeated artifact id")
+        if role not in ("before", "after", "control"):
+            raise PublisherError(HTTPStatus.BAD_REQUEST, "invalid_request", "invalid artifact role")
+        if (not isinstance(item["sha256"], str) or not re.fullmatch(r"[0-9a-f]{64}", item["sha256"])
+                or not isinstance(item["source_sha"], str) or not SHA_RE.fullmatch(item["source_sha"])):
+            raise PublisherError(HTTPStatus.BAD_REQUEST, "invalid_request", "invalid artifact hash")
+        if allowed_source_shas is not None and item["source_sha"] not in allowed_source_shas:
+            raise PublisherError(HTTPStatus.CONFLICT, "source_sha_mismatch", "artifact source_sha is not allowed")
+        if (not isinstance(item["bytes"], int) or isinstance(item["bytes"], bool)
+                or item["bytes"] <= 0 or item["bytes"] > MAX_VISUAL_ARTIFACT_BYTES):
+            raise PublisherError(HTTPStatus.BAD_REQUEST, "invalid_request", "invalid artifact size")
+        if item["media_type"] not in VISUAL_MEDIA_TYPES:
+            raise PublisherError(HTTPStatus.BAD_REQUEST, "invalid_request", "invalid artifact media_type")
+        if not isinstance(item["caption"], str) or not item["caption"].strip() or len(item["caption"]) > 500:
+            raise PublisherError(HTTPStatus.BAD_REQUEST, "invalid_request", "invalid artifact caption")
+        path = visual_artifact_path(root, relpath)
+        if path in seen_paths:
+            raise PublisherError(HTTPStatus.BAD_REQUEST, "invalid_request", "repeated artifact path")
+        st = os.stat(path)
+        if st.st_size != item["bytes"]:
+            raise PublisherError(HTTPStatus.BAD_REQUEST, "artifact_mismatch", f"{relpath}: bytes")
+        with open(path, "rb") as handle:
+            prefix = handle.read(32)
+            digest = hashlib.sha256(prefix)
+            remaining = st.st_size - len(prefix)
+            while remaining:
+                chunk = handle.read(min(1024 * 1024, remaining))
+                if not chunk:
+                    raise PublisherError(HTTPStatus.BAD_REQUEST, "artifact_mismatch", f"{relpath}: truncated")
+                digest.update(chunk)
+                remaining -= len(chunk)
+        if not visual_magic(item["media_type"], prefix):
+            raise PublisherError(HTTPStatus.BAD_REQUEST, "artifact_mismatch", f"{relpath}: magic/MIME")
+        if digest.hexdigest() != item["sha256"]:
+            raise PublisherError(HTTPStatus.BAD_REQUEST, "artifact_mismatch", f"{relpath}: sha256")
+        seen_ids.add(ident)
+        seen_paths.add(path)
+        validated.append((item, path))
+    return validated
+
+
+def visual_asset_urls(body: str) -> list[str]:
+    return sorted(set(re.findall(r"https://github\.com/[^\s)>\"]+", body)))
+
+
+def gh_comments(repo: str, pr_number: int, token: str) -> list[dict[str, Any]]:
+    result = run_gh(["api", f"repos/{repo}/issues/{pr_number}/comments?per_page=100"], token=token)
+    if result.returncode != 0:
+        raise PublisherError(HTTPStatus.BAD_GATEWAY, "github_error", scrub(result.stderr, [token]))
+    try:
+        data = json.loads(result.stdout)
+    except (ValueError, UnicodeDecodeError):
+        raise PublisherError(HTTPStatus.BAD_GATEWAY, "github_error", "invalid comment response") from None
+    if not isinstance(data, list):
+        raise PublisherError(HTTPStatus.BAD_GATEWAY, "github_error", "invalid comment response")
+    return [item for item in data if isinstance(item, dict)]
+def normalize_visual_marker(marker: str) -> str:
+    if marker == VISUAL_MARKER_LITERAL:
+        return "default"
+    if VISUAL_MARKER_RE.fullmatch(marker):
+        return marker
+    raise PublisherError(HTTPStatus.BAD_REQUEST, "invalid_request", "invalid visual marker")
+
+
+
+def do_visual_evidence(repo: str, worktree: str, pr_number: int, head_sha: str, marker: str,
+                       body: str, artifacts: Any, allowed_source_shas: Any = None) -> dict[str, Any]:
+    if not SHA_RE.fullmatch(head_sha) or not _is_int(pr_number):
+        raise PublisherError(HTTPStatus.BAD_REQUEST, "invalid_request", "invalid PR head")
+    if allowed_source_shas is None:
+        allowed_source_shas = [head_sha]
+    if (not isinstance(allowed_source_shas, list) or not allowed_source_shas
+            or len(allowed_source_shas) > MAX_CODEX_IDS
+            or not all(isinstance(sha, str) and SHA_RE.fullmatch(sha) for sha in allowed_source_shas)):
+        raise PublisherError(HTTPStatus.BAD_REQUEST, "invalid_request", "invalid allowed_source_shas")
+    allowed_source_shas = set(allowed_source_shas)
+    marker = normalize_visual_marker(marker)
+    if not isinstance(body, str) or not body.strip() or len(body) > 60000:
+        raise PublisherError(HTTPStatus.BAD_REQUEST, "invalid_request", "invalid visual comment")
+    root = visual_worktree_path(repo, worktree)
+    if visual_worktree_head(root) != head_sha:
+        raise PublisherError(HTTPStatus.CONFLICT, "worktree_head_mismatch",
+                             f"worktree HEAD is not {head_sha}")
+    validated = validate_visual_artifacts(root, artifacts, allowed_source_shas)
+    marker_text = f"<!-- issue-agent:visual-evidence:{marker} -->"
+    rendered = f"{marker_text}\n{body.strip()}"
+    token = read_secret(COMMENT_TOKEN_FILE, "comment token")
+    existing = next((c for c in gh_comments(repo, pr_number, token) if marker_text in str(c.get("body", ""))), None)
+    if existing is None:
+        args = ["pr", "comment", "--repo", repo, str(pr_number), "--body", rendered]
+        for _, path in validated:
+            args += ["--attach", path]
+        result = run_gh(args, token=token)
+        if result.returncode != 0:
+            raise PublisherError(HTTPStatus.BAD_GATEWAY, "github_error", scrub(result.stderr, [token]))
+        comments = gh_comments(repo, pr_number, token)
+        existing = next((c for c in comments if marker_text in str(c.get("body", ""))), None)
+        if existing is None:
+            url_match = re.search(r"https://github\\.com/[^\\s]+", result.stdout)
+            return {"created": True, "url": url_match.group(0) if url_match else None,
+                    "body": rendered, "asset_urls": visual_asset_urls(rendered)}
+        created = True
+    else:
+        created = False
+    comment_body = str(existing.get("body") or rendered)
+    return {"created": created, "url": existing.get("html_url"), "body": comment_body,
+            "asset_urls": visual_asset_urls(comment_body)}
 
 
 def worktree_admin_dir(worktree: str) -> str | None:
@@ -859,7 +1066,8 @@ class Handler(BaseHTTPRequestHandler):
             raise PublisherError(HTTPStatus.UNAUTHORIZED, "unauthorized", "missing or invalid bearer token")
 
     def body(self, fields: dict[str, re.Pattern], *, nullable: tuple[str, ...] = (),
-             lists: dict[str, re.Pattern] | None = None, ints: tuple[str, ...] = ()) -> dict:
+             lists: dict[str, re.Pattern] | None = None, ints: tuple[str, ...] = (),
+             objects: tuple[str, ...] = (), max_body: int = MAX_BODY) -> dict:
         """Validated JSON body: ``fields`` are strings (None allowed for ``nullable``), ``lists`` string
         arrays, ``ints`` required positive integers."""
         lists = lists or {}
@@ -869,7 +1077,7 @@ class Handler(BaseHTTPRequestHandler):
             length = int(self.headers.get("Content-Length", ""))
         except ValueError:
             raise PublisherError(HTTPStatus.LENGTH_REQUIRED, "invalid_request", "Content-Length required") from None
-        if length < 0 or length > MAX_BODY:
+        if length < 0 or length > max_body:
             raise PublisherError(HTTPStatus.REQUEST_ENTITY_TOO_LARGE, "invalid_request", "body too large")
         try:
             data = json.loads(self.rfile.read(length))
@@ -877,7 +1085,7 @@ class Handler(BaseHTTPRequestHandler):
             raise PublisherError(HTTPStatus.BAD_REQUEST, "invalid_request", "body is not valid JSON") from None
         if not isinstance(data, dict):
             raise PublisherError(HTTPStatus.BAD_REQUEST, "invalid_request", "body must be a JSON object")
-        unknown = sorted(set(data) - set(fields) - set(lists) - set(ints))
+        unknown = sorted(set(data) - set(fields) - set(lists) - set(ints) - set(objects))
         if unknown:
             raise PublisherError(HTTPStatus.BAD_REQUEST, "invalid_request", f"unknown fields: {', '.join(unknown)}")
         values = {}
@@ -899,6 +1107,10 @@ class Handler(BaseHTTPRequestHandler):
             if not _is_int(data.get(name)):
                 raise PublisherError(HTTPStatus.BAD_REQUEST, "invalid_request", f"invalid {name}")
             values[name] = data[name]
+        for name in objects:
+            if name not in data:
+                raise PublisherError(HTTPStatus.BAD_REQUEST, "invalid_request", f"missing {name}")
+            values[name] = data[name]
         repo = values.get("repo")
         if repo is not None and any(part in (".", "..") or part.endswith(".git") for part in repo.split("/")):
             raise PublisherError(HTTPStatus.BAD_REQUEST, "invalid_request", "invalid repo")
@@ -919,6 +1131,18 @@ class Handler(BaseHTTPRequestHandler):
                 args = self.body({"repo": REPO_RE, "branch": BRANCH_RE, "expected_sha": SHA_RE})
                 with repo_lock(args["repo"]):
                     self.reply(HTTPStatus.OK, do_push(args["repo"], args["branch"], args["expected_sha"]))
+            elif self.path == "/visual-evidence":
+                args = self.body(
+                    {"repo": REPO_RE, "worktree": WORKTREE_RE, "head_sha": SHA_RE,
+                     "marker": re.compile(r"(?s).{1,200}"), "body": re.compile(r"(?s).{1,60000}")},
+                    lists={"allowed_source_shas": SHA_RE}, ints=("pr_number",), objects=("artifacts",),
+                    max_body=256 * 1024,
+                )
+                with repo_lock(args["repo"]):
+                    self.reply(HTTPStatus.OK, do_visual_evidence(
+                        args["repo"], args["worktree"], args["pr_number"], args["head_sha"],
+                        args["marker"], args["body"], args["artifacts"], args["allowed_source_shas"],
+                    ))
             elif self.path == "/cleanup":
                 args = self.body({"repo": REPO_RE, "worktree": WORKTREE_RE, "branch": CLEANUP_BRANCH_RE},
                                  nullable=("worktree", "branch"), lists={"codex_session_ids": CODEX_ID_RE})

@@ -5,6 +5,7 @@ Run: python3 -m unittest apps/objects/issue-agent/test_bridge.py
 
 from __future__ import annotations
 
+import hashlib
 import dataclasses
 import http.client
 import http.server
@@ -879,6 +880,7 @@ TRIAGE_ADVISORY: dict[str, Any] = {
 IMPLEMENT_OK: dict[str, Any] = {
     "status": "ready", "pr": {"title": "Fix it", "body": "Fixes #7"}, "issue_comment": None,
     "questions": [], "summary": "done", "blockers": [], "local_checks": [{"command": "make test", "exit_code": 0}],
+    "visual_evidence": [],
 }
 REVIEW_OK: dict[str, Any] = {
     "status": "reviewed", "head_sha": SHA_A, "event": "REQUEST_CHANGES", "body": "Needs work",
@@ -1048,6 +1050,11 @@ class IntakeTests(BridgeTestCase):
         registry = bridge.load_registry(self.registry_path)
         self.assertEqual((registry.get(OTHER).agent, registry.get(OTHER).model), ("claude", None))
         self.assertEqual((registry.get(REPO).agent, registry.get(REPO).model), ("codex", "gpt-5"))
+        self.write_registry({"defaults": {"agent": "codex", "model": None, "permission_mode": "yolo",
+                                          "machine_id": None, "project_owner": None, "visual_paths": ["src/**"]},
+                             "repositories": {REPO: {"visual_paths": ["web/**"]}}})
+        registry = bridge.load_registry(self.registry_path)
+        self.assertEqual(registry.get(REPO).visual_paths, ("web/**",))
 
     def test_registry_rejects_label_mapping_and_incomplete_defaults(self) -> None:
         for bad in ({"defaults": {"agent": "codex"}, "repositories": {REPO: {"labels": {"bug": "bug"}}}},
@@ -2538,7 +2545,7 @@ class PrRepairTests(BridgeTestCase):
         sid = self.store.turn(delivery, "followup")["session_id"]
         self.fake.invoke(sid, original_local_id)
         result = {"status": "no_change", "pr": None, "issue_comment": "nothing needed", "questions": [],
-                  "summary": "nothing needed", "blockers": [], "local_checks": []}
+                  "summary": "nothing needed", "blockers": [], "local_checks": [], "visual_evidence": []}
         self.fake.codex(sid, "message", message=f"{bridge.RESULT_TAG} {original_local_id} {json.dumps(result)}")
         self.assertEqual(self.op("session_turn", delivery, mode="followup")["state"], "done")
         self.assertEqual(len(self.fake.message_posts), 1)
@@ -4054,7 +4061,8 @@ class TurnTests(BridgeTestCase):
 
     def result_line(self, nonce: str | None = None, **fields: Any) -> str:
         data = {"status": "no_change", "pr": None, "issue_comment": "nothing needed",
-                "questions": [], "summary": "nothing needed", "blockers": [], "local_checks": [], **fields}
+                "questions": [], "summary": "nothing needed", "blockers": [], "local_checks": [],
+                "visual_evidence": [], **fields}
         return f"done.\n{bridge.RESULT_TAG} {nonce or self.lid} {json.dumps(data)}"
 
     def say(self, text: str) -> None:
@@ -4609,7 +4617,7 @@ class UnresolvedTurnTests(BridgeTestCase):
 
     def answer(self, lid: str | None = None, *, status: str = "no_change") -> None:
         result = {"status": status, "pr": None, "issue_comment": "nothing needed", "questions": [],
-                  "summary": "nothing needed", "blockers": [], "local_checks": []}
+                  "summary": "nothing needed", "blockers": [], "local_checks": [], "visual_evidence": []}
         self.fake.codex(self.sid, "message", message=f"{bridge.RESULT_TAG} {lid or self.lid} {json.dumps(result)}")
 
     def restart(self) -> None:
@@ -4955,7 +4963,7 @@ class TimeBudgetTests(BridgeTestCase):
     """krema#99: an implement turn outlived the n8n time budget; its late result must be harvested, not redone."""
 
     RESULT = {"status": "no_change", "pr": None, "issue_comment": "nothing needed", "questions": [],
-              "summary": "nothing needed", "blockers": [], "local_checks": []}
+              "summary": "nothing needed", "blockers": [], "local_checks": [], "visual_evidence": []}
 
     def timed_out_comment(self) -> tuple[str, str]:
         """Comment event c1 on issue 7 (phase 'implementing'), parked at the time budget mid implement turn."""
@@ -5290,7 +5298,7 @@ class ProviderErrorTests(BridgeTestCase):
         self.task_failed(self.sid, "Codex error: Codex thread entered systemError")
         self.fake.codex(self.sid, "message", message=f"done.\n{bridge.RESULT_TAG} {self.lid} " + json.dumps(
             {"status": "no_change", "pr": None, "issue_comment": "nothing needed", "questions": [],
-             "summary": "nothing needed", "blockers": [], "local_checks": []}))
+             "summary": "nothing needed", "blockers": [], "local_checks": [], "visual_evidence": []}))
         self.assertEqual(self.op("session_turn")["state"], "done")
 
     def test_operator_retry_of_an_idle_unanswered_turn_resends_it(self) -> None:
@@ -5496,6 +5504,20 @@ class ResultValidationTests(unittest.TestCase):
                     "local check command",
                 )
         self.assertIn("<=2000 exact command you ran in this worktree", bridge._IMPLEMENT_SCHEMA)
+    def test_visual_evidence_is_required_and_confined(self) -> None:
+        item = {"id": "after", "role": "after", "relpath": "evidence/after.png",
+                "sha256": "a" * 64, "bytes": 8, "media_type": "image/png",
+                "source_sha": SHA_A, "caption": "After"}
+        valid = bridge.validate_result("implement", variant(IMPLEMENT_OK, visual_evidence=[item]), 7)
+        self.assertEqual(valid["visual_evidence"], [item])
+        self.assertInvalid("implement", {k: v for k, v in IMPLEMENT_OK.items() if k != "visual_evidence"}, "missing")
+        for relpath in ("/tmp/a.png", "../a.png", "evidence/../a.png"):
+            self.assertInvalid("implement", variant(IMPLEMENT_OK, visual_evidence=[{**item, "relpath": relpath}]),
+                               "relpath")
+        self.assertInvalid("implement", variant(IMPLEMENT_OK, visual_evidence=[{**item, "bytes": 0}]), "bytes")
+        self.assertInvalid("implement", variant(IMPLEMENT_OK, visual_evidence=[{**item, "media_type": "text/plain"}]),
+                           "media_type")
+
 
     def test_review_conditional_fields(self) -> None:
         self.assertInvalid("review", variant(REVIEW_OK, head_sha=None), "head_sha")
@@ -6985,8 +7007,174 @@ class MigrationTests(unittest.TestCase):
             self.assertEqual(queued, "queued")
             self.assertEqual(store.event("r1")["kind"], "closed_issue_comment")
 
+class VisualEvidenceBridgeTests(BridgeTestCase):
+    def setUp(self) -> None:
+        super().setUp()
+        self.fake.add_pr(7, sha=SHA_A, body="Keep this unrelated PR context.")
+        self.started()
+        self.assertTrue(self.op("ensure_session")["ok"])
+
+    def test_visual_evidence_checks_head_and_preserves_pr_body(self) -> None:
+        artifact = {"id": "after", "role": "after", "relpath": "after.png", "sha256": "a" * 64,
+                    "bytes": 8, "media_type": "image/png", "source_sha": SHA_A, "caption": "After"}
+        with patch.object(self.bridge.publisher, "request", return_value={
+            "created": True, "url": "https://github.com/isac322/cc-lb/pull/7#issuecomment-1",
+            "asset_urls": [],
+        }) as request:
+            result = self.op("github.visual_evidence", pr_number=7, head_sha=SHA_A,
+                             worktree="issue-7", marker="<!-- issue-agent:visual-evidence -->",
+                             body="Captured", artifacts=[artifact])
+        self.assertTrue(result["ok"])
+        request.assert_called_once()
+        payload = request.call_args.args[1]
+        self.assertEqual(payload["allowed_source_shas"], [SHA_A])
+        self.assertIn("Keep this unrelated PR context.", self.fake.prs[7]["body"])
+        self.assertEqual(self.fake.prs[7]["body"].count("## Visual evidence"), 1)
+        self.assertEqual(self.fake.prs[7]["body"].count("<!-- issue-agent:visual-evidence:pr-7-head-"), 1)
+
+    def test_visual_evidence_rejects_stale_head_before_publisher(self) -> None:
+        with patch.object(self.bridge.publisher, "request") as request:
+            result = self.op("github.visual_evidence", pr_number=7, head_sha=SHA_B,
+                             worktree="issue-7", marker="m", body="Captured", artifacts=[{}])
+        self.assertFalse(result["ok"])
+        request.assert_not_called()
+    def test_pr_upsert_preserves_existing_visual_evidence_sections(self) -> None:
+        section = ("<!-- issue-agent:visual-evidence:pr-7-head-" + SHA_A + " -->\n"
+                   "## Visual evidence\n\n- Existing capture\n"
+                   "<!-- issue-agent:visual-evidence-end:pr-7-head-" + SHA_A + " -->")
+        self.fake.prs[7]["body"] = section
+        result = self.op("github.pr_upsert", head_sha=SHA_A, title="Fix it", body="Fixes #7")
+        self.assertTrue(result["ok"], result)
+        updated_body = self.fake.pr_patches[-1]["body"]
+        self.assertIn("Fixes #7", updated_body)
+        self.assertIn(section, updated_body)
+
+    def test_visual_paths_overwrite_empty_context(self) -> None:
+        self.write_registry({"defaults": {"agent": "codex", "model": None, "permission_mode": "yolo",
+                                          "machine_id": None, "project_owner": None, "visual_paths": []},
+                             "repositories": {REPO: {"visual_paths": ["src/qml/**"]}}})
+        delivery = "visual-context"
+        self.started(number=8, delivery=delivery)
+        self.assertTrue(self.op("ensure_session", delivery)["ok"])
+        sent = self.op("session_send", delivery, mode="implement", instructions="Implement it.",
+                        context={"visual_paths": []})
+        self.assertTrue(sent["ok"], sent)
+        context = json.loads(self.fake.message_posts[-1]["text"].split(" CONTEXT_JSON\n", 1)[1].rsplit("\n", 1)[0])
+        self.assertEqual(context["visual_paths"], ["src/qml/**"])
+    def test_visual_paths_preserve_nonempty_explicit_context(self) -> None:
+        self.write_registry({"defaults": {"agent": "codex", "model": None, "permission_mode": "yolo",
+                                          "machine_id": None, "project_owner": None, "visual_paths": []},
+                             "repositories": {REPO: {"visual_paths": ["src/qml/**"]}}})
+        delivery = "visual-context-explicit"
+        self.started(number=9, delivery=delivery)
+        self.assertTrue(self.op("ensure_session", delivery)["ok"])
+        sent = self.op("session_send", delivery, mode="implement", instructions="Implement it.",
+                        context={"visual_paths": ["custom/**"]})
+        self.assertTrue(sent["ok"], sent)
+        context = json.loads(self.fake.message_posts[-1]["text"].split(" CONTEXT_JSON\n", 1)[1].rsplit("\n", 1)[0])
+        self.assertEqual(context["visual_paths"], ["custom/**"])
+
+
+
+class PublisherVisualEvidenceTests(unittest.TestCase):
+    def setUp(self) -> None:
+        spec = importlib.util.spec_from_file_location(
+            "issue_agent_publisher_visual_test",
+            os.path.join(os.path.dirname(__file__), "runner", "publisher.py"),
+        )
+        self.publisher = importlib.util.module_from_spec(spec)
+        assert spec.loader is not None
+        spec.loader.exec_module(self.publisher)
+        self.tmp = tempfile.TemporaryDirectory()
+        self.addCleanup(self.tmp.cleanup)
+        self.publisher.CHECKOUTS = os.path.join(self.tmp.name, "checkouts")
+        self.publisher.STATE_DIR = os.path.join(self.tmp.name, "state")
+        self.publisher.COMMENT_TOKEN_FILE = os.path.join(self.tmp.name, "comment-token")
+        self.publisher.PUSH_TOKEN_FILE = os.path.join(self.tmp.name, "push-token")
+        os.makedirs(os.path.join(self.publisher.CHECKOUTS, REPO + "-worktrees", "issue-7"), exist_ok=True)
+        self.publisher.visual_worktree_head = lambda _worktree: SHA_A
+        with open(self.publisher.COMMENT_TOKEN_FILE, "w") as handle:
+            handle.write("comment-token\n")
+        with open(self.publisher.PUSH_TOKEN_FILE, "w") as handle:
+            handle.write("push-token\n")
+        self.path = os.path.join(self.publisher.CHECKOUTS, REPO + "-worktrees", "issue-7", "after.png")
+        payload = b"\x89PNG\r\n\x1a\nx"
+        with open(self.path, "wb") as handle:
+            handle.write(payload)
+        self.comments: list[dict[str, Any]] = []
+        self.gh_calls: list[list[str]] = []
+        self.tokens: list[str] = []
+
+        def fake_gh(args: list[str], *, token: str, timeout: int = 120) -> SimpleNamespace:
+            self.gh_calls.append(args)
+            self.tokens.append(token)
+            if args[:1] == ["api"]:
+                return SimpleNamespace(returncode=0, stdout=json.dumps(self.comments), stderr="")
+            body_index = args.index("--body") + 1
+            self.comments.append({"html_url": "https://github.com/isac322/cc-lb/pull/7#issuecomment-1",
+                                  "body": args[body_index]})
+            return SimpleNamespace(returncode=0, stdout="https://github.com/isac322/cc-lb/pull/7#issuecomment-1",
+                                   stderr="")
+
+        self.publisher.run_gh = fake_gh
+        self.item = {
+            "id": "after", "role": "after", "relpath": "after.png",
+            "sha256": hashlib.sha256(payload).hexdigest(), "bytes": len(payload),
+            "media_type": "image/png", "source_sha": SHA_A, "caption": "After",
+        }
+
+    def call(self, **changes: Any) -> dict[str, Any]:
+        allowed = changes.pop("allowed_source_shas", None)
+        item = {**self.item, **changes}
+        return self.publisher.do_visual_evidence(
+            REPO, "issue-7", 7, SHA_A, "pr-7-head-a", "Evidence", [item],
+            allowed_source_shas=allowed,
+        )
+
+    def test_visual_evidence_rejects_path_and_hash_before_gh(self) -> None:
+        with self.assertRaises(self.publisher.PublisherError):
+            self.call(relpath="../after.png")
+        with self.assertRaises(self.publisher.PublisherError):
+            self.call(sha256="b" * 64)
+        self.assertEqual(self.gh_calls, [])
+    def test_visual_evidence_rejects_foreign_source_sha(self) -> None:
+        with self.assertRaises(self.publisher.PublisherError):
+            self.call(source_sha="c" * 40)
+        self.assertEqual(self.gh_calls, [])
+
+    def test_visual_evidence_rejects_worktree_head_mismatch(self) -> None:
+        self.publisher.visual_worktree_head = lambda _worktree: SHA_B
+        with self.assertRaises(self.publisher.PublisherError):
+            self.call()
+        self.assertEqual(self.gh_calls, [])
+
+    def test_visual_evidence_allows_base_sha_when_explicitly_allowed(self) -> None:
+        result = self.call(source_sha=SHA_B, allowed_source_shas=[SHA_A, SHA_B])
+        self.assertTrue(result["created"])
+
+    def test_visual_evidence_uses_comment_token_and_is_idempotent(self) -> None:
+        first = self.call()
+        second = self.call()
+        self.assertTrue(first["created"])
+        self.assertFalse(second["created"])
+        self.assertEqual(sum(args[:2] == ["pr", "comment"] for args in self.gh_calls), 1)
+        self.assertEqual(set(self.tokens), {"comment-token"})
+        self.assertNotIn("push-token", self.tokens)
+
+
+class VisualWorkflowTests(unittest.TestCase):
+    def test_visual_publish_uses_issue_worktree_for_non_review_events(self) -> None:
+        with open(os.path.join(os.path.dirname(__file__), "n8n-workflow.json"), encoding="utf-8") as handle:
+            workflow = json.load(handle)
+        nodes = {node["name"]: node for node in workflow["nodes"]}
+        for name in ("Publish visual evidence", "Publish no-change visual evidence"):
+            expression = nodes[name]["parameters"]["jsonBody"]
+            self.assertIn("event.kind === 'pr_review' ? 'review-pr-'", expression)
+            self.assertNotIn("['pr_review', 'pr_repair'].includes", expression)
+
 
 class ConfigTests(unittest.TestCase):
+
     def test_missing_required_env_fails_closed(self) -> None:
         with self.assertRaises(bridge.ConfigError) as ctx:
             bridge.Config.from_env({})

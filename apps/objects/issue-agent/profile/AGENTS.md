@@ -15,6 +15,15 @@ You handle GitHub issues and pull requests for the repository checked out in you
 - Put everything you want published into the result fields: comment drafts, label requests (catalog names only), pull request title and body, review body, inline comments, thread replies, questions. Write them in English, following `isac-github-publishing`.
 - If you need to ask the reporter or maintainer something, put the questions in the result (`questions` and the drafted comment) and end the turn with the matching status or next action. Do not wait.
 - If you are blocked by missing credentials, tools, network access, or infrastructure, return `status: "blocked"` with the concrete blocker in `blockers` (what is missing and what you tried). Do not guess or fabricate results.
+## Visual evidence
+
+- `ImplementResult` MUST include the required `visual_evidence` list. Return `[]` for a non-visual change.
+- For GUI, KWin, or web user-visible diffs, capture real before-and-after media when the repository's existing harness supports it. Use the repository's existing capture commands; do not invent a substitute capture path.
+- Evidence files MUST remain under the current worktree shared with the publisher, never under `/tmp`. Keep them out of the repository's tracked source and do not use absolute paths or `..` path segments in the result.
+- Each item MUST exactly match this contract:
+  `{"id":"<=64 safe id","role":"before|after|control","relpath":"relative path under the current worktree","sha256":"64-hex","bytes":positive int,"media_type":"image/png|image/jpeg|image/gif|image/webp|video/mp4|video/webm|video/quicktime","source_sha":"40-hex","caption":"English <=500"}`
+- If required capture cannot run, return `status: "blocked"` with the concrete blocker. Do not claim visual verification without the required media.
+- The visual-evidence section of `pr.body` contains only the placeholder or marker; automation replaces it after uploading the artifacts. Reviewers consume the uploaded media and MUST NOT attempt to capture replacement media.
 
 ## Mode and skill
 
@@ -49,7 +58,7 @@ In `followup`, keep the pull request consistent with the issue's current require
 - To bring in upstream changes, merge `origin/<default-branch>` into your branch. Do not rebase, and do not force anything.
 - Never create, modify, or delete files under `.github/workflows/`: the GitHub App push token does not have `workflows` permission, so GitHub rejects any push whose commits touch `.github/workflows/*`. If a change under `.github/workflows/` is requested, leave `.github/workflows/` untouched in git and explain in the PR body or comment that a human maintainer must apply it.
 - In `followup` or PR repair, if your local `hapi-issue-<n>` branch has unpushed local commits ahead of `origin/hapi-issue-<n>` from a failed push (such as a commit that touched `.github/workflows/*`), reset to `origin/hapi-issue-<n>` (`git reset --hard origin/hapi-issue-<n>`) before merging `origin/<default-branch>`; never rewrite commits already present on `origin/hapi-issue-<n>`.
-- Put scratch files, logs, and evidence under `/tmp/issue-agent/<worktree-name>/`. Never commit them.
+- Put scratch files and logs under `/tmp/issue-agent/<worktree-name>/`. Visual evidence is not scratch: keep it under the current worktree shared with the publisher, never under `/tmp`, and do not commit it as repository media.
 - Keep build outputs (Cargo `target/` dirs, `node_modules`, caches and similar) in the worktree's default location, which is on the persistent home volume. Never point them at `/tmp` (for example `CARGO_TARGET_DIR=/tmp/...`): `/tmp` is a size-limited volume shared by every session on the runner, and overflowing it evicts the runner and kills every session.
 
 ## Execution environment

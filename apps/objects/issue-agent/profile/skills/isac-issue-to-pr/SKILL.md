@@ -41,7 +41,17 @@ description: Use in the GitHub issue automation's `implement` and `followup` mod
 
 `gh repo view --json nameWithOwner,visibility,defaultBranchRef`로 대상과 기본 브랜치를 확인한다. 이하 `main`은 그 기본 브랜치를 뜻한다. 이 스킬의 `references/projects/<owner>__<repo>.md`가 있으면 먼저 읽는다(공개 저장소만 둔다). 비공개 저장소의 프로젝트 사실은 그 저장소 자체 지침(AGENTS.md, `.agents/skills`)에 있다. 프로젝트 문서는 기본값을 좁히거나 구체화할 뿐 `[U]` 규칙과 전역 가드를 완화하지 못한다. 작업은 HAPI worktree의 `hapi-issue-<n>` 브랜치에서 한다. 새 브랜치는 `git fetch origin` 후 최신 `origin/main` 위에 만들고, 이미 있으면 `git merge origin/main`으로 최신화한다(rebase·force 금지).
 
-이 자동화에서는 항상 초안 모드다(`isac-github-publishing`의 초안 규칙). GitHub에 올릴 글은 결과 필드(`pr.title`, `pr.body`, `issue_comment`)에 쓰고 n8n이 게시한다. QA list·수정안 같은 scratch 산출물은 `/tmp/issue-agent/<worktree-name>/`에 두고 커밋하지 않는다.
+이 자동화에서는 항상 초안 모드다(`isac-github-publishing`의 초안 규칙). GitHub에 올릴 글은 결과 필드(`pr.title`, `pr.body`, `issue_comment`)에 쓰고 n8n이 게시한다. QA list·수정안 같은 scratch 산출물은 `/tmp/issue-agent/<worktree-name>/`에 두고 커밋하지 않는다. Visual evidence는 scratch 산출물이 아니며 publisher가 공유 worktree에서 읽으므로 `/tmp`에 두지 않는다.
+
+## 시각 증거
+
+- `ImplementResult`에는 `visual_evidence` list가 항상 있어야 한다. 시각 변경이 아니면 `[]`을 반환한다.
+- GUI·KWin·웹의 사용자 가시 변경은 저장소의 기존 harness가 지원하는 경우 실제 before/after media를 캡처해야 한다. 저장소에 이미 있는 capture command를 사용하고, 임시 대체 경로를 만들지 않는다.
+- 증거 파일은 publisher와 공유하는 현재 worktree 아래에만 둔다. 결과의 `relpath`는 worktree 아래 상대 경로여야 하며 절대 경로나 `..`를 쓰지 않는다. 증거를 raw repository media로 커밋하지 않는다.
+- 각 항목은 정확히 다음 계약을 따른다:
+  `{"id":"<=64 safe id","role":"before|after|control","relpath":"relative path under the current worktree","sha256":"64-hex","bytes":positive int,"media_type":"image/png|image/jpeg|image/gif|image/webp|video/mp4|video/webm|video/quicktime","source_sha":"40-hex","caption":"English <=500"}`
+- 필요한 capture를 실행할 수 없으면 `status: "blocked"`와 구체적인 blocker를 반환한다. 필요한 media 없이 시각 검증을 완료했다고 보고하지 않는다.
+- 시각 증거 section of `pr.body`에는 placeholder 또는 marker만 둔다. 업로드 뒤 automation이 이를 실제 링크로 바꾼다. Reviewer는 업로드된 media를 사용하며 직접 capture하지 않는다.
 
 ## 흐름
 

@@ -3,10 +3,39 @@
     "agent": "codex",
     "model": "gpt-6.1-sol",
     "permission_mode": "yolo",
-    "machine_id": null
+    "machine_id": null,
+    "visual_paths": []
   },
   "repositories": {
-    "isac322/cc-lb": {"project_owner": "isac322"},
-    "isac322/pillar-csi": {"project_owner": "isac322"}
+    "isac322/cc-lb": {
+      "project_owner": "isac322",
+      "visual_paths": [
+        "crates/cc-lb-admin/web/index.html",
+        "crates/cc-lb-admin/web/public/**",
+        "crates/cc-lb-admin/web/src/**"
+      ]
+    },
+    "isac322/krema": {
+      "project_owner": "isac322",
+      "visual_paths": [
+        "src/qml/**",
+        "src/shell/**",
+        "src/utils/**",
+        "src/config/**",
+        "tests/qml/**"
+      ]
+    },
+    "isac322/kwin-mcp": {
+      "project_owner": "isac322",
+      "visual_paths": [
+        "src/kwin_mcp/accessibility.py",
+        "src/kwin_mcp/geometry.py",
+        "src/kwin_mcp/input.py",
+        "src/kwin_mcp/screenshot.py"
+      ]
+    },
+    "isac322/pillar-csi": {
+      "project_owner": "isac322"
+    }
   }
 }

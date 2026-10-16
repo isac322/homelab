@@ -177,7 +177,7 @@ spec:
                       - macmini
       containers:
         - name: runner
-          image: ghcr.io/isac322/issue-agent-runner:0.30.7-codex0.162.1-20261015-pr-comment-fix@sha256:5cb5b380fee66cd76006146646104986abeab4468fb510352f47b85eab601405
+          image: ghcr.io/isac322/issue-agent-runner:0.30.7-codex0.162.1-20261017-visual-evidence@sha256:d6079f2b9dc484a396c6df49e712b54ae1f62e2ee70e9eb6f7f536d0e05d993
           env:
             - name: HOME
               value: /home/agent
@@ -285,7 +285,7 @@ spec:
         # Same image as the runner; /checkout also marks the checkout and its
         # worktrees untrusted in CODEX_HOME (codex-untrust).
         - name: publisher
-          image: ghcr.io/isac322/issue-agent-runner:0.30.7-codex0.162.1-20261015-pr-comment-fix@sha256:5cb5b380fee66cd76006146646104986abeab4468fb510352f47b85eab601405
+          image: ghcr.io/isac322/issue-agent-runner:0.30.7-codex0.162.1-20261017-visual-evidence@sha256:d6079f2b9dc484a396c6df49e712b54ae1f62e2ee70e9eb6f7f536d0e05d993
           command:
             - /usr/bin/tini
             - --
@@ -299,6 +299,8 @@ spec:
               value: /run/issue-agent/publisher/token
             - name: GITHUB_PUSH_TOKEN_FILE
               value: /run/issue-agent/push/token
+            - name: GITHUB_COMMENT_TOKEN_FILE
+              value: /run/issue-agent/comment/token
             - name: PUBLISHER_STATE_DIR
               value: /var/lib/issue-agent-publisher
             - name: ISSUE_AGENT_CHECKOUTS
@@ -339,6 +341,9 @@ spec:
             - name: push
               mountPath: /run/issue-agent/push
               readOnly: true
+            - name: comment
+              mountPath: /run/issue-agent/comment
+              readOnly: true
             - name: publisher-auth
               mountPath: /run/issue-agent/publisher
               readOnly: true
@@ -366,6 +371,10 @@ spec:
         - name: push
           secret:
             secretName: issue-agent-github-push
+            defaultMode: 0440
+        - name: comment
+          secret:
+            secretName: issue-agent-github-comment
             defaultMode: 0440
         - name: publisher-auth
           secret:

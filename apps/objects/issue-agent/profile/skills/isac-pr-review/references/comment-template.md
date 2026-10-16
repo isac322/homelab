@@ -4,6 +4,10 @@ GitHub에 올리는 본문은 영어다. 문체, 길이, 공개 위생은 `isac-
 
 공개 텍스트(body, comments, thread_replies, open_items, summary)에는 리뷰어 스킬 이름, 규칙 ID(PRR-*, KM-*, MAC-*, I2P-* 등), 자동화·runner 내부 경로(`/etc/codex`, `/tmp/issue-agent`, `CODEX_HOME` 등)를 쓰지 않는다. 판단 이유는 프로젝트 쪽 사실로 쓴다(예: "this bypasses the distribution's SELinux policy, which is a maintainer decision"). 저장소의 `file:line` 참조는 지금처럼 필수다. `Lenses`와 `Considered`의 렌즈 이름은 예외다. 아래 템플릿 설명의 규칙 ID는 리뷰어용이고 게시 텍스트에 옮기지 않는다.
 
+## Visual evidence
+
+For GUI, KWin, or web user-visible changes, inspect the uploaded before-and-after media (and any control media) in the PR conversation. Treat uploaded artifacts as the visual evidence; do not run capture commands or create replacement media. A PR-body placeholder or marker is not evidence until automation replaces it after upload. If required media is missing or does not establish the claimed change, record that in `Not verified` and apply the appropriate review decision; do not attempt capture yourself.
+
 ## 리뷰 (`ReviewResult.event` + `ReviewResult.body`)
 
 이벤트는 판정으로 정한다(PRR-25, PRR-56): `GREEN` → `APPROVE`, `BLOCKING` → `REQUEST_CHANGES`, `OPEN` → `COMMENT`, 판정이 아닌 안내 → `COMMENT`. 리뷰 계정이 PR 작성자면 GitHub가 approve·request-changes를 거부하므로 bridge가 같은 본문을 `COMMENT`로 게시한다. 에이전트는 판정대로 event를 적는다.
