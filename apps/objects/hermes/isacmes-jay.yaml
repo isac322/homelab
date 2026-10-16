@@ -8,7 +8,7 @@ spec:
       enabled: false
   image:
     repository: nousresearch/hermes-agent
-    tag: v2026.9.24@sha256:fca358f12efd65bfaaca05884166f15c0e2788375ca30d77061ac1ebc96452b7
+    tag: v0.22.2@sha256:36099926da316742423544e055d4734777105ffe6341873af5459b957d0c2919
   scheduling:
     affinity:
       nodeAffinity:
@@ -35,15 +35,15 @@ spec:
       memory: 1Gi
   initContainers:
     - name: install-hermes-lcm
-      image: nousresearch/hermes-agent:v2026.9.24@sha256:fca358f12efd65bfaaca05884166f15c0e2788375ca30d77061ac1ebc96452b7
+      image: nousresearch/hermes-agent:v0.22.2@sha256:36099926da316742423544e055d4734777105ffe6341873af5459b957d0c2919
       command:
         - /bin/sh
         - -ec
       args:
         - |
           TARGET_DIR="/lcm/plugin"
-          TARGET_COMMIT="8d1b1e6d3d63f5fc7b209e8d7ec1dc9b814f2e54"
-          TARGET_SHA256="a359daf3c1bb217ee92dc04b4fed17fb350de683a8ef02b1bb4796f3a6ab6f65"
+          TARGET_COMMIT="460994653a2970f5f1012b625ea85be5e1fd433f"
+          TARGET_SHA256="4e65211d0d42171f9c2b8a4dac3b749324d5246e8fda7222bc4c56abe0ea6581"
           RECEIPT_FILE="$TARGET_DIR/.version"
 
           if [ -f "$RECEIPT_FILE" ] && [ "$(cat "$RECEIPT_FILE")" = "$TARGET_COMMIT" ]; then
@@ -74,7 +74,7 @@ spec:
         - name: hermes-lcm
           mountPath: /lcm
     - name: install-default-skills
-      image: nousresearch/hermes-agent:v2026.9.24@sha256:fca358f12efd65bfaaca05884166f15c0e2788375ca30d77061ac1ebc96452b7
+      image: nousresearch/hermes-agent:v0.22.2@sha256:36099926da316742423544e055d4734777105ffe6341873af5459b957d0c2919
       command:
         - /bin/sh
         - -e
@@ -121,7 +121,7 @@ spec:
         - name: hermes-default-skills
           mountPath: /skills
     - name: patch-openai-native-web-search
-      image: nousresearch/hermes-agent:v2026.9.24@sha256:fca358f12efd65bfaaca05884166f15c0e2788375ca30d77061ac1ebc96452b7
+      image: nousresearch/hermes-agent:v0.22.2@sha256:36099926da316742423544e055d4734777105ffe6341873af5459b957d0c2919
       command:
         - /opt/hermes/.venv/bin/python
         - /patch/patch.py
@@ -149,7 +149,7 @@ spec:
         - name: hermes-patched-files
           mountPath: /patched
     - name: prepare-camofox-home
-      image: ghcr.io/jo-inc/camofox-browser:1.18.0@sha256:e7789fd79fbe0004b3d25fabf4f1f1eb4a1984801e2a102b50b5433333a0a011
+      image: ghcr.io/jo-inc/camofox-browser:1.18.1@sha256:cff2c1432b609bde9c9d0b91e5b924dae0799d3c7bc9d468c0bc949325beaf2a
       command:
         - /bin/sh
         - -ec
@@ -234,7 +234,7 @@ spec:
       readOnly: true
   sidecars:
     - name: camofox
-      image: ghcr.io/jo-inc/camofox-browser:1.18.0@sha256:e7789fd79fbe0004b3d25fabf4f1f1eb4a1984801e2a102b50b5433333a0a011
+      image: ghcr.io/jo-inc/camofox-browser:1.18.1@sha256:cff2c1432b609bde9c9d0b91e5b924dae0799d3c7bc9d468c0bc949325beaf2a
       imagePullPolicy: IfNotPresent
       env:
         - name: HOME
@@ -345,7 +345,7 @@ spec:
           readOnly: true
   config:
     raw:
-      _config_version: 45
+      _config_version: 50
       approvals:
         mode: "off"
       agent:
@@ -353,7 +353,7 @@ spec:
           - computer_use
         reasoning_effort: medium
       model:
-        default: gpt-6-astra
+        default: gpt-6.1-sol
         provider: openai-api
         api_mode: codex_responses
       delegation:
