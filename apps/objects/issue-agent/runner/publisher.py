@@ -176,17 +176,19 @@ def run_git(args: list[str], *, token: str | None = None, timeout: int = GIT_TIM
         cmd += auth_header_args(token)
     cmd += args
     try:
-        result = subprocess.run(
-            cmd,
-            cwd=STATE_DIR,
-            env=git_env() | (extra_env or {}),
-            stdin=subprocess.PIPE if stdin_text is not None else subprocess.DEVNULL,
-            input=stdin_text,
-            capture_output=True,
-            text=True,
-            timeout=timeout,
-            check=False,
-        )
+        kwargs: dict[str, Any] = {
+            "cwd": STATE_DIR,
+            "env": git_env() | (extra_env or {}),
+            "capture_output": True,
+            "text": True,
+            "timeout": timeout,
+            "check": False,
+        }
+        if stdin_text is None:
+            kwargs["stdin"] = subprocess.DEVNULL
+        else:
+            kwargs["input"] = stdin_text
+        result = subprocess.run(cmd, **kwargs)
     except subprocess.TimeoutExpired:
         raise PublisherError(HTTPStatus.GATEWAY_TIMEOUT, "git_timeout", f"git {args[0]} exceeded {timeout}s") from None
     result.stderr = scrub(result.stderr or "", [token or ""])
