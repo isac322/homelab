@@ -377,6 +377,98 @@ class VisualEvidenceEndpointTest(EndpointCase):
         self.assertTrue(operation.call_args.args[-1])
 
 
+class VisualEvidencePublishTest(unittest.TestCase):
+    HEAD = "a" * 40
+    OLD_COMMIT = "b" * 40
+    NEW_COMMIT = "c" * 40
+    BLOB_SHA = "d" * 40
+
+    def artifact(self) -> dict[str, object]:
+        return {
+            "id": "shadow-after",
+            "role": "after",
+            "relpath": "visual-evidence/shadow-after.mp4",
+            "sha256": "e" * 64,
+            "bytes": 10,
+            "media_type": "video/mp4",
+            "source_sha": self.HEAD,
+            "caption": "After",
+        }
+
+    def configured_publisher(self, existing: tuple[str | None, bool], *,
+                             create_commit: bool = True):
+        source = os.path.join(tempfile.mkdtemp(), "shadow-after.mp4")
+        write(source, "video")
+        self.addCleanup(lambda: shutil.rmtree(os.path.dirname(source), ignore_errors=True))
+        indexed = [(self.artifact(), source, self.BLOB_SHA)]
+        patches = [
+            patch.object(publisher, "visual_worktree_path", return_value=os.path.dirname(source)),
+            patch.object(publisher, "visual_worktree_head", return_value=self.HEAD),
+            patch.object(publisher, "fetch_branch", return_value=self.HEAD),
+            patch.object(publisher, "ensure_mirror", return_value="/mirror.git"),
+            patch.object(publisher, "visual_verified_ancestor_sources", return_value={self.HEAD}),
+            patch.object(publisher, "validate_visual_artifacts", return_value=[(self.artifact(), source)]),
+            patch.object(publisher, "read_secret", return_value=TOKEN),
+            patch.object(publisher, "visual_existing_ref", return_value=existing),
+        ]
+        if create_commit:
+            patches.append(patch.object(publisher, "visual_create_commit",
+                                         return_value=(self.NEW_COMMIT, indexed)))
+        return patches, source, indexed
+
+    def test_replaces_existing_ref_with_compare_and_swap(self) -> None:
+        patches, _, _ = self.configured_publisher((self.OLD_COMMIT, True))
+        ok = subprocess.CompletedProcess([], 0, stdout="", stderr="")
+        with patch.object(publisher, "run_git", side_effect=[ok, ok]) as run_git:
+            with patches[0], patches[1], patches[2], patches[3], patches[4], patches[5], patches[6], patches[7], \
+                    patch.object(publisher, "visual_create_commit",
+                                 return_value=(self.NEW_COMMIT, [(self.artifact(), "/tmp/video", self.BLOB_SHA)])):
+                result = publisher.do_visual_evidence(
+                    REPO, "issue-7", 7, self.HEAD, "pr-7-head-a", "Evidence",
+                    [self.artifact()], [self.HEAD],
+                )
+        ref = publisher.visual_evidence_ref(7, self.HEAD)
+        self.assertFalse(result["created"])
+        self.assertTrue(result["replaced"])
+        self.assertFalse(result["already_published"])
+        push_args = run_git.call_args_list[0].args[0]
+        self.assertIn(f"--force-with-lease=refs/heads/{ref}:{self.OLD_COMMIT}", push_args)
+        self.assertEqual(run_git.call_args_list[1].args[0][3], f"refs/heads/{ref}")
+
+    def test_replacement_rejects_concurrent_ref_change(self) -> None:
+        patches, _, _ = self.configured_publisher((self.OLD_COMMIT, True))
+        other_commit = "f" * 40
+        patches[7] = patch.object(
+            publisher, "visual_existing_ref",
+            side_effect=[(self.OLD_COMMIT, True), (other_commit, True)],
+        )
+        failed_push = subprocess.CompletedProcess([], 1, stdout="", stderr="non-fast-forward")
+        with patch.object(publisher, "run_git", return_value=failed_push):
+            with patches[0], patches[1], patches[2], patches[3], patches[4], patches[5], patches[6], patches[7], \
+                    patch.object(publisher, "visual_create_commit",
+                                 return_value=(self.NEW_COMMIT, [(self.artifact(), "/tmp/video", self.BLOB_SHA)])):
+                with self.assertRaises(publisher.PublisherError) as ctx:
+                    publisher.do_visual_evidence(
+                        REPO, "issue-7", 7, self.HEAD, "pr-7-head-a", "Evidence",
+                        [self.artifact()], [self.HEAD],
+                    )
+        self.assertEqual((ctx.exception.status, ctx.exception.error),
+                         (HTTPStatus.CONFLICT, "evidence_ref_conflict"))
+
+    def test_reuse_existing_keeps_canonical_ref(self) -> None:
+        patches, _, indexed = self.configured_publisher((self.OLD_COMMIT, True), create_commit=False)
+        with patch.object(publisher, "visual_verify_existing_commit", return_value=indexed), \
+                patch.object(publisher, "run_git") as run_git:
+            with patches[0], patches[1], patches[2], patches[3], patches[4], patches[5], patches[6], patches[7]:
+                result = publisher.do_visual_evidence(
+                    REPO, "issue-7", 7, self.HEAD, "pr-7-head-a", "Evidence",
+                    [self.artifact()], [self.HEAD], reuse_existing=True,
+                )
+        self.assertTrue(result["already_published"])
+        self.assertFalse(result["replaced"])
+        run_git.assert_not_called()
+
+
 GIT_ENV = {
     "PATH": os.environ.get("PATH", "/usr/bin:/bin"),
     "HOME": "/nonexistent",

@@ -7260,12 +7260,13 @@ class PublisherVisualEvidenceTests(unittest.TestCase):
         self.assertEqual(result["ref"], f"issue-agent-visual/pr-7-{SHA_A}")
         self.assertIn(".issue-agent/visual-evidence/pr-7/" + SHA_A + "/after-after.png", result["assets"][0]["path"])
 
-    def test_visual_evidence_uses_push_token_and_is_idempotent(self) -> None:
+    def test_visual_evidence_replaces_stale_ref_with_push_token(self) -> None:
         first = self.call()
         second = self.call()
         self.assertTrue(first["created"])
         self.assertFalse(second["created"])
-        self.assertEqual(sum("push" in args for args, _ in self.git_calls), 1)
+        self.assertTrue(second["replaced"])
+        self.assertEqual(sum("push" in args for args, _ in self.git_calls), 2)
         self.assertTrue(all("--attach" not in args for args, _ in self.git_calls))
         self.assertEqual({token for args, token in self.git_calls if "push" in args}, {"push-token"})
         self.assertEqual(first["asset_urls"], second["asset_urls"])

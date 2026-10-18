@@ -751,20 +751,37 @@ def do_visual_evidence(repo: str, worktree: str, pr_number: int, head_sha: str, 
     marker_text = f"Marker: <!-- issue-agent:visual-evidence:{marker} -->"
     remote_commit, exists = visual_existing_ref(repo, ref, token, mirror)
     already_published = False
+    replaced = False
     if exists:
         assert remote_commit is not None
         if reuse_existing:
             indexed = visual_verify_existing_commit(
                 mirror, remote_commit, head_sha, marker_text, validated, pr_number)
             already_published = True
+            commit, created = remote_commit, False
         else:
-            indexed = []
-            for item, source in validated:
-                result = run_git(["--git-dir", mirror, "hash-object", source])
-                visual_git_error(result, "cannot inspect evidence blob")
-                indexed.append((item, source, result.stdout.strip()))
-            visual_verify_commit(mirror, remote_commit, head_sha, marker_text, indexed, pr_number)
-        commit, created = remote_commit, False
+            commit, indexed = visual_create_commit(mirror, head_sha, marker_text, validated, pr_number)
+            push = run_git(
+                ["--git-dir", mirror, "push", "--quiet", "--porcelain", "--no-verify",
+                 f"--force-with-lease=refs/heads/{ref}:{remote_commit}", "--",
+                 f"https://github.com/{repo}.git", f"{commit}:refs/heads/{ref}"],
+                token=token,
+            )
+            if push.returncode != 0:
+                current_commit, current_exists = visual_existing_ref(repo, ref, token, mirror)
+                if current_exists and current_commit == commit:
+                    pass
+                elif current_exists and current_commit != remote_commit:
+                    raise PublisherError(
+                        HTTPStatus.CONFLICT, "evidence_ref_conflict",
+                        "evidence ref changed during replacement",
+                    )
+                else:
+                    visual_git_error(push, "cannot replace evidence ref", token)
+            result = run_git(["--git-dir", mirror, "update-ref", f"refs/heads/{ref}", commit])
+            visual_git_error(result, "cannot retain evidence ref")
+            created = False
+            replaced = True
     else:
         commit, indexed = visual_create_commit(mirror, head_sha, marker_text, validated, pr_number)
         push = run_git(["--git-dir", mirror, "push", "--quiet", "--porcelain", "--no-verify", "--",
@@ -786,7 +803,7 @@ def do_visual_evidence(repo: str, worktree: str, pr_number: int, head_sha: str, 
         })
     ref_url = visual_github_url(repo, "tree", ref)
     return {
-        "created": created, "already_published": already_published, "marker": marker, "ref": ref,
+        "created": created, "replaced": replaced, "already_published": already_published, "marker": marker, "ref": ref,
         "ref_url": ref_url, "evidence_ref_url": ref_url,
         "commit_url": visual_github_url(repo, "commit", commit),
         "evidence_commit_url": visual_github_url(repo, "commit", commit),
