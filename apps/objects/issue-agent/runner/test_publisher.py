@@ -364,6 +364,19 @@ class JanitorEndpointTest(EndpointCase):
         self.assertEqual(self.call("GET", "/healthz", token="nope"), (HTTPStatus.OK, {"ok": True}))
 
 
+class VisualEvidenceEndpointTest(EndpointCase):
+    def test_reuse_existing_boolean_is_forwarded(self) -> None:
+        body = {
+            "repo": REPO, "worktree": "issue-7", "pr_number": 7, "head_sha": "a" * 40,
+            "allowed_source_shas": ["a" * 40], "marker": "pr-7-head-a", "body": "Evidence",
+            "artifacts": [{}], "reuse_existing": True,
+        }
+        with patch.object(publisher, "do_visual_evidence", return_value={"ok": True}) as operation:
+            status, payload = self.call("POST", "/visual-evidence", json.dumps(body).encode())
+        self.assertEqual((status, payload), (HTTPStatus.OK, {"ok": True}))
+        self.assertTrue(operation.call_args.args[-1])
+
+
 GIT_ENV = {
     "PATH": os.environ.get("PATH", "/usr/bin:/bin"),
     "HOME": "/nonexistent",

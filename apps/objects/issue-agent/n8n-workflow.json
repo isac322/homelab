@@ -1735,7 +1735,7 @@
         "genericAuthType": "httpHeaderAuth",
         "sendBody": true,
         "specifyBody": "json",
-        "jsonBody": "={{ JSON.stringify({ op: 'github.visual_evidence', delivery_id: $('Begin').first().json.event.delivery_id, repo: $('Begin').first().json.event.repo, worktree: $('Begin').first().json.event.kind === 'pr_review' ? 'review-pr-' + String($('Begin').first().json.event.issue_number) : 'issue-' + String($('Begin').first().json.event.issue_number), pr_number: $('Begin').first().json.event.pr_number, head_sha: $('Begin').first().json.event.head_sha || null, marker: '<!-- issue-agent:visual-evidence -->', body: $('Compose implement report').first().json.body || $('Compose implement report').first().json.note || 'Visual evidence captured for this pull request.', artifacts: $('Compose implement report').first().json.visual_evidence }) }}",
+        "jsonBody": "={{ JSON.stringify({ op: 'github.visual_evidence', delivery_id: $('Begin').first().json.event.delivery_id, repo: $('Begin').first().json.event.repo, worktree: $('Begin').first().json.event.kind === 'pr_review' ? 'review-pr-' + String($('Begin').first().json.event.issue_number) : 'issue-' + String($('Begin').first().json.event.issue_number), pr_number: $('Begin').first().json.event.pr_number, head_sha: $('Begin').first().json.event.head_sha || null, marker: '<!-- issue-agent:visual-evidence -->', reuse_existing: true, body: $('Compose implement report').first().json.body || $('Compose implement report').first().json.note || 'Visual evidence captured for this pull request.', artifacts: $('Compose implement report').first().json.visual_evidence }) }}",
         "options": {
           "timeout": 300000,
           "response": {

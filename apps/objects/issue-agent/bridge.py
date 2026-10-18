@@ -5582,6 +5582,7 @@ class Bridge:
         worktree = req.get("worktree")
         body = req.get("body")
         artifacts = req.get("artifacts")
+        reuse_existing = req.get("reuse_existing", False)
         if pr_number is None or (requested_head is not None
                                  and (not isinstance(requested_head, str) or not _SHA_RE.fullmatch(requested_head))):
             raise OpError("bad visual evidence PR head")
@@ -5591,6 +5592,8 @@ class Bridge:
             raise OpError("bad visual evidence body")
         if not isinstance(artifacts, list) or not artifacts:
             raise OpError("visual evidence artifacts are required")
+        if not isinstance(reuse_existing, bool):
+            raise OpError("bad visual evidence reuse_existing")
         if ev["pr_number"] is not None and int(ev["pr_number"]) != pr_number:
             raise OpError("visual evidence PR does not match event")
         if ev["pr_number"] is None:
@@ -5613,7 +5616,8 @@ class Bridge:
         published = self.publisher.request(
             "/visual-evidence",
             {"repo": repo, "worktree": worktree, "pr_number": pr_number, "head_sha": head_sha,
-             "allowed_source_shas": allowed_source_shas, "marker": marker, "body": body, "artifacts": artifacts},
+             "allowed_source_shas": allowed_source_shas, "marker": marker, "body": body,
+             "artifacts": artifacts, "reuse_existing": reuse_existing},
             timeout=PUBLISHER_PUSH_TIMEOUT,
         )
         evidence_url = published.get("evidence_url") or published.get("ref_url")
@@ -5642,7 +5646,9 @@ class Bridge:
         prior_body = fresh.get("body") if isinstance(fresh.get("body"), str) else ""
         pattern = re.compile(re.escape(begin) + r".*?" + re.escape(end), re.DOTALL)
         match = pattern.search(prior_body)
-        if match is None:
+        if published.get("already_published") is True and match is not None:
+            updated_body = prior_body
+        elif match is None:
             updated_body = f"{prior_body.rstrip()}\n\n{section}" if prior_body.strip() else section
         else:
             updated_body = pattern.sub(section, prior_body, count=1)
@@ -5656,9 +5662,11 @@ class Bridge:
         if not isinstance(updated, dict):
             raise OpError("github visual evidence PR body update: unexpected response", retryable=True)
         return {"pr_number": pr_number, "head_sha": head_sha, "marker": marker,
-                "created": bool(published.get("created")), "evidence_url": evidence_url,
-                "ref_url": published.get("ref_url"), "commit_url": published.get("commit_url"),
-                "body_updated": updated_body != prior_body, "asset_urls": asset_urls, "assets": assets}
+                "created": bool(published.get("created")),
+                "already_published": bool(published.get("already_published")),
+                "evidence_url": evidence_url, "ref_url": published.get("ref_url"),
+                "commit_url": published.get("commit_url"), "body_updated": updated_body != prior_body,
+                "asset_urls": asset_urls, "assets": assets}
 
     @staticmethod
     def _preserve_visual_evidence_sections(existing: str, requested: str) -> str:

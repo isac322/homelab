@@ -7062,6 +7062,33 @@ class VisualEvidenceBridgeTests(BridgeTestCase):
         self.assertEqual(len(self.fake.pr_patches), 1)
         self.assertEqual(self.fake.prs[7]["body"].count("## Visual evidence"), 1)
         self.assertFalse(second["body_updated"])
+    def test_no_change_reuses_existing_marker_without_rewriting_body(self) -> None:
+        artifact = {"id": "after", "role": "after", "relpath": "after.png", "sha256": "b" * 64,
+                    "bytes": 8, "media_type": "image/png", "source_sha": SHA_A, "caption": "Retry"}
+        marker = "<!-- issue-agent:visual-evidence:pr-7-head-" + SHA_A + " -->"
+        end = "<!-- issue-agent:visual-evidence-end:pr-7-head-" + SHA_A + " -->"
+        original = marker + "\n## Visual evidence\n\nCanonical capture\n" + end
+        self.fake.prs[7]["body"] = original
+        evidence = {
+            "created": False,
+            "already_published": True,
+            "evidence_url": "https://github.com/isac322/cc-lb/tree/issue-agent-visual/pr-7-" + SHA_A,
+            "ref_url": "https://github.com/isac322/cc-lb/tree/issue-agent-visual/pr-7-" + SHA_A,
+            "commit_url": "https://github.com/isac322/cc-lb/commit/" + SHA_A,
+            "assets": [{"id": "after", "blob_url": "https://github.com/isac322/cc-lb/blob/ref/after.png"}],
+            "asset_urls": ["https://github.com/isac322/cc-lb/blob/ref/after.png"],
+        }
+        with patch.object(self.bridge.publisher, "request", return_value=evidence) as request:
+            result = self.op("github.visual_evidence", pr_number=7, head_sha=SHA_A,
+                             worktree="issue-7", marker="<!-- issue-agent:visual-evidence -->",
+                             body="Different retry description", artifacts=[artifact],
+                             reuse_existing=True)
+        self.assertTrue(result["ok"])
+        self.assertTrue(result["already_published"])
+        self.assertEqual(request.call_args.args[1]["reuse_existing"], True)
+        self.assertEqual(self.fake.pr_patches, [])
+        self.assertEqual(self.fake.prs[7]["body"], original)
+
 
 
     def test_visual_evidence_rejects_stale_head_before_publisher(self) -> None:
@@ -7159,10 +7186,11 @@ class PublisherVisualEvidenceTests(unittest.TestCase):
 
     def call(self, **changes: Any) -> dict[str, Any]:
         allowed = changes.pop("allowed_source_shas", None)
+        reuse_existing = changes.pop("reuse_existing", False)
         item = {**self.item, **changes}
         return self.publisher.do_visual_evidence(
             REPO, "issue-7", 7, SHA_A, "pr-7-head-a", "Evidence", [item],
-            allowed_source_shas=allowed,
+            allowed_source_shas=allowed, reuse_existing=reuse_existing,
         )
 
     def test_visual_evidence_rejects_path_and_hash_before_git(self) -> None:
@@ -7242,6 +7270,63 @@ class PublisherVisualEvidenceTests(unittest.TestCase):
         self.assertEqual({token for args, token in self.git_calls if "push" in args}, {"push-token"})
         self.assertEqual(first["asset_urls"], second["asset_urls"])
 
+    def test_visual_evidence_no_change_reuses_canonical_ref(self) -> None:
+        first = self.call()
+        changed = b"\x89PNG\r\n\x1a\nnew-encoding"
+        with open(self.path, "wb") as handle:
+            handle.write(changed)
+        canonical = [(self.item, self.path, "d" * 40)]
+        with patch.object(self.publisher, "visual_verify_existing_commit",
+                          return_value=canonical) as verify:
+            second = self.call(sha256=hashlib.sha256(changed).hexdigest(),
+                               bytes=len(changed), reuse_existing=True)
+        self.assertTrue(first["created"])
+        self.assertFalse(second["created"])
+        self.assertTrue(second["already_published"])
+        self.assertEqual(first["commit_url"], second["commit_url"])
+        self.assertEqual(first["asset_urls"], second["asset_urls"])
+        verify.assert_called_once()
+        self.assertEqual(sum("push" in args for args, _ in self.git_calls), 1)
+    def test_visual_evidence_reuse_rejects_corrupt_canonical_tree(self) -> None:
+        first = self.call()
+        commit = self.evidence_commit
+        path = self.publisher.visual_evidence_path(7, SHA_A, self.item)
+        marker = "Marker: <!-- issue-agent:visual-evidence:pr-7-head-a -->"
+
+        def corrupt_git(args: list[str], **_kwargs: Any) -> SimpleNamespace:
+            if "rev-list" in args:
+                return SimpleNamespace(returncode=0, stdout=f"{commit} {SHA_A}\n", stderr="")
+            if "show" in args:
+                line = f"Artifact: after {self.item['sha256']} {'d' * 40} {path}"
+                return SimpleNamespace(returncode=0, stdout=f"{marker}\n{line}\n", stderr="")
+            if "ls-tree" in args:
+                return SimpleNamespace(returncode=0, stdout=f"100644 blob {'e' * 40}\t{path}\n", stderr="")
+            return SimpleNamespace(returncode=0, stdout="", stderr="")
+
+        with patch.object(self.publisher, "run_git", side_effect=corrupt_git):
+            with self.assertRaises(self.publisher.PublisherError) as ctx:
+                self.call(reuse_existing=True)
+        self.assertEqual(ctx.exception.error, "evidence_ref_conflict")
+        self.assertTrue(first["created"])
+    def test_visual_evidence_reuse_rejects_identity_mismatch(self) -> None:
+        path = self.publisher.visual_evidence_path(7, SHA_A, self.item)
+        marker = "Marker: <!-- issue-agent:visual-evidence:pr-7-head-a -->"
+
+        def canonical_git(args: list[str], **_kwargs: Any) -> SimpleNamespace:
+            if "rev-list" in args:
+                return SimpleNamespace(returncode=0, stdout=f"{'c' * 40} {SHA_A}\n", stderr="")
+            if "show" in args:
+                line = f"Artifact: after {self.item['sha256']} {'d' * 40} {path}"
+                return SimpleNamespace(returncode=0, stdout=f"{marker}\n{line}\n", stderr="")
+            return SimpleNamespace(returncode=0, stdout=f"100644 blob {'d' * 40}\t{path}\n", stderr="")
+
+        requested = {**self.item, "id": "other", "relpath": "other.png"}
+        with patch.object(self.publisher, "run_git", side_effect=canonical_git):
+            with self.assertRaises(self.publisher.PublisherError) as ctx:
+                self.publisher.visual_verify_existing_commit(
+                    "mirror", "c" * 40, SHA_A, marker, [(requested, self.path)], 7)
+        self.assertEqual(ctx.exception.error, "evidence_ref_conflict")
+
 
 class VisualWorkflowTests(unittest.TestCase):
     def test_visual_publish_uses_issue_worktree_for_non_review_events(self) -> None:
@@ -7251,6 +7336,10 @@ class VisualWorkflowTests(unittest.TestCase):
         for name in ("Publish visual evidence", "Publish no-change visual evidence"):
             expression = nodes[name]["parameters"]["jsonBody"]
             self.assertIn("event.kind === 'pr_review' ? 'review-pr-'", expression)
+            if name == "Publish no-change visual evidence":
+                self.assertIn("reuse_existing: true", expression)
+            else:
+                self.assertNotIn("reuse_existing: true", expression)
             self.assertNotIn("['pr_review', 'pr_repair'].includes", expression)
 
 

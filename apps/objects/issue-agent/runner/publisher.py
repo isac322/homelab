@@ -11,8 +11,8 @@ called only by the bridge (bearer token the agent container cannot read).
   POST /push     {repo, branch, expected_sha}  -> {sha}
   POST /cleanup  {repo, worktree, branch, codex_session_ids} -> {removed}
   POST /worktree/restore {repo, worktree, branch} -> {restored, path, already} | {restored: false, reason}
-  POST /visual-evidence {repo, worktree, pr_number, head_sha, allowed_source_shas, marker, body, artifacts}
-                                             -> {created, ref_url, commit_url, assets, asset_urls}
+  POST /visual-evidence {repo, worktree, pr_number, head_sha, allowed_source_shas, marker, body, artifacts,
+                         reuse_existing} -> {created, already_published, ref_url, commit_url, assets, asset_urls}
   POST /janitor/prune-request {lease_until}   -> {requested_at, lease_until}
   GET  /janitor/status                        -> the janitor's status JSON
 
@@ -93,6 +93,10 @@ VISUAL_MEDIA_TYPES = {
     "video/mp4", "video/webm", "video/quicktime",
 }
 VISUAL_MARKER_LITERAL = "<!-- issue-agent:visual-evidence -->"
+VISUAL_ARTIFACT_LINE_RE = re.compile(
+    r"^Artifact: (?P<id>[A-Za-z0-9][A-Za-z0-9_.-]{0,63}) "
+    r"(?P<sha256>[0-9a-f]{64}) (?P<blob>[0-9a-f]{40}) (?P<path>\S+)$"
+)
 CODEX_ID_RE = re.compile(r"^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$")
 MAX_CODEX_IDS = 50
 PACKED_REF_RE = re.compile(r"^[0-9a-f]{40,64} (refs/\S+)$")
@@ -571,6 +575,75 @@ def visual_verify_commit(mirror: str, commit: str, head_sha: str, marker_text: s
         if len(fields) < 3 or fields[1] != "blob" or fields[2] != blob_sha:
             raise PublisherError(HTTPStatus.CONFLICT, "evidence_ref_conflict", "evidence tree differs")
 
+def visual_verify_existing_commit(
+    mirror: str,
+    commit: str,
+    head_sha: str,
+    marker_text: str,
+    requested: list[tuple[dict[str, Any], str]],
+    pr_number: int,
+) -> list[tuple[dict[str, Any], str, str]]:
+    """Validate an existing canonical ref without comparing a re-encoded capture."""
+    result = run_git(["--git-dir", mirror, "rev-list", "--parents", "-n", "1", commit])
+    if result.returncode != 0:
+        raise PublisherError(HTTPStatus.CONFLICT, "evidence_ref_conflict", "cannot inspect evidence lineage")
+    parents = result.stdout.strip().split()
+    if len(parents) != 2 or parents[1] != head_sha:
+        raise PublisherError(HTTPStatus.CONFLICT, "evidence_ref_conflict", "evidence commit has unexpected lineage")
+
+    result = run_git(["--git-dir", mirror, "show", "-s", "--format=%B", commit])
+    if result.returncode != 0:
+        raise PublisherError(HTTPStatus.CONFLICT, "evidence_ref_conflict", "cannot inspect evidence manifest")
+    lines = result.stdout.splitlines()
+    if marker_text not in lines:
+        raise PublisherError(HTTPStatus.CONFLICT, "evidence_ref_conflict", "evidence commit marker differs")
+
+    prefix = f".issue-agent/visual-evidence/pr-{pr_number}/{head_sha}/"
+    canonical: list[tuple[str, str, str, str]] = []
+    seen_ids: set[str] = set()
+    seen_paths: set[str] = set()
+    for line in lines:
+        match = VISUAL_ARTIFACT_LINE_RE.fullmatch(line)
+        if match is None:
+            continue
+        ident, sha256, blob, path = match.group("id", "sha256", "blob", "path")
+        if (not path.startswith(prefix) or ident in seen_ids or path in seen_paths
+                or not os.path.basename(path).startswith(ident + "-")):
+            raise PublisherError(HTTPStatus.CONFLICT, "evidence_ref_conflict",
+                                 "evidence commit artifact manifest is invalid")
+        seen_ids.add(ident)
+        seen_paths.add(path)
+        canonical.append((ident, sha256, blob, path))
+    if not canonical:
+        raise PublisherError(HTTPStatus.CONFLICT, "evidence_ref_conflict",
+                             "evidence commit has no artifacts")
+
+    requested_paths = {visual_evidence_path(pr_number, head_sha, item) for item, _ in requested}
+    canonical_paths = {path for _, _, _, path in canonical}
+    if requested_paths != canonical_paths:
+        raise PublisherError(HTTPStatus.CONFLICT, "evidence_ref_conflict",
+                             "evidence artifact identities differ")
+
+    by_path = {path: (ident, sha256, blob) for ident, sha256, blob, path in canonical}
+    indexed: list[tuple[dict[str, Any], str, str]] = []
+    for item, source in requested:
+        path = visual_evidence_path(pr_number, head_sha, item)
+        ident, _, blob = by_path[path]
+        if ident != item["id"]:
+            raise PublisherError(HTTPStatus.CONFLICT, "evidence_ref_conflict",
+                                 "evidence artifact identities differ")
+        result = run_git(["--git-dir", mirror, "ls-tree", "-r", "--full-tree", commit, "--", path])
+        if result.returncode != 0:
+            raise PublisherError(HTTPStatus.CONFLICT, "evidence_ref_conflict",
+                                 "cannot inspect evidence tree")
+        fields = result.stdout.strip().split()
+        if len(fields) < 3 or fields[1] != "blob" or fields[2] != blob:
+            raise PublisherError(HTTPStatus.CONFLICT, "evidence_ref_conflict", "evidence tree differs")
+        indexed.append((item, source, blob))
+    return indexed
+
+
+
 
 def visual_create_commit(mirror: str, head_sha: str, marker_text: str,
                          artifacts: list[tuple[dict[str, Any], str]], pr_number: int) -> tuple[str, list[tuple[dict[str, Any], str, str]]]:
@@ -649,7 +722,8 @@ def visual_verified_ancestor_sources(mirror: str, head_sha: str, artifacts: Any,
 
 
 def do_visual_evidence(repo: str, worktree: str, pr_number: int, head_sha: str, marker: str,
-                       body: str, artifacts: Any, allowed_source_shas: Any = None) -> dict[str, Any]:
+                       body: str, artifacts: Any, allowed_source_shas: Any = None,
+                       reuse_existing: bool = False) -> dict[str, Any]:
     if not SHA_RE.fullmatch(head_sha) or not _is_int(pr_number):
         raise PublisherError(HTTPStatus.BAD_REQUEST, "invalid_request", "invalid PR head")
     if allowed_source_shas is None:
@@ -658,6 +732,8 @@ def do_visual_evidence(repo: str, worktree: str, pr_number: int, head_sha: str, 
             or len(allowed_source_shas) > MAX_CODEX_IDS
             or not all(isinstance(sha, str) and SHA_RE.fullmatch(sha) for sha in allowed_source_shas)):
         raise PublisherError(HTTPStatus.BAD_REQUEST, "invalid_request", "invalid allowed_source_shas")
+    if not isinstance(reuse_existing, bool):
+        raise PublisherError(HTTPStatus.BAD_REQUEST, "invalid_request", "invalid reuse_existing")
     marker = normalize_visual_marker(marker)
     if not isinstance(body, str) or not body.strip() or len(body) > 60000:
         raise PublisherError(HTTPStatus.BAD_REQUEST, "invalid_request", "invalid visual evidence body")
@@ -674,14 +750,20 @@ def do_visual_evidence(repo: str, worktree: str, pr_number: int, head_sha: str, 
     ref = visual_evidence_ref(pr_number, head_sha)
     marker_text = f"Marker: <!-- issue-agent:visual-evidence:{marker} -->"
     remote_commit, exists = visual_existing_ref(repo, ref, token, mirror)
+    already_published = False
     if exists:
         assert remote_commit is not None
-        indexed: list[tuple[dict[str, Any], str, str]] = []
-        for item, source in validated:
-            result = run_git(["--git-dir", mirror, "hash-object", source])
-            visual_git_error(result, "cannot inspect evidence blob")
-            indexed.append((item, source, result.stdout.strip()))
-        visual_verify_commit(mirror, remote_commit, head_sha, marker_text, indexed, pr_number)
+        if reuse_existing:
+            indexed = visual_verify_existing_commit(
+                mirror, remote_commit, head_sha, marker_text, validated, pr_number)
+            already_published = True
+        else:
+            indexed = []
+            for item, source in validated:
+                result = run_git(["--git-dir", mirror, "hash-object", source])
+                visual_git_error(result, "cannot inspect evidence blob")
+                indexed.append((item, source, result.stdout.strip()))
+            visual_verify_commit(mirror, remote_commit, head_sha, marker_text, indexed, pr_number)
         commit, created = remote_commit, False
     else:
         commit, indexed = visual_create_commit(mirror, head_sha, marker_text, validated, pr_number)
@@ -704,7 +786,7 @@ def do_visual_evidence(repo: str, worktree: str, pr_number: int, head_sha: str, 
         })
     ref_url = visual_github_url(repo, "tree", ref)
     return {
-        "created": created, "marker": marker, "ref": ref, "commit_sha": commit,
+        "created": created, "already_published": already_published, "marker": marker, "ref": ref,
         "ref_url": ref_url, "evidence_ref_url": ref_url,
         "commit_url": visual_github_url(repo, "commit", commit),
         "evidence_commit_url": visual_github_url(repo, "commit", commit),
@@ -1214,9 +1296,10 @@ class Handler(BaseHTTPRequestHandler):
 
     def body(self, fields: dict[str, re.Pattern], *, nullable: tuple[str, ...] = (),
              lists: dict[str, re.Pattern] | None = None, ints: tuple[str, ...] = (),
-             objects: tuple[str, ...] = (), max_body: int = MAX_BODY) -> dict:
-        """Validated JSON body: ``fields`` are strings (None allowed for ``nullable``), ``lists`` string
-        arrays, ``ints`` required positive integers."""
+             objects: tuple[str, ...] = (), booleans: tuple[str, ...] = (),
+             max_body: int = MAX_BODY) -> dict:
+        """Validated JSON body: ``fields`` are strings, ``lists`` string arrays,
+        ``ints`` positive integers, and ``booleans`` actual JSON booleans."""
         lists = lists or {}
         if (self.headers.get("Content-Type") or "").split(";")[0].strip().lower() != "application/json":
             raise PublisherError(HTTPStatus.UNSUPPORTED_MEDIA_TYPE, "invalid_request", "Content-Type must be application/json")
@@ -1232,7 +1315,7 @@ class Handler(BaseHTTPRequestHandler):
             raise PublisherError(HTTPStatus.BAD_REQUEST, "invalid_request", "body is not valid JSON") from None
         if not isinstance(data, dict):
             raise PublisherError(HTTPStatus.BAD_REQUEST, "invalid_request", "body must be a JSON object")
-        unknown = sorted(set(data) - set(fields) - set(lists) - set(ints) - set(objects))
+        unknown = sorted(set(data) - set(fields) - set(lists) - set(ints) - set(objects) - set(booleans))
         if unknown:
             raise PublisherError(HTTPStatus.BAD_REQUEST, "invalid_request", f"unknown fields: {', '.join(unknown)}")
         values = {}
@@ -1254,6 +1337,10 @@ class Handler(BaseHTTPRequestHandler):
             if not _is_int(data.get(name)):
                 raise PublisherError(HTTPStatus.BAD_REQUEST, "invalid_request", f"invalid {name}")
             values[name] = data[name]
+        for name in booleans:
+            if name in data and not isinstance(data[name], bool):
+                raise PublisherError(HTTPStatus.BAD_REQUEST, "invalid_request", f"invalid {name}")
+            values[name] = data.get(name, False)
         for name in objects:
             if name not in data:
                 raise PublisherError(HTTPStatus.BAD_REQUEST, "invalid_request", f"missing {name}")
@@ -1283,12 +1370,13 @@ class Handler(BaseHTTPRequestHandler):
                     {"repo": REPO_RE, "worktree": WORKTREE_RE, "head_sha": SHA_RE,
                      "marker": re.compile(r"(?s).{1,200}"), "body": re.compile(r"(?s).{1,60000}")},
                     lists={"allowed_source_shas": SHA_RE}, ints=("pr_number",), objects=("artifacts",),
-                    max_body=256 * 1024,
+                    booleans=("reuse_existing",), max_body=256 * 1024,
                 )
                 with repo_lock(args["repo"]):
                     self.reply(HTTPStatus.OK, do_visual_evidence(
                         args["repo"], args["worktree"], args["pr_number"], args["head_sha"],
                         args["marker"], args["body"], args["artifacts"], args["allowed_source_shas"],
+                        args["reuse_existing"],
                     ))
             elif self.path == "/cleanup":
                 args = self.body({"repo": REPO_RE, "worktree": WORKTREE_RE, "branch": CLEANUP_BRANCH_RE},
