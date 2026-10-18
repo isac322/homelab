@@ -12,7 +12,7 @@ called only by the bridge (bearer token the agent container cannot read).
   POST /cleanup  {repo, worktree, branch, codex_session_ids} -> {removed}
   POST /worktree/restore {repo, worktree, branch} -> {restored, path, already} | {restored: false, reason}
   POST /visual-evidence {repo, worktree, pr_number, head_sha, allowed_source_shas, marker, body, artifacts}
-                                             -> {created, url, body, asset_urls}
+                                             -> {created, ref_url, commit_url, assets, asset_urls}
   POST /janitor/prune-request {lease_until}   -> {requested_at, lease_until}
   GET  /janitor/status                        -> the janitor's status JSON
 
@@ -61,13 +61,13 @@ import threading
 import time
 import urllib.error
 import urllib.request
+import urllib.parse
 from http import HTTPStatus
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 
 PORT = int(os.environ.get("PUBLISHER_PORT", "8090"))
 AUTH_TOKEN_FILE = os.environ.get("PUBLISHER_TOKEN_FILE", "/run/issue-agent/publisher/token")
 PUSH_TOKEN_FILE = os.environ.get("GITHUB_PUSH_TOKEN_FILE", "/run/issue-agent/push/token")
-COMMENT_TOKEN_FILE = os.environ.get("GITHUB_COMMENT_TOKEN_FILE", "/run/issue-agent/comment/token")
 MAX_VISUAL_ARTIFACTS = 20
 MAX_VISUAL_ARTIFACT_BYTES = 10 * 1024 * 1024
 CHECKOUTS = os.environ.get("ISSUE_AGENT_CHECKOUTS", "/home/agent/checkouts")
@@ -137,18 +137,6 @@ def read_secret(path: str, what: str) -> str:
     if not value:
         raise PublisherError(HTTPStatus.SERVICE_UNAVAILABLE, "credential_unavailable", f"{what} is empty")
     return value
-def gh_env(token: str) -> dict[str, str]:
-    return git_env() | {"GH_TOKEN": token, "GH_PROMPT_DISABLED": "1", "GH_NO_UPDATE_NOTIFIER": "1"}
-
-
-def run_gh(args: list[str], *, token: str, timeout: int = 120) -> subprocess.CompletedProcess:
-    try:
-        return subprocess.run(
-            ["gh", *args], cwd=STATE_DIR, env=gh_env(token), stdin=subprocess.DEVNULL,
-            capture_output=True, text=True, timeout=timeout, check=False,
-        )
-    except subprocess.TimeoutExpired:
-        raise PublisherError(HTTPStatus.GATEWAY_TIMEOUT, "gh_timeout", f"gh {args[0]} exceeded {timeout}s") from None
 
 
 
@@ -182,7 +170,7 @@ def scrub(text: str, secrets: list[str]) -> str:
 
 
 def run_git(args: list[str], *, token: str | None = None, timeout: int = GIT_TIMEOUT,
-            extra_env: dict[str, str] | None = None) -> subprocess.CompletedProcess:
+            extra_env: dict[str, str] | None = None, stdin_text: str | None = None) -> subprocess.CompletedProcess:
     cmd = ["git", "-c", "core.hooksPath=/dev/null", "-c", "credential.helper="]
     if token is not None:
         cmd += auth_header_args(token)
@@ -192,7 +180,8 @@ def run_git(args: list[str], *, token: str | None = None, timeout: int = GIT_TIM
             cmd,
             cwd=STATE_DIR,
             env=git_env() | (extra_env or {}),
-            stdin=subprocess.DEVNULL,
+            stdin=subprocess.PIPE if stdin_text is not None else subprocess.DEVNULL,
+            input=stdin_text,
             capture_output=True,
             text=True,
             timeout=timeout,
@@ -500,21 +489,6 @@ def validate_visual_artifacts(root: str, artifacts: Any, allowed_source_shas: se
     return validated
 
 
-def visual_asset_urls(body: str) -> list[str]:
-    return sorted(set(re.findall(r"https://github\.com/[^\s)>\"]+", body)))
-
-
-def gh_comments(repo: str, pr_number: int, token: str) -> list[dict[str, Any]]:
-    result = run_gh(["api", f"repos/{repo}/issues/{pr_number}/comments?per_page=100"], token=token)
-    if result.returncode != 0:
-        raise PublisherError(HTTPStatus.BAD_GATEWAY, "github_error", scrub(result.stderr, [token]))
-    try:
-        data = json.loads(result.stdout)
-    except (ValueError, UnicodeDecodeError):
-        raise PublisherError(HTTPStatus.BAD_GATEWAY, "github_error", "invalid comment response") from None
-    if not isinstance(data, list):
-        raise PublisherError(HTTPStatus.BAD_GATEWAY, "github_error", "invalid comment response")
-    return [item for item in data if isinstance(item, dict)]
 def normalize_visual_marker(marker: str) -> str:
     if marker == VISUAL_MARKER_LITERAL:
         return "default"
@@ -522,6 +496,133 @@ def normalize_visual_marker(marker: str) -> str:
         return marker
     raise PublisherError(HTTPStatus.BAD_REQUEST, "invalid_request", "invalid visual marker")
 
+
+def visual_evidence_ref(pr_number: int, head_sha: str) -> str:
+    return f"issue-agent-visual/pr-{pr_number}-{head_sha}"
+
+
+def visual_evidence_basename(relpath: str) -> str:
+    basename = os.path.basename(relpath.replace("\\", "/"))
+    basename = re.sub(r"[^A-Za-z0-9_.-]", "_", basename)[:160]
+    return basename or "artifact"
+
+
+def visual_evidence_path(pr_number: int, head_sha: str, item: dict[str, Any]) -> str:
+    return (f".issue-agent/visual-evidence/pr-{pr_number}/{head_sha}/"
+            f"{item['id']}-{visual_evidence_basename(item['relpath'])}")
+
+
+def visual_github_url(repo: str, kind: str, value: str, path: str | None = None) -> str:
+    encoded = urllib.parse.quote(value, safe="/-._~")
+    if kind == "blob":
+        assert path is not None
+        return f"https://github.com/{repo}/blob/{encoded}/{urllib.parse.quote(path, safe='/-._~')}"
+    if kind == "tree":
+        return f"https://github.com/{repo}/tree/{encoded}"
+    return f"https://github.com/{repo}/commit/{encoded}"
+
+
+def visual_git_error(result: subprocess.CompletedProcess, operation: str, token: str | None = None) -> None:
+    if result.returncode != 0:
+        raise PublisherError(HTTPStatus.BAD_GATEWAY, "github_error",
+                             scrub(result.stderr or "", [token or ""]) or operation)
+
+
+def visual_existing_ref(repo: str, ref: str, token: str, mirror: str) -> tuple[str | None, bool]:
+    """Return the remote ref commit, fetching it into the mirror when present."""
+    url = f"https://github.com/{repo}.git"
+    result = run_git(["ls-remote", "--", url, f"refs/heads/{ref}"], token=token)
+    visual_git_error(result, "cannot inspect evidence ref", token)
+    rows = [line.split() for line in result.stdout.splitlines() if line.strip()]
+    if not rows:
+        return None, False
+    if len(rows) != 1 or len(rows[0]) != 2 or not SHA_RE.fullmatch(rows[0][0]) \
+            or rows[0][1] != f"refs/heads/{ref}":
+        raise PublisherError(HTTPStatus.BAD_GATEWAY, "github_error", "invalid evidence ref response")
+    remote_sha = rows[0][0]
+    result = run_git(["--git-dir", mirror, "fetch", "--quiet", "--no-tags", "--", url,
+                      f"refs/heads/{ref}:refs/heads/{ref}"], token=token)
+    visual_git_error(result, "cannot fetch evidence ref", token)
+    return remote_sha, True
+
+
+def visual_verify_commit(mirror: str, commit: str, head_sha: str, marker_text: str,
+                         artifacts: list[tuple[dict[str, Any], str, str]], pr_number: int) -> None:
+    result = run_git(["--git-dir", mirror, "rev-list", "--parents", "-n", "1", commit])
+    visual_git_error(result, "cannot inspect evidence commit")
+    parents = result.stdout.strip().split()
+    if len(parents) != 2 or parents[1] != head_sha:
+        raise PublisherError(HTTPStatus.CONFLICT, "evidence_ref_conflict", "evidence commit has unexpected lineage")
+    result = run_git(["--git-dir", mirror, "show", "-s", "--format=%B", commit])
+    visual_git_error(result, "cannot inspect evidence commit")
+    expected_lines = {
+        f"Artifact: {item['id']} {item['sha256']} {blob_sha} {visual_evidence_path(pr_number, head_sha, item)}"
+        for item, _, blob_sha in artifacts
+    }
+    if marker_text not in result.stdout or not expected_lines <= set(result.stdout.splitlines()):
+        raise PublisherError(HTTPStatus.CONFLICT, "evidence_ref_conflict", "evidence commit marker or artifacts differ")
+    for item, _, blob_sha in artifacts:
+        path = visual_evidence_path(pr_number, head_sha, item)
+        result = run_git(["--git-dir", mirror, "ls-tree", "-r", "--full-tree", commit, "--", path])
+        visual_git_error(result, "cannot inspect evidence tree")
+        fields = result.stdout.strip().split()
+        if len(fields) < 3 or fields[1] != "blob" or fields[2] != blob_sha:
+            raise PublisherError(HTTPStatus.CONFLICT, "evidence_ref_conflict", "evidence tree differs")
+
+
+def visual_create_commit(mirror: str, head_sha: str, marker_text: str,
+                         artifacts: list[tuple[dict[str, Any], str]], pr_number: int) -> tuple[str, list[tuple[dict[str, Any], str, str]]]:
+    """Add only validated blobs to a tree rooted at ``head_sha`` and commit it."""
+    indexed: list[tuple[dict[str, Any], str, str]] = []
+    for item, source in artifacts:
+        result = run_git(["--git-dir", mirror, "hash-object", "-w", "--", source])
+        visual_git_error(result, "cannot store evidence blob")
+        blob_sha = result.stdout.strip()
+        if not SHA_RE.fullmatch(blob_sha):
+            raise PublisherError(HTTPStatus.BAD_GATEWAY, "github_error", "invalid evidence blob id")
+        with open(source, "rb") as handle:
+            digest = hashlib.sha256()
+            for chunk in iter(lambda: handle.read(1024 * 1024), b""):
+                digest.update(chunk)
+        if digest.hexdigest() != item["sha256"]:
+            raise PublisherError(HTTPStatus.CONFLICT, "artifact_mismatch", f"{item['relpath']}: changed during publish")
+        indexed.append((item, source, blob_sha))
+
+    index_file = tempfile.NamedTemporaryFile(prefix=".visual-index-", dir=STATE_DIR, delete=False)
+    index_file.close()
+    os.unlink(index_file.name)
+    env = {"GIT_INDEX_FILE": index_file.name}
+    try:
+        result = run_git(["--git-dir", mirror, "read-tree", head_sha], extra_env=env)
+        visual_git_error(result, "cannot read evidence parent")
+        for item, _, blob_sha in indexed:
+            path = visual_evidence_path(pr_number, head_sha, item)
+            result = run_git(["--git-dir", mirror, "update-index", "--add",
+                              "--cacheinfo", f"100644,{blob_sha},{path}"], extra_env=env)
+            visual_git_error(result, "cannot add evidence path")
+        result = run_git(["--git-dir", mirror, "write-tree"], extra_env=env)
+        visual_git_error(result, "cannot write evidence tree")
+        tree = result.stdout.strip()
+    finally:
+        try:
+            os.unlink(index_file.name)
+        except FileNotFoundError:
+            pass
+    message_lines = ["Issue-agent visual evidence", "", marker_text, f"Head: {head_sha}"]
+    for item, _, blob_sha in indexed:
+        message_lines.append(f"Artifact: {item['id']} {item['sha256']} {blob_sha} "
+                             f"{visual_evidence_path(pr_number, head_sha, item)}")
+    result = run_git(["--git-dir", mirror, "commit-tree", tree, "-p", head_sha, "-F", "-"], extra_env={
+        "GIT_AUTHOR_NAME": "issue-agent[bot]",
+        "GIT_AUTHOR_EMAIL": "issue-agent[bot]@users.noreply.github.com",
+        "GIT_COMMITTER_NAME": "issue-agent[bot]",
+        "GIT_COMMITTER_EMAIL": "issue-agent[bot]@users.noreply.github.com",
+    }, stdin_text="\n".join(message_lines) + "\n")
+    visual_git_error(result, "cannot create evidence commit")
+    commit = result.stdout.strip()
+    if not SHA_RE.fullmatch(commit):
+        raise PublisherError(HTTPStatus.BAD_GATEWAY, "github_error", "invalid evidence commit id")
+    return commit, indexed
 
 
 def do_visual_evidence(repo: str, worktree: str, pr_number: int, head_sha: str, marker: str,
@@ -534,38 +635,59 @@ def do_visual_evidence(repo: str, worktree: str, pr_number: int, head_sha: str, 
             or len(allowed_source_shas) > MAX_CODEX_IDS
             or not all(isinstance(sha, str) and SHA_RE.fullmatch(sha) for sha in allowed_source_shas)):
         raise PublisherError(HTTPStatus.BAD_REQUEST, "invalid_request", "invalid allowed_source_shas")
-    allowed_source_shas = set(allowed_source_shas)
     marker = normalize_visual_marker(marker)
     if not isinstance(body, str) or not body.strip() or len(body) > 60000:
-        raise PublisherError(HTTPStatus.BAD_REQUEST, "invalid_request", "invalid visual comment")
+        raise PublisherError(HTTPStatus.BAD_REQUEST, "invalid_request", "invalid visual evidence body")
     root = visual_worktree_path(repo, worktree)
     if visual_worktree_head(root) != head_sha:
-        raise PublisherError(HTTPStatus.CONFLICT, "worktree_head_mismatch",
-                             f"worktree HEAD is not {head_sha}")
-    validated = validate_visual_artifacts(root, artifacts, allowed_source_shas)
-    marker_text = f"<!-- issue-agent:visual-evidence:{marker} -->"
-    rendered = f"{marker_text}\n{body.strip()}"
-    token = read_secret(COMMENT_TOKEN_FILE, "comment token")
-    existing = next((c for c in gh_comments(repo, pr_number, token) if marker_text in str(c.get("body", ""))), None)
-    if existing is None:
-        args = ["pr", "comment", "--repo", repo, str(pr_number), "--body", rendered]
-        for _, path in validated:
-            args += ["--attach", path]
-        result = run_gh(args, token=token)
-        if result.returncode != 0:
-            raise PublisherError(HTTPStatus.BAD_GATEWAY, "github_error", scrub(result.stderr, [token]))
-        comments = gh_comments(repo, pr_number, token)
-        existing = next((c for c in comments if marker_text in str(c.get("body", ""))), None)
-        if existing is None:
-            url_match = re.search(r"https://github\\.com/[^\\s]+", result.stdout)
-            return {"created": True, "url": url_match.group(0) if url_match else None,
-                    "body": rendered, "asset_urls": visual_asset_urls(rendered)}
-        created = True
+        raise PublisherError(HTTPStatus.CONFLICT, "worktree_head_mismatch", f"worktree HEAD is not {head_sha}")
+    validated = validate_visual_artifacts(root, artifacts, set(allowed_source_shas))
+    branch = f"hapi-{worktree}"
+    if fetch_branch(repo, branch) != head_sha:
+        raise PublisherError(HTTPStatus.CONFLICT, "worktree_head_mismatch", f"{branch} is not {head_sha}")
+    token = read_secret(PUSH_TOKEN_FILE, "push token")
+    mirror = ensure_mirror(repo)
+    ref = visual_evidence_ref(pr_number, head_sha)
+    marker_text = f"Marker: <!-- issue-agent:visual-evidence:{marker} -->"
+    remote_commit, exists = visual_existing_ref(repo, ref, token, mirror)
+    if exists:
+        assert remote_commit is not None
+        indexed: list[tuple[dict[str, Any], str, str]] = []
+        for item, source in validated:
+            result = run_git(["--git-dir", mirror, "hash-object", source])
+            visual_git_error(result, "cannot inspect evidence blob")
+            indexed.append((item, source, result.stdout.strip()))
+        visual_verify_commit(mirror, remote_commit, head_sha, marker_text, indexed, pr_number)
+        commit, created = remote_commit, False
     else:
-        created = False
-    comment_body = str(existing.get("body") or rendered)
-    return {"created": created, "url": existing.get("html_url"), "body": comment_body,
-            "asset_urls": visual_asset_urls(comment_body)}
+        commit, indexed = visual_create_commit(mirror, head_sha, marker_text, validated, pr_number)
+        push = run_git(["--git-dir", mirror, "push", "--quiet", "--porcelain", "--no-verify", "--",
+                        f"https://github.com/{repo}.git", f"{commit}:refs/heads/{ref}"], token=token)
+        created = push.returncode == 0
+        if push.returncode != 0:
+            remote_commit, exists = visual_existing_ref(repo, ref, token, mirror)
+            if not exists or remote_commit != commit:
+                visual_git_error(push, "cannot publish evidence ref", token)
+        result = run_git(["--git-dir", mirror, "update-ref", f"refs/heads/{ref}", commit])
+        visual_git_error(result, "cannot retain evidence ref")
+    assets = []
+    for item, _, _ in indexed:
+        path = visual_evidence_path(pr_number, head_sha, item)
+        assets.append({
+            "id": item["id"], "role": item["role"], "caption": item["caption"],
+            "media_type": item["media_type"], "path": path,
+            "blob_url": visual_github_url(repo, "blob", ref, path),
+        })
+    ref_url = visual_github_url(repo, "tree", ref)
+    return {
+        "created": created, "marker": marker, "ref": ref, "commit_sha": commit,
+        "ref_url": ref_url, "evidence_ref_url": ref_url,
+        "commit_url": visual_github_url(repo, "commit", commit),
+        "evidence_commit_url": visual_github_url(repo, "commit", commit),
+        "evidence_url": ref_url, "assets": assets,
+        "asset_urls": [asset["blob_url"] for asset in assets],
+        "body": body.strip(),
+    }
 
 
 def worktree_admin_dir(worktree: str) -> str | None:

@@ -5574,7 +5574,7 @@ class Bridge:
         return "ready"
 
     def op_github_visual_evidence(self, req: dict[str, Any]) -> dict[str, Any]:
-        """Attach validated GUI evidence and replace only this PR body's marker section."""
+        """Publish validated GUI evidence to a private repository ref and replace only this PR body's marker section."""
         ev = self._event(req)
         repo = ev["repo"]
         pr_number = _positive_int(req.get("pr_number"))
@@ -5616,19 +5616,23 @@ class Bridge:
              "allowed_source_shas": allowed_source_shas, "marker": marker, "body": body, "artifacts": artifacts},
             timeout=PUBLISHER_PUSH_TIMEOUT,
         )
-        comment_url = published.get("url")
+        evidence_url = published.get("evidence_url") or published.get("ref_url")
+        assets = published.get("assets") if isinstance(published.get("assets"), list) else []
         asset_urls = published.get("asset_urls") if isinstance(published.get("asset_urls"), list) else []
         begin = f"<!-- issue-agent:visual-evidence:{marker} -->"
         end = f"<!-- issue-agent:visual-evidence-end:{marker} -->"
-        lines = [begin, "## Visual evidence", ""]
+        lines = [begin, "## Visual evidence", "", body.strip(), "",
+                 "Videos open from the evidence link; images open in GitHub."]
+        by_id = {item.get("id"): item for item in assets if isinstance(item, dict)}
         for item in artifacts:
-            caption = item.get("caption") if isinstance(item, dict) else None
-            lines.append(f"- {caption or 'Visual evidence'}")
-        if isinstance(comment_url, str) and comment_url:
-            lines.append(f"- [Open attached evidence]({comment_url})")
-        for url in asset_urls:
-            if isinstance(url, str) and url:
-                lines.append(f"- [Attached asset]({url})")
+            if not isinstance(item, dict):
+                continue
+            caption = item.get("caption") or "Visual evidence"
+            asset = by_id.get(item.get("id"))
+            url = asset.get("blob_url") if isinstance(asset, dict) else None
+            lines.append(f"- {caption}" + (f" ([Open in GitHub]({url}))" if isinstance(url, str) and url else ""))
+        if isinstance(evidence_url, str) and evidence_url:
+            lines.append(f"- [Open evidence ref]({evidence_url})")
         lines.append(end)
         section = "\n".join(lines)
         fresh = self._get_pr(repo, pr_number)
@@ -5637,15 +5641,24 @@ class Bridge:
             raise OpError(f"pull request head moved to {fresh_head}", retryable=True)
         prior_body = fresh.get("body") if isinstance(fresh.get("body"), str) else ""
         pattern = re.compile(re.escape(begin) + r".*?" + re.escape(end), re.DOTALL)
-        updated_body = pattern.sub(section, prior_body, count=1)
-        if updated_body == prior_body:
+        match = pattern.search(prior_body)
+        if match is None:
             updated_body = f"{prior_body.rstrip()}\n\n{section}" if prior_body.strip() else section
-        updated = self._gh("PATCH", f"/repos/{repo}/pulls/{pr_number}", {"body": updated_body})
+        else:
+            updated_body = pattern.sub(section, prior_body, count=1)
+        body_updated = updated_body != prior_body
+        if body_updated:
+            updated = self._gh("PATCH", f"/repos/{repo}/pulls/{pr_number}", {"body": updated_body})
+            if not isinstance(updated, dict):
+                raise OpError("github visual evidence PR body update: unexpected response", retryable=True)
+        else:
+            updated = fresh
         if not isinstance(updated, dict):
             raise OpError("github visual evidence PR body update: unexpected response", retryable=True)
         return {"pr_number": pr_number, "head_sha": head_sha, "marker": marker,
-                "created": bool(published.get("created")), "comment_url": comment_url,
-                "body_updated": updated_body != prior_body, "asset_urls": asset_urls}
+                "created": bool(published.get("created")), "evidence_url": evidence_url,
+                "ref_url": published.get("ref_url"), "commit_url": published.get("commit_url"),
+                "body_updated": updated_body != prior_body, "asset_urls": asset_urls, "assets": assets}
 
     @staticmethod
     def _preserve_visual_evidence_sections(existing: str, requested: str) -> str:

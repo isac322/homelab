@@ -7018,8 +7018,12 @@ class VisualEvidenceBridgeTests(BridgeTestCase):
         artifact = {"id": "after", "role": "after", "relpath": "after.png", "sha256": "a" * 64,
                     "bytes": 8, "media_type": "image/png", "source_sha": SHA_A, "caption": "After"}
         with patch.object(self.bridge.publisher, "request", return_value={
-            "created": True, "url": "https://github.com/isac322/cc-lb/pull/7#issuecomment-1",
-            "asset_urls": [],
+            "created": True,
+            "evidence_url": "https://github.com/isac322/cc-lb/tree/issue-agent-visual/pr-7-" + SHA_A,
+            "ref_url": "https://github.com/isac322/cc-lb/tree/issue-agent-visual/pr-7-" + SHA_A,
+            "commit_url": "https://github.com/isac322/cc-lb/commit/" + SHA_A,
+            "assets": [{"id": "after", "blob_url": "https://github.com/isac322/cc-lb/blob/ref/after.png"}],
+            "asset_urls": ["https://github.com/isac322/cc-lb/blob/ref/after.png"],
         }) as request:
             result = self.op("github.visual_evidence", pr_number=7, head_sha=SHA_A,
                              worktree="issue-7", marker="<!-- issue-agent:visual-evidence -->",
@@ -7031,6 +7035,34 @@ class VisualEvidenceBridgeTests(BridgeTestCase):
         self.assertIn("Keep this unrelated PR context.", self.fake.prs[7]["body"])
         self.assertEqual(self.fake.prs[7]["body"].count("## Visual evidence"), 1)
         self.assertEqual(self.fake.prs[7]["body"].count("<!-- issue-agent:visual-evidence:pr-7-head-"), 1)
+        self.assertIn("Open evidence ref", self.fake.prs[7]["body"])
+        self.assertIn("Open in GitHub", self.fake.prs[7]["body"])
+        self.assertIn("Videos open from the evidence link; images open in GitHub.", self.fake.prs[7]["body"])
+        self.assertNotIn("attached", self.fake.prs[7]["body"].casefold())
+    def test_visual_evidence_same_head_retry_reuses_one_marker_section(self) -> None:
+        artifact = {"id": "after", "role": "after", "relpath": "after.png", "sha256": "a" * 64,
+                    "bytes": 8, "media_type": "image/png", "source_sha": SHA_A, "caption": "After"}
+        evidence = {
+            "created": True,
+            "evidence_url": "https://github.com/isac322/cc-lb/tree/issue-agent-visual/pr-7-" + SHA_A,
+            "ref_url": "https://github.com/isac322/cc-lb/tree/issue-agent-visual/pr-7-" + SHA_A,
+            "commit_url": "https://github.com/isac322/cc-lb/commit/" + SHA_A,
+            "assets": [{"id": "after", "blob_url": "https://github.com/isac322/cc-lb/blob/ref/after.png"}],
+            "asset_urls": ["https://github.com/isac322/cc-lb/blob/ref/after.png"],
+        }
+        with patch.object(self.bridge.publisher, "request", return_value=evidence):
+            first = self.op("github.visual_evidence", pr_number=7, head_sha=SHA_A,
+                             worktree="issue-7", marker="<!-- issue-agent:visual-evidence -->",
+                             body="Captured", artifacts=[artifact])
+            second = self.op("github.visual_evidence", pr_number=7, head_sha=SHA_A,
+                             worktree="issue-7", marker="<!-- issue-agent:visual-evidence -->",
+                             body="Captured", artifacts=[artifact])
+        self.assertTrue(first["ok"])
+        self.assertTrue(second["ok"])
+        self.assertEqual(len(self.fake.pr_patches), 1)
+        self.assertEqual(self.fake.prs[7]["body"].count("## Visual evidence"), 1)
+        self.assertFalse(second["body_updated"])
+
 
     def test_visual_evidence_rejects_stale_head_before_publisher(self) -> None:
         with patch.object(self.bridge.publisher, "request") as request:
@@ -7089,34 +7121,36 @@ class PublisherVisualEvidenceTests(unittest.TestCase):
         self.addCleanup(self.tmp.cleanup)
         self.publisher.CHECKOUTS = os.path.join(self.tmp.name, "checkouts")
         self.publisher.STATE_DIR = os.path.join(self.tmp.name, "state")
-        self.publisher.COMMENT_TOKEN_FILE = os.path.join(self.tmp.name, "comment-token")
         self.publisher.PUSH_TOKEN_FILE = os.path.join(self.tmp.name, "push-token")
         os.makedirs(os.path.join(self.publisher.CHECKOUTS, REPO + "-worktrees", "issue-7"), exist_ok=True)
+        os.makedirs(self.publisher.STATE_DIR, exist_ok=True)
         self.publisher.visual_worktree_head = lambda _worktree: SHA_A
-        with open(self.publisher.COMMENT_TOKEN_FILE, "w") as handle:
-            handle.write("comment-token\n")
+        self.publisher.fetch_branch = lambda _repo, _branch: SHA_A
+        self.publisher.ensure_mirror = lambda _repo: "mirror"
         with open(self.publisher.PUSH_TOKEN_FILE, "w") as handle:
             handle.write("push-token\n")
-        self.path = os.path.join(self.publisher.CHECKOUTS, REPO + "-worktrees", "issue-7", "after.png")
         payload = b"\x89PNG\r\n\x1a\nx"
+        self.path = os.path.join(self.publisher.CHECKOUTS, REPO + "-worktrees", "issue-7", "after.png")
         with open(self.path, "wb") as handle:
             handle.write(payload)
-        self.comments: list[dict[str, Any]] = []
-        self.gh_calls: list[list[str]] = []
-        self.tokens: list[str] = []
+        self.git_calls: list[tuple[list[str], str | None]] = []
+        self.evidence_commit: str | None = None
 
-        def fake_gh(args: list[str], *, token: str, timeout: int = 120) -> SimpleNamespace:
-            self.gh_calls.append(args)
-            self.tokens.append(token)
-            if args[:1] == ["api"]:
-                return SimpleNamespace(returncode=0, stdout=json.dumps(self.comments), stderr="")
-            body_index = args.index("--body") + 1
-            self.comments.append({"html_url": "https://github.com/isac322/cc-lb/pull/7#issuecomment-1",
-                                  "body": args[body_index]})
-            return SimpleNamespace(returncode=0, stdout="https://github.com/isac322/cc-lb/pull/7#issuecomment-1",
-                                   stderr="")
+        def fake_git(args: list[str], *, token: str | None = None, timeout: int = 600,
+                     extra_env: dict[str, str] | None = None, stdin_text: str | None = None) -> SimpleNamespace:
+            self.git_calls.append((args, token))
+            if "push" in args:
+                self.evidence_commit = "c" * 40
+            return SimpleNamespace(returncode=0, stdout=self.evidence_commit or "d" * 40, stderr="")
 
-        self.publisher.run_gh = fake_gh
+        self.publisher.run_git = fake_git
+        self.publisher.visual_existing_ref = lambda _repo, _ref, _token, _mirror: (
+            (self.evidence_commit, True) if self.evidence_commit else (None, False)
+        )
+        self.publisher.visual_create_commit = lambda _mirror, _head, _marker, items, _pr: (
+            "c" * 40, [(item, source, "d" * 40) for item, source in items]
+        )
+        self.publisher.visual_verify_commit = lambda *_args: None
         self.item = {
             "id": "after", "role": "after", "relpath": "after.png",
             "sha256": hashlib.sha256(payload).hexdigest(), "bytes": len(payload),
@@ -7131,35 +7165,39 @@ class PublisherVisualEvidenceTests(unittest.TestCase):
             allowed_source_shas=allowed,
         )
 
-    def test_visual_evidence_rejects_path_and_hash_before_gh(self) -> None:
+    def test_visual_evidence_rejects_path_and_hash_before_git(self) -> None:
         with self.assertRaises(self.publisher.PublisherError):
             self.call(relpath="../after.png")
         with self.assertRaises(self.publisher.PublisherError):
             self.call(sha256="b" * 64)
-        self.assertEqual(self.gh_calls, [])
+        self.assertEqual(self.git_calls, [])
+
     def test_visual_evidence_rejects_foreign_source_sha(self) -> None:
         with self.assertRaises(self.publisher.PublisherError):
             self.call(source_sha="c" * 40)
-        self.assertEqual(self.gh_calls, [])
+        self.assertEqual(self.git_calls, [])
 
     def test_visual_evidence_rejects_worktree_head_mismatch(self) -> None:
         self.publisher.visual_worktree_head = lambda _worktree: SHA_B
         with self.assertRaises(self.publisher.PublisherError):
             self.call()
-        self.assertEqual(self.gh_calls, [])
+        self.assertEqual(self.git_calls, [])
 
     def test_visual_evidence_allows_base_sha_when_explicitly_allowed(self) -> None:
         result = self.call(source_sha=SHA_B, allowed_source_shas=[SHA_A, SHA_B])
         self.assertTrue(result["created"])
+        self.assertEqual(result["ref"], f"issue-agent-visual/pr-7-{SHA_A}")
+        self.assertIn(".issue-agent/visual-evidence/pr-7/" + SHA_A + "/after-after.png", result["assets"][0]["path"])
 
-    def test_visual_evidence_uses_comment_token_and_is_idempotent(self) -> None:
+    def test_visual_evidence_uses_push_token_and_is_idempotent(self) -> None:
         first = self.call()
         second = self.call()
         self.assertTrue(first["created"])
         self.assertFalse(second["created"])
-        self.assertEqual(sum(args[:2] == ["pr", "comment"] for args in self.gh_calls), 1)
-        self.assertEqual(set(self.tokens), {"comment-token"})
-        self.assertNotIn("push-token", self.tokens)
+        self.assertEqual(sum("push" in args for args, _ in self.git_calls), 1)
+        self.assertTrue(all("--attach" not in args for args, _ in self.git_calls))
+        self.assertEqual({token for args, token in self.git_calls if "push" in args}, {"push-token"})
+        self.assertEqual(first["asset_urls"], second["asset_urls"])
 
 
 class VisualWorkflowTests(unittest.TestCase):

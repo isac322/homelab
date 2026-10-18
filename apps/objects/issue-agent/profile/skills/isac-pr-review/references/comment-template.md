@@ -6,7 +6,7 @@ GitHub에 올리는 본문은 영어다. 문체, 길이, 공개 위생은 `isac-
 
 ## Visual evidence
 
-For GUI, KWin, or web user-visible changes, inspect the uploaded before-and-after media (and any control media) in the PR conversation. Treat uploaded artifacts as the visual evidence; do not run capture commands or create replacement media. A PR-body placeholder or marker is not evidence until automation replaces it after upload. If required media is missing or does not establish the claimed change, record that in `Not verified` and apply the appropriate review decision; do not attempt capture yourself.
+For GUI, KWin, or web user-visible changes, inspect the visual-evidence links in the PR body. Images open in GitHub; videos open from the evidence link. Treat the repository evidence ref as the visual evidence; do not run capture commands or create replacement media. If required media is missing or does not establish the claimed change, record that in `Not verified` and apply the appropriate review decision; do not attempt capture yourself.
 
 ## 리뷰 (`ReviewResult.event` + `ReviewResult.body`)
 
