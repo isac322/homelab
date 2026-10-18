@@ -7171,11 +7171,54 @@ class PublisherVisualEvidenceTests(unittest.TestCase):
         with self.assertRaises(self.publisher.PublisherError):
             self.call(sha256="b" * 64)
         self.assertEqual(self.git_calls, [])
+    def test_visual_source_accepts_verified_ancestor(self) -> None:
+        source = "b" * 40
+        calls: list[list[str]] = []
+
+        def fake_git(args: list[str], **_kwargs: Any) -> SimpleNamespace:
+            calls.append(args)
+            if "cat-file" in args or "merge-base" in args:
+                return SimpleNamespace(returncode=0, stdout="", stderr="")
+            return SimpleNamespace(returncode=0, stdout="d" * 40, stderr="")
+
+        self.publisher.run_git = fake_git
+        allowed = self.publisher.visual_verified_ancestor_sources(
+            "mirror", SHA_A, [{"source_sha": source}], {SHA_A},
+        )
+        self.assertIn(source, allowed)
+        self.assertTrue(any("merge-base" in call for call in calls))
+
+    def test_visual_source_rejects_unrelated_commit(self) -> None:
+        source = "c" * 40
+
+        def fake_git(args: list[str], **_kwargs: Any) -> SimpleNamespace:
+            if "cat-file" in args:
+                return SimpleNamespace(returncode=0, stdout="", stderr="")
+            if "merge-base" in args:
+                return SimpleNamespace(returncode=1, stdout="", stderr="")
+            return SimpleNamespace(returncode=0, stdout="", stderr="")
+
+        self.publisher.run_git = fake_git
+        allowed = self.publisher.visual_verified_ancestor_sources(
+            "mirror", SHA_A, [{"source_sha": source}], {SHA_A},
+        )
+        self.assertNotIn(source, allowed)
 
     def test_visual_evidence_rejects_foreign_source_sha(self) -> None:
+        calls: list[list[str]] = []
+
+        def unrelated_git(args: list[str], **_kwargs: Any) -> SimpleNamespace:
+            calls.append(args)
+            if "cat-file" in args:
+                return SimpleNamespace(returncode=0, stdout="", stderr="")
+            if "merge-base" in args:
+                return SimpleNamespace(returncode=1, stdout="", stderr="")
+            return SimpleNamespace(returncode=0, stdout="", stderr="")
+
+        self.publisher.run_git = unrelated_git
         with self.assertRaises(self.publisher.PublisherError):
             self.call(source_sha="c" * 40)
-        self.assertEqual(self.git_calls, [])
+        self.assertFalse(any("push" in args for args in calls))
 
     def test_visual_evidence_rejects_worktree_head_mismatch(self) -> None:
         self.publisher.visual_worktree_head = lambda _worktree: SHA_B

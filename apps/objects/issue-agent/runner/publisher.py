@@ -625,6 +625,27 @@ def visual_create_commit(mirror: str, head_sha: str, marker_text: str,
     return commit, indexed
 
 
+def visual_verified_ancestor_sources(mirror: str, head_sha: str, artifacts: Any,
+                                      exact_sources: set[str]) -> set[str]:
+    """Extend the exact source allowlist only with commits proven to be ancestors of ``head_sha``."""
+    allowed = set(exact_sources)
+    if not isinstance(artifacts, list):
+        return allowed
+    for item in artifacts:
+        source = item.get("source_sha") if isinstance(item, dict) else None
+        if not isinstance(source, str) or not SHA_RE.fullmatch(source) or source in allowed:
+            continue
+        exists = run_git(["--git-dir", mirror, "cat-file", "-e", f"{source}^{{commit}}"])
+        if exists.returncode != 0:
+            continue
+        relation = run_git(["--git-dir", mirror, "merge-base", "--is-ancestor", source, head_sha])
+        if relation.returncode == 0:
+            allowed.add(source)
+        elif relation.returncode != 1:
+            visual_git_error(relation, "cannot verify visual source ancestry")
+    return allowed
+
+
 def do_visual_evidence(repo: str, worktree: str, pr_number: int, head_sha: str, marker: str,
                        body: str, artifacts: Any, allowed_source_shas: Any = None) -> dict[str, Any]:
     if not SHA_RE.fullmatch(head_sha) or not _is_int(pr_number):
@@ -641,12 +662,13 @@ def do_visual_evidence(repo: str, worktree: str, pr_number: int, head_sha: str, 
     root = visual_worktree_path(repo, worktree)
     if visual_worktree_head(root) != head_sha:
         raise PublisherError(HTTPStatus.CONFLICT, "worktree_head_mismatch", f"worktree HEAD is not {head_sha}")
-    validated = validate_visual_artifacts(root, artifacts, set(allowed_source_shas))
     branch = f"hapi-{worktree}"
     if fetch_branch(repo, branch) != head_sha:
         raise PublisherError(HTTPStatus.CONFLICT, "worktree_head_mismatch", f"{branch} is not {head_sha}")
-    token = read_secret(PUSH_TOKEN_FILE, "push token")
     mirror = ensure_mirror(repo)
+    allowed = visual_verified_ancestor_sources(mirror, head_sha, artifacts, set(allowed_source_shas))
+    validated = validate_visual_artifacts(root, artifacts, allowed)
+    token = read_secret(PUSH_TOKEN_FILE, "push token")
     ref = visual_evidence_ref(pr_number, head_sha)
     marker_text = f"Marker: <!-- issue-agent:visual-evidence:{marker} -->"
     remote_commit, exists = visual_existing_ref(repo, ref, token, mirror)
