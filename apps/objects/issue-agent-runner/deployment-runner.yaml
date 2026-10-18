@@ -285,7 +285,7 @@ spec:
         # Same image as the runner; /checkout also marks the checkout and its
         # worktrees untrusted in CODEX_HOME (codex-untrust).
         - name: publisher
-          image: ghcr.io/isac322/issue-agent-runner:0.30.7-codex0.162.1-20261018-visual-evidence-r2@sha256:d92fdbc88feec5c680a02397dac688f7f4bb9d4ebdc398b482ea37aaf944c633
+          image: ghcr.io/isac322/issue-agent-runner:0.30.7-codex0.162.1-20261018-visual-evidence-r3@sha256:8f06935196913878f8ea0a9fe7a229d9f94bf21280c1f7b3e051946901216f2e
           command:
             - /usr/bin/tini
             - --
