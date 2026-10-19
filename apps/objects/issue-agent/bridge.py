@@ -2237,22 +2237,24 @@ def provider_failure(message: Mapping[str, Any]) -> str | None:
 
 
 
-def find_result(texts: list[str], nonce: str) -> Any:
-    """Last JSON value that follows ``RESULT_TAG nonce`` in any of the texts."""
+def find_result(texts: list[str], nonce: str) -> tuple[str, Any]:
+    """Return (state, last successfully decoded JSON value): absent, malformed, or decoded."""
     needle = f"{RESULT_TAG} {nonce}"
     decoder = json.JSONDecoder()
-    found: Any = None
+    state, found = "absent", None
     for text in texts:
         start = 0
         while (idx := text.find(needle, start)) >= 0:
             start = idx + len(needle)
+            if state == "absent":
+                state = "malformed"
             rest = text[start:].lstrip(" \t")
             try:
                 value, _ = decoder.raw_decode(rest)
             except json.JSONDecodeError:
                 continue
-            found = value
-    return found
+            state, found = "decoded", value
+    return state, found
 
 
 class _Invalid(Exception):
@@ -3289,11 +3291,11 @@ class Bridge:
                 state = self._answered_result(ev, turn)[0]
                 resend = state == "answered" and self._consumed(ev, turn)
                 if state == "unanswered":
-                    # Resend only a turn that cannot still produce its result: one parked by the idle rule
+                    # Resend only a turn already consumed after rejection, parked by the idle rule
                     # (polls recorded by session_turn), one whose provider failed it (its text is still the last
                     # assistant line), or one whose session died. A busy sample taken in the gap between tool
                     # calls reads 'unanswered' too; that turn keeps its localId so it is never sent twice.
-                    resend = int(turn["idle_polls"] or 0) >= IDLE_WITHOUT_RESULT_LIMIT \
+                    resend = self._consumed(ev, turn) or int(turn["idle_polls"] or 0) >= IDLE_WITHOUT_RESULT_LIMIT \
                         or self._turn_failed_on_provider(ev, turn) is not None or \
                         self._session_gone(ev, turn)
                 if resend:
@@ -3421,8 +3423,8 @@ class Bridge:
             texts = assistant_texts(m)
             if texts:
                 last_text = texts
-        raw = find_result(last_text, local_id)
-        return ("unanswered", None) if raw is None else ("answered", raw)
+        state, raw = find_result(last_text, local_id)
+        return ("answered", raw) if state == "decoded" else ("unanswered", None)
 
     def _other_parked(self, ev: sqlite3.Row) -> bool:
         return bool(self.store.query(
@@ -4229,7 +4231,7 @@ class Bridge:
             last_message: Mapping[str, Any] = {}
             for m in later:
                 if message_role(m) == "user" and m.get("localId") != local_id and invoked(m):
-                    if find_result(last_text, local_id) is None:
+                    if find_result(last_text, local_id)[0] != "decoded":
                         return self._attention("another user message reached the agent before this step's result")
                     break
                 texts = assistant_texts(m)
@@ -4240,15 +4242,16 @@ class Bridge:
             alive = session.get("active") is not False
             if alive and (session.get("thinking") or requests):
                 deadline_at = turn["deadline_at"]
-                if deadline_at is not None and time.time() >= deadline_at and find_result(last_text, local_id) is None:
+                if deadline_at is not None and time.time() >= deadline_at \
+                        and find_result(last_text, local_id)[0] != "decoded":
                     # The workflow stops waiting and parks the event (`time_budget`); the dispatcher harvests a
                     # result that still arrives, or stops the agent after TURN_GRACE_SECONDS.
                     return {"state": "expired", "session_id": sid,
                             "detail": f"agent turn still running at the bridge deadline {_utc(deadline_at)}"}
                 self.store.put_turn(ev["delivery_id"], mode, local_id, turn["session_id"], "sent", 0)
                 return {"state": "running", "session_id": sid, "pending_requests": len(requests)}
-            raw = find_result(last_text, local_id)
-            if raw is not None:
+            result_state, raw = find_result(last_text, local_id)
+            if result_state == "decoded":
                 result = validate_result(mode, raw, int(ev["issue_number"]))
                 if isinstance(result, str):
                     if local_id.endswith(CORRECTION_SUFFIX):
@@ -4278,6 +4281,8 @@ class Bridge:
                                     sid, "lost")
                 return {"state": "attention", "park_class": "provider_error",
                         "detail": f"model provider error ended the agent turn: {failure[:500]}"}
+            if result_state == "malformed":
+                return self._request_correction(ev, mode, sid, local_id, "result line contains invalid JSON")
             idle = turn["idle_polls"] + 1
             self.store.put_turn(ev["delivery_id"], mode, local_id, turn["session_id"], "sent", idle)
             if idle >= IDLE_WITHOUT_RESULT_LIMIT:

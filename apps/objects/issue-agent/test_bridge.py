@@ -4147,6 +4147,157 @@ class TurnTests(BridgeTestCase):
         self.assertEqual((done["state"], done["result"]["status"]), ("done", "ready"))
         self.assertEqual(bridge.resend_local_id("d1", "implement", fix_lid), f"{self.lid}-r1")
 
+    def test_idle_malformed_result_is_corrected_once_then_completes(self) -> None:
+        self.send()
+        self.fake.invoke(self.sid, self.lid)
+        self.say(f"{bridge.RESULT_TAG} {self.lid} " + '{"status":')
+        self.assertEqual(self.op("session_turn")["state"], "running")
+        fix_lid = self.lid + bridge.CORRECTION_SUFFIX
+        self.assertEqual(self.store.turn("d1", "implement")["local_id"], fix_lid)
+        correction = self.fake.message_posts[-1]
+        self.assertEqual((correction["localId"], correction["deliveryMode"]), (fix_lid, "queue"))
+        self.assertIn(f"{bridge.RESULT_TAG} {fix_lid}", correction["text"])
+        for _ in range(2):
+            self.assertEqual(self.op("session_turn")["state"], "queued")
+        self.assertEqual([p["localId"] for p in self.fake.message_posts], [self.lid, fix_lid])
+        self.fake.invoke(self.sid, fix_lid)
+        self.say(self.result_line(fix_lid))
+        done = self.op("session_turn")
+        self.assertEqual((done["state"], done["result"]["status"]), ("done", "no_change"))
+        self.assertEqual(self.store.turn("d1", "implement")["consumed_id"], fix_lid)
+        self.assertEqual([p["localId"] for p in self.fake.message_posts], [self.lid, fix_lid])
+
+    def test_malformed_correction_is_consumed_and_retry_uses_fresh_local_id(self) -> None:
+        self.send()
+        self.fake.invoke(self.sid, self.lid)
+        self.say(self.result_line(status="bogus"))
+        self.assertEqual(self.op("session_turn")["state"], "running")
+        fix_lid = self.lid + bridge.CORRECTION_SUFFIX
+        self.fake.invoke(self.sid, fix_lid)
+        self.say(f"{bridge.RESULT_TAG} {fix_lid} " + '{"status":')
+        turn = self.op("session_turn")
+        self.assertEqual(turn["state"], "attention")
+        self.assertIn("after a correction request", turn["detail"])
+        self.assertEqual(bridge.Store(self.config.state_path).turn("d1", "implement")["consumed_id"], fix_lid)
+        self.assertEqual([p["localId"] for p in self.fake.message_posts], [self.lid, fix_lid])
+        self.assertTrue(self.op("fail", detail=turn["detail"])["ok"])
+        self.assertTrue(self.op("retry_event")["ok"])
+        self.assertEqual(self.dispatcher.tick(), "dispatched")
+        self.assertEqual(self.op("begin", attempt=1)["status"], "started")
+        fresh_lid = self.lid + "-r1"
+        self.assertEqual(self.send()["local_id"], fresh_lid)
+        self.assertEqual(self.op("session_turn")["state"], "queued")
+        self.assertEqual([p["localId"] for p in self.fake.message_posts], [self.lid, fix_lid, fresh_lid])
+        self.fake.invoke(self.sid, fresh_lid)
+        self.say(self.result_line(fresh_lid))
+        self.assertEqual(self.op("session_turn")["state"], "done")
+        self.assertEqual(self.store.turn("d1", "implement")["consumed_id"], fresh_lid)
+
+    def test_null_result_is_corrected_instead_of_treated_as_absent(self) -> None:
+        self.send()
+        self.fake.invoke(self.sid, self.lid)
+        self.say(f"{bridge.RESULT_TAG} {self.lid} null")
+        self.assertEqual(self.op("session_turn")["state"], "running")
+        fix_lid = self.lid + bridge.CORRECTION_SUFFIX
+        self.assertEqual(self.store.turn("d1", "implement")["local_id"], fix_lid)
+        self.assertEqual(self.op("session_turn")["state"], "queued")
+        self.assertEqual([p["localId"] for p in self.fake.message_posts], [self.lid, fix_lid])
+        self.fake.invoke(self.sid, fix_lid)
+        self.say(self.result_line(fix_lid))
+        self.assertEqual(self.op("session_turn")["state"], "done")
+        self.assertEqual(self.store.turn("d1", "implement")["consumed_id"], fix_lid)
+
+    def test_later_malformed_result_preserves_last_successfully_decoded_result(self) -> None:
+        self.send()
+        self.fake.invoke(self.sid, self.lid)
+        self.say(self.result_line() + f"\n{bridge.RESULT_TAG} {self.lid} " + '{"status":')
+        done = self.op("session_turn")
+        self.assertEqual((done["state"], done["result"]["status"]), ("done", "no_change"))
+        self.assertEqual(self.store.turn("d1", "implement")["consumed_id"], self.lid)
+        self.assertEqual([p["localId"] for p in self.fake.message_posts], [self.lid])
+
+    def test_wrong_nonce_and_missing_tag_remain_idle_without_correction(self) -> None:
+        self.send()
+        self.fake.invoke(self.sid, self.lid)
+        for idle_polls, text in enumerate((
+                f"{bridge.RESULT_TAG} other-nonce " + '{"status":',
+                'I finished but the result is {"status":'), 1):
+            with self.subTest(text=text):
+                self.say(text)
+                self.assertEqual(self.op("session_turn")["state"], "running")
+                turn = self.store.turn("d1", "implement")
+                self.assertEqual((turn["local_id"], turn["idle_polls"], turn["consumed_id"]),
+                                 (self.lid, idle_polls, None))
+                self.assertEqual([p["localId"] for p in self.fake.message_posts], [self.lid])
+        self.assertEqual(self.op("session_turn")["state"], "attention")
+        self.assertEqual([p["localId"] for p in self.fake.message_posts], [self.lid])
+
+    def test_busy_malformed_result_waits_without_correction(self) -> None:
+        self.send()
+        self.fake.invoke(self.sid, self.lid)
+        self.say(f"{bridge.RESULT_TAG} {self.lid} " + '{"status":')
+        for thinking, requests in ((True, {}), (False, {"permission": {}})):
+            with self.subTest(thinking=thinking, requests=requests):
+                self.fake.sessions[self.sid]["thinking"] = thinking
+                self.fake.sessions[self.sid]["agentState"]["requests"] = requests
+                self.assertEqual(self.op("session_turn")["state"], "running")
+                turn = self.store.turn("d1", "implement")
+                self.assertEqual((turn["local_id"], turn["idle_polls"], turn["consumed_id"]),
+                                 (self.lid, 0, None))
+                self.assertEqual([p["localId"] for p in self.fake.message_posts], [self.lid])
+        self.fake.sessions[self.sid]["agentState"]["requests"] = {}
+        self.assertEqual(self.op("session_turn")["state"], "running")
+        self.assertEqual([p["localId"] for p in self.fake.message_posts],
+                         [self.lid, self.lid + bridge.CORRECTION_SUFFIX])
+
+    def test_dead_session_with_malformed_result_is_lost_without_correction(self) -> None:
+        self.send()
+        self.fake.invoke(self.sid, self.lid)
+        self.say(f"{bridge.RESULT_TAG} {self.lid} " + '{"status":')
+        self.fake.sessions[self.sid].update(active=False, thinking=True)
+        self.assertEqual(self.op("session_turn")["state"], "lost")
+        turn = self.store.turn("d1", "implement")
+        self.assertEqual((turn["state"], turn["local_id"], turn["consumed_id"]),
+                         ("lost", self.lid + "-r1", None))
+        self.assertEqual([p["localId"] for p in self.fake.message_posts], [self.lid])
+
+    def test_provider_failure_with_malformed_result_is_not_corrected(self) -> None:
+        self.send()
+        self.fake.invoke(self.sid, self.lid)
+        text = "Codex error: exceeded retry limit, last status: 503 Service Unavailable"
+        message = self.fake.codex(
+            self.sid, "message", message=text + f"\n{bridge.RESULT_TAG} {self.lid} " + '{"status":')
+        message["localId"] = "codex:t1:turn1:abc:task_failed"
+        turn = self.op("session_turn")
+        self.assertEqual((turn["state"], turn["park_class"]), ("attention", "provider_error"))
+        stored = self.store.turn("d1", "implement")
+        self.assertEqual((stored["state"], stored["local_id"], stored["consumed_id"]),
+                         ("lost", self.lid + "-r1", None))
+        self.assertEqual([p["localId"] for p in self.fake.message_posts], [self.lid])
+
+    def test_malformed_result_before_foreign_user_message_does_not_correct(self) -> None:
+        self.send()
+        self.fake.invoke(self.sid, self.lid)
+        self.say(f"{bridge.RESULT_TAG} {self.lid} " + '{"status":')
+        self.fake.user_says(self.sid, "human steer from UI", local_id="web-1", invoked=True)
+        self.say(self.result_line())
+        turn = self.op("session_turn")
+        self.assertEqual(turn["state"], "attention")
+        self.assertIn("another user message", turn["detail"])
+        self.assertEqual(self.store.turn("d1", "implement")["local_id"], self.lid)
+        self.assertIsNone(self.store.turn("d1", "implement")["consumed_id"])
+        self.assertEqual([p["localId"] for p in self.fake.message_posts], [self.lid])
+
+    def test_malformed_result_after_foreign_user_message_does_not_correct(self) -> None:
+        self.send()
+        self.fake.invoke(self.sid, self.lid)
+        self.fake.user_says(self.sid, "human steer from UI", local_id="web-1", invoked=True)
+        self.say(f"{bridge.RESULT_TAG} {self.lid} " + '{"status":')
+        self.assertEqual(self.op("session_turn")["state"], "attention")
+        self.assertEqual(self.store.turn("d1", "implement")["local_id"], self.lid)
+        self.assertIsNone(self.store.turn("d1", "implement")["consumed_id"])
+        self.assertEqual([p["localId"] for p in self.fake.message_posts], [self.lid])
+
     def test_unsent_correction_is_delivered_when_history_exceeds_page_limit(self) -> None:
         self.send()
         self.fake.invoke(self.sid, self.lid)
