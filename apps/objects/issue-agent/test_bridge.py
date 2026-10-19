@@ -2288,6 +2288,76 @@ class PrRepairTests(BridgeTestCase):
         self.assertEqual(self.store.pr_state(REPO, 144)["active_delivery"], delivery)
         self.assertEqual(self.repair_delivery(), delivery)
 
+    def test_retry_after_a_lost_pr_repair_turn_refreshes_snapshot_for_current_head(self) -> None:
+        pr = self.managed_pr(merge_state="BLOCKED")
+        self.fake.checks[SHA_A] = [{"name": "old-head-check", "status": "COMPLETED", "conclusion": "FAILURE"}]
+        self.assertEqual(self.dispatcher.tick(), "dispatched")
+        delivery = self.repair_delivery()
+        begun = self.op("begin", delivery, attempt=1)
+        self.assertEqual((begun["status"], begun["event"]["head_sha"]), ("started", SHA_A))
+        session = self.op("ensure_session", delivery)
+        self.assertTrue(session["ok"])
+        sent = self.op("session_send", delivery, mode="followup", instructions="Repair the supported blockers.")
+        self.assertTrue(sent["ok"], sent)
+        self.fake.invoke(sent["session_id"], sent["local_id"])
+        self.fake.codex(sent["session_id"], "message", message="building...")
+        self.fake.sessions[sent["session_id"]].update(active=False, thinking=True)
+        lost = self.op("session_turn", delivery, mode="followup")
+        self.assertEqual(lost["state"], "lost")
+        original = json.loads(self.store.event(delivery)["stages"])["repair_snapshot"]
+        self.assertEqual(original["state"]["head_sha"], SHA_A)
+        self.assertTrue(self.op("fail", delivery, detail="Runner was evicted during repair.")["ok"])
+        pr["head"]["sha"] = SHA_B
+        self.fake.checks[SHA_B] = [{"name": "current-head-check", "status": "COMPLETED", "conclusion": "FAILURE"}]
+        self.assertTrue(self.op("retry_event", delivery)["ok"])
+        self.assertEqual(self.dispatcher.tick(), "dispatched")
+        begun = self.op("begin", delivery, attempt=1)
+        self.assertEqual((begun["status"], begun["event"]["head_sha"]), ("started", SHA_B))
+        self.assertTrue(self.op("ensure_session", delivery)["ok"])
+        resent = self.op("session_send", delivery, mode="followup", instructions="Repair the supported blockers.")
+        self.assertTrue(resent["ok"], resent)
+        self.assertEqual(len(self.fake.message_posts), 2)
+        text = self.fake.message_posts[-1]["text"]
+        context = json.loads(text.split(" CONTEXT_JSON\n", 1)[1].rsplit("\n", 1)[0])
+        self.assertEqual(context["repair"]["state"]["head_sha"], SHA_B)
+        self.assertEqual([check["name"] for check in context["repair"]["findings"]["failed_checks"]],
+                         ["current-head-check"])
+        refreshed = json.loads(self.store.event(delivery)["stages"])["repair_snapshot"]
+        self.assertEqual(refreshed["state"]["head_sha"], SHA_B)
+        self.assertEqual(self.store.event(delivery)["head_sha"], SHA_B)
+
+    def test_sending_without_delivery_refreshes_repair_snapshot_with_the_same_local_id(self) -> None:
+        pr = self.managed_pr(merge_state="BLOCKED")
+        self.fake.checks[SHA_A] = [{"name": "old-head-check", "status": "COMPLETED", "conclusion": "FAILURE"}]
+        self.assertEqual(self.dispatcher.tick(), "dispatched")
+        delivery = self.repair_delivery()
+        self.assertEqual(self.op("begin", delivery, attempt=1)["status"], "started")
+        self.assertTrue(self.op("ensure_session", delivery)["ok"])
+        with patch.object(self.bridge.hapi, "request", return_value=(500, {"error": "temporary"})):
+            rejected = self.op("session_send", delivery, mode="followup", instructions="Repair the blockers.")
+        self.assertFalse(rejected["ok"])
+        turn = self.store.turn(delivery, "followup")
+        self.assertIsNotNone(turn)
+        assert turn is not None
+        self.assertEqual(turn["state"], "sending")
+        local_id = turn["local_id"]
+        self.assertEqual(self.fake.message_posts, [])
+        pr["head"]["sha"] = SHA_B
+        self.fake.checks[SHA_B] = [{"name": "current-head-check", "status": "COMPLETED", "conclusion": "FAILURE"}]
+        sent = self.op("session_send", delivery, mode="followup", instructions="Repair the blockers.")
+        self.assertTrue(sent["ok"], sent)
+        self.assertEqual(sent["local_id"], local_id)
+        self.assertEqual(len(self.fake.message_posts), 1)
+        text = self.fake.message_posts[0]["text"]
+        context = json.loads(text.split(" CONTEXT_JSON\n", 1)[1].rsplit("\n", 1)[0])
+        self.assertEqual(context["repair"]["state"]["head_sha"], SHA_B)
+        self.assertEqual([check["name"] for check in context["repair"]["findings"]["failed_checks"]],
+                         ["current-head-check"])
+        refreshed = json.loads(self.store.event(delivery)["stages"])["repair_snapshot"]
+        self.assertEqual(refreshed["state"]["head_sha"], SHA_B)
+        self.assertEqual(self.store.event(delivery)["head_sha"], SHA_B)
+
+
     def test_parked_repair_keeps_its_lease_without_blocking_an_isolated_pr_review(self) -> None:
         self.use_reviewer_app()
         pr = self.managed_pr()
@@ -2549,6 +2619,76 @@ class PrRepairTests(BridgeTestCase):
         self.fake.codex(sid, "message", message=f"{bridge.RESULT_TAG} {original_local_id} {json.dumps(result)}")
         self.assertEqual(self.op("session_turn", delivery, mode="followup")["state"], "done")
         self.assertEqual(len(self.fake.message_posts), 1)
+
+    def test_indeterminate_pr_repair_delivery_preserves_snapshot_and_begin_head(self) -> None:
+        pr = self.managed_pr(merge_state="BLOCKED")
+        self.fake.checks[SHA_A] = [{"name": "original-check", "status": "COMPLETED", "conclusion": "FAILURE"}]
+        self.assertEqual(self.dispatcher.tick(), "dispatched")
+        delivery = self.repair_delivery()
+        self.assertEqual(self.op("begin", delivery, attempt=1)["status"], "started")
+        self.assertTrue(self.op("ensure_session", delivery)["ok"])
+        sent = self.op("session_send", delivery, mode="followup", instructions="Repair the blockers.")
+        self.assertTrue(sent["ok"], sent)
+        self.assertEqual(len(self.fake.message_posts), 1)
+        original_local_id = sent["local_id"]
+        original_snapshot = json.loads(self.store.event(delivery)["stages"])["repair_snapshot"]
+        self.assertEqual(original_snapshot["state"]["head_sha"], SHA_A)
+        self.assertTrue(self.op("fail", delivery, detail="Retry the interrupted followup.")["ok"])
+        pr["head"]["sha"] = SHA_B
+        self.fake.checks[SHA_B] = [{"name": "current-head-check", "status": "COMPLETED", "conclusion": "FAILURE"}]
+        self.assertTrue(self.op("retry_event", delivery)["ok"])
+        self.assertEqual(self.dispatcher.tick(), "dispatched")
+        begun = self.op("begin", delivery, attempt=1)
+        self.assertEqual((begun["status"], begun["event"]["head_sha"]), ("started", SHA_B))
+        self.assertTrue(self.op("ensure_session", delivery)["ok"])
+        turn = self.store.turn(delivery, "followup")
+        self.assertIsNotNone(turn)
+        assert turn is not None
+        self.store.put_turn(delivery, "followup", original_local_id, turn["session_id"], "sending",
+                            deadline_at=turn["deadline_at"])
+        self.fake.indeterminate.add(original_local_id)
+        retried = self.op("session_send", delivery, mode="followup", instructions="Repair the blockers.")
+        self.assertEqual((retried["ok"], retried["delivery"], retried["local_id"]),
+                         (True, "already", original_local_id), retried)
+        self.assertEqual(len(self.fake.message_posts), 1)
+        self.assertEqual(json.loads(self.store.event(delivery)["stages"])["repair_snapshot"], original_snapshot)
+        self.assertEqual(self.store.event(delivery)["head_sha"], SHA_B)
+        self.assertEqual(self.store.pr_state(REPO, 144)["active_delivery"], delivery)
+
+    def test_pr_repair_push_accepts_child_commit_at_begin_head_but_rejects_remote_move(self) -> None:
+        pr = self.managed_pr(merge_state="BLOCKED")
+        self.fake.checks[SHA_A] = [{"name": "repair-check", "status": "COMPLETED", "conclusion": "FAILURE"}]
+        self.assertEqual(self.dispatcher.tick(), "dispatched")
+        delivery = self.repair_delivery()
+        self.assertEqual(self.op("begin", delivery, attempt=1)["status"], "started")
+        self.assertTrue(self.op("ensure_session", delivery)["ok"])
+        sent = self.op("session_send", delivery, mode="followup", instructions="Repair the blockers.")
+        self.assertTrue(sent["ok"], sent)
+        original_local_id = sent["local_id"]
+        self.assertTrue(self.op("fail", delivery, detail="Retry after the first delivery.")["ok"])
+        pr["head"]["sha"] = SHA_B
+        self.fake.checks[SHA_B] = [{"name": "current-head-check", "status": "COMPLETED", "conclusion": "FAILURE"}]
+        self.assertTrue(self.op("retry_event", delivery)["ok"])
+        self.assertEqual(self.dispatcher.tick(), "dispatched")
+        begun = self.op("begin", delivery, attempt=1)
+        self.assertEqual((begun["status"], begun["event"]["head_sha"]), ("started", SHA_B))
+        self.assertTrue(self.op("ensure_session", delivery)["ok"])
+        already = self.op("session_send", delivery, mode="followup", instructions="Repair the blockers.")
+        self.assertEqual((already["ok"], already["delivery"], already["local_id"]),
+                         (True, "already", original_local_id), already)
+        self.assertEqual(self.store.event(delivery)["head_sha"], SHA_B)
+        child = "c" * 40
+        self.fake.worktree_heads["hapi-issue-141"] = child
+        pushed = self.op("git.push", delivery, head_sha=child)
+        self.assertTrue(pushed["ok"], pushed)
+        self.assertNotIn("superseded", pushed)
+        self.assertEqual(self.fake.pushes, [{"repo": REPO, "branch": "hapi-issue-141", "expected_sha": child}])
+        pr["head"]["sha"] = "d" * 40
+        superseded = self.op("git.push", delivery, head_sha=child)
+        self.assertTrue(superseded["ok"], superseded)
+        self.assertTrue(superseded["superseded"])
+        self.assertEqual(self.fake.pushes, [{"repo": REPO, "branch": "hapi-issue-141", "expected_sha": child}])
+
 
 
 class DispatchTests(BridgeTestCase):

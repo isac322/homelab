@@ -108,6 +108,7 @@ Runner Pod의 `dockerd`는 privileged 컨테이너다. daemon에는 Secret과 ho
 - 첫 actionable blocker에서 원본 `issue-<n>` worktree로 `pr_repair` followup을 보낸다. freshly fetched 기본 branch를 먼저 merge하고, 현재 head의 CI 실패와 리뷰 finding을 한 턴에서 검증·수정한다. rebase·reset·force-push와 자동 PR merge는 하지 않는다.
 - repair 중 새 이벤트는 두 번째 writer를 시작하지 않고 dirty/revision만 갱신한다. 끝난 턴은 push 이후 GitHub 상태를 다시 조회한다. 이전 head의 change request는 새 head의 repair 근거로 재사용하지 않고 재리뷰를 기다린다.
 - 시작 시 일시적인 GitHub 조회 실패는 같은 delivery를 backoff 후 재시도한다. 성공한 push·PR 갱신 뒤 상태 조회만 실패하면 성공 결과를 유지하고 reconciliation을 예약한다. 해결 불가능한 repair는 `needs_attention`으로 보류하며 새 repair writer를 막지만, 별도 worktree의 리뷰는 진행할 수 있다.
+- 재개할 때 이미 전달됐을 수 있는 메시지는 같은 `localId`와 스냅샷으로 유지하며, 그 스냅샷으로 `begin`이 갱신한 push 기준 head를 덮어쓰지 않는다. 새 repair 메시지를 작성할 때만 현재 PR head와 스냅샷을 맞춰 갱신한다. 전송 이후 PR head가 다시 바뀌면 기존 stale-writer 보호가 push와 시각 증거 게시를 막는다.
 - readiness는 일치하는 GraphQL/REST head·base에서 open, non-Draft, `MERGEABLE`, `CLEAN` 또는 `UNSTABLE`일 때만 인정한다. `UNSTABLE`은 비필수 check 실패를 포함할 수 있다. `UNKNOWN`이나 API 간 불일치는 기다리며, assign 전과 멘션 직전에 다시 확인한다.
 - 알림은 `(repo, PR, head)`별 SQLite acknowledgement와 `pr-ready:<PR>:<head>` comment marker로 중복을 방지한다. 같은 수동 repair 댓글의 재전송도 comment ID로 중복 처리한다. 현재 owner 설정은 `isac322/cc-lb`와 `isac322/pillar-csi`에만 있다.
 

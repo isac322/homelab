@@ -4080,44 +4080,6 @@ class Bridge:
             lease = self.store.pr_state(ev["repo"], int(ev["pr_number"]))
             if lease is None or lease["active_delivery"] != ev["delivery_id"]:
                 raise OpError("repair lease not owned", needs_operator=True)
-            recorded = json.loads(ev["stages"]).get("repair_snapshot")
-            if recorded is None:
-                snapshot = self._pr_state(ev["repo"], int(ev["pr_number"]))
-                findings = self._pr_findings(ev["repo"], snapshot)
-                recorded = self.op_stage({"delivery_id": ev["delivery_id"], "stage": "repair_snapshot",
-                                          "value": {"state": snapshot, "findings": findings}})["value"]
-            snapshot, findings = recorded["state"], recorded["findings"]
-            manual = json.loads(ev["stages"]).get("repair_input", {}).get("manual")
-            context = self._repair_context(context, snapshot, findings, manual)
-            instructions += (
-                "\nPR repair preparation: fetch origin; if this local branch has unpushed commits ahead of "
-                f"origin/hapi-issue-{ev['issue_number']} from a failed push (or any commit in "
-                f"origin/hapi-issue-{ev['issue_number']}..HEAD touching .github/workflows/*), reset to "
-                f"origin/hapi-issue-{ev['issue_number']} first, then synchronize with the current PR head using "
-                "fast-forward or merge only (never rewrite commits already on the remote PR branch, and never "
-                "touch .github/workflows/* because the push token lacks workflows permission). Check whether the "
-                "branch contains the freshly fetched default branch, and if behind merge origin/"
-                f"{snapshot['default_branch']} FIRST, resolving conflicts before handling findings. "
-                "Evaluate ALL currently observed CI failures and review findings together in this ONE followup "
-                "with receiving-code-review. Read current CI logs, reviews and threads yourself, verify claims, "
-                "repair only supported blockers, and retain the full issue scope in the PR body. "
-                "Do not add a separate behind-only turn. Before reporting ready, run the repository's fast gates "
-                "locally in this worktree: format/lint, build/compile, unit tests, and fast tests scoped to your "
-                "change (take the commands from .github/workflows/* and the Makefile/justfile targets they call); "
-                "fix failures and rerun until they pass, and record each command with its exit code in "
-                "local_checks; never report ready with code whose fast gates fail. Long-running suites (e2e, "
-                "GUI/Appium, multi-distro/multi-version/multi-node matrices, container/VM integration, soak, "
-                "envtest-style suites taking more than a few minutes) are CI's job: run one locally only to "
-                "reproduce or fix a failure CI reported in it, or when you change that suite's harness and cannot "
-                "validate it otherwise, and then only the affected leg or test, never a serialized matrix; list the "
-                "others as left to CI in summary and the PR body. List gates that cannot run locally at all "
-                "(secrets, external services, special hardware) as not run in summary and the PR body, never in "
-                "local_checks. Keep build outputs off /tmp. "
-                "GitHub owns merge policy; never merge the PR."
-            )
-            self.store.update_event(ev["delivery_id"], head_sha=snapshot["head_sha"],
-                                    default_branch=snapshot["default_branch"])
-            ev = self.store.event(ev["delivery_id"])
         if context is not None and len(json.dumps(context, ensure_ascii=False).encode()) > MAX_CONTEXT_BYTES:
             raise OpError(f"context exceeds {MAX_CONTEXT_BYTES} bytes")
         delivery = ev["delivery_id"]
@@ -4126,7 +4088,6 @@ class Bridge:
             self.store.update_issue(ev["repo"], ev["issue_number"], phase="implementing")
         elif mode == "review":
             self.store.update_issue(ev["repo"], ev["issue_number"], phase="reviewing")
-        default_branch = self._default_branch(ev)
         with self.session_lock:
             issue = self._ready_session(ev)
             session_id = issue["session_id"]
@@ -4143,6 +4104,67 @@ class Bridge:
                     self.store.put_turn(delivery, mode, local_id, turn["session_id"], "sent")
                     return {"delivery": "already", "session_id": turn["session_id"], "local_id": local_id,
                             "mode": mode}
+            if ev["kind"] == "pr_repair":
+                ev = self.store.event(delivery)
+                recorded = json.loads(ev["stages"]).get("repair_snapshot")
+                if recorded is not None:
+                    current = self._get_pr(ev["repo"], int(ev["pr_number"]))
+                    if current.get("state") != "open" or current.get("draft"):
+                        raise OpError("pull request is no longer open for repair", needs_operator=True)
+                if recorded is None or (current.get("head") or {}).get("sha") != recorded["state"]["head_sha"]:
+                    snapshot = self._pr_state(ev["repo"], int(ev["pr_number"]))
+                    if snapshot["state"] != "OPEN" or snapshot["draft"]:
+                        raise OpError("pull request is no longer open for repair", needs_operator=True)
+                    if not snapshot["known"]:
+                        raise OpError("github pull request: repair state unavailable", retryable=True)
+                    findings = self._pr_findings(ev["repo"], snapshot)
+                    recorded = {"state": snapshot, "findings": findings}
+                    # Replace only for a message that has not landed. op_stage deliberately
+                    # keeps the first snapshot, including one an interrupted turn used.
+                    with self.store.tx() as conn:
+                        stages = json.loads(conn.execute("SELECT stages FROM events WHERE seq = ?",
+                                                         (ev["seq"],)).fetchone()[0])
+                        stages["repair_snapshot"] = recorded
+                        conn.execute("UPDATE events SET stages = ?, head_sha = ?, default_branch = ?,"
+                                     " updated_at = ? WHERE seq = ?",
+                                     (json.dumps(stages), snapshot["head_sha"], snapshot["default_branch"],
+                                      time.time(), ev["seq"]))
+                else:
+                    self.store.update_event(delivery, head_sha=recorded["state"]["head_sha"],
+                                            default_branch=recorded["state"]["default_branch"])
+                ev = self.store.event(delivery)
+                snapshot, findings = recorded["state"], recorded["findings"]
+                manual = json.loads(ev["stages"]).get("repair_input", {}).get("manual")
+                context = self._repair_context(context, snapshot, findings, manual)
+                instructions += (
+                    "\nPR repair preparation: fetch origin; if this local branch has unpushed commits ahead of "
+                    f"origin/hapi-issue-{ev['issue_number']} from a failed push (or any commit in "
+                    f"origin/hapi-issue-{ev['issue_number']}..HEAD touching .github/workflows/*), reset to "
+                    f"origin/hapi-issue-{ev['issue_number']} first, then synchronize with the current PR head using "
+                    "fast-forward or merge only (never rewrite commits already on the remote PR branch, and never "
+                    "touch .github/workflows/* because the push token lacks workflows permission). Check whether the "
+                    "branch contains the freshly fetched default branch, and if behind merge origin/"
+                    f"{snapshot['default_branch']} FIRST, resolving conflicts before handling findings. "
+                    "Evaluate ALL currently observed CI failures and review findings together in this ONE followup "
+                    "with receiving-code-review. Read current CI logs, reviews and threads yourself, verify claims, "
+                    "repair only supported blockers, and retain the full issue scope in the PR body. "
+                    "Do not add a separate behind-only turn. Before reporting ready, run the repository's fast gates "
+                    "locally in this worktree: format/lint, build/compile, unit tests, and fast tests scoped to your "
+                    "change (take the commands from .github/workflows/* and the Makefile/justfile targets they call); "
+                    "fix failures and rerun until they pass, and record each command with its exit code in "
+                    "local_checks; never report ready with code whose fast gates fail. Long-running suites (e2e, "
+                    "GUI/Appium, multi-distro/multi-version/multi-node matrices, container/VM integration, soak, "
+                    "envtest-style suites taking more than a few minutes) are CI's job: run one locally only to "
+                    "reproduce or fix a failure CI reported in it, or when you change that suite's harness and cannot "
+                    "validate it otherwise, and then only the affected leg or test, never a serialized matrix; list the "
+                    "others as left to CI in summary and the PR body. List gates that cannot run locally at all "
+                    "(secrets, external services, special hardware) as not run in summary and the PR body, never in "
+                    "local_checks. Keep build outputs off /tmp. "
+                    "GitHub owns merge policy; never merge the PR."
+                )
+                if len(json.dumps(context, ensure_ascii=False).encode()) > MAX_CONTEXT_BYTES:
+                    raise OpError(f"context exceeds {MAX_CONTEXT_BYTES} bytes")
+            default_branch = self._default_branch(ev)
             if local_id != local_id_for(delivery, mode):
                 # A re-send of a lost turn (state 'lost', or a 'sending' re-send that never landed): the agent must
                 # not trust anything from the interrupted run.
