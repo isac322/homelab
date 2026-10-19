@@ -11,7 +11,7 @@ called only by the bridge (bearer token the agent container cannot read).
   POST /push     {repo, branch, expected_sha}  -> {sha}
   POST /cleanup  {repo, worktree, branch, codex_session_ids} -> {removed}
   POST /worktree/restore {repo, worktree, branch} -> {restored, path, already} | {restored: false, reason}
-  POST /visual-evidence {repo, worktree, pr_number, head_sha, allowed_source_shas, marker, body, artifacts,
+  POST /visual-evidence {repo, worktree, pr_number, head_sha, base_sha, manifest_path, marker, body,
                          reuse_existing} -> {created, already_published, ref_url, commit_url, assets, asset_urls}
   POST /janitor/prune-request {lease_until}   -> {requested_at, lease_until}
   GET  /janitor/status                        -> the janitor's status JSON
@@ -70,6 +70,7 @@ AUTH_TOKEN_FILE = os.environ.get("PUBLISHER_TOKEN_FILE", "/run/issue-agent/publi
 PUSH_TOKEN_FILE = os.environ.get("GITHUB_PUSH_TOKEN_FILE", "/run/issue-agent/push/token")
 MAX_VISUAL_ARTIFACTS = 20
 MAX_VISUAL_ARTIFACT_BYTES = 10 * 1024 * 1024
+MAX_VISUAL_MANIFEST_BYTES = 256 * 1024
 CHECKOUTS = os.environ.get("ISSUE_AGENT_CHECKOUTS", "/home/agent/checkouts")
 CODEX_HOME = os.environ.get("CODEX_HOME", "/home/agent/.codex")
 STATE_DIR = os.environ.get("PUBLISHER_STATE_DIR", "/var/lib/issue-agent-publisher")
@@ -97,6 +98,8 @@ VISUAL_ARTIFACT_LINE_RE = re.compile(
     r"^Artifact: (?P<id>[A-Za-z0-9][A-Za-z0-9_.-]{0,63}) "
     r"(?P<sha256>[0-9a-f]{64}) (?P<blob>[0-9a-f]{40}) (?P<path>\S+)$"
 )
+VISUAL_ARTIFACT_ERROR_FIELDS = frozenset({"sha256", "bytes", "media_type", "source_sha"})
+VISUAL_MANIFEST_PATH_RE = re.compile(r"^[^/\x00][^\x00]{0,1023}$")
 CODEX_ID_RE = re.compile(r"^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$")
 MAX_CODEX_IDS = 50
 PACKED_REF_RE = re.compile(r"^[0-9a-f]{40,64} (refs/\S+)$")
@@ -119,11 +122,13 @@ _locks_guard = threading.Lock()
 
 
 class PublisherError(Exception):
-    def __init__(self, status: HTTPStatus, error: str, detail: str = ""):
+    def __init__(self, status: HTTPStatus, error: str, detail: str = "",
+                 artifact_error: dict[str, str | int] | None = None):
         super().__init__(error)
         self.status = status
         self.error = error
         self.detail = detail
+        self.artifact_error = artifact_error
 
 
 def repo_lock(repo: str) -> threading.Lock:
@@ -401,6 +406,89 @@ def visual_worktree_head(worktree: str) -> str:
 
 
 
+def visual_artifact_error(relpath: str, field: str, expected: Any, actual: Any) -> dict[str, str | int] | None:
+    """Return only bounded machine-readable detail safe for the HTTP boundary."""
+    if not isinstance(field, str) or field not in VISUAL_ARTIFACT_ERROR_FIELDS:
+        return None
+    if field in {"sha256", "source_sha"}:
+        pattern = r"[0-9a-f]{64}" if field == "sha256" else r"[0-9a-f]{40}"
+        if (not isinstance(expected, str) or not re.fullmatch(pattern, expected)
+                or not isinstance(actual, str) or not re.fullmatch(pattern, actual)):
+            return None
+    elif field == "bytes":
+        if (not isinstance(expected, int) or isinstance(expected, bool) or expected < 0
+                or expected > MAX_VISUAL_ARTIFACT_BYTES
+                or not isinstance(actual, int) or isinstance(actual, bool) or actual < 0
+                or actual > MAX_VISUAL_ARTIFACT_BYTES):
+            return None
+    elif not isinstance(expected, str) or expected not in VISUAL_MEDIA_TYPES or actual != "magic":
+        return None
+    if (not isinstance(relpath, str) or not re.fullmatch(r"[A-Za-z0-9_. /-]{1,1024}", relpath)
+            or relpath.startswith("/") or any(part in ("", ".", "..") for part in relpath.split("/"))):
+        return None
+    return {"relpath": relpath, "field": field, "expected": expected, "actual": actual}
+
+
+def visual_artifact_mismatch(relpath: str, field: str, expected: Any, actual: Any,
+                             detail: str) -> PublisherError:
+    return PublisherError(HTTPStatus.BAD_REQUEST, "artifact_mismatch", detail,
+                          visual_artifact_error(relpath, field, expected, actual))
+
+
+def read_visual_manifest(root: str, manifest_path: str) -> list[dict[str, Any]]:
+    """Read a bounded JSON list through no-follow directory FDs."""
+    if (not isinstance(manifest_path, str) or not VISUAL_MANIFEST_PATH_RE.fullmatch(manifest_path)
+            or "\\" in manifest_path):
+        raise PublisherError(HTTPStatus.BAD_REQUEST, "invalid_request", "invalid manifest_path")
+    parts = manifest_path.split("/")
+    if any(part in ("", ".", "..") for part in parts):
+        raise PublisherError(HTTPStatus.BAD_REQUEST, "invalid_request", "invalid manifest_path")
+    flags = os.O_RDONLY | os.O_CLOEXEC
+    directory_flags = flags | os.O_DIRECTORY | os.O_NOFOLLOW
+    fd: int | None = None
+    try:
+        fd = os.open(root, directory_flags)
+        for part in parts[:-1]:
+            next_fd = os.open(part, directory_flags, dir_fd=fd)
+            os.close(fd)
+            fd = next_fd
+        file_fd = os.open(parts[-1], flags | os.O_NOFOLLOW | os.O_NONBLOCK, dir_fd=fd)
+    except FileNotFoundError:
+        raise PublisherError(HTTPStatus.NOT_FOUND, "manifest_missing", manifest_path) from None
+    except OSError:
+        raise PublisherError(HTTPStatus.CONFLICT, "unsafe_path", "manifest is not a safe regular file") from None
+    finally:
+        if fd is not None:
+            os.close(fd)
+    try:
+        st = os.fstat(file_fd)
+        if not stat.S_ISREG(st.st_mode):
+            raise PublisherError(HTTPStatus.CONFLICT, "unsafe_path", "manifest is not a regular file")
+        if st.st_size > MAX_VISUAL_MANIFEST_BYTES:
+            raise PublisherError(HTTPStatus.REQUEST_ENTITY_TOO_LARGE, "invalid_request", "manifest is too large")
+        chunks: list[bytes] = []
+        size = 0
+        while size <= MAX_VISUAL_MANIFEST_BYTES:
+            chunk = os.read(file_fd, min(64 * 1024, MAX_VISUAL_MANIFEST_BYTES + 1 - size))
+            if not chunk:
+                break
+            chunks.append(chunk)
+            size += len(chunk)
+        if size > MAX_VISUAL_MANIFEST_BYTES:
+            raise PublisherError(HTTPStatus.REQUEST_ENTITY_TOO_LARGE, "invalid_request", "manifest is too large")
+    except OSError:
+        raise PublisherError(HTTPStatus.BAD_REQUEST, "invalid_request", "manifest cannot be read") from None
+    finally:
+        os.close(file_fd)
+    try:
+        data = json.loads(b"".join(chunks).decode("utf-8"))
+    except (UnicodeDecodeError, ValueError, RecursionError):
+        raise PublisherError(HTTPStatus.BAD_REQUEST, "invalid_request", "manifest is not valid UTF-8 JSON") from None
+    if not isinstance(data, list) or not data or len(data) > MAX_VISUAL_ARTIFACTS:
+        raise PublisherError(HTTPStatus.BAD_REQUEST, "invalid_request", "manifest must be a non-empty list")
+    return data
+
+
 def visual_artifact_path(root: str, relpath: str) -> str:
     if not isinstance(relpath, str) or not relpath or os.path.isabs(relpath) or "\x00" in relpath:
         raise PublisherError(HTTPStatus.BAD_REQUEST, "invalid_request", "invalid artifact relpath")
@@ -461,11 +549,15 @@ def validate_visual_artifacts(root: str, artifacts: Any, allowed_source_shas: se
                 or not isinstance(item["source_sha"], str) or not SHA_RE.fullmatch(item["source_sha"])):
             raise PublisherError(HTTPStatus.BAD_REQUEST, "invalid_request", "invalid artifact hash")
         if allowed_source_shas is not None and item["source_sha"] not in allowed_source_shas:
-            raise PublisherError(HTTPStatus.CONFLICT, "source_sha_mismatch", "artifact source_sha is not allowed")
+            expected_source = min(allowed_source_shas) if allowed_source_shas else None
+            raise PublisherError(
+                HTTPStatus.CONFLICT, "source_sha_mismatch", "artifact source_sha is not allowed",
+                visual_artifact_error(relpath, "source_sha", expected_source, item["source_sha"]),
+            )
         if (not isinstance(item["bytes"], int) or isinstance(item["bytes"], bool)
                 or item["bytes"] <= 0 or item["bytes"] > MAX_VISUAL_ARTIFACT_BYTES):
             raise PublisherError(HTTPStatus.BAD_REQUEST, "invalid_request", "invalid artifact size")
-        if item["media_type"] not in VISUAL_MEDIA_TYPES:
+        if not isinstance(item["media_type"], str) or item["media_type"] not in VISUAL_MEDIA_TYPES:
             raise PublisherError(HTTPStatus.BAD_REQUEST, "invalid_request", "invalid artifact media_type")
         if not isinstance(item["caption"], str) or not item["caption"].strip() or len(item["caption"]) > 500:
             raise PublisherError(HTTPStatus.BAD_REQUEST, "invalid_request", "invalid artifact caption")
@@ -474,7 +566,8 @@ def validate_visual_artifacts(root: str, artifacts: Any, allowed_source_shas: se
             raise PublisherError(HTTPStatus.BAD_REQUEST, "invalid_request", "repeated artifact path")
         st = os.stat(path)
         if st.st_size != item["bytes"]:
-            raise PublisherError(HTTPStatus.BAD_REQUEST, "artifact_mismatch", f"{relpath}: bytes")
+            raise visual_artifact_mismatch(relpath, "bytes", item["bytes"], st.st_size,
+                                           f"{relpath}: bytes")
         with open(path, "rb") as handle:
             prefix = handle.read(32)
             digest = hashlib.sha256(prefix)
@@ -486,9 +579,11 @@ def validate_visual_artifacts(root: str, artifacts: Any, allowed_source_shas: se
                 digest.update(chunk)
                 remaining -= len(chunk)
         if not visual_magic(item["media_type"], prefix):
-            raise PublisherError(HTTPStatus.BAD_REQUEST, "artifact_mismatch", f"{relpath}: magic/MIME")
+            raise visual_artifact_mismatch(relpath, "media_type", item["media_type"], "magic",
+                                           f"{relpath}: magic/MIME")
         if digest.hexdigest() != item["sha256"]:
-            raise PublisherError(HTTPStatus.BAD_REQUEST, "artifact_mismatch", f"{relpath}: sha256")
+            raise visual_artifact_mismatch(relpath, "sha256", item["sha256"], digest.hexdigest(),
+                                           f"{relpath}: sha256")
         seen_ids.add(ident)
         seen_paths.add(path)
         validated.append((item, path))
@@ -660,7 +755,10 @@ def visual_create_commit(mirror: str, head_sha: str, marker_text: str,
             for chunk in iter(lambda: handle.read(1024 * 1024), b""):
                 digest.update(chunk)
         if digest.hexdigest() != item["sha256"]:
-            raise PublisherError(HTTPStatus.CONFLICT, "artifact_mismatch", f"{item['relpath']}: changed during publish")
+            raise PublisherError(
+                HTTPStatus.CONFLICT, "artifact_mismatch", f"{item['relpath']}: changed during publish",
+                visual_artifact_error(item["relpath"], "sha256", item["sha256"], digest.hexdigest()),
+            )
         indexed.append((item, source, blob_sha))
 
     index_file = tempfile.NamedTemporaryFile(prefix=".visual-index-", dir=STATE_DIR, delete=False)
@@ -722,29 +820,31 @@ def visual_verified_ancestor_sources(mirror: str, head_sha: str, artifacts: Any,
 
 
 def do_visual_evidence(repo: str, worktree: str, pr_number: int, head_sha: str, marker: str,
-                       body: str, artifacts: Any, allowed_source_shas: Any = None,
+                       body: str, manifest_path: str, *, base_sha: str | None = None,
                        reuse_existing: bool = False) -> dict[str, Any]:
     if not SHA_RE.fullmatch(head_sha) or not _is_int(pr_number):
         raise PublisherError(HTTPStatus.BAD_REQUEST, "invalid_request", "invalid PR head")
-    if allowed_source_shas is None:
-        allowed_source_shas = [head_sha]
-    if (not isinstance(allowed_source_shas, list) or not allowed_source_shas
-            or len(allowed_source_shas) > MAX_CODEX_IDS
-            or not all(isinstance(sha, str) and SHA_RE.fullmatch(sha) for sha in allowed_source_shas)):
-        raise PublisherError(HTTPStatus.BAD_REQUEST, "invalid_request", "invalid allowed_source_shas")
+    if base_sha is not None and (not isinstance(base_sha, str) or not SHA_RE.fullmatch(base_sha)):
+        raise PublisherError(HTTPStatus.BAD_REQUEST, "invalid_request", "invalid PR base")
     if not isinstance(reuse_existing, bool):
         raise PublisherError(HTTPStatus.BAD_REQUEST, "invalid_request", "invalid reuse_existing")
     marker = normalize_visual_marker(marker)
     if not isinstance(body, str) or not body.strip() or len(body) > 60000:
         raise PublisherError(HTTPStatus.BAD_REQUEST, "invalid_request", "invalid visual evidence body")
     root = visual_worktree_path(repo, worktree)
+    artifacts = read_visual_manifest(root, manifest_path)
     if visual_worktree_head(root) != head_sha:
         raise PublisherError(HTTPStatus.CONFLICT, "worktree_head_mismatch", f"worktree HEAD is not {head_sha}")
     branch = f"hapi-{worktree}"
     if fetch_branch(repo, branch) != head_sha:
         raise PublisherError(HTTPStatus.CONFLICT, "worktree_head_mismatch", f"{branch} is not {head_sha}")
     mirror = ensure_mirror(repo)
-    allowed = visual_verified_ancestor_sources(mirror, head_sha, artifacts, set(allowed_source_shas))
+    exact_sources = {head_sha}
+    roles = {item.get("role") for item in artifacts
+             if isinstance(item, dict) and isinstance(item.get("role"), str)}
+    if {"before", "after"} <= roles and base_sha is not None:
+        exact_sources.add(base_sha)
+    allowed = visual_verified_ancestor_sources(mirror, head_sha, artifacts, exact_sources)
     validated = validate_visual_artifacts(root, artifacts, allowed)
     token = read_secret(PUSH_TOKEN_FILE, "push token")
     ref = visual_evidence_ref(pr_number, head_sha)
@@ -1285,7 +1385,15 @@ class Handler(BaseHTTPRequestHandler):
         self.wfile.write(body)
 
     def error(self, exc: PublisherError) -> None:
-        self.reply(exc.status, {"error": exc.error, "detail": exc.detail})
+        payload = {"error": exc.error, "detail": exc.detail}
+        candidate = exc.artifact_error
+        if (isinstance(candidate, dict) and set(candidate) == {"relpath", "field", "expected", "actual"}
+                and exc.error in {"artifact_mismatch", "source_sha_mismatch"}):
+            safe = visual_artifact_error(candidate["relpath"], candidate["field"],
+                                         candidate["expected"], candidate["actual"])
+            if safe is not None:
+                payload["artifact_error"] = safe
+        self.reply(exc.status, payload)
 
     def do_GET(self) -> None:  # noqa: N802
         try:
@@ -1385,15 +1493,16 @@ class Handler(BaseHTTPRequestHandler):
             elif self.path == "/visual-evidence":
                 args = self.body(
                     {"repo": REPO_RE, "worktree": WORKTREE_RE, "head_sha": SHA_RE,
+                     "base_sha": SHA_RE, "manifest_path": VISUAL_MANIFEST_PATH_RE,
                      "marker": re.compile(r"(?s).{1,200}"), "body": re.compile(r"(?s).{1,60000}")},
-                    lists={"allowed_source_shas": SHA_RE}, ints=("pr_number",), objects=("artifacts",),
-                    booleans=("reuse_existing",), max_body=256 * 1024,
+                    ints=("pr_number",), booleans=("reuse_existing",), nullable=("base_sha",),
+                    max_body=MAX_VISUAL_MANIFEST_BYTES,
                 )
                 with repo_lock(args["repo"]):
                     self.reply(HTTPStatus.OK, do_visual_evidence(
                         args["repo"], args["worktree"], args["pr_number"], args["head_sha"],
-                        args["marker"], args["body"], args["artifacts"], args["allowed_source_shas"],
-                        args["reuse_existing"],
+                        args["marker"], args["body"], args["manifest_path"],
+                        base_sha=args["base_sha"], reuse_existing=args["reuse_existing"],
                     ))
             elif self.path == "/cleanup":
                 args = self.body({"repo": REPO_RE, "worktree": WORKTREE_RE, "branch": CLEANUP_BRANCH_RE},

@@ -18,7 +18,6 @@ import bridge  # noqa: E402
 
 
 WORKFLOW = Path(__file__).with_name("n8n-session-workflow.json")
-BASE_SHA = "1" * 40
 HEAD_SHA = "2" * 40
 
 # Follow the deployed graph instead of choosing a particular preservation node.
@@ -67,6 +66,55 @@ let steps = 0;
   process.exitCode = 1;
 });
 """
+RUN_MAIN_NODES = r"""
+const fs = require('node:fs');
+const { workflowPath, items, actions, previousNode } = JSON.parse(fs.readFileSync(0, 'utf8'));
+const workflow = JSON.parse(fs.readFileSync(workflowPath, 'utf8'));
+const nodes = new Map(workflow.nodes.map(node => [node.name, node]));
+const outputs = new Map(Object.entries(items).map(([name, json]) => [name, [{ json }]]));
+const lookup = name => {
+  const values = outputs.get(name);
+  if (!values) throw new Error(`Missing node output: ${name}`);
+  return { all: () => values, first: () => values[0], item: values[0] };
+};
+const AsyncFunction = Object.getPrototypeOf(async function () {}).constructor;
+(async () => {
+  const results = [];
+  for (const { name, input } of actions) {
+    const node = nodes.get(name);
+    if (!node) throw new Error(`Missing workflow node: ${name}`);
+    const json = input || {};
+    const $input = { first: () => ({ json }), all: () => [{ json }] };
+    const evaluate = expression => new Function('$json', '$', '$prevNode',
+      'return (' + expression.replace(/^=\{\{\s*/, '').replace(/\s*\}\}$/, '') + ')'
+    )(json, lookup, { name: previousNode });
+    let result;
+    if (node.type === 'n8n-nodes-base.code') {
+      result = await new AsyncFunction('$input', '$', node.parameters.jsCode)($input, lookup);
+      outputs.set(name, result);
+    } else if (node.type === 'n8n-nodes-base.if') {
+      result = node.parameters.conditions.conditions.every(condition => Boolean(evaluate(condition.leftValue)));
+    } else if (node.type === 'n8n-nodes-base.httpRequest') {
+      result = JSON.parse(evaluate(node.parameters.jsonBody));
+    } else {
+      throw new Error(`Unsupported workflow node: ${node.type}`);
+    }
+    results.push(result);
+  }
+  process.stdout.write(JSON.stringify(results));
+})().catch(error => { console.error(error); process.exitCode = 1; });
+"""
+
+
+def run_main_nodes(actions: list[dict], *, items: dict | None = None, previous_node: str = "") -> list:
+    completed = subprocess.run(
+        ["node", "-e", RUN_MAIN_NODES],
+        input=json.dumps({"workflowPath": str(WORKFLOW.with_name("n8n-workflow.json")),
+                          "items": items or {}, "actions": actions, "previousNode": previous_node}),
+        capture_output=True, text=True, timeout=10, check=True,
+    )
+    return json.loads(completed.stdout)
+
 
 
 def implementation_result() -> dict:
@@ -81,28 +129,7 @@ def implementation_result() -> dict:
         "summary": "Corrected panel-relative spacing and captured before/after screenshots.",
         "blockers": [],
         "local_checks": [{"command": "make test", "exit_code": 0}],
-        "visual_evidence": [
-            {
-                "id": "panel-margin-before",
-                "role": "before",
-                "relpath": "artifacts/panel-margin-before.png",
-                "sha256": "a" * 64,
-                "bytes": 48217,
-                "media_type": "image/png",
-                "source_sha": BASE_SHA,
-                "caption": "Notification overlaps the panel at the base revision.",
-            },
-            {
-                "id": "panel-margin-after",
-                "role": "after",
-                "relpath": "artifacts/panel-margin-after.png",
-                "sha256": "b" * 64,
-                "bytes": 49328,
-                "media_type": "image/png",
-                "source_sha": HEAD_SHA,
-                "caption": "Notification keeps the requested margin from the panel edge.",
-            },
-        ],
+        "visual_evidence_manifest": "artifacts/visual-evidence.json",
     }
 
 
@@ -166,14 +193,76 @@ class SessionWorkflowResultTests(unittest.TestCase):
             "summary": "The original overlap remains reproducible.", "blockers": [],
         })
 
-    def test_implement_result_preserves_nonempty_visual_evidence(self) -> None:
+    def test_implement_result_preserves_manifest_path(self) -> None:
         self.assert_result_roundtrip("implement", implementation_result())
 
-    def test_followup_result_preserves_nonempty_visual_evidence(self) -> None:
+    def test_followup_result_preserves_manifest_path(self) -> None:
         result = implementation_result()
         result["pr"]["body"] += "\n\nAlso cover the top-panel case raised in review."
         result["summary"] = "Addressed the top-panel review finding and refreshed visual evidence."
         self.assert_result_roundtrip("followup", result)
+
+    def test_implementation_statuses_preserve_null_manifest(self) -> None:
+        for mode in ("implement", "followup"):
+            for status in ("ready", "no_change", "needs_info", "blocked"):
+                with self.subTest(mode=mode, status=status):
+                    result = implementation_result()
+                    result.update(status=status, visual_evidence_manifest=None)
+                    if status != "ready":
+                        result.update(pr=None, local_checks=[])
+                    if status == "no_change":
+                        result["issue_comment"] = "The existing implementation already meets this request."
+                    elif status == "needs_info":
+                        result.update(issue_comment="Which panel edge?", questions=["Which panel edge?"])
+                    elif status == "blocked":
+                        result["blockers"] = ["The capture device is unavailable."]
+                    self.assert_result_roundtrip(mode, result)
+
+
+class VisualWorkflowConsumerTests(unittest.TestCase):
+    def test_ready_and_no_change_publish_manifest_without_artifact_transcription(self) -> None:
+        for status, guard, publish in (
+            ("ready", "Visual evidence requested?", "Publish visual evidence"),
+            ("no_change", "No-change visual evidence requested?", "Publish no-change visual evidence"),
+        ):
+            for manifest in ("artifacts/visual-evidence.json", None):
+                for kind in ("issue_comment", "pr_repair", "pr_review"):
+                    with self.subTest(status=status, manifest=manifest, kind=kind):
+                        result = implementation_result()
+                        result.update(status=status, visual_evidence_manifest=manifest,
+                                      issue_comment="Captured the requested panel margin.")
+                        if status != "ready":
+                            result.update(pr=None, local_checks=[])
+                        if status == "needs_info":
+                            result.update(questions=["Which panel edge?"])
+                        elif status == "blocked":
+                            result.update(blockers=["The capture device is unavailable."])
+                        self.assertIsInstance(bridge.validate_result("followup", result, 7), dict)
+                        event = {"delivery_id": "d7", "repo": "isac322/cc-lb", "kind": kind,
+                                 "issue_number": 7, "pr_number": 12, "head_sha": HEAD_SHA}
+                        report, requested = run_main_nodes(
+                            [{"name": "Compose implement report", "input": {"result": result}},
+                             {"name": guard}],
+                            items={"Begin": {"event": event}, "Upsert pull request": {"number": 12},
+                                   "Push branch": {"sha": HEAD_SHA}},
+                        )
+                        self.assertEqual(report[0]["json"]["status"], status)
+                        self.assertEqual(requested, manifest is not None)
+                        if not requested:
+                            continue
+                        payload, = run_main_nodes(
+                            [{"name": publish}],
+                            items={"Begin": {"event": event}, "Upsert pull request": {"number": 12},
+                                   "Push branch": {"sha": HEAD_SHA},
+                                   "Compose implement report": report[0]["json"]},
+                        )
+                        self.assertEqual(payload["manifest_path"], manifest)
+                        self.assertEqual(payload["head_sha"], HEAD_SHA)
+                        self.assertEqual(payload["pr_number"], 12)
+                        self.assertEqual(payload["worktree"], ("review-pr-" if kind == "pr_review" else "issue-") + "7")
+                        self.assertEqual(payload.get("reuse_existing", False), status == "no_change")
+                        self.assertNotIn("artifacts", payload)
+                        self.assertNotIn("allowed_source_shas", payload)
 
 
 if __name__ == "__main__":
