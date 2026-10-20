@@ -41,6 +41,7 @@ from __future__ import annotations
 import datetime
 import hashlib
 import hmac
+import html
 import http.server
 import json
 import logging
@@ -1292,9 +1293,35 @@ def http_json(method: str, url: str, *, headers: Mapping[str, str], body: Any = 
         return status, None
 
 
+def normalize_artifact_error(value: Any) -> dict[str, str | int] | None:
+    """Keep only bounded publisher validation facts safe for attention notices."""
+    if not isinstance(value, dict) or set(value) != {"relpath", "field", "expected", "actual"}:
+        return None
+    relpath, field = value["relpath"], value["field"]
+    expected, actual = value["expected"], value["actual"]
+    if (not isinstance(relpath, str) or not re.fullmatch(r"[A-Za-z0-9_. /-]{1,1024}", relpath)
+            or relpath.startswith("/") or any(part in ("", ".", "..") for part in relpath.split("/"))):
+        return None
+    if field in ("sha256", "source_sha"):
+        pattern = r"[0-9a-f]{64}" if field == "sha256" else r"[0-9a-f]{40}"
+        if (not isinstance(expected, str) or not re.fullmatch(pattern, expected)
+                or not isinstance(actual, str) or not re.fullmatch(pattern, actual)):
+            return None
+    elif field == "bytes":
+        if not all(isinstance(item, int) and not isinstance(item, bool) and 0 <= item <= 10 * 1024 * 1024
+                   for item in (expected, actual)):
+            return None
+    elif field == "media_type":
+        if expected not in VISUAL_MEDIA_TYPES or actual != "magic":
+            return None
+    else:
+        return None
+    return {"relpath": relpath, "field": field, "expected": expected, "actual": actual}
+
+
 class OpError(Exception):
     def __init__(self, error: str, *, retryable: bool = False, needs_operator: bool = False,
-                 park_class: str | None = None, detail: str | None = None):
+                 park_class: str | None = None, detail: str | None = None, artifact_error: Any = None):
         super().__init__(error)
         self.error = error
         self.retryable = retryable
@@ -1302,6 +1329,7 @@ class OpError(Exception):
         # A TRANSIENT_PARK_CLASSES member when the event this failure parks may be re-queued automatically.
         self.park_class = park_class
         self.detail = detail
+        self.artifact_error = normalize_artifact_error(artifact_error)
 
 
 class HubTransportError(TransportError):
@@ -1423,7 +1451,8 @@ class Publisher:
             message = f"push_failed: {detail.strip()[:1500]}"
         # foreign_owner (409): a worktree entry another uid owns; the dockerd janitor chowns it within minutes.
         raise OpError(message, retryable=status >= 500 or status == 429 or error == "foreign_owner",
-                      detail=detail if isinstance(detail, str) else None)
+                      detail=detail if isinstance(detail, str) else None,
+                      artifact_error=data.get("artifact_error") if isinstance(data, dict) and path == "/visual-evidence" else None)
 
 
 # --------------------------------------------------------------------------
@@ -2067,9 +2096,8 @@ _IMPLEMENT_SCHEMA = """\
  "summary":"<=2000",
  "blockers":[strings] (non-empty iff blocked),
  "local_checks":[{"command":"<=2000 exact command you ran in this worktree","exit_code":int}] (max 30; when ready: non-empty and every exit_code 0),
- "visual_evidence":[{"id":"<=64 safe id","role":"before|after|control","relpath":"relative path under worktree",
-   "sha256":"64-hex","bytes":positive int,"media_type":"image/png|image/jpeg|image/gif|image/webp|video/mp4|video/webm|video/quicktime",
-   "source_sha":"40-hex","caption":"English <=500"}] (required; empty for non-visual changes)
+ "visual_evidence_manifest": null | "relative path under the worktree to the machine-generated visual evidence JSON list"
+ (required; null for non-visual changes). Return only the manifest path, never artifact hashes, byte counts, or inline entries.
 Before reporting ready, run the repository's fast gates locally in this worktree: format/lint, build/compile,
 unit tests, and fast tests scoped to your change (take the commands from .github/workflows/* and the
 Makefile/justfile targets they call). Fix failures and rerun until they pass, and record each command with its
@@ -2402,41 +2430,17 @@ def security_advisory(value: Any) -> dict[str, Any]:
             "cwe_ids": list(cwes), "vulnerabilities": vulns}
 VISUAL_MEDIA_TYPES = ("image/png", "image/jpeg", "image/gif", "image/webp",
                       "video/mp4", "video/webm", "video/quicktime")
-_VISUAL_ID_RE = re.compile(r"^[A-Za-z0-9][A-Za-z0-9_.-]{0,63}$")
 
 
-def _visual_evidence(value: Any) -> list[dict[str, Any]]:
-    _require(isinstance(value, list) and len(value) <= 20,
-             "visual_evidence must be a list of at most 20")
-    out = []
-    ids: set[str] = set()
-    paths: set[str] = set()
-    for item in value:
-        _fields(item, ("id", "role", "relpath", "sha256", "bytes", "media_type", "source_sha", "caption"),
-                "visual evidence")
-        ident = item["id"]
-        _require(isinstance(ident, str) and _VISUAL_ID_RE.fullmatch(ident) and ident not in ids,
-                 "visual_evidence id must be safe, <=64 chars, and unique")
-        role = _choice(item["role"], ("before", "after", "control"), "visual_evidence role")
-        relpath = _text(item["relpath"], 1000, "visual_evidence relpath")
-        _require(not relpath.startswith(("/", "\\")) and "\x00" not in relpath
-                 and all(part not in ("", ".", "..") for part in relpath.replace("\\", "/").split("/")),
-                 "visual_evidence relpath must be relative and confined")
-        _require(relpath not in paths, "visual_evidence relpath must be unique")
-        sha256 = item["sha256"]
-        _require(isinstance(sha256, str) and re.fullmatch(r"[0-9a-f]{64}", sha256),
-                 "visual_evidence sha256 must be 64-hex")
-        size = item["bytes"]
-        _require(isinstance(size, int) and not isinstance(size, bool) and size > 0
-                 and size <= 10 * 1024 * 1024, "visual_evidence bytes must be positive and <= 10 MiB")
-        media_type = _choice(item["media_type"], VISUAL_MEDIA_TYPES, "visual_evidence media_type")
-        source_sha = _sha(item["source_sha"], "visual_evidence source_sha")
-        caption = _text(item["caption"], 500, "visual_evidence caption")
-        ids.add(ident)
-        paths.add(relpath)
-        out.append({"id": ident, "role": role, "relpath": relpath, "sha256": sha256,
-                    "bytes": size, "media_type": media_type, "source_sha": source_sha, "caption": caption})
-    return out
+def _visual_evidence_manifest(value: Any) -> str | None:
+    if value is None:
+        return None
+    _require(isinstance(value, str) and bool(value.strip()) and len(value) <= 1024,
+             "visual_evidence_manifest must be a relative path or null")
+    _require(not value.startswith("/") and "\x00" not in value and "\\" not in value
+             and all(part not in ("", ".", "..") for part in value.split("/")),
+             "visual_evidence_manifest must be relative and confined")
+    return value
 
 
 
@@ -2470,10 +2474,10 @@ def _implement(v: dict[str, Any], number: int) -> dict[str, Any]:
         _require(bool(local_checks), "local_checks must list the CI gates run locally when status is ready")
         failing = [c["command"] for c in local_checks if c["exit_code"] != 0]
         _require(not failing, f"local_checks must all exit 0 when status is ready; failing: {failing}"[:1000])
-    visual_evidence = _visual_evidence(v["visual_evidence"])
+    manifest = _visual_evidence_manifest(v["visual_evidence_manifest"])
     return {"status": status, "pr": pr, "issue_comment": note, "questions": questions,
             "summary": _text(v["summary"], 2000, "summary"), "blockers": blockers, "local_checks": local_checks,
-            "visual_evidence": visual_evidence}
+            "visual_evidence_manifest": manifest}
 
 
 def _review(v: dict[str, Any]) -> dict[str, Any]:
@@ -2529,7 +2533,7 @@ RESULT_KEYS = {
     "triage": ("status", "verdict", "fault_domain", "duplicate_of", "labels", "comment", "next_action",
                "implementation_brief", "questions", "summary", "blockers", "security_advisory"),
     "implement": ("status", "pr", "issue_comment", "questions", "summary", "blockers", "local_checks",
-                  "visual_evidence"),
+                  "visual_evidence_manifest"),
     "review": ("status", "head_sha", "event", "body", "comments", "thread_replies", "open_items", "summary",
                "blockers"),
     "reopen_check": ("status", "reason", "comment", "summary", "blockers"),
@@ -2663,8 +2667,11 @@ class Bridge:
             result = fn(request)
         except OpError as exc:
             LOG.warning("op %s failed: %s", request["op"], exc.error)
-            return {"ok": False, "error": exc.error, "retryable": exc.retryable, "needs_operator": exc.needs_operator,
-                    "park_class": exc.park_class}
+            response = {"ok": False, "error": exc.error, "retryable": exc.retryable, "needs_operator": exc.needs_operator,
+                        "park_class": exc.park_class}
+            if exc.artifact_error is not None:
+                response["artifact_error"] = exc.artifact_error
+            return response
         except TransportError as exc:
             LOG.warning("op %s transport failure: %s", request["op"], exc)
             return {"ok": False, "error": f"transport: {exc}", "retryable": True, "needs_operator": False,
@@ -3054,6 +3061,10 @@ class Bridge:
         detail = detail[:2000] if isinstance(detail, str) and detail.strip() else "workflow reported failure"
         node = req.get("node")
         node = node[:200] if isinstance(node, str) and node.strip() else None
+        artifact_error = normalize_artifact_error(req.get("artifact_error"))
+        if artifact_error is not None:
+            suffix = "Artifact validation: " + json.dumps(artifact_error, separators=(",", ":"))
+            detail = detail[:max(0, 2000 - len(suffix) - 2)] + "\n\n" + suffix
         # n8n forwards the class of the bridge error (or of its own exhausted transport loop); anything outside
         # the closed enum is ignored, so the park stays operator-owned. A turn the workflow stopped waiting on at
         # its deadline is classed by the bridge (``time_budget``), so the dispatcher can harvest its late result.
@@ -5608,7 +5619,7 @@ class Bridge:
         requested_head = req.get("head_sha")
         worktree = req.get("worktree")
         body = req.get("body")
-        artifacts = req.get("artifacts")
+        manifest_path = req.get("manifest_path")
         reuse_existing = req.get("reuse_existing", False)
         if pr_number is None or (requested_head is not None
                                  and (not isinstance(requested_head, str) or not _SHA_RE.fullmatch(requested_head))):
@@ -5617,8 +5628,14 @@ class Bridge:
             raise OpError("bad visual evidence worktree")
         if not isinstance(body, str) or not body.strip() or len(body) > 60000:
             raise OpError("bad visual evidence body")
-        if not isinstance(artifacts, list) or not artifacts:
-            raise OpError("visual evidence artifacts are required")
+        if "artifacts" in req or "allowed_source_shas" in req:
+            raise OpError("inline visual evidence is not accepted")
+        try:
+            manifest_path = _visual_evidence_manifest(manifest_path)
+        except _Invalid as exc:
+            raise OpError(str(exc)) from None
+        if manifest_path is None:
+            raise OpError("visual evidence manifest_path is required")
         if not isinstance(reuse_existing, bool):
             raise OpError("bad visual evidence reuse_existing")
         if ev["pr_number"] is not None and int(ev["pr_number"]) != pr_number:
@@ -5636,15 +5653,11 @@ class Bridge:
             raise OpError(f"pull request head {current_head} is not {requested_head}", retryable=True)
         head_sha = current_head
         marker = f"pr-{pr_number}-head-{head_sha}"
-        allowed_source_shas = [head_sha]
-        roles = {item.get("role") for item in artifacts if isinstance(item, dict)}
-        if {"before", "after"} <= roles and isinstance(base_sha, str) and _SHA_RE.fullmatch(base_sha):
-            allowed_source_shas.append(base_sha)
         published = self.publisher.request(
             "/visual-evidence",
             {"repo": repo, "worktree": worktree, "pr_number": pr_number, "head_sha": head_sha,
-             "allowed_source_shas": allowed_source_shas, "marker": marker, "body": body,
-             "artifacts": artifacts, "reuse_existing": reuse_existing},
+             "base_sha": base_sha if isinstance(base_sha, str) and _SHA_RE.fullmatch(base_sha) else None,
+             "marker": marker, "body": body, "manifest_path": manifest_path, "reuse_existing": reuse_existing},
             timeout=PUBLISHER_PUSH_TIMEOUT,
         )
         evidence_url = published.get("evidence_url") or published.get("ref_url")
@@ -5654,14 +5667,15 @@ class Bridge:
         end = f"<!-- issue-agent:visual-evidence-end:{marker} -->"
         lines = [begin, "## Visual evidence", "", body.strip(), "",
                  "Videos open from the evidence link; images open in GitHub."]
-        by_id = {item.get("id"): item for item in assets if isinstance(item, dict)}
-        for item in artifacts:
-            if not isinstance(item, dict):
+        for asset in assets:
+            if not isinstance(asset, dict):
                 continue
-            caption = item.get("caption") or "Visual evidence"
-            asset = by_id.get(item.get("id"))
-            url = asset.get("blob_url") if isinstance(asset, dict) else None
-            lines.append(f"- {caption}" + (f" ([Open in GitHub]({url}))" if isinstance(url, str) and url else ""))
+            caption = asset.get("caption") or "Visual evidence"
+            caption = re.sub(r"([\\`*_{}\[\]()#+.!|~-])", r"\\\1", html.escape(str(caption), quote=False).replace("\n", " "))
+            role = asset.get("role")
+            label = role.capitalize() + ": " if role in ("before", "after", "control") else ""
+            url = asset.get("blob_url")
+            lines.append(f"- {label}{caption}" + (f" ([Open in GitHub]({url}))" if isinstance(url, str) and url else ""))
         if isinstance(evidence_url, str) and evidence_url:
             lines.append(f"- [Open evidence ref]({evidence_url})")
         lines.append(end)
@@ -5678,7 +5692,7 @@ class Bridge:
         elif match is None:
             updated_body = f"{prior_body.rstrip()}\n\n{section}" if prior_body.strip() else section
         else:
-            updated_body = pattern.sub(section, prior_body, count=1)
+            updated_body = pattern.sub(lambda _: section, prior_body, count=1)
         body_updated = updated_body != prior_body
         if body_updated:
             updated = self._gh("PATCH", f"/repos/{repo}/pulls/{pr_number}", {"body": updated_body})

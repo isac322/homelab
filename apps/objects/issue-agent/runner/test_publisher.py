@@ -7,6 +7,7 @@ Run: python3 -m unittest apps/objects/issue-agent/runner/test_publisher.py
 from __future__ import annotations
 
 import http.client
+import hashlib
 import json
 import os
 import shutil
@@ -368,13 +369,60 @@ class VisualEvidenceEndpointTest(EndpointCase):
     def test_reuse_existing_boolean_is_forwarded(self) -> None:
         body = {
             "repo": REPO, "worktree": "issue-7", "pr_number": 7, "head_sha": "a" * 40,
-            "allowed_source_shas": ["a" * 40], "marker": "pr-7-head-a", "body": "Evidence",
-            "artifacts": [{}], "reuse_existing": True,
+            "base_sha": None, "manifest_path": "visual-evidence.json",
+            "marker": "pr-7-head-a", "body": "Evidence", "reuse_existing": True,
         }
         with patch.object(publisher, "do_visual_evidence", return_value={"ok": True}) as operation:
             status, payload = self.call("POST", "/visual-evidence", json.dumps(body).encode())
         self.assertEqual((status, payload), (HTTPStatus.OK, {"ok": True}))
-        self.assertTrue(operation.call_args.args[-1])
+        self.assertTrue(operation.call_args.kwargs["reuse_existing"])
+
+    def test_inline_artifacts_and_source_allowlists_are_unknown_fields(self) -> None:
+        request = {
+            "repo": REPO, "worktree": "issue-7", "pr_number": 7, "head_sha": "a" * 40,
+            "base_sha": "b" * 40, "manifest_path": "visual-evidence.json",
+            "marker": "pr-7-head-a", "body": "Evidence",
+        }
+        for old in ({"artifacts": [{}]}, {"allowed_source_shas": ["a" * 40]}):
+            with self.subTest(old=old):
+                status, response = self.call("POST", "/visual-evidence", json.dumps({**request, **old}).encode())
+                self.assertEqual((status, response["error"]), (HTTPStatus.BAD_REQUEST, "invalid_request"))
+
+    def test_missing_or_null_manifest_path_is_rejected(self) -> None:
+        request = {
+            "repo": REPO, "worktree": "issue-7", "pr_number": 7, "head_sha": "a" * 40,
+            "base_sha": "b" * 40, "marker": "pr-7-head-a", "body": "Evidence",
+        }
+        for extra in ({}, {"manifest_path": None}):
+            with self.subTest(extra=extra):
+                status, response = self.call("POST", "/visual-evidence", json.dumps({**request, **extra}).encode())
+                self.assertEqual((status, response["error"]), (HTTPStatus.BAD_REQUEST, "invalid_request"))
+
+    def test_error_response_exposes_only_validated_typed_artifact_fields(self) -> None:
+        request = {
+            "repo": REPO, "worktree": "issue-7", "pr_number": 7, "head_sha": "a" * 40,
+            "base_sha": None, "manifest_path": "visual-evidence.json",
+            "marker": "pr-7-head-a", "body": "Evidence",
+        }
+        safe = {"relpath": "captures/after.png", "field": "sha256", "expected": "a" * 64, "actual": "b" * 64}
+        unsafe = [
+            {**safe, "detail": "/secret/token"},
+            {**safe, "field": "detail", "actual": "token"},
+            {**safe, "expected": "https://host/token?secret=value"},
+            {**safe, "relpath": "/host/secrets"},
+            {**safe, "relpath": "https://host/token?secret=value"},
+            {**safe, "relpath": "../secrets"},
+            {**safe, "field": ["sha256"]},
+            {**safe, "field": "bytes", "expected": True, "actual": 1},
+            {**safe, "field": "bytes", "expected": 1, "actual": publisher.MAX_VISUAL_ARTIFACT_BYTES + 1},
+        ]
+        for typed in [safe, *unsafe]:
+            error = publisher.PublisherError(HTTPStatus.BAD_REQUEST, "artifact_mismatch", "", typed)
+            with self.subTest(typed=typed), patch.object(publisher, "do_visual_evidence", side_effect=error):
+                status, response = self.call("POST", "/visual-evidence", json.dumps(request).encode())
+            self.assertEqual(status, HTTPStatus.BAD_REQUEST)
+            self.assertEqual(response, {"error": "artifact_mismatch", "detail": "",
+                                       **({"artifact_error": safe} if typed == safe else {})})
 
 
 class VisualEvidencePublishTest(unittest.TestCase):
@@ -382,14 +430,15 @@ class VisualEvidencePublishTest(unittest.TestCase):
     OLD_COMMIT = "b" * 40
     NEW_COMMIT = "c" * 40
     BLOB_SHA = "d" * 40
+    MEDIA_BYTES = b"\x00\x00\x00\x18ftypmp42video"
 
     def artifact(self) -> dict[str, object]:
         return {
             "id": "shadow-after",
             "role": "after",
             "relpath": "visual-evidence/shadow-after.mp4",
-            "sha256": "e" * 64,
-            "bytes": 10,
+            "sha256": hashlib.sha256(self.MEDIA_BYTES).hexdigest(),
+            "bytes": len(self.MEDIA_BYTES),
             "media_type": "video/mp4",
             "source_sha": self.HEAD,
             "caption": "After",
@@ -397,17 +446,22 @@ class VisualEvidencePublishTest(unittest.TestCase):
 
     def configured_publisher(self, existing: tuple[str | None, bool], *,
                              create_commit: bool = True):
-        source = os.path.join(tempfile.mkdtemp(), "shadow-after.mp4")
-        write(source, "video")
-        self.addCleanup(lambda: shutil.rmtree(os.path.dirname(source), ignore_errors=True))
+        root = tempfile.mkdtemp()
+        source = os.path.join(root, "visual-evidence", "shadow-after.mp4")
+        os.makedirs(os.path.dirname(source), exist_ok=True)
+        with open(source, "wb") as handle:
+            handle.write(self.MEDIA_BYTES)
+        manifest = os.path.join(root, "visual-evidence.json")
+        write(manifest, json.dumps([self.artifact()]))
+        self.addCleanup(lambda: shutil.rmtree(root, ignore_errors=True))
         indexed = [(self.artifact(), source, self.BLOB_SHA)]
         patches = [
-            patch.object(publisher, "visual_worktree_path", return_value=os.path.dirname(source)),
+            patch.object(publisher, "visual_worktree_path", return_value=root),
             patch.object(publisher, "visual_worktree_head", return_value=self.HEAD),
             patch.object(publisher, "fetch_branch", return_value=self.HEAD),
             patch.object(publisher, "ensure_mirror", return_value="/mirror.git"),
             patch.object(publisher, "visual_verified_ancestor_sources", return_value={self.HEAD}),
-            patch.object(publisher, "validate_visual_artifacts", return_value=[(self.artifact(), source)]),
+            patch.object(publisher, "validate_visual_artifacts", wraps=publisher.validate_visual_artifacts),
             patch.object(publisher, "read_secret", return_value=TOKEN),
             patch.object(publisher, "visual_existing_ref", return_value=existing),
         ]
@@ -425,7 +479,7 @@ class VisualEvidencePublishTest(unittest.TestCase):
                                  return_value=(self.NEW_COMMIT, [(self.artifact(), "/tmp/video", self.BLOB_SHA)])):
                 result = publisher.do_visual_evidence(
                     REPO, "issue-7", 7, self.HEAD, "pr-7-head-a", "Evidence",
-                    [self.artifact()], [self.HEAD],
+                    "visual-evidence.json", base_sha=None,
                 )
         ref = publisher.visual_evidence_ref(7, self.HEAD)
         self.assertFalse(result["created"])
@@ -450,7 +504,7 @@ class VisualEvidencePublishTest(unittest.TestCase):
                 with self.assertRaises(publisher.PublisherError) as ctx:
                     publisher.do_visual_evidence(
                         REPO, "issue-7", 7, self.HEAD, "pr-7-head-a", "Evidence",
-                        [self.artifact()], [self.HEAD],
+                        "visual-evidence.json", base_sha=None,
                     )
         self.assertEqual((ctx.exception.status, ctx.exception.error),
                          (HTTPStatus.CONFLICT, "evidence_ref_conflict"))
@@ -462,11 +516,224 @@ class VisualEvidencePublishTest(unittest.TestCase):
             with patches[0], patches[1], patches[2], patches[3], patches[4], patches[5], patches[6], patches[7]:
                 result = publisher.do_visual_evidence(
                     REPO, "issue-7", 7, self.HEAD, "pr-7-head-a", "Evidence",
-                    [self.artifact()], [self.HEAD], reuse_existing=True,
+                    "visual-evidence.json", base_sha=None, reuse_existing=True,
                 )
         self.assertTrue(result["already_published"])
         self.assertFalse(result["replaced"])
         run_git.assert_not_called()
+
+
+class VisualManifestLoaderTest(CheckoutsCase):
+    def setUp(self) -> None:
+        super().setUp()
+        self.path, _ = self.linked_worktree("issue-7")
+
+    def manifest(self, value, name: str = "captures/visual-evidence.json") -> str:
+        write(os.path.join(self.path, name), json.dumps(value))
+        return name
+
+    def test_rejects_absolute_traversal_and_empty_components(self) -> None:
+        for name in ("/visual-evidence.json", "../manifest.json", "a/../manifest.json",
+                     "a//manifest.json", "./manifest.json", "a\\manifest.json", ""):
+            with self.subTest(name=name):
+                self.assert_error("invalid_request", publisher.read_visual_manifest, self.path, name)
+
+    def test_rejects_final_and_intermediate_symlinks_inside_and_outside_worktree(self) -> None:
+        name = self.manifest([{}])
+        write(os.path.join(self.outside, "manifest.json"), "[{}]")
+        os.symlink(os.path.join(self.path, name), os.path.join(self.path, "manifest-link.json"))
+        os.symlink(os.path.join(self.path, "captures"), os.path.join(self.path, "capture-link"))
+        os.symlink(os.path.join(self.outside, "manifest.json"), os.path.join(self.path, "outside-link.json"))
+        os.symlink(self.outside, os.path.join(self.path, "outside-link"))
+        for linked in ("manifest-link.json", "capture-link/visual-evidence.json",
+                       "outside-link.json", "outside-link/manifest.json"):
+            with self.subTest(name=linked):
+                self.assert_error("unsafe_path", publisher.read_visual_manifest, self.path, linked)
+
+    def test_rejects_fifo_and_directory_without_waiting_for_a_writer(self) -> None:
+        os.mkfifo(os.path.join(self.path, "manifest.fifo"))
+        for name in ("manifest.fifo", "src"):
+            with self.subTest(name=name):
+                self.assert_error("unsafe_path", publisher.read_visual_manifest, self.path, name)
+
+    def test_rejects_oversized_malformed_non_utf8_and_wrong_shape_manifests(self) -> None:
+        cases = [
+            (b" " * (publisher.MAX_VISUAL_MANIFEST_BYTES + 1), HTTPStatus.REQUEST_ENTITY_TOO_LARGE),
+            (b"[", HTTPStatus.BAD_REQUEST), (b'["\xff"]', HTTPStatus.BAD_REQUEST),
+            (b"{}", HTTPStatus.BAD_REQUEST), (b"[]", HTTPStatus.BAD_REQUEST),
+            (json.dumps([{}] * 21).encode(), HTTPStatus.BAD_REQUEST),
+        ]
+        for raw, status in cases:
+            with self.subTest(raw=raw[:20], status=status):
+                name = os.path.join(self.path, "manifest.json")
+                with open(name, "wb") as handle:
+                    handle.write(raw)
+                exc = self.assert_error("invalid_request", publisher.read_visual_manifest, self.path, "manifest.json")
+                self.assertEqual(exc.status, status)
+
+    def test_accepts_twenty_entries_at_the_existing_payload_bound(self) -> None:
+        entries = [{} for _ in range(publisher.MAX_VISUAL_ARTIFACTS)]
+        name = self.manifest(entries)
+        with open(os.path.join(self.path, name), "a", encoding="utf-8") as handle:
+            handle.write(" " * (publisher.MAX_VISUAL_MANIFEST_BYTES - os.path.getsize(os.path.join(self.path, name))))
+        self.assertEqual(publisher.read_visual_manifest(self.path, name), entries)
+
+
+class VisualManifestPublicationTest(CheckoutsCase):
+    def setUp(self) -> None:
+        super().setUp()
+        self.path = os.path.join(self.worktrees, "issue-7")
+        os.makedirs(self.path)
+        git("init", "--quiet", "--initial-branch=main", cwd=self.path)
+        write(os.path.join(self.path, "README"), "base")
+        git("add", "README", cwd=self.path)
+        git("commit", "--quiet", "-m", "base", cwd=self.path)
+        self.ancestor = git("rev-parse", "HEAD", cwd=self.path)
+        write(os.path.join(self.path, "README"), "head")
+        git("commit", "--quiet", "-am", "head", cwd=self.path)
+        self.head = git("rev-parse", "HEAD", cwd=self.path)
+        self.base_candidate = git("commit-tree", "HEAD^{tree}", "-m", "unrelated base", cwd=self.path)
+        self.manifest_path = "captures/visual-evidence.json"
+        self.state = os.path.join(self.root, "state")
+        os.makedirs(self.state)
+        self.real_run_git = publisher.run_git
+        for name, value in (
+            ("STATE_DIR", self.state), ("fetch_branch", lambda *_: self.head),
+            ("ensure_mirror", lambda *_: os.path.join(self.path, ".git")),
+            ("read_secret", lambda *_: TOKEN),
+            ("visual_existing_ref", lambda *_: (None, False)),
+            ("run_git", self.local_git),
+        ):
+            patcher = patch.object(publisher, name, value)
+            patcher.start()
+            self.addCleanup(patcher.stop)
+
+    def local_git(self, args, **kwargs):
+        if len(args) > 2 and args[2] == "push":
+            return subprocess.CompletedProcess(args, 0, stdout="", stderr="")
+        return self.real_run_git(args, **kwargs)
+
+    def artifact(self, ident: str = "after", role: str = "after", source: str | None = None):
+        raw = b"\x89PNG\r\n\x1a\ncapture-" + ident.encode()
+        relpath = f"captures/{ident}.png"
+        os.makedirs(os.path.dirname(os.path.join(self.path, relpath)), exist_ok=True)
+        with open(os.path.join(self.path, relpath), "wb") as handle:
+            handle.write(raw)
+        return {"id": ident, "role": role, "relpath": relpath,
+                "sha256": hashlib.sha256(raw).hexdigest(), "bytes": len(raw),
+                "media_type": "image/png", "source_sha": source or self.head, "caption": ident}
+
+    def publish(self, entries, *, base_sha: str | None = None):
+        write(os.path.join(self.path, self.manifest_path), json.dumps(entries))
+        return publisher.do_visual_evidence(
+            REPO, "issue-7", 7, self.head, "pr-7-head-a", "Evidence",
+            self.manifest_path, base_sha=base_sha,
+        )
+
+    def test_publishes_manifest_bytes_and_preserves_asset_contract(self) -> None:
+        item = self.artifact()
+        result = self.publish([item])
+        self.assertTrue(result["created"])
+        self.assertEqual(result["assets"][0]["id"], item["id"])
+        self.assertEqual(result["assets"][0]["role"], item["role"])
+        self.assertEqual(result["assets"][0]["caption"], item["caption"])
+        self.assertEqual(result["asset_urls"], [result["assets"][0]["blob_url"]])
+        ref = result["ref"]
+        commit = git("rev-parse", f"refs/heads/{ref}", cwd=self.path)
+        self.assertEqual(git("rev-parse", f"{commit}^", cwd=self.path), self.head)
+        message = git("show", "-s", "--format=%B", commit, cwd=self.path)
+        self.assertIn(f"Artifact: {item['id']} {item['sha256']}", message)
+
+    def test_publishes_nineteen_machine_entries_with_matching_evidence_blobs(self) -> None:
+        entries = [self.artifact(f"capture-{index}") for index in range(19)]
+        result = self.publish(entries)
+        self.assertEqual(len(result["assets"]), 19)
+        ref = result["ref"]
+        for item in entries:
+            evidence_path = publisher.visual_evidence_path(7, self.head, item)
+            blob = git("rev-parse", f"refs/heads/{ref}:{evidence_path}", cwd=self.path)
+            source_blob = git("hash-object", os.path.join(self.path, item["relpath"]), cwd=self.path)
+            self.assertEqual(blob, source_blob)
+
+    def test_twenty_complete_artifacts_publish_but_twenty_one_are_rejected(self) -> None:
+        entries = [self.artifact(f"capture-{index}") for index in range(21)]
+        with self.assertRaises(publisher.PublisherError) as ctx:
+            self.publish(entries)
+        self.assertEqual(ctx.exception.error, "invalid_request")
+        result = self.publish(entries[:20])
+        self.assertEqual(len(result["assets"]), 20)
+
+    def test_one_nibble_hash_mismatch_is_not_repaired_or_published(self) -> None:
+        item = self.artifact()
+        actual = item["sha256"]
+        item["sha256"] = ("0" if actual[0] != "0" else "1") + actual[1:]
+        with self.assertRaises(publisher.PublisherError) as ctx:
+            self.publish([item])
+        self.assertEqual(ctx.exception.error, "artifact_mismatch")
+        self.assertEqual(ctx.exception.artifact_error,
+                         {"relpath": item["relpath"], "field": "sha256", "expected": item["sha256"], "actual": actual})
+        with open(os.path.join(self.path, self.manifest_path), encoding="utf-8") as handle:
+            self.assertEqual(json.load(handle)[0]["sha256"], item["sha256"])
+        self.assertEqual(git("for-each-ref", "--format=%(refname)", "refs/heads/issue-agent-visual", cwd=self.path), "")
+
+    def test_byte_and_mime_mismatches_keep_closed_machine_detail(self) -> None:
+        item = self.artifact()
+        for field, expected, actual in (("bytes", item["bytes"] + 1, item["bytes"]),
+                                        ("media_type", "video/mp4", "magic")):
+            with self.subTest(field=field), self.assertRaises(publisher.PublisherError) as ctx:
+                self.publish([{**item, field: expected}])
+            self.assertEqual(ctx.exception.error, "artifact_mismatch")
+            self.assertEqual(ctx.exception.artifact_error,
+                             {"relpath": item["relpath"], "field": field, "expected": expected, "actual": actual})
+
+    def test_base_candidate_requires_both_before_and_after(self) -> None:
+        for role in ("after", "before", "control"):
+            with self.subTest(role=role), self.assertRaises(publisher.PublisherError) as ctx:
+                self.publish([self.artifact(role, role, self.base_candidate)], base_sha=self.base_candidate)
+            self.assertEqual(ctx.exception.error, "source_sha_mismatch")
+        entries = [self.artifact("before", "before", self.base_candidate), self.artifact()]
+        self.assertTrue(self.publish(entries, base_sha=self.base_candidate)["created"])
+
+    def test_verified_ancestor_remains_allowed_without_a_before_after_pair(self) -> None:
+        self.assertTrue(self.publish([self.artifact(source=self.ancestor)])["created"])
+
+    def test_unrelated_source_remains_rejected_even_with_a_pair(self) -> None:
+        entries = [self.artifact("before", "before", self.ancestor),
+                   self.artifact(source=self.base_candidate)]
+        with self.assertRaises(publisher.PublisherError) as ctx:
+            self.publish(entries, base_sha=self.ancestor)
+        self.assertEqual(ctx.exception.error, "source_sha_mismatch")
+
+    def test_existing_exact_fields_duplicate_and_media_checks_remain_enforced(self) -> None:
+        item = self.artifact()
+        cases = [
+            [{**item, "extra": True}],
+            [{key: value for key, value in item.items() if key != "caption"}],
+            [item, item], [{**item, "bytes": item["bytes"] + 1}],
+            [{**item, "media_type": "video/mp4"}], [{**item, "media_type": []}],
+            [{**item, "role": []}], [{**item, "relpath": "../capture.png"}],
+            [{**item, "bytes": publisher.MAX_VISUAL_ARTIFACT_BYTES + 1}],
+            [item, {**item, "id": "different-id"}],
+            [{**item, "sha256": "A" * 64}], [{**item, "bytes": True}],
+        ]
+        for entries in cases:
+            with self.subTest(entries=entries), self.assertRaises(publisher.PublisherError):
+                self.publish(entries)
+
+    def test_changed_file_is_rejected_before_any_evidence_ref_is_created(self) -> None:
+        item = self.artifact()
+        real_create = publisher.visual_create_commit
+
+        def mutate_then_create(*args):
+            with open(os.path.join(self.path, item["relpath"]), "ab") as handle:
+                handle.write(b"changed")
+            return real_create(*args)
+
+        with patch.object(publisher, "visual_create_commit", side_effect=mutate_then_create):
+            with self.assertRaises(publisher.PublisherError) as ctx:
+                self.publish([item])
+        self.assertEqual(ctx.exception.error, "artifact_mismatch")
+        self.assertEqual(git("for-each-ref", "--format=%(refname)", "refs/heads/issue-agent-visual", cwd=self.path), "")
 
 
 GIT_ENV = {
