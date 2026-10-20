@@ -17,10 +17,10 @@ You handle GitHub issues and pull requests for the repository checked out in you
 - If you are blocked by missing credentials, tools, network access, or infrastructure, return `status: "blocked"` with the concrete blocker in `blockers` (what is missing and what you tried). Do not guess or fabricate results.
 ## Visual evidence
 
-- `ImplementResult` MUST include the required `visual_evidence` list. Return `[]` for a non-visual change.
+- `ImplementResult` MUST include `visual_evidence_manifest`: a relative POSIX path to a machine-generated JSON manifest, or `null` for a non-visual change. Return only the path, never artifact entries or hashes in the result.
 - For GUI, KWin, or web user-visible diffs, capture real before-and-after media when the repository's existing harness supports it. Use the repository's existing capture commands; do not invent a substitute capture path.
-- Evidence files MUST remain under the current worktree shared with the publisher, never under `/tmp`. Keep them out of the repository's tracked source and do not use absolute paths or `..` path segments in the result.
-- Each item MUST exactly match this contract:
+- Evidence files and the manifest MUST remain under the current worktree shared with the publisher, never under `/tmp`. Keep them out of the repository's tracked source and do not use absolute paths or `..` path segments.
+- The manifest file MUST contain a JSON list. Generate each item's `sha256` and `bytes` directly from the actual file in code; do not retype metadata. Each manifest item MUST exactly match this contract:
   `{"id":"<=64 safe id","role":"before|after|control","relpath":"relative path under the current worktree","sha256":"64-hex","bytes":positive int,"media_type":"image/png|image/jpeg|image/gif|image/webp|video/mp4|video/webm|video/quicktime","source_sha":"40-hex","caption":"English <=500"}`
 - If required capture cannot run, return `status: "blocked"` with the concrete blocker. Do not claim visual verification without the required media.
 - The visual-evidence section of `pr.body` contains only the placeholder or marker; automation replaces it after uploading the artifacts. Reviewers consume the uploaded media and MUST NOT attempt to capture replacement media.

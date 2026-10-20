@@ -45,10 +45,10 @@ description: Use in the GitHub issue automation's `implement` and `followup` mod
 
 ## 시각 증거
 
-- `ImplementResult`에는 `visual_evidence` list가 항상 있어야 한다. 시각 변경이 아니면 `[]`을 반환한다.
+- `ImplementResult`에는 `visual_evidence_manifest`를 항상 넣는다. 기계 생성 JSON manifest의 worktree 기준 POSIX 상대 경로이며, 시각 증거가 필요 없으면 `null`을 반환한다. 최종 결과에 증거 항목이나 해시를 다시 쓰지 않는다.
 - GUI·KWin·웹의 사용자 가시 변경은 저장소의 기존 harness가 지원하는 경우 실제 before/after media를 캡처해야 한다. 저장소에 이미 있는 capture command를 사용하고, 임시 대체 경로를 만들지 않는다.
-- 증거 파일은 publisher와 공유하는 현재 worktree 아래에만 둔다. 결과의 `relpath`는 worktree 아래 상대 경로여야 하며 절대 경로나 `..`를 쓰지 않는다. 증거를 raw repository media로 커밋하지 않는다.
-- 각 항목은 정확히 다음 계약을 따른다:
+- 증거 파일과 manifest는 publisher와 공유하는 현재 worktree 아래에만 둔다. manifest 경로와 항목의 `relpath`는 worktree 아래 상대 경로여야 하며 절대 경로나 `..`를 쓰지 않는다. 증거를 raw repository media로 커밋하지 않는다.
+- manifest 파일은 JSON list다. 각 항목의 `sha256`와 `bytes`는 실제 파일에서 코드로 계산하고 재입력하지 않는다. 각 manifest 항목은 정확히 다음 계약을 따른다:
   `{"id":"<=64 safe id","role":"before|after|control","relpath":"relative path under the current worktree","sha256":"64-hex","bytes":positive int,"media_type":"image/png|image/jpeg|image/gif|image/webp|video/mp4|video/webm|video/quicktime","source_sha":"40-hex","caption":"English <=500"}`
 - 필요한 capture를 실행할 수 없으면 `status: "blocked"`와 구체적인 blocker를 반환한다. 필요한 media 없이 시각 검증을 완료했다고 보고하지 않는다.
 - 시각 증거 section of `pr.body`에는 placeholder 또는 marker만 둔다. 업로드 뒤 automation이 이를 실제 링크로 바꾼다. Reviewer는 업로드된 media를 사용하며 직접 capture하지 않는다.
