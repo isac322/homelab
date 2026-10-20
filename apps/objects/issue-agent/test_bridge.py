@@ -1487,6 +1487,104 @@ class PrRepairTests(BridgeTestCase):
         self.assertTrue(self.op("finish", new_delivery, outcome="implemented")["ok"])
         self.assertNotIn(NEEDS, self.fake.labels[144])
 
+    def test_terminal_pr_repair_clears_bridge_attention_label_after_retry(self) -> None:
+        pr = self.managed_pr()
+        self.assertEqual(self.bridge.reconcile_pr(REPO, 144), "queued")
+        delivery = self.repair_delivery()
+        self.assertEqual(self.dispatcher.tick(), "dispatched")
+        self.assertEqual(self.op("begin", delivery, attempt=1)["status"], "started")
+        self.assertTrue(self.op("fail", delivery, detail="Push failed", node="Pushed?")["ok"])
+        self.fake.labels[144].insert(0, "bug")
+        self.assertEqual(self.fake.labels[144], ["bug", NEEDS])
+        self.assertEqual(self.store.issue(REPO, 141)["attention_label"], 1)
+        self.assertEqual(self.store.pr_state(REPO, 144)["active_delivery"], delivery)
+
+        self.assertTrue(self.op("retry_event", delivery)["ok"])
+        pr.update(mergeStateStatus="CLEAN", mergeable="MERGEABLE")
+        self.assertEqual(self.dispatcher.tick(), "dispatched")
+        terminal = self.op("begin", delivery, attempt=1)
+        self.assertEqual(terminal["status"], "terminal")
+        self.assertEqual(self.store.event(delivery)["outcome"], "no_change")
+        self.assertEqual(self.fake.labels[144], ["bug"])
+        self.assertEqual(self.store.issue(REPO, 141)["attention_label"], 0)
+        self.assertIsNone(self.store.pr_state(REPO, 144)["active_delivery"])
+        self.assertEqual(self.store.issue(REPO, 141)["session_state"], "none")
+        self.assertEqual(self.fake.spawns, [])
+        self.assertEqual(self.fake.message_posts, [])
+
+    def test_terminal_pr_repair_preserves_attention_when_an_issue_event_is_parked(self) -> None:
+        pr = self.managed_pr()
+        self.assertEqual(self.bridge.reconcile_pr(REPO, 144), "queued")
+        delivery = self.repair_delivery()
+        self.assertEqual(self.dispatcher.tick(), "dispatched")
+        self.assertEqual(self.op("begin", delivery, attempt=1)["status"], "started")
+        self.assertTrue(self.op("fail", delivery, detail="Push failed")["ok"])
+
+        self.assertEqual(self.deliver(issue_payload(141), delivery="issue-sibling").outcome, "queued")
+        self.assertTrue(self.op("fail", "issue-sibling", detail="Issue workflow failed")["ok"])
+        self.assertEqual(self.store.event("issue-sibling")["state"], "needs_attention")
+        self.assertEqual(self.fake.labels[141], [NEEDS])
+        self.assertEqual(self.bridge.handle({"op": "unblock_issue", "repo": REPO, "issue_number": 141}),
+                         {"ok": True})
+
+        self.assertTrue(self.op("retry_event", delivery)["ok"])
+        pr.update(mergeStateStatus="CLEAN", mergeable="MERGEABLE")
+        self.assertEqual(self.dispatcher.tick(), "dispatched")
+        self.assertEqual(self.op("begin", delivery, attempt=1)["status"], "terminal")
+        self.assertEqual(self.store.event(delivery)["outcome"], "no_change")
+        self.assertEqual(self.fake.labels[144], [NEEDS])
+        self.assertEqual(self.fake.labels[141], [NEEDS])
+        self.assertEqual(self.store.issue(REPO, 141)["attention_label"], 1)
+        self.assertEqual(self.store.issue(REPO, 141)["blocked"], 0)
+        self.assertEqual(self.store.event("issue-sibling")["state"], "needs_attention")
+        self.assertIsNone(self.store.pr_state(REPO, 144)["active_delivery"])
+
+    def test_terminal_pr_repair_preserves_attention_when_pr_review_is_parked(self) -> None:
+        self.use_reviewer_app()
+        pr = self.managed_pr()
+        self.assertEqual(self.bridge.reconcile_pr(REPO, 144), "queued")
+        delivery = self.repair_delivery()
+        self.assertEqual(self.dispatcher.tick(), "dispatched")
+        self.assertEqual(self.op("begin", delivery, attempt=1)["status"], "started")
+        self.assertTrue(self.op("fail", delivery, detail="Push failed")["ok"])
+        self.assertEqual(self.fake.labels[144], [NEEDS])
+
+        signal = pr_payload(144, action="synchronize", sha=SHA_A)
+        signal["pull_request"]["head"]["ref"] = "hapi-issue-141"
+        self.assertEqual(self.deliver(signal, event="pull_request", delivery="parked-review").outcome,
+                         "queued")
+        self.assertEqual(self.dispatcher.tick(), "dispatched")
+        review_delivery = self.fake.dispatched[-1][1]["delivery_id"]
+        self.assertEqual(self.op("begin", review_delivery, attempt=1)["status"], "started")
+        self.assertTrue(self.op("fail", review_delivery, detail="Review failed")["ok"])
+        self.assertEqual(self.store.event(review_delivery)["state"], "needs_attention")
+        self.assertEqual(self.store.event(review_delivery)["issue_number"], 144)
+        self.assertEqual(self.fake.labels[144], [NEEDS])
+
+        self.assertTrue(self.op("retry_event", delivery)["ok"])
+        pr.update(mergeStateStatus="CLEAN", mergeable="MERGEABLE")
+        self.assertEqual(self.dispatcher.tick(), "dispatched")
+        self.assertEqual(self.op("begin", delivery, attempt=1)["status"], "terminal")
+        self.assertEqual(self.store.event(delivery)["outcome"], "no_change")
+        self.assertEqual(self.fake.labels[144], [NEEDS])
+        self.assertEqual(self.store.issue(REPO, 141)["attention_label"], 1)
+        self.assertEqual(self.store.event(review_delivery)["state"], "needs_attention")
+
+    def test_terminal_pr_repair_keeps_a_human_attention_label_when_flag_is_clear(self) -> None:
+        pr = self.managed_pr()
+        self.fake.labels[144] = [NEEDS]
+        self.assertEqual(self.store.issue(REPO, 141)["attention_label"], 0)
+        self.assertEqual(self.bridge.reconcile_pr(REPO, 144), "queued")
+        delivery = self.repair_delivery()
+        self.assertEqual(self.dispatcher.tick(), "dispatched")
+        pr.update(mergeStateStatus="CLEAN", mergeable="MERGEABLE")
+        self.assertEqual(self.op("begin", delivery, attempt=1)["status"], "terminal")
+        self.assertEqual(self.store.event(delivery)["outcome"], "no_change")
+        self.assertEqual(self.fake.labels[144], [NEEDS])
+        self.assertEqual(self.store.issue(REPO, 141)["attention_label"], 0)
+        self.assertIsNone(self.store.pr_state(REPO, 144)["active_delivery"])
+
+
     def test_trusted_pr_comment_supersedes_parked_repair_and_unblocks(self) -> None:
         self.managed_pr()
         self.assertEqual(self.bridge.reconcile_pr(REPO, 144), "queued")
