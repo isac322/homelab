@@ -2826,6 +2826,12 @@ class Bridge:
                                                 detail="GitHub no longer has an actionable repair blocker")
                         self.store.release_pr_repair(ev["repo"], int(pr_number), ev["delivery_id"],
                                                      success=True, clear_attempted=True)
+                        if not self._other_parked(ev) and not self.store.query(
+                                "SELECT 1 FROM events WHERE repo = ? AND issue_number = ?"
+                                " AND state = 'needs_attention' LIMIT 1",
+                                (ev["repo"], int(pr_number))):
+                            self._clear_attention_label(ev["repo"], int(ev["issue_number"]),
+                                                        target=self._event_target_number(ev))
                         status = "terminal"
                     else:
                         self.store.update_event(ev["delivery_id"], head_sha=current["head_sha"],
