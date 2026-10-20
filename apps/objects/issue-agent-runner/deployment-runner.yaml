@@ -177,7 +177,7 @@ spec:
                       - macmini
       containers:
         - name: runner
-          image: ghcr.io/isac322/issue-agent-runner:0.30.7-codex0.162.1-20261018-visual-evidence-r6@sha256:9505af40d15e5851a80dadcf54b6511892b5324175fa85207cb29f2c0527ffc4
+          image: ghcr.io/isac322/issue-agent-runner:0.30.7-codex0.162.1-20261020-manifest-r7@sha256:859255821d523bd4555b16a207cafbb6db268d97772920a94d7779fb8180ecb9
           env:
             - name: HOME
               value: /home/agent
@@ -285,7 +285,7 @@ spec:
         # Same image as the runner; /checkout also marks the checkout and its
         # worktrees untrusted in CODEX_HOME (codex-untrust).
         - name: publisher
-          image: ghcr.io/isac322/issue-agent-runner:0.30.7-codex0.162.1-20261018-visual-evidence-r6@sha256:9505af40d15e5851a80dadcf54b6511892b5324175fa85207cb29f2c0527ffc4
+          image: ghcr.io/isac322/issue-agent-runner:0.30.7-codex0.162.1-20261020-manifest-r7@sha256:859255821d523bd4555b16a207cafbb6db268d97772920a94d7779fb8180ecb9
           command:
             - /usr/bin/tini
             - --
