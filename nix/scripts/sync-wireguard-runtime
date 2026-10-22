@@ -74,7 +74,7 @@ test -n "$private_file"
 test "$peer_count" -gt 0
 test "$psk_count" -eq "$peer_count"
 if test "$apply" = true; then
-  wg syncconf "$interface" "$configuration"
+  cat "$configuration" | wg syncconf "$interface" /dev/stdin
   action="synchronized in place"
 else
   action=verified

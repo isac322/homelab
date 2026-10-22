@@ -162,6 +162,16 @@ let
         {
           wireguard = [ "wg0" ];
         };
+    v1 =
+      mkNode "node-v1" "v1" "x86_64-linux" "debian" "apt" "bhyoo@v1.bhyoo.com" null null "enp1s0" 1024
+        {
+          wireguardEndpointHost = "v1.bhyoo.com";
+          wireguard = [ "vpn0" ];
+          firewall.vpnServer = true;
+          tuning = {
+            zram = true;
+          };
+        };
   };
 
   wg0Nodes = {
@@ -288,6 +298,47 @@ let
       bNodeId = "edge-${edge}";
       managed = false;
     }) (builtins.attrNames wg0Edges);
+  vpn0Nodes = {
+    v1 = {
+      address = "10.111.0.1/24";
+      publicKey = readPublicKey ./../identities/wireguard/node-v1.pub;
+    };
+  };
+  vpn0Edges = {
+    bhyoo-desktop-windows = {
+      address = "10.111.0.2/32";
+      publicKey = "Q4t2V94pCmmxFjVttTED61fhooe+4Ny6zu6jeqY+c0w=";
+    };
+    jay-desktop-windows = {
+      address = "10.111.0.3/32";
+      publicKey = "kl8hdBfHj5GpbUC84jEhB4vAWafqce27SKcw8iPi+jo=";
+    };
+    bhyoo-desktop-linux = {
+      address = "10.111.0.4/32";
+      publicKey = "EFHJ2XRnjGC86ZNk7aJ+9NHCUYGZ8ut7D3BYOADTmFo=";
+    };
+    bhyoo-macbookpro = {
+      address = "10.111.0.5/32";
+      publicKey = "yCLKH6quf98elQJGOLKBoDe0livoTTflsdbi7JBethk=";
+    };
+    bhyoo-phone = {
+      address = "10.111.0.6/32";
+      publicKey = "p2NUaQ8G+cBVK4qEWFQEgTFUJxHstg6jsVWDZyWXW2Q=";
+    };
+    bhyoo-tablet = {
+      address = "10.111.0.7/32";
+      publicKey = "9MFU9dY8pBJa//93ia9+0sX0zzmjhHNN//NAmK6X9yk=";
+    };
+  };
+  vpn0RequiredLinks = map (edge: {
+    linkId = "vpn0-v1-${edge}";
+    network = "vpn0";
+    aName = "v1";
+    bName = edge;
+    aNodeId = nodes.v1.nodeId;
+    bNodeId = "edge-${edge}";
+    managed = false;
+  }) (builtins.attrNames vpn0Edges);
   activeNodes = lib.filterAttrs (_: node: node.lifecycle == "active") nodes;
   provisioningNodes = lib.filterAttrs (_: node: node.lifecycle == "provisioning") nodes;
   decommissioningNodes = lib.filterAttrs (_: node: node.lifecycle == "decommissioning") nodes;
@@ -304,11 +355,15 @@ in
     wg0Nodes
     wg0PeerNodes
     wg0Edges
+    vpn0Nodes
+    vpn0Edges
+    vpn0RequiredLinks
     ;
   trustedNodes = {
     bhyoo-macbook-pro = wg0Nodes.bhyoo-macbook-pro;
   };
   requiredLinks = wg0RequiredLinks;
+  allLinks = wg0RequiredLinks ++ vpn0RequiredLinks;
   # K3s default cluster-cidr; server configs do not override it and Cilium
   # runs Kubernetes IPAM with the same ipv4NativeRoutingCIDR.
   k3s.podNetwork = "10.42.0.0/16";
@@ -323,6 +378,20 @@ in
     nodes = wg0Nodes;
     peerNodes = wg0PeerNodes;
     edges = wg0Edges;
+  };
+  vpn0 = {
+    interface = "vpn0";
+    network = "10.111.0.0/24";
+    listenPort = 51902;
+    server = "v1";
+    endpoint = "v1.bhyoo.com:51902";
+    allowedIPs = "0.0.0.0/0";
+    dns = [
+      "1.1.1.1"
+      "1.0.0.1"
+    ];
+    nodes = vpn0Nodes;
+    edges = vpn0Edges;
   };
   secretRecipients = {
     operator = "age1ghdfjncup4cw6rfmvm4z0rnvdg7230svt5u2dxn8ced6uq4ze5wsdy22sd";

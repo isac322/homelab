@@ -14,6 +14,12 @@ let
   encryptedPath = credential: "${encryptedRoot}/${credential}.cred";
 
   wg0Node = topology.wg0.nodes.${name} or null;
+  wg0Enabled = builtins.elem "wg0" hostConfig.wireguard && wg0Node != null;
+  vpn0Node = topology.vpn0.nodes.${name} or null;
+  vpn0Enabled = builtins.elem "vpn0" hostConfig.wireguard && vpn0Node != null;
+  vpn0PrivateCredential = "vpn0-private";
+  vpn0PeerCredential = peer: "vpn0-psk-${builtins.replaceStrings [ "." ] [ "-" ] peer}";
+  vpn0EdgeNames = builtins.attrNames topology.vpn0.edges;
   wg0PeerNames = lib.optionals (wg0Node != null) (
     lib.filter (peer: peer != name) (builtins.attrNames topology.wg0.peerNodes)
   );
@@ -51,12 +57,25 @@ let
       PresharedKeyFile=${credentialPath (peerCredential edge)}
       AllowedIPs=${edgeCfg.address}
     '';
-  credentials = [ privateCredential ] ++ map peerCredential wg0RequiredPeers;
+  vpn0Edge =
+    edge:
+    let
+      edgeCfg = topology.vpn0.edges.${edge};
+    in
+    ''
+      [WireGuardPeer]
+      PublicKey=${edgeCfg.publicKey}
+      PresharedKeyFile=${credentialPath (vpn0PeerCredential edge)}
+      AllowedIPs=${edgeCfg.address}
+    '';
+  credentials =
+    lib.optionals wg0Enabled ([ privateCredential ] ++ map peerCredential wg0RequiredPeers)
+    ++ lib.optionals vpn0Enabled ([ vpn0PrivateCredential ] ++ map vpn0PeerCredential vpn0EdgeNames);
 in
 {
-  config = lib.mkIf (builtins.elem "wg0" hostConfig.wireguard && wg0Node != null) {
+  config = lib.mkIf (wg0Enabled || vpn0Enabled) {
     environment.etc = {
-      "systemd/network/99-wg0.netdev" = {
+      "systemd/network/99-wg0.netdev" = lib.mkIf wg0Enabled {
         text = ''
           [NetDev]
           Name=wg0
@@ -75,13 +94,43 @@ in
         replaceExisting = true;
         mode = "0644";
       };
-      "systemd/network/99-wg0.network" = {
+      "systemd/network/99-wg0.network" = lib.mkIf wg0Enabled {
         text = ''
           [Match]
           Name=wg0
 
           [Network]
           Address=${wg0Node.address}
+          ConfigureWithoutCarrier=yes
+
+          [Link]
+          RequiredForOnline=no
+        '';
+        replaceExisting = true;
+      };
+      "systemd/network/99-vpn0.netdev" = lib.mkIf vpn0Enabled {
+        text = ''
+          [NetDev]
+          Name=vpn0
+          Kind=wireguard
+          Description=Homelab vpn0
+
+          [WireGuard]
+          ListenPort=${toString topology.vpn0.listenPort}
+          PrivateKeyFile=${credentialPath vpn0PrivateCredential}
+
+          ${lib.concatStringsSep "\n" (map vpn0Edge vpn0EdgeNames)}
+        '';
+        replaceExisting = true;
+        mode = "0644";
+      };
+      "systemd/network/99-vpn0.network" = lib.mkIf vpn0Enabled {
+        text = ''
+          [Match]
+          Name=vpn0
+
+          [Network]
+          Address=${vpn0Node.address}
           ConfigureWithoutCarrier=yes
 
           [Link]

@@ -29,3 +29,25 @@ jobs:
         with:
           token: ${{ secrets.TF_API_TOKEN }}
           path: 1-provision/env/backbone
+
+  prod:
+    runs-on: ubuntu-latest
+    permissions:
+      pull-requests: write
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v6
+      - name: Get changed files
+        id: changed-files
+        uses: tj-actions/changed-files@v47
+        with:
+          files: |
+            1-provision/env/prod-vultr/**/*.tf
+            1-provision/modules/vultr-cluster/**/*.tf
+            ssh_pub_keys/*.pub
+      - name: Terraform
+        if: steps.changed-files.outputs.any_changed == 'true' || (github.ref == 'refs/heads/master' && github.event_name == 'push')
+        uses: ./.github/actions/terraform
+        with:
+          token: ${{ secrets.TF_API_TOKEN }}
+          path: 1-provision/env/prod-vultr

@@ -12,6 +12,7 @@ let
   k3s = hostConfig.k3sRole != null;
   server = hostConfig.k3sRole == "server";
   gateway = hostConfig.firewall.wireguardGateway or false;
+  vpnServer = hostConfig.firewall.vpnServer or false;
   sambaClients = cfg.sambaClients;
   netbios = cfg.netbios;
   localNetwork = cfg.localNetwork;
@@ -23,7 +24,9 @@ let
       "iptables.service"
     else
       "netfilter-persistent.service";
-  wgPorts = lib.optional (builtins.elem "wg0" hostConfig.wireguard) topology.wg0.listenPort;
+  wgPorts =
+    lib.optional (builtins.elem "wg0" hostConfig.wireguard) topology.wg0.listenPort
+    ++ lib.optional (builtins.elem "vpn0" hostConfig.wireguard) topology.vpn0.listenPort;
   body = ''
     :HOMELAB_INPUT - [0:0]
     :HOMELAB_FORWARD - [0:0]
@@ -46,7 +49,7 @@ let
     ${lib.concatMapStringsSep "\n" (
       port: "-A HOMELAB_UDP -i ${hostConfig.defaultInterface} -p udp --dport ${toString port} -j ACCEPT"
     ) wgPorts}
-    -A HOMELAB_UDP -s ${localNetwork} -p udp --dport 5353 -j ACCEPT
+    ${lib.optionalString (!vpnServer) "-A HOMELAB_UDP -s ${localNetwork} -p udp --dport 5353 -j ACCEPT"}
     ${lib.optionalString server "-A HOMELAB_TCP -s ${localNetwork} -p tcp --dport 6443 -j ACCEPT"}
     ${lib.optionalString server "-A HOMELAB_TCP -s ${podNetwork} -p tcp --dport 6443 -j ACCEPT"}
     ${lib.optionalString (
@@ -62,12 +65,35 @@ let
     ) sambaClients}
     ${lib.optionalString netbios "-A HOMELAB_UDP -s ${localNetwork} -p udp --dport 137:138 -j ACCEPT"}
     ${lib.optionalString gateway "-A HOMELAB_FORWARD -i wg0 -o wg0 -s ${topology.wg0.trustedNetwork} -d ${topology.wg0.edgeNetwork} -j ACCEPT\n-A HOMELAB_FORWARD -i wg0 -o wg0 -s ${topology.wg0.edgeNetwork} -d ${topology.wg0.trustedNetwork} -j ACCEPT\n-A HOMELAB_FORWARD -i wg0 -o wg0 -s 10.222.0.128/26 -d 10.222.0.128/26 -j DROP\n-A HOMELAB_FORWARD -i wg0 -o wg0 -s 10.222.0.192/27 -d 10.222.0.192/27 -j DROP\n-A HOMELAB_FORWARD -i wg0 -o wg0 -s 10.222.0.224/27 -d 10.222.0.224/27 -j DROP"}
+    ${lib.optionalString vpnServer "-A HOMELAB_FORWARD -m conntrack --ctstate RELATED,ESTABLISHED -j ACCEPT\n-A HOMELAB_FORWARD -i ${topology.vpn0.interface} -s ${topology.vpn0.network} -j ACCEPT"}
+  '';
+  natLiveRules = lib.optionalString vpnServer ''
+    *nat
+    :HOMELAB_POSTROUTING - [0:0]
+    -F HOMELAB_POSTROUTING
+    -A HOMELAB_POSTROUTING -s ${topology.vpn0.network} -o ${hostConfig.defaultInterface} -j MASQUERADE
+    -F POSTROUTING
+    -A POSTROUTING -j HOMELAB_POSTROUTING
+    COMMIT
+  '';
+  natBootRules = lib.optionalString vpnServer ''
+    *nat
+    :PREROUTING ACCEPT [0:0]
+    :INPUT ACCEPT [0:0]
+    :OUTPUT ACCEPT [0:0]
+    :POSTROUTING ACCEPT [0:0]
+    :HOMELAB_POSTROUTING - [0:0]
+    -F HOMELAB_POSTROUTING
+    -A HOMELAB_POSTROUTING -s ${topology.vpn0.network} -o ${hostConfig.defaultInterface} -j MASQUERADE
+    -A POSTROUTING -j HOMELAB_POSTROUTING
+    COMMIT
   '';
   liveRules = ''
     *filter
     ${body}
     COMMIT
-  '';
+  ''
+  + natLiveRules;
   bootRules = ''
     *filter
     :INPUT DROP [0:0]
@@ -77,7 +103,8 @@ let
     -A INPUT -j HOMELAB_INPUT
     -A FORWARD -j HOMELAB_FORWARD
     COMMIT
-  '';
+  ''
+  + natBootRules;
   pillar = cfg.pillar;
   pillarChain = "HOMELAB_PILLAR";
   pillarMarker = "homelab-pillar";

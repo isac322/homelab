@@ -269,10 +269,12 @@ in
         '';
         replaceExisting = true;
       };
-      "sysctl.d/99-wireguard-forwarding.conf" = lib.mkIf k8sMember {
-        text = "net.ipv4.ip_forward=1\n";
-        replaceExisting = true;
-      };
+      "sysctl.d/99-wireguard-forwarding.conf" =
+        lib.mkIf (k8sMember || (hostConfig.firewall.vpnServer or false))
+          {
+            text = "net.ipv4.ip_forward=1\n";
+            replaceExisting = true;
+          };
       "udev/rules.d/60-io-scheduler.rules" = lib.mkIf emmcIoScheduler {
         text = ''
           ACTION=="add|change", KERNEL=="mmcblk*", ATTR{queue/scheduler}="none"
