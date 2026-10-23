@@ -31,6 +31,24 @@
   notify:
   - Restart systemd-resolved
 
+- name: Create DNSSEC trust-anchor directory
+  ansible.builtin.file:
+    path: /etc/dnssec-trust-anchors.d
+    state: directory
+    owner: root
+    group: root
+    mode: '0755'
+
+- name: Install DNSSEC root trust anchor
+  ansible.builtin.copy:
+    src: files/root.positive
+    dest: /etc/dnssec-trust-anchors.d/root.positive
+    owner: root
+    group: root
+    mode: '0644'
+  notify:
+  - Restart systemd-resolved
+
 - name: Install monitoring tools
   ansible.builtin.apt:
     pkg:

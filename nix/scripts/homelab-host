@@ -1316,6 +1316,7 @@ REMOTE_K3S_CLEANUP
     netbios=$(nix_eval --json "$root#systemConfigs.$host.config.homelab.firewall.netbios")
     local_network=$(nix_eval --raw "$root#systemConfigs.$host.config.homelab.firewall.localNetwork")
     localtime_source=$(nix_eval --raw "$root#systemConfigs.$host.config.environment.etc.localtime.source")
+    dnssec_trust_anchors_source=$(nix_eval --raw "$root#systemConfigs.$host.config.environment.etc.\"dnssec-trust-anchors.d/root.positive\".source")
     resolved_dns_over_tls=$(host_field "$host" resolvedDnsOverTls)
     mask_unattended_logind_delay=false
     case "$host" in n2p1|n2p2) mask_unattended_logind_delay=true ;; esac
@@ -1329,11 +1330,11 @@ REMOTE_K3S_CLEANUP
       ssh_service=ssh.service
     fi
     printf -v verify_command \
-      'env PATH=/usr/local/sbin:/usr/local/bin:/usr/sbin:/usr/bin:/sbin:/bin HOST_NAME=%q ROLE=%q MANAGE_FIREWALL_RULES=%q ZRAM=%q LAN_ADDRESS=%q GATEWAY_ADDRESS=%q DEFAULT_INTERFACE=%q FIREWALL_RULES=%q FIREWALL_SERVICE=%q SSH_SERVICE=%q ADMIN_USER=%q SAMBA_CLIENTS=%q NETBIOS=%q LOCAL_NETWORK=%q LOCALTIME_SOURCE=%q RESOLVED_DNS_OVER_TLS=%q MASK_UNATTENDED_LOGIND_DELAY=%q sh -s' \
+      'env PATH=/usr/local/sbin:/usr/local/bin:/usr/sbin:/usr/bin:/sbin:/bin HOST_NAME=%q ROLE=%q MANAGE_FIREWALL_RULES=%q ZRAM=%q LAN_ADDRESS=%q GATEWAY_ADDRESS=%q DEFAULT_INTERFACE=%q FIREWALL_RULES=%q FIREWALL_SERVICE=%q SSH_SERVICE=%q ADMIN_USER=%q SAMBA_CLIENTS=%q NETBIOS=%q LOCAL_NETWORK=%q LOCALTIME_SOURCE=%q RESOLVED_DNS_OVER_TLS=%q MASK_UNATTENDED_LOGIND_DELAY=%q DNSSEC_TRUST_ANCHORS_SOURCE=%q sh -s' \
       "$host" "$role" "$manage_rules" "$zram" \
       "$lan_address" "$gateway_address" "$default_interface" "$firewall_rules" "$firewall_service" "$ssh_service" \
       "$admin_user" "$samba_clients" "$netbios" "$local_network" "$localtime_source" "$resolved_dns_over_tls" \
-      "$mask_unattended_logind_delay"
+      "$mask_unattended_logind_delay" "$dnssec_trust_anchors_source"
     remote "$host" "$verify_command" <<'REMOTE_VERIFY'
 set -eu
 stage=core-services
@@ -1383,6 +1384,12 @@ test "$actual" = /run/systemd/resolve/stub-resolv.conf || {
   printf 'unexpected /etc/resolv.conf target: %s\n' "${actual:-missing}" >&2
   exit 1
 }
+actual=$(readlink /etc/dnssec-trust-anchors.d/root.positive 2>/dev/null || true)
+test "$actual" = "$DNSSEC_TRUST_ANCHORS_SOURCE" || {
+  printf 'unexpected /etc/dnssec-trust-anchors.d/root.positive target: %s (expected %s)\n' "${actual:-missing}" "$DNSSEC_TRUST_ANCHORS_SOURCE" >&2
+  exit 1
+}
+resolvectl query --type=DNSKEY . >/dev/null
 actual=$(getent passwd root | cut -d: -f7)
 test "$actual" = /bin/bash || {
   printf 'unexpected root login shell: %s\n' "${actual:-missing}" >&2

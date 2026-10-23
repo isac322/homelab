@@ -365,6 +365,10 @@
             assert lib.hasInfix "MulticastDNS=yes" rockLan && lib.hasInfix "LLMNR=no" rockLan;
             assert lib.hasInfix "DNSSEC=yes" rockResolved;
             assert lib.hasInfix "DNSOverTLS=yes" rockResolved;
+            assert n2p1.environment.etc."dnssec-trust-anchors.d/root.positive".replaceExisting;
+            assert lib.hasSuffix "/root.ds" (
+              toString n2p1.environment.etc."dnssec-trust-anchors.d/root.positive".source
+            );
             assert lib.hasInfix "NTP=162.159.200.1 162.159.200.123"
               n2p1.environment.etc."systemd/timesyncd.conf".text;
             assert lib.hasInfix "FallbackNTP=" n2p1.environment.etc."systemd/timesyncd.conf".text;

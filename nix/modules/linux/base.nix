@@ -111,6 +111,10 @@ in
         '';
         replaceExisting = true;
       };
+      "dnssec-trust-anchors.d/root.positive" = {
+        source = "${pkgs.dns-root-data}/root.ds";
+        replaceExisting = true;
+      };
       "systemd/timesyncd.conf" = {
         text = ''
           [Time]

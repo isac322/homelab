@@ -3585,6 +3585,8 @@ require(
     "nix/modules/linux/base.nix",
     "10-homelab-lan.network",
     "DNSSEC=yes",
+    "dnssec-trust-anchors.d/root.positive",
+    'source = "${pkgs.dns-root-data}/root.ds"',
     "DNSOverTLS=yes",
     "MulticastDNS=yes",
     "systemd/timesyncd.conf",
@@ -3863,6 +3865,9 @@ require(
     "locale -a",
     "LOCALTIME_SOURCE",
     'test "$actual" = "$LOCALTIME_SOURCE"',
+    "DNSSEC_TRUST_ANCHORS_SOURCE",
+    'test "$actual" = "$DNSSEC_TRUST_ANCHORS_SOURCE"',
+    "resolvectl query --type=DNSKEY . >/dev/null",
     'grep -qx "Asia/Seoul" /etc/timezone',
     "resolvedDnsOverTls",
     "RESOLVED_DNS_OVER_TLS=%q",
@@ -4482,7 +4487,7 @@ require(
     "apps/objects/k3s-system-upgrade/k3s-upgrade-plan.yaml",
     "name: server-plan",
     "name: agent-plan",
-    "version: v1.36.4+k3s1",
+    "version: v1.36.5+k3s1",
     "image: rancher/k3s-upgrade",
 )
 if (root / "nix/k3s-package.nix").exists():
