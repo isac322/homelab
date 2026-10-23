@@ -65,7 +65,7 @@ The `build` job runs on a native `ubuntu-24.04-arm` runner:
 
 | File | Purpose |
 |---|---|
-| `01-pr-23958-rknn-shared-weights.patch` | Upstream PR #23958 ported onto v3.3.1: native pybind11 pool sharing weights via `rknn_dup_context` (keeps v3.3's custom-string metadata, fp16 outputs, dynamic shapes, `data_format`), drops `rknn-toolkit-lite2`, pins `librknnrt` v2.3.2, and builds the extension in the `prod` stage with chained `&&` and `/opt/venv/bin` on `PATH` (formerly patch 02) |
+| `01-pr-23958-rknn-shared-weights.patch` | Upstream PR #23958 ported onto v3.3.5: native pybind11 pool sharing weights via `rknn_dup_context` (keeps v3.3's custom-string metadata, fp16 outputs, dynamic shapes, `data_format`), drops `rknn-toolkit-lite2`, pins `librknnrt` v2.3.2, and builds the extension in the `prod` stage with chained `&&` and `/opt/venv/bin` on `PATH` (formerly patch 02) |
 
 Paths inside the patches are relative to the Immich repo root
 (`a/machine-learning/...`).
