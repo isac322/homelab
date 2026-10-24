@@ -29,7 +29,7 @@ spec:
           type: RuntimeDefault
       containers:
         - name: n8n
-          image: docker.io/n8nio/n8n:2.42.7@sha256:906dd7fb0a2f23869001d1767168359489c518ff34d4f67427abf2dc59e868fe
+          image: docker.io/n8nio/n8n:2.45.3@sha256:bf88c3783fc4b2a90a007bb99b04ad2f6a9627f41499baf72ca67559c51c7f4c
           command:
             - /bin/sh
             - /etc/issue-agent-n8n/n8n-bootstrap.sh
