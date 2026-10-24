@@ -1347,8 +1347,8 @@ grafana:
 
   sidecar:
     image:
-      tag: 2.11.2
-      sha: 2912be006f62f9ea080194cf6d3afcd90daead8d101d0ba686a137a849f6a4f6
+      tag: 2.14.1
+      sha: 092dbe0c335fba9af414a27630ca68f34df6185784fa847d9954187e69dbfdd7
     resources:
       requests:
         cpu: 5m
