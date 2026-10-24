@@ -10,7 +10,7 @@ spec:
       enabled: false
   image:
     repository: nousresearch/hermes-agent
-    tag: v0.22.2@sha256:36099926da316742423544e055d4734777105ffe6341873af5459b957d0c2919
+    tag: v0.22.5@sha256:9c5561579f3ffdf333401797094ac3a743738d6c25d40f4331c7bf77b694238d
   resources:
     requests:
       cpu: 50m
@@ -19,15 +19,15 @@ spec:
       memory: 3Gi
   initContainers:
     - name: install-hermes-lcm
-      image: nousresearch/hermes-agent:v0.22.2@sha256:36099926da316742423544e055d4734777105ffe6341873af5459b957d0c2919
+      image: nousresearch/hermes-agent:v0.22.5@sha256:9c5561579f3ffdf333401797094ac3a743738d6c25d40f4331c7bf77b694238d
       command:
         - /bin/sh
         - -ec
       args:
         - |
           TARGET_DIR="/lcm/plugin"
-          TARGET_COMMIT="460994653a2970f5f1012b625ea85be5e1fd433f"
-          TARGET_SHA256="4e65211d0d42171f9c2b8a4dac3b749324d5246e8fda7222bc4c56abe0ea6581"
+          TARGET_COMMIT="49e99a272d2d461e5c90732e7ef2bc20e96f0826"
+          TARGET_SHA256="4c055c79e91ab1738fb70f325b265fce26c3c818c352e640a64e1d3dbdeb2182"
           RECEIPT_FILE="$TARGET_DIR/.version"
           rm -f /opt/data/plugins/hindsight/pyproject.toml "$TARGET_DIR/pyproject.toml"
 
@@ -62,7 +62,7 @@ spec:
         - name: hermes-lcm
           mountPath: /lcm
     - name: install-default-skills
-      image: nousresearch/hermes-agent:v0.22.2@sha256:36099926da316742423544e055d4734777105ffe6341873af5459b957d0c2919
+      image: nousresearch/hermes-agent:v0.22.5@sha256:9c5561579f3ffdf333401797094ac3a743738d6c25d40f4331c7bf77b694238d
       command:
         - /bin/sh
         - -e
@@ -109,7 +109,7 @@ spec:
         - name: hermes-default-skills
           mountPath: /skills
     - name: patch-openai-native-web-search
-      image: nousresearch/hermes-agent:v0.22.2@sha256:36099926da316742423544e055d4734777105ffe6341873af5459b957d0c2919
+      image: nousresearch/hermes-agent:v0.22.5@sha256:9c5561579f3ffdf333401797094ac3a743738d6c25d40f4331c7bf77b694238d
       command:
         - /opt/hermes/.venv/bin/python
         - /patch/patch.py
