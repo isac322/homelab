@@ -58,7 +58,7 @@ spec:
       enableServiceLinks: false
       containers:
         - name: registry
-          image: docker.io/library/registry:3.1.2@sha256:ddf754342cfc8acc51a56d5d0ab6af06826461864460636d8bd5c546dab2a7b8
+          image: docker.io/library/registry:3.1.2@sha256:01cd312e5a92a1df81c36ef185cfcf87141f2a7bf23fb6cfcf0e1702bd20efd2
           ports:
             - name: registry
               containerPort: 5000

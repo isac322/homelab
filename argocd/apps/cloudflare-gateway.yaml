@@ -12,7 +12,7 @@ spec:
   source:
     repoURL: https://github.com/kubernetes-sigs/gateway-api.git
     path: config/crd/standard
-    targetRevision: v1.6.2
+    targetRevision: v1.6.3
   ignoreDifferences:
     - group: apiextensions.k8s.io
       kind: CustomResourceDefinition
@@ -58,7 +58,7 @@ spec:
           patch: |
             - op: replace
               path: /spec/template/spec/containers/0/env/0/value
-              value: docker.io/cloudflare/cloudflared:2026.9.3@sha256:072c067d25ccbe61d46e18f0d0723255f2bb5304f7317caa95b27031520ff92c
+              value: docker.io/cloudflare/cloudflared:2026.10.3@sha256:faa8e0a1475f137c910be6025f43c8e4092fdd35461b31e19fd1390657a1ff39
   syncPolicy:
     automated:
       prune: true
