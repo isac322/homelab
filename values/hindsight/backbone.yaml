@@ -11,6 +11,7 @@ api:
     limits:
       memory: 1Gi
   env:
+    HINDSIGHT_API_WORKER_ID: "hindsight-api"
     # LLM: Vertex AI using the existing service-account mount through ADC
     HINDSIGHT_API_LLM_PROVIDER: "vertexai"
     HINDSIGHT_API_LLM_MODEL: "gemini-3.5-flash-lite"

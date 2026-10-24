@@ -9,7 +9,7 @@ controllers:
     containers:
       main:
         image:
-          tag: v3.3.1@sha256:db996e352359771c6a3db121a0ed8761516b22f727fc092a0f46dcfef82c1bc1
+          tag: v3.3.5@sha256:485d546a2e31d6a8b4db8423fcba5c109de8c218d93410af115fd1ccfc4352a6
         env:
           REDIS_HOSTNAME: '{{ printf "%s-valkey" .Release.Name }}'
           # Add the env vars to connect to your database here.
@@ -69,7 +69,7 @@ valkey:
         main:
           image:
             repository: docker.io/valkey/valkey
-            tag: 9.1.2-alpine@sha256:a0dbf4c1d5708782907c10e2c72deff317518518b5288a58416981d9db95d30b
+            tag: 9.2-alpine@sha256:cdcb7b1c7b6f1c9cb9442c71ac6275e78184657448407b2c1fdde7ee8024f4fb
             pullPolicy: IfNotPresent
           args:
             - --maxmemory
@@ -212,10 +212,10 @@ server:
       enabled: true
       type: hostPath
       hostPath: /usr/lib/aarch64-linux-gnu/libwayland-server.so.0
-    # These files are verbatim copies of immich v3.3.1 server dist JS with only the
+    # These files are verbatim copies of immich v3.3.5 server dist JS with only the
     # local RKMPP/OpenCL tonemap and frame-cropping deltas applied (see the
     # media-patch-configmap.yaml commit history and the PR #30022 port). They are
-    # valid ONLY for the server image tag pinned in this values file (v3.3.1).
+    # valid ONLY for the server image tag pinned in this values file (v3.3.5).
     # To regenerate: extract the six dist files from
     # ghcr.io/immich-app/immich-server:<tag> (docker create --platform linux/arm64
     # + docker cp), apply the local delta via git merge-file (base = old upstream
@@ -253,7 +253,7 @@ machine-learning:
         main:
           image:
             repository: ghcr.io/isac322/immich-machine-learning
-            tag: v3.3.1-rknn@sha256:8d859332aa0bfdcd7262706de4c4a3b410cb012fa5921731902d8ef6d87a9e30
+            tag: v3.3.5-rknn@sha256:7a0048535a479c4908c7818c71babc9a811aa199f40b9aeddcfb413de03edb66
           env:
             MACHINE_LEARNING_RKNN_THREADS: 3
             # Upstream v2 models fold the XLM-R position-id CumSum away at export

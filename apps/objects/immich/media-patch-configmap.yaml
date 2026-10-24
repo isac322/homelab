@@ -936,7 +936,7 @@ data:
     //# sourceMappingURL=media.js.map
   database.js: |
     import { createPostgres } from '@immich/sql-tools';
-    import { DeduplicateJoinsPlugin, sql, } from 'kysely';
+    import { DeduplicateJoinsPlugin, expressionBuilder, sql, } from 'kysely';
     import { jsonArrayFrom, jsonObjectFrom } from 'kysely/helpers/postgres';
     import { PostgresJSDialect } from 'kysely-postgres-js';
     import { columns, lockableProperties } from "../database.js";
@@ -1125,13 +1125,14 @@ data:
             .having((eb) => eb.fn.count('personGroupId').distinct(), '=', personGroupIds.length)
             .as('has_people'), (join) => join.onRef('has_people.assetId', '=', 'asset.id'));
     }
-    export function inSharedAlbum(eb, userId) {
+    export function inSharedAlbum(userId, assetId) {
+        const eb = expressionBuilder();
         return eb.exists(eb
             .selectFrom('album_asset')
             .select(sql.lit(1).as('exists'))
             .innerJoin('album', (join) => join.onRef('album.id', '=', 'album_asset.albumId').on('album.deletedAt', 'is', null))
-            .innerJoin('album_user', (join) => join.onRef('album_user.albumId', '=', 'album.id').on('album_user.userId', '=', asUuid(userId)))
-            .whereRef('album_asset.assetId', '=', 'asset.id'));
+            .innerJoin('album_user', (join) => join.onRef('album_user.albumId', '=', 'album.id').on('album_user.userId', '=', userId))
+            .whereRef('album_asset.assetId', '=', assetId));
     }
     export function inAlbums(qb, albumIds) {
         return qb.innerJoin((eb) => eb
@@ -2737,7 +2738,7 @@ data:
                 .where((eb) => eb.or([eb('asset.stackId', 'is', null), eb(eb.table('stack'), 'is not', null)])))
                 .$if(!!options.userIds, (qb) => qb.where((eb) => {
                 const isOwner = eb('asset.ownerId', '=', anyUuid(options.userIds));
-                return options.personId ? eb.or([isOwner, inSharedAlbum(eb, auth.user.id)]) : isOwner;
+                return options.personId ? eb.or([isOwner, inSharedAlbum(auth.user.id, 'asset.id')]) : isOwner;
             }))
                 .$if(options.isFavorite !== undefined, (qb) => qb.where('asset.isFavorite', '=', options.isFavorite))
                 .$if(!!options.assetType, (qb) => qb.where('asset.type', '=', options.assetType))
@@ -2799,7 +2800,7 @@ data:
                 .$if(!!options.personId, (qb) => hasPeople(qb, [options.personId]))
                 .$if(!!options.userIds, (qb) => qb.where((eb) => {
                 const isOwner = eb('asset.ownerId', '=', anyUuid(options.userIds));
-                return options.personId ? eb.or([isOwner, inSharedAlbum(eb, auth.user.id)]) : isOwner;
+                return options.personId ? eb.or([isOwner, inSharedAlbum(auth.user.id, 'asset.id')]) : isOwner;
             }))
                 .$if(options.isFavorite !== undefined, (qb) => qb.where('asset.isFavorite', '=', options.isFavorite))
                 .$if(!!options.withStacked, (qb) => qb
