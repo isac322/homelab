@@ -46,11 +46,11 @@
       "nvme-fabrics",
       "nvme-tcp"
     ],
-    "kernelRelease": "6.18.34+rpt-rpi-v8",
-    "headersPackage": "linux-headers-6.18.34+rpt-rpi-v8",
+    "kernelRelease": "6.18.50+rpt-rpi-v8",
+    "headersPackage": "linux-headers-6.18.50+rpt-rpi-v8",
     "baseline": {
-      "version": "6.18.34",
-      "hash": "sha256-ZAxHMvtChCFm25fgMsH+fl/3LIWomCx1tA90vjVV12A="
+      "version": "6.18.50",
+      "hash": "sha256-0vwEHatOEdlkXjulO+BY+qUrjOKKipfIibssrO4XBGE="
     },
     "transport": {
       "version": "6.18.51",
@@ -63,15 +63,15 @@
       "nvme-fabrics",
       "nvme-tcp"
     ],
-    "kernelRelease": "6.12.93+rpt-rpi-2712",
-    "headersPackage": "linux-headers-6.12.93+rpt-rpi-2712",
+    "kernelRelease": "6.12.109+rpt-rpi-2712",
+    "headersPackage": "linux-headers-6.12.109+rpt-rpi-2712",
     "baseline": {
-      "version": "6.12.93",
-      "hash": "sha256-SSZIqHwLacWsf0O+ZHkrkADjQ5VQ1OguShRxDEkJT6M="
+      "version": "6.12.109",
+      "hash": "sha256-VITlUqM04VAZ9K66ieW1jwRlHPL04k4E3p8VLxw44/o="
     },
     "transport": {
-      "version": "6.12.111",
-      "hash": "sha256-nlncZ2JBiPoSpmAflZhJnNZmKpBmvlcrWfk149eEmBA="
+      "version": "6.12.114",
+      "hash": "sha256-eoWJkSvXqK2wf+0HQoNlLPSCo1+s74lUVUZU8BVLSvM="
     }
   }
 }
