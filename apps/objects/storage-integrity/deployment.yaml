@@ -57,7 +57,7 @@ spec:
           type: RuntimeDefault
       containers:
         - name: storage-canary
-          image: ghcr.io/isac322/storage-canary:6a819b6ce8c1@sha256:1b3c42f03bcb6dba2cd8a498f115149c50f4d8f87df17002f5c297e68208c3b4
+          image: ghcr.io/isac322/storage-canary:c25608680632@sha256:3b263f996e2da7b892c5fc0420e24bc4aacc6484f1c8e21144ae9bafc21b7e9e
           args:
             - -mode
             - canary
