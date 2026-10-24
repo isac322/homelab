@@ -64,7 +64,7 @@
         atomic: yes
         chart_ref: argo-cd
         chart_repo_url: https://argoproj.github.io/argo-helm
-        chart_version: 9.1.3
+        chart_version: 10.11.1
         create_namespace: yes
         kubeconfig: /etc/rancher/k3s/k3s.yaml
         release_name: argocd
@@ -84,7 +84,7 @@
         atomic: yes
         chart_ref: argocd-apps
         chart_repo_url: https://argoproj.github.io/argo-helm
-        chart_version: 2.0.2
+        chart_version: 2.0.7
         create_namespace: yes
         kubeconfig: /etc/rancher/k3s/k3s.yaml
         release_name: argocd-apps
