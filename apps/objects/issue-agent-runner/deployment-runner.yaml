@@ -35,7 +35,7 @@ spec:
         # from falling back to the upstream entrypoint's TCP listener.
         - name: dockerd
           restartPolicy: Always
-          image: ghcr.io/isac322/issue-agent-dockerd:29.9.0-20261013-janitor-pressure@sha256:b8417323336fafa8553b38c136b1d88c987eecdde54c651dee5b6e2a46e0b103
+          image: ghcr.io/isac322/issue-agent-dockerd:29.9.2-20261024@sha256:9185ace7fb76486a815eb713b62d5614b00d8ac323958cdcc60e261bc36d721e
           command:
             - /opt/issue-agent/bin/dockerd-start
           env:
@@ -177,7 +177,7 @@ spec:
                       - macmini
       containers:
         - name: runner
-          image: ghcr.io/isac322/issue-agent-runner:0.30.7-codex0.162.1-20261020-manifest-profile-r8-abc2fb5@sha256:a2fbd82fd2dfb1fb0f2277dcabfb7893dae7566c7e6b11ff1cbd00d08fcf0406
+          image: ghcr.io/isac322/issue-agent-runner:0.30.7-codex0.164.0-20261024@sha256:326c06971406f23e248a34312ec0bbde6325d8ce1fdcdb6d6fabf7343cff36f9
           env:
             - name: HOME
               value: /home/agent
@@ -285,7 +285,7 @@ spec:
         # Same image as the runner; /checkout also marks the checkout and its
         # worktrees untrusted in CODEX_HOME (codex-untrust).
         - name: publisher
-          image: ghcr.io/isac322/issue-agent-runner:0.30.7-codex0.162.1-20261020-manifest-profile-r8-abc2fb5@sha256:a2fbd82fd2dfb1fb0f2277dcabfb7893dae7566c7e6b11ff1cbd00d08fcf0406
+          image: ghcr.io/isac322/issue-agent-runner:0.30.7-codex0.164.0-20261024@sha256:326c06971406f23e248a34312ec0bbde6325d8ce1fdcdb6d6fabf7343cff36f9
           command:
             - /usr/bin/tini
             - --

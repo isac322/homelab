@@ -6,7 +6,7 @@
 #
 # Codex starts stdio MCP servers with only its default variables (HOME LOGNAME
 # PATH SHELL USER LANG LC_ALL TERM TMPDIR TZ; rmcp-client DEFAULT_ENV_VARS,
-# 0.162.1) plus the names listed in env_vars. Commands run through ctx_* need
+# 0.164.0) plus the names listed in env_vars. Commands run through ctx_* need
 # the same non-secret runner environment the agent shell gets, so context-mode
 # receives the managed_config.toml include_only names that are not defaults.
 # Never list secrets (OPENAI_API_KEY, CLI_API_TOKEN, HAPI_*) or

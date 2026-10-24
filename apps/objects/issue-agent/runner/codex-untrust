@@ -11,7 +11,7 @@
 #                   worktree next to it (<checkout>-worktrees/<dir>) get
 #                   `[projects."<path>"] trust_level = "untrusted"`.
 #
-# Why every one of those paths (Codex 0.162.1): a thread looks up its project by
+# Why every one of those paths (Codex 0.164.0): a thread looks up its project by
 # the cwd key first, then by the repository root key, each as the canonical
 # (realpath) spelling and then the original one, with no ancestor or wildcard
 # match (config_toml.rs get_active_project, project_trust.rs). For a git

@@ -3,11 +3,11 @@
 # Build context: apps/objects/issue-agent (see .dockerignore). linux/arm64 only.
 # No credentials are baked in and the sidecar mounts none.
 
-# issue-agent-authz: the Docker authorization plugin (runner/authz). Go 1.27.2
+# issue-agent-authz: the Docker authorization plugin (runner/authz). Go 1.27.3
 # matches Dockerfile.runner's GO_VERSION. Pinned by OCI index digest of
-# golang:1.27.2-alpine3.24. The table tests gate the build; the binary is
+# golang:1.27.3-alpine3.24. The table tests gate the build; the binary is
 # static (CGO_ENABLED=0) so it runs on the dind image's musl userland.
-FROM --platform=$BUILDPLATFORM golang:1.27.2-alpine3.24@sha256:f92b6ef800e499660581efdabdf25d9d817a9d124eaf900924f0504e7e27e12d AS authz
+FROM --platform=$BUILDPLATFORM golang:1.27.3-alpine3.24@sha256:b8c9b82affbbb82a020bbcf998dad2ba9516944ac7e883524642a481a9505e9c AS authz
 ARG TARGETOS TARGETARCH
 WORKDIR /src
 COPY runner/authz/ ./
@@ -19,7 +19,7 @@ RUN go test ./... \
 # (runner/chown-sweep): fd-anchored, no-follow ownership sweep of worktrees
 # and the status/prune-request files. Same toolchain image and gating as authz;
 # its one dependency (golang.org/x/sys) is pinned by go.sum.
-FROM --platform=$BUILDPLATFORM golang:1.27.2-alpine3.24@sha256:f92b6ef800e499660581efdabdf25d9d817a9d124eaf900924f0504e7e27e12d AS chown-sweep
+FROM --platform=$BUILDPLATFORM golang:1.27.3-alpine3.24@sha256:b8c9b82affbbb82a020bbcf998dad2ba9516944ac7e883524642a481a9505e9c AS chown-sweep
 ARG TARGETOS TARGETARCH
 WORKDIR /src
 COPY runner/chown-sweep/go.mod runner/chown-sweep/go.sum ./
@@ -29,8 +29,8 @@ RUN go test ./... \
     && CGO_ENABLED=0 GOOS=$TARGETOS GOARCH=$TARGETARCH \
        go build -trimpath -ldflags='-s -w' -o /out/issue-agent-chown-sweep .
 
-# docker:29.9.0-dind (linux/arm64); matches the runner image's docker:29.9.0-cli.
-FROM docker:29.9.0-dind@sha256:0b6d18a4a222e71c88be6034926b4f6cde2fc33c2218643d03ccfddc65995470
+# docker:29.9.2-dind (linux/arm64); matches the runner image's docker:29.9.2-cli.
+FROM docker:29.9.2-dind@sha256:9e79b879b177fbd72c34376a3dd3d91747da5db49e1f560f76aea59561471977
 
 # The dind image already ships iptables/ip6tables on the nf_tables
 # backend; fail the build if they ever resolve to legacy. util-linux provides
