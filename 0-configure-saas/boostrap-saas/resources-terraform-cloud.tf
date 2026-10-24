@@ -10,7 +10,7 @@ resource "tfe_workspace" "backbone" {
   description         = "backbone cluster of homelab"
   organization        = tfe_organization.this.name
   speculative_enabled = false
-  terraform_version   = "1.15.8"
+  terraform_version   = "1.16.5"
   project_id          = tfe_project.homelab.id
 }
 

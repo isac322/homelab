@@ -8,11 +8,11 @@ terraform {
     }
     tfe = {
       source  = "hashicorp/tfe"
-      version = "~> 0.74"
+      version = "~> 0.82"
     }
     cloudflare = {
       source  = "cloudflare/cloudflare"
-      version = "~> 5.18"
+      version = "~> 5.24.0"
     }
   }
 }

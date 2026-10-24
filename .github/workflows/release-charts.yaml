@@ -6,7 +6,6 @@ on:
       - master
     paths:
       - charts/**
-      - .github/workflows/release-charts.yaml
 
   workflow_dispatch:
 
