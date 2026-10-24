@@ -1,3 +1,6 @@
+image:
+  tag: v0.24.0@sha256:a80a146d2540fa138565e404f0625157271071a06093021f27ae19d8316d10f9
+
 serviceMonitor:
   enabled: true
 
