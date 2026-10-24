@@ -32,7 +32,7 @@ spec:
                       - macmini
       containers:
         - name: buildkitd
-          image: docker.io/moby/buildkit:v0.33.1@sha256:cec9f139f45e93c5c69c60f8b07cfad9f43f4ef6b6a6cd917527fea5ff2e3dea
+          image: docker.io/moby/buildkit:v0.34.1@sha256:99368f3e46177c6405b9740e4461d91cee004128daeecca78d4ceac50ec1da5c
           args:
             - --config
             - /etc/buildkit/buildkitd.toml

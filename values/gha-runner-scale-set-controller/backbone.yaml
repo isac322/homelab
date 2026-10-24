@@ -2,7 +2,7 @@ fullnameOverride: arc-gha-rs-controller
 
 image:
   repository: ghcr.io/actions/gha-runner-scale-set-controller
-  tag: 0.15.0@sha256:162dfb5bfbda9e7e49fbed67d428994c9ced55b41a37a18b75b46dab0aa98d37
+  tag: 0.15.1@sha256:4b51a20db717b194e2f3fa96cfe2ddcb21602811f79053c75fd1a383517b9f90
   pullPolicy: IfNotPresent
 
 serviceAccount:
