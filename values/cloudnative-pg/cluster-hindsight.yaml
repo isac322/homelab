@@ -35,6 +35,7 @@ cluster:
       work_mem: 16MB
       maintenance_work_mem: 128MB
       max_connections: "50"
+      max_locks_per_transaction: "256"
   postgresUID: 26
   postgresGID: 999
   initdb:
