@@ -25,7 +25,7 @@ spec:
           operator: Exists
       containers:
         - name: rknpu-dp-cntr
-          image: ghcr.io/elct9620/rknpu-device-plugin:f8a6989@sha256:542c5933b4f5d837632eb419abd5c97a3bc1fe8ac6cebc8db6423f81c9210790
+          image: ghcr.io/elct9620/rknpu-device-plugin:33f7c5f@sha256:f56fc4e87ec4adffd3d49add0330d6560b7450406a1bb1b0d018845556c0eb74
           imagePullPolicy: IfNotPresent
           resources:
             requests:
