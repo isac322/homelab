@@ -222,7 +222,7 @@ jobs:
 
       - name: Install uv
         if: steps.uv.outputs.lock_refresh == 'true'
-        uses: astral-sh/setup-uv@v10.3.2
+        uses: astral-sh/setup-uv@v10.3.3
         with:
           version: ${{ steps.uv.outputs.uv_version }}
           enable-cache: false
