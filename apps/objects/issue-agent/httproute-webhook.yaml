@@ -4,8 +4,9 @@ metadata:
   name: issue-agent-webhook
 spec:
   parentRefs:
-    - name: cloudflare-tunnel
-      namespace: cloudflare-gateway
+    - name: public-webhooks
+      namespace: flareway-system
+      sectionName: issue-agent-webhook
   hostnames:
     - issue-agent-webhook.bhyoo.com
   rules:

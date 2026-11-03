@@ -5,8 +5,9 @@ metadata:
   namespace: argocd
 spec:
   parentRefs:
-    - name: cloudflare-tunnel
-      namespace: cloudflare-gateway
+    - name: public-webhooks
+      namespace: flareway-system
+      sectionName: argocd-webhook
   hostnames:
     - argocd-webhook.bhyoo.com
   rules:
