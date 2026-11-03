@@ -10,6 +10,7 @@ spec:
       namespace: flareway-system
       key: api-token
   grants:
+    # CRD defaults inside this atomic list must be explicit for Argo CD comparison.
     - namespaceSelector:
         matchLabels:
           kubernetes.io/metadata.name: flareway-system
@@ -18,6 +19,11 @@ spec:
         - issue-agent-webhook.bhyoo.com
       zones: [bhyoo.com]
       exposures: [Public]
+      accessCustomPageRefs: Denied
+      accessPolicyRefs: Denied
+      accessStandaloneApplicationRefs: Denied
+      devicePostureIntegrationRefs: Denied
+      platformObjects: Denied
       unprotectedHostnames:
         - argocd-webhook.bhyoo.com
         - issue-agent-webhook.bhyoo.com
@@ -31,6 +37,11 @@ spec:
         - issue-agent-webhook.bhyoo.com
       zones: [bhyoo.com]
       exposures: [Public]
+      accessCustomPageRefs: Denied
+      accessPolicyRefs: Denied
+      accessStandaloneApplicationRefs: Denied
+      devicePostureIntegrationRefs: Denied
+      platformObjects: Denied
       backends:
         namespaces: Same
         kinds: [Service]
