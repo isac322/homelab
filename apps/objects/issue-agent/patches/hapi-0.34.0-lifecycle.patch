@@ -1,8 +1,8 @@
 diff --git a/cli/src/codex/shared/registry.test.ts b/cli/src/codex/shared/registry.test.ts
-index d702cfa8..1370efe3 100644
+index d702cfa8..cac7ed61 100644
 --- a/cli/src/codex/shared/registry.test.ts
 +++ b/cli/src/codex/shared/registry.test.ts
-@@ -3,20 +3,38 @@ import { mkdtemp, mkdir, writeFile, rm } from 'node:fs/promises';
+@@ -3,20 +3,50 @@ import { mkdtemp, mkdir, writeFile, rm } from 'node:fs/promises';
  import { join } from 'node:path';
  import { tmpdir } from 'node:os';
  
@@ -36,6 +36,18 @@ index d702cfa8..1370efe3 100644
 +        expect(runtimeMayBeAlive(owner)).toBe(false);
 +        expect(runtimeMayBeAlive(owner, new Map([[owner.pid, owner.marker]]))).toBe(false);
 +    });
++    it('ignores active thread ownership records from a previous namespace generation', async () => {
++        const owner = await fixture();
++        state.processes.set(owner.pid, owner.marker);
++        state.processes.set(owner.serverPid!, owner.serverMarker);
++        await saveRuntime({ ...owner, namespaceGeneration: 'boot:old' });
++        await expect(withThreadOwnership(owner.codexHome, 'thread', 'new-owner', async () => 'allowed'))
++            .resolves.toBe('allowed');
++
++        await saveRuntime(owner);
++        await expect(withThreadOwnership(owner.codexHome, 'thread', 'new-owner', async () => 'allowed'))
++            .rejects.toThrow('Thread belongs to another Codex runtime');
++    });
 +    it('persists the current namespace generation by default', async () => {
 +        const owner = await fixture();
 +        await saveRuntime(owner);
@@ -45,7 +57,7 @@ index d702cfa8..1370efe3 100644
          const owner = await fixture();
          const probe = vi.spyOn(state.processes, 'has');
 diff --git a/cli/src/codex/shared/registry.ts b/cli/src/codex/shared/registry.ts
-index 190593e5..e4c73a95 100644
+index 190593e5..f536c830 100644
 --- a/cli/src/codex/shared/registry.ts
 +++ b/cli/src/codex/shared/registry.ts
 @@ -5,12 +5,13 @@ import { randomUUID, createHash } from 'node:crypto';
@@ -112,6 +124,14 @@ index 190593e5..e4c73a95 100644
          await rename(temporary, target);
      }
  }
+@@ -90,6 +102,7 @@ export async function withThreadOwnership<T>(home: string, threadId: string, own
+         try {
+             for (const owner of await readRecords(directory, true)) {
+                 if (owner.id === ownId || owner.codexHome !== home) continue;
++                if (!currentNamespaceGenerationMatches(owner)) continue;
+                 if (owner.pendingCreations?.length && runtimeMayBeAlive(owner)) {
+                     throw new Error(`Codex runtime ${owner.id} has an unconfirmed creation. Inspect/stop that runtime before cold resume; its thread ID may be unknown.`);
+                 }
 diff --git a/cli/src/commands/runner.test.ts b/cli/src/commands/runner.test.ts
 index 706cbd16..0067654f 100644
 --- a/cli/src/commands/runner.test.ts

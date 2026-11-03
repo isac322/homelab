@@ -29,7 +29,7 @@ spec:
           type: RuntimeDefault
       containers:
         - name: hub
-          image: ghcr.io/isac322/issue-agent-hapi:0.34.0-20261104-lifecycle@sha256:720938665ff625d77794c9458566a4d1749c9bde22382314ab9a24879858ae04
+          image: ghcr.io/isac322/issue-agent-hapi:0.34.0-20261104-lifecycle-r2@sha256:7743a710ac282d2c4cc189cf3c9aaeffd6ee685106bf40fc0094fad8d20c8ba4
           env:
             - name: HOME
               value: /var/lib/hapi
