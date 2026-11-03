@@ -1,0 +1,36 @@
+apiVersion: flareway.bhyoo.com/v1alpha1
+kind: CloudflareAccount
+metadata:
+  name: bhyoo
+spec:
+  accountId: "fc3dc494135a541eb966015a04bc66c6"
+  credentials:
+    apiTokenSecretRef:
+      name: cloudflare-api-token
+      namespace: flareway-system
+      key: api-token
+  grants:
+    - namespaceSelector:
+        matchLabels:
+          kubernetes.io/metadata.name: flareway-system
+      hostnames:
+        - argocd-webhook.bhyoo.com
+        - issue-agent-webhook.bhyoo.com
+      zones: [bhyoo.com]
+      exposures: [Public]
+      unprotectedHostnames:
+        - argocd-webhook.bhyoo.com
+        - issue-agent-webhook.bhyoo.com
+    - namespaceSelector:
+        matchExpressions:
+          - key: kubernetes.io/metadata.name
+            operator: In
+            values: [argocd, issue-agent]
+      hostnames:
+        - argocd-webhook.bhyoo.com
+        - issue-agent-webhook.bhyoo.com
+      zones: [bhyoo.com]
+      exposures: [Public]
+      backends:
+        namespaces: Same
+        kinds: [Service]

@@ -1,0 +1,15 @@
+apiVersion: argoproj.io/v1alpha1
+kind: AppProject
+metadata:
+  name: flareway
+spec:
+  description: Public webhook ingress through Flareway
+  sourceRepos:
+    - https://github.com/isac322/homelab.git
+    - ghcr.io/isac322/charts
+  destinations:
+    - namespace: flareway-system
+      name: backbone
+  clusterResourceWhitelist:
+    - group: '*'
+      kind: '*'

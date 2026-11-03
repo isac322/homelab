@@ -1,0 +1,62 @@
+apiVersion: flareway.bhyoo.com/v1alpha1
+kind: CloudflareTunnel
+metadata:
+  name: public-webhooks
+spec:
+  accountRef:
+    name: bhyoo
+  tunnel:
+    name: homelab-backbone-public-webhooks
+  configuration:
+    mode: Gateway
+  managementPolicy: Managed
+  adoption:
+    mode: None
+  # Preserve the remote tunnel if GitOps is removed during recovery.
+  deletionPolicy: Orphan
+  dns:
+    mode: Managed
+    proxied: true
+    ttl: 1
+  listeners:
+    - name: argocd-webhook
+      exposure: Public
+    - name: issue-agent-webhook
+      exposure: Public
+---
+apiVersion: gateway.networking.k8s.io/v1
+kind: Gateway
+metadata:
+  name: public-webhooks
+spec:
+  gatewayClassName: flareway
+  infrastructure:
+    parametersRef:
+      group: flareway.bhyoo.com
+      kind: CloudflareTunnel
+      name: public-webhooks
+  listeners:
+    - name: argocd-webhook
+      hostname: argocd-webhook.bhyoo.com
+      protocol: HTTP
+      port: 80
+      allowedRoutes:
+        namespaces:
+          from: Selector
+          selector:
+            matchExpressions:
+              - key: kubernetes.io/metadata.name
+                operator: In
+                values: [argocd]
+    - name: issue-agent-webhook
+      hostname: issue-agent-webhook.bhyoo.com
+      protocol: HTTP
+      port: 80
+      allowedRoutes:
+        namespaces:
+          from: Selector
+          selector:
+            matchExpressions:
+              - key: kubernetes.io/metadata.name
+                operator: In
+                values: [issue-agent]

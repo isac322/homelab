@@ -1,0 +1,57 @@
+image:
+  digest: sha256:a9e6aa2ce520d768a76e79a15fb4061ca3f4098871f78cb5953d5cfafc9c37f8
+
+controllers:
+  gateway: true
+  access: false
+  privateNetwork: false
+  device: false
+  organization: false
+
+# Tier 1. Initial sizing exception approved 2026-11-03; no Flareway history yet.
+# Revisit after 14 healthy days; cloudflared uses the previous tunnel's history.
+resources:
+  requests:
+    cpu: 100m
+    memory: 64Mi
+  limits:
+    cpu: null
+    memory: 128Mi
+
+gatewayClass:
+  create: true
+  config:
+    accountRefName: bhyoo
+    connector:
+      # Preserve the currently deployed, digest-pinned connector during migration.
+      image: docker.io/cloudflare/cloudflared:2026.10.3@sha256:faa8e0a1475f137c910be6025f43c8e4092fdd35461b31e19fd1390657a1ff39
+      replicas: 2
+      resources:
+        requests:
+          cpu: 100m
+          memory: 24Mi
+        limits:
+          memory: 48Mi
+    proxy:
+      resources:
+        requests:
+          cpu: 100m
+          memory: 128Mi
+        limits:
+          memory: 256Mi
+    scheduling:
+      affinity:
+        nodeAffinity:
+          requiredDuringSchedulingIgnoredDuringExecution:
+            nodeSelectorTerms:
+              - matchExpressions:
+                  - key: kubernetes.io/arch
+                    operator: In
+                    values: [amd64, arm64]
+                  - key: kubernetes.io/os
+                    operator: In
+                    values: [linux]
+                  # WARP on macmini drops tunnel QUIC (UDP 7844).
+                  - key: kubernetes.io/hostname
+                    operator: NotIn
+                    values: [macmini]

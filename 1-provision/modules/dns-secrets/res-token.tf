@@ -81,6 +81,36 @@ resource "cloudflare_api_token" "k8s_cloudflared_gateway" {
   ]
 }
 
+# Dedicated production ingress token; keep the legacy token until its Gateway
+# finalizer has removed the old remote tunnel.
+resource "cloudflare_api_token" "k8s_flareway" {
+  name = "${var.k8s_cluster_name}_k8s_flareway"
+
+  policies = [
+    {
+      effect = "allow"
+      permission_groups = [
+        { id = local.zone_permission_groups["Zone Read"] },
+        { id = local.zone_permission_groups["DNS Write"] },
+      ]
+      resources = jsonencode({
+        "com.cloudflare.api.account.zone.${var.cloudflare_main_zone_id}" = "*"
+      })
+    },
+    {
+      effect = "allow"
+      permission_groups = [
+        { id = local.account_permission_groups["Account Settings Read"] },
+        { id = local.account_permission_groups["Cloudflare Tunnel Write"] },
+        { id = local.account_permission_groups["Access: Organizations, Identity Providers, and Groups Read"] },
+      ]
+      resources = jsonencode({
+        "com.cloudflare.api.account.${var.cloudflare_account_id}" = "*"
+      })
+    },
+  ]
+}
+
 # Flareway verifies credentials through /user/tokens/verify, so this must be a
 # user-owned API token rather than an account-owned token. Account permissions
 # apply across the existing bhyoo.com account; add new capabilities explicitly.

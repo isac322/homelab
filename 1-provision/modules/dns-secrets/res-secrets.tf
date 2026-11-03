@@ -19,6 +19,13 @@ resource "aws_ssm_parameter" "cf_api_token_for_cloudflared_gateway" {
   value       = cloudflare_api_token.k8s_cloudflared_gateway.value
 }
 
+resource "aws_ssm_parameter" "cf_api_token_for_flareway" {
+  name        = "/homelab/cluster/${var.k8s_cluster_name}/token/cloudflare/flareway"
+  description = "Cloudflare API token for Flareway public ingress"
+  type        = "SecureString"
+  value       = cloudflare_api_token.k8s_flareway.value
+}
+
 resource "aws_ssm_parameter" "postmark_smtp_token_for_immich" {
   name        = "/homelab/cluster/${var.k8s_cluster_name}/token/postmark/immich-smtp"
   description = "Postmark SMTP token for Immich"
@@ -172,6 +179,7 @@ data "aws_iam_policy_document" "secret_read" {
         aws_ssm_parameter.cf_api_token_for_cert_manager_dns_challenge.arn,
         aws_ssm_parameter.cf_api_token_for_external_dns.arn,
         aws_ssm_parameter.cf_api_token_for_cloudflared_gateway.arn,
+        aws_ssm_parameter.cf_api_token_for_flareway.arn,
         aws_ssm_parameter.postmark_smtp_token_for_immich.arn,
         aws_ssm_parameter.cf_account_id.arn,
         "${trimsuffix(aws_ssm_parameter.cf_account_id.arn, "cloudflare/account-id")}token/telegram/*",

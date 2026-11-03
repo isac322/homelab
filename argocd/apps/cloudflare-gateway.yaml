@@ -1,41 +1,6 @@
 apiVersion: argoproj.io/v1alpha1
 kind: Application
 metadata:
-  name: gateway-api-crds
-  finalizers:
-    - resources-finalizer.argocd.argoproj.io
-spec:
-  destination:
-    name: backbone
-    namespace: cloudflare-gateway
-  project: cloudflare-gateway
-  source:
-    repoURL: https://github.com/kubernetes-sigs/gateway-api.git
-    path: config/crd/standard
-    targetRevision: v1.6.3
-  ignoreDifferences:
-    - group: apiextensions.k8s.io
-      kind: CustomResourceDefinition
-      jqPathExpressions:
-        - .status
-  syncPolicy:
-    automated:
-      prune: true
-      selfHeal: true
-    retry:
-      backoff:
-        duration: 5s
-        factor: 2
-        maxDuration: 3m0s
-      limit: 100
-    syncOptions:
-      - CreateNamespace=true
-      - ServerSideApply=true
-      - RespectIgnoreDifferences=true
----
-apiVersion: argoproj.io/v1alpha1
-kind: Application
-metadata:
   name: cloudflare-gateway-controller
   finalizers:
     - resources-finalizer.argocd.argoproj.io

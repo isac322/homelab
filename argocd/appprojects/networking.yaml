@@ -7,6 +7,7 @@ spec:
   sourceRepos:
     - https://helm.cilium.io/
     - https://github.com/isac322/homelab.git
+    - https://github.com/kubernetes-sigs/gateway-api.git
   destinations:
     - namespace: kube-system
       name: backbone
