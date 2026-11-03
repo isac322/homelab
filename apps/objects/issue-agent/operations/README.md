@@ -1,6 +1,6 @@
 # Issue Agent operations
 
-There are four operator scripts. The three that call `kubectl` default to
+There are three operator scripts. The scripts that call `kubectl` default to
 `--context homelab-backbone` and never use the current kubectl context. They need
 bash ≥ 4.4. Hub, bridge, and n8n run in `issue-agent`; the runner pod (runner,
 publisher, and the privileged `dockerd` sidecar) runs in `issue-agent-runner`.
@@ -9,7 +9,6 @@ publisher, and the privileged `dockerd` sidecar) runs in `issue-agent-runner`.
 |---|---|---|
 | `issue-agent-records` | Read-only query/export of records for people and external readers | None. Needs `pods/exec` in both namespaces |
 | `issue-agent-backup` | Consistent online backup of the record stores. This is a **private operator artifact**: never give it to agents or external readers | Snapshot temp files next to each database, removed afterwards. Needs `pods/exec` in both namespaces |
-| `issue-agent-runner-home-migrate` | One-time copy of the runner home into `issue-agent-runner` during the namespace cutover | `status` is read-only. `migrate` patches the old PV, creates and deletes two scratch pods, writes the new home claim, and deletes runner pods that never started. `cleanup` deletes the scratch pods |
 | `issue-agent-docker-smoke` | Checks the pod-local Docker daemon from inside the runner container; `--policy` also checks its authorization policy | Builds and runs containers on the privileged daemon; keeps an artifact directory under `/tmp/issue-agent` |
 
 `issue-agent-records` and `issue-agent-backup` read hub, bridge, and n8n from
@@ -86,7 +85,7 @@ partial last line.
 The backup directory contains:
 
 - `hub.tar`: the `hapi.db` snapshot, `owner-id.json`, and logs.
-- `n8n.tar`: the `database.sqlite` snapshot, workflow-import state, event logs, and
+- `n8n.tar`: the `database.sqlite` snapshot, per-workflow import state, event logs, and
   binary data.
 - `bridge.tar`: the `state.sqlite3` snapshot.
 - `runner.tar`: `.codex` (rollouts, archived rollouts, history, SQLite state snapshots)
@@ -140,90 +139,45 @@ Procedure:
    in the same namespace that complies with the restricted Pod Security profile (uid
    1000). Remove the old database and its `-wal`/`-shm` files. Extract the component
    tar into the mount root. For the runner, extract into the existing
-   `issue-agent-runner-home` claim and leave `checkouts/` in place: it holds
-   `.issue-agent-home-ready`, and without that marker the dockerd sidecar keeps the
-   runner and publisher from starting. Delete the pod.
+   `issue-agent-runner-home` claim. The old `issue-agent/issue-agent-runner-home`
+   Retain backup PVC is preserved but is not mounted by the active Deployment. Delete
+   the pod.
 3. Scale up hub, bridge, n8n, and runner, in that order. Check `/health`, `/healthz`,
-   the dockerd startup probe, and the runner healthcheck. Then use
+   the dockerd startup probe, and runner readiness. Then use
    `issue-agent-records hub-sessions` and `codex-sessions` to confirm the history is
    present.
 4. Recreate worktrees from `checkouts-manifest.txt`. The branches are on GitHub.
    Uncommitted or unpushed work listed there cannot be recovered from this backup.
 
-## Runner home migration (`issue-agent-runner-home-migrate`)
+## Runner lifecycle and HAPI v0.34.0
 
-```sh
-$ops/issue-agent-runner-home-migrate status
-$ops/issue-agent-runner-home-migrate migrate [--wipe-incomplete-destination]
-$ops/issue-agent-runner-home-migrate cleanup
-```
+The active runner starts directly in `issue-agent-runner`; there is no
+`issue-agent-runner-home-migrate` command and no `.issue-agent-home-ready` marker.
+The old `issue-agent/issue-agent-runner-home` Retain backup PVC remains preserved
+for separately approved recovery, but it is not part of normal startup or cutover.
 
-The runner moved from `issue-agent` to `issue-agent-runner` because its dockerd sidecar
-needs a privileged namespace. The new `issue-agent-runner/issue-agent-runner-home`
-claim starts empty, and `dockerd-start` exits until
-`checkouts/.issue-agent-home-ready` exists on it. Until then the runner and publisher
-never start or register with the hub. Only `migrate` writes that marker. There is no
-separate fresh-install option: on a new installation, `migrate` copies the empty
-retained `issue-agent` claim the same way.
+HAPI `v0.34.0` includes the runner lifecycle patch: `stopSession` removes an
+orphaned
+`serverPid` tree only when no sibling session is active and waits for the final
+root process to exit normally. Linux `acquireRunnerLock` and `CodexRuntimeRecord`
+use `/proc/1/stat` starttime plus `boot_id` for the namespace generation and
+`/proc/<pid>/stat` starttime markers for PID-reuse detection. `hapi runner status
+--check [--max-age 180]` exits 1 when runner status is unhealthy and 0 when it is
+healthy; without `--check` it retains the normal status output.
 
-Run `migrate` only after the authorized cutover: syncing the `issue-agent` Argo CD
-application prunes the old runner Deployment, and syncing `issue-agent-runner` creates
-the empty home claim and a runner pod that waits on the marker. The cutover is not
-uninterrupted. From the prune until the marker, no runner serves HAPI sessions and the
-bridge cannot reach the publisher. Pause intake for that window, or retry the stopped
-events manually with `retry_event` afterwards.
+`runner-healthcheck` is removed. `runner/bootstrap.sh` remains, but its old
+previous-generation state and ownership-file deletion blocks are gone.
+`HAPI_RUNNER_WEBHOOK_TIMEOUT_MS` is removed; HAPI uses its built-in 30-second
+webhook default. `n8n-bootstrap.sh` remains, while its old single
+`workflow-import.json` state-handling block is removed. The three operator scripts
+otherwise keep their existing scope.
 
-`migrate` does the following, in order:
-
-1. Checks that both claims are Bound, the old runner Deployment is absent or at 0
-   replicas, no pod in `issue-agent` is the runner or mounts the old claim, and no
-   scratch pod is left from an earlier run.
-2. Sets the old PV's reclaim policy to `Retain`.
-3. Starts two scratch pods from the new Deployment's runner image, one per namespace.
-   They comply with the restricted profile. The source pod mounts the old claim
-   read-only with no `fsGroup`, so ownership on the source never changes. Each pod is
-   Tier 4 with a 1 CPU request, a 2Gi memory request, an 8Gi memory limit, and no CPU
-   limit. The user approved these values as an unmeasured initial exception. Kubernetes
-   stops the pods after 24 hours (`activeDeadlineSeconds`).
-4. Inspects the destination. A destination that already has the marker stops the run.
-   A partial copy stops the run unless `--wipe-incomplete-destination` is given, which
-   deletes only that unfinished copy on the new claim.
-5. Streams the whole old home through `tar` (pod → kubectl → pod), keeping numeric
-   owners and modes. This includes checkouts, worktrees with uncommitted work, and
-   native `CODEX_HOME`/`HAPI_HOME` state with its native credentials. File contents
-   never reach the terminal or the local disk.
-6. Builds a sorted manifest of each tree inside its pod: path, type, mode, owner, and,
-   for regular files, size, mtime, and SHA-256; symlink targets and device numbers too.
-   Sockets are counted and skipped. If the manifests differ, the run stops without a
-   marker.
-7. Checks again that the old runner is stopped, then writes the marker (mode, source,
-   manifest digest, entry count, time). It deletes the scratch pods and deletes runner
-   pods in `issue-agent-runner` whose runner container never started, so they come up
-   without crash back-off.
-
-The manifests and a `RESULT` file go to
-`.host-state/issue-agent/home-migration/<UTC>/` (gitignored, 0600). They hold paths
-and hashes but no file contents; keep them private.
-
-Safety boundary:
-
-- The source claim is only ever mounted read-only and is never deleted. Its PV is
-  `Retain`, and both home claims carry `argocd.argoproj.io/sync-options:
-  Prune=false,Delete=false`, so removing a declaration or an Application does not
-  delete them.
-- The tool never deletes data on its own. `--wipe-incomplete-destination` touches only
-  an unfinished destination without the marker. Delete the old claim by hand, and only
-  after the new runner is verified.
-- `cleanup` deletes only this tool's two scratch pods, for example after an interrupted
-  run: `issue-agent-home-migrate-src` in `issue-agent` and
-  `issue-agent-home-migrate-dst` in `issue-agent-runner`. A pod is deleted only when both
-  its exact name and the `app.kubernetes.io/name=issue-agent-home-migrate` label match,
-  so a foreign pod with the same name is kept. Each deletion waits up to 120 seconds,
-  and the command exits non-zero if one does not finish. Run `status` first to see the
-  state.
-- Rollback is manual and needs separate approval. Once the new runner has run, the new
-  claim holds newer state. Stop the new runner and copy its home back into the old
-  claim before the old runner starts again. The tool has no back-copy command.
+For bridge operations, `ensure_session` runs a synchronous 95-second archive barrier
+before a 65-second resume for inactive sessions. `finish` and cancelled reviews
+share one `archive_pending` queue; completion is committed before archive retry.
+Bridge front-door `step_retries` performs at most 10 quiet retries with 120 seconds
+between attempts. n8n has no duplicate session/send retry nodes; HTTP nodes retain
+their 5×5-second engine retry.
 
 ## Docker smoke test (`issue-agent-docker-smoke`)
 

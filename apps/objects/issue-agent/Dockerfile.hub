@@ -2,23 +2,38 @@
 # HAPI hub: session store (SQLite + WAL under HAPI_HOME), REST/SSE API, web UI.
 # Build context: apps/objects/issue-agent (see .dockerignore). linux/arm64 only.
 
+# Official Bun image tag; the arm64 build runs in the target architecture.
+FROM oven/bun:1.4.4@sha256:f2b798e7ce1c056cd2149a6be7f014b3fde68a0c7165a3011ce3896e8404a6cd AS hapi-builder
+
+ARG HAPI_SOURCE_SHA256=abf89478f96ab8aacc1d249c0ad0a79fd72c842f6a85123296a83ae19295f360
+WORKDIR /src
+RUN apt-get update \
+    && apt-get install -y --no-install-recommends ca-certificates curl patch \
+    && rm -rf /var/lib/apt/lists/*
+RUN curl -fsSLo /tmp/hapi.tar.gz "https://github.com/tiann/hapi/archive/1f4518df20469c38429cf8ee103ea6320e1087ed.tar.gz" \
+    && echo "${HAPI_SOURCE_SHA256}  /tmp/hapi.tar.gz" | sha256sum -c - \
+    && tar -xzf /tmp/hapi.tar.gz --strip-components=1 -C /src \
+    && rm /tmp/hapi.tar.gz
+COPY patches/hapi-0.34.0-lifecycle.patch /tmp/hapi-0.34.0-lifecycle.patch
+RUN patch -p1 < /tmp/hapi-0.34.0-lifecycle.patch \
+    && bun install --frozen-lockfile \
+    && mkdir -p shared/tools/tunwg \
+    && curl -fsSLo shared/tools/tunwg/tunwg-arm64-linux "https://github.com/tiann/tunwg/releases/download/v26.08.03%2B122a6d0/tunwg-arm64" \
+    && echo "d2d29afda075e26bb70140184b5ee6c8a8cf56b18f1fe56db3c002d7dbe5eef9  shared/tools/tunwg/tunwg-arm64-linux" | sha256sum -c - \
+    && curl -fsSLo shared/tools/tunwg/LICENSE "https://raw.githubusercontent.com/tiann/tunwg/122a6d0/LICENSE" \
+    && echo "d8ac11fb1304443975a04293266bc30227d0dbf01a44f9d51d9ece096aadbe36  shared/tools/tunwg/LICENSE" | sha256sum -c - \
+    && bun run build:web \
+    && bun run --cwd hub generate:embedded-web-assets \
+    && bun run --cwd cli build:exe:allinone --target bun-linux-arm64
+
 # debian:trixie-slim (linux/arm64)
 FROM debian:trixie-slim@sha256:f6b08b09a05725f9431502d3b5714f5c4576e82c1a84fa1debe0c24a7e0c3ec4
+COPY --from=hapi-builder /src/cli/dist-exe/bun-linux-arm64/hapi /usr/local/bin/hapi
+RUN chmod 0755 /usr/local/bin/hapi
 
-# HAPI v0.34.0 (tiann/hapi commit 1f4518df20469c38429cf8ee103ea6320e1087ed).
-# Checksum from the release checksums.txt; equals the GitHub asset digest.
-ARG HAPI_VERSION=0.34.0
-ARG HAPI_SHA256=4bb329b66b856c760e61d311f8bf8d0cb5cbb4c3d23c0870619ed80b599c1006
 
 RUN apt-get update \
-    && apt-get install -y --no-install-recommends ca-certificates curl tini \
-    && curl -fsSLo /tmp/hapi.tar.gz "https://github.com/tiann/hapi/releases/download/v${HAPI_VERSION}/hapi-linux-arm64.tar.gz" \
-    && echo "${HAPI_SHA256}  /tmp/hapi.tar.gz" | sha256sum -c - \
-    && tar -xzf /tmp/hapi.tar.gz -C /usr/local/bin hapi \
-    && chmod 0755 /usr/local/bin/hapi \
-    && rm /tmp/hapi.tar.gz \
-    && apt-get purge -y curl \
-    && apt-get autoremove -y \
+    && apt-get install -y --no-install-recommends ca-certificates tini \
     && rm -rf /var/lib/apt/lists/* \
     && groupadd --gid 1000 hapi \
     && useradd --uid 1000 --gid 1000 --home-dir /var/lib/hapi --no-create-home --shell /usr/sbin/nologin hapi \

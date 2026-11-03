@@ -84,6 +84,8 @@ class Fake:
         self.message_mode = "ok"
         self.seq = 0
         self.calls: list[str] = []
+        self.hub_calls: list[tuple[str, str]] = []
+        self.archive_answers: dict[str, tuple[int, Any]] = {}
         self.delete_status = 200  # DELETE /api/sessions/<id> answers this instead of deleting when not 200
         self.tier_posts: list[tuple[str, Any]] = []  # (session id, body) of POST /api/sessions/<id>/service-tier
         self.tier_status = 200  # POST /api/sessions/<id>/service-tier answers this instead of applying when not 200
@@ -199,8 +201,8 @@ class Fake:
 
     def _session(self, sid: str | None, metadata: dict[str, Any]) -> str:
         sid = sid or f"s{self._next()}"
-        self.sessions[sid] = {"id": sid, "active": True, "thinking": False, "agentState": {"requests": {}},
-                              "metadata": metadata}
+        self.sessions[sid] = {"id": sid, "active": True, "runnerOwned": True, "thinking": False,
+                              "agentState": {"requests": {}}, "metadata": metadata}
         self.messages[sid] = []
         return sid
 
@@ -386,6 +388,7 @@ class Fake:
             return 200, {"token": jwt, "user": {"id": 1}}
         if auth.removeprefix("Bearer ") not in self.jwts:
             return 401, {"error": "Invalid token"}
+        self.hub_calls.append((method, path))
         parts = path.split("/")[2:]
         if parts == ["machines"]:
             return 200, {"machines": self.machines}
@@ -442,9 +445,11 @@ class Fake:
             return 200, {"type": "success", "sessionId": new}
         if rest == ["archive"]:
             self.calls.append(f"archive {sid}")
-            if not session["active"]:
+            if sid in self.archive_answers:
+                return self.archive_answers[sid]
+            if not session["active"] and not session.get("runnerOwned"):
                 return 409, {"error": "Session is inactive"}
-            session["active"] = False
+            session.update(active=False, runnerOwned=False, thinking=False)
             return 200, {"ok": True}
         if rest == ["service-tier"] and method == "POST":
             self.tier_posts.append((sid, body))
@@ -3892,6 +3897,196 @@ class LifecycleOpsTests(BridgeTestCase):
         self.assertEqual(self.fake.labels[12], [])
 
 
+class StepRetryTests(BridgeTestCase):
+    def test_retryable_failures_release_slots_quietly_for_all_event_kinds(self) -> None:
+        for index, kind in enumerate(("issue_opened", "issue_comment", "pr_review", "pr_repair",
+                                      "closed_issue_comment")):
+            with self.subTest(kind=kind):
+                number, delivery = 100 + index, f"retry-{kind.replace('_', '-')}"
+                self.started(number, delivery)
+                sid = self.op("ensure_session", delivery)["session_id"]
+                mode = "review" if kind == "pr_review" else "implement"
+                lid = bridge.local_id_for(delivery, mode)
+                self.store.put_turn(delivery, mode, lid, sid, "sent", deadline_at=time.time() + 10000)
+                stages = {"started": {}, "preserved": {"publication": "already-written"}}
+                self.store.update_event(delivery, kind=kind, pr_number=number if kind == "pr_repair" else None,
+                                        stages=json.dumps(stages))
+                if kind == "pr_repair":
+                    self.store.track_pr(REPO, number, number, SHA_A)
+                    self.assertEqual(self.store.claim_pr_repair(REPO, number, delivery)["status"], "started")
+                comments = self.fake.comment_posts
+                for attempt in range(1, 11):
+                    now = time.time()
+                    self.store.update_event(delivery, state="dispatched", attempts=1,
+                                            execution_id=f"ex-{delivery}", heartbeat_at=now)
+                    with patch.object(bridge.time, "time", return_value=now):
+                        failed = self.op("fail", delivery, retryable=True, detail="temporary failure",
+                                         node="Ensure session", park_class="hub_5xx")
+                    self.assertEqual((failed["requeued"], failed["step_retries"]), (True, attempt))
+                    row = self.store.event(delivery)
+                    self.assertEqual((row["state"], row["attempts"], row["execution_id"], row["heartbeat_at"]),
+                                     ("accepted", 0, None, None))
+                    self.assertEqual(row["next_attempt_at"], now + 120.0)
+                    saved = json.loads(row["stages"])
+                    self.assertEqual(saved["step_retries"], attempt)
+                    self.assertEqual(saved["preserved"], stages["preserved"])
+                    self.assertNotIn("started", saved)
+                    self.assertEqual(self.store.turn(delivery, mode)["local_id"], lid)
+                    self.assertEqual(self.store.issue(REPO, number)["blocked"], 0)
+                    self.assertEqual(self.fake.comment_posts, comments)
+                    self.assertEqual(self.fake.labels.get(number, []), [])
+                    self.assertEqual(self.op("fail", delivery, retryable=True)["already"], True)
+                    if kind == "pr_repair":
+                        self.assertEqual(self.store.pr_state(REPO, number)["active_delivery"], delivery)
+                self.store.update_event(delivery, state="dispatched", execution_id=f"ex-{delivery}")
+                exhausted = self.op("fail", delivery, retryable=True, detail="still unavailable",
+                                    node="Ensure session", park_class="hub_5xx")
+                self.assertTrue(exhausted["ok"])
+                row = self.store.event(delivery)
+                self.assertEqual((row["state"], row["park_class"], row["auto_retry_at"]),
+                                 ("needs_attention", None, None))
+                self.assertEqual(self.store.issue(REPO, number)["blocked"], 1)
+                self.assertEqual(self.fake.comment_posts, comments + 1)
+                self.assertTrue(self.op("fail", delivery, retryable=True)["ok"])
+                self.assertEqual(self.fake.comment_posts, comments + 1)
+
+    def test_transport_execution_failure_requeues_but_nontransport_failure_parks(self) -> None:
+        self.started()
+        now = time.time()
+        with patch.object(bridge.time, "time", return_value=now):
+            failed = self.bridge.handle({"op": "fail_execution", "execution_id": "ex-d1",
+                                         "node": "Ensure session", "error": "socket hang up"})
+        self.assertTrue(failed["requeued"], failed)
+        row = self.store.event("d1")
+        self.assertEqual((row["state"], row["attempts"], row["execution_id"], row["heartbeat_at"]),
+                         ("accepted", 0, None, None))
+        self.assertEqual(row["next_attempt_at"], now + 120.0)
+        self.assertEqual(json.loads(row["stages"])["step_retries"], 1)
+        self.assertEqual((self.fake.comment_posts, self.store.issue(REPO, 7)["blocked"]), (0, 0))
+        self.started(8, "permanent")
+        failed = self.bridge.handle({"op": "fail_execution", "execution_id": "ex-permanent",
+                                     "node": "Parse result", "error": "socket hang up"})
+        self.assertTrue(failed["ok"], failed)
+        self.assertEqual(self.store.event("permanent")["state"], "needs_attention")
+
+    def test_late_fail_execution_for_an_accepted_row_is_noop(self) -> None:
+        self.started()
+        # Covers the accepted-state guard when an execution lookup still resolves the row.
+        self.store.update_event("d1", state="accepted")
+        before = dict(self.store.event("d1"))
+        failed = self.bridge.handle({"op": "fail_execution", "execution_id": "ex-d1",
+                                     "node": "Ensure session", "error": "socket hang up"})
+        self.assertTrue(failed["already"], failed)
+        self.assertEqual(dict(self.store.event("d1")), before)
+        self.assertEqual(self.fake.comment_posts, 0)
+
+    def test_time_budget_and_expired_deadline_bypass_quiet_retries(self) -> None:
+        for number, node, expired in ((7, "Within time budget? (implement)", False),
+                                      (8, "Ensure session", True)):
+            with self.subTest(node=node):
+                delivery = f"budget-{number}"
+                self.started(number, delivery)
+                if expired:
+                    sid = self.op("ensure_session", delivery)["session_id"]
+                    self.store.put_turn(delivery, "implement", bridge.local_id_for(delivery, "implement"),
+                                        sid, "sent", deadline_at=time.time() - 1)
+                self.assertTrue(self.op("fail", delivery, retryable=True, node=node)["ok"])
+                row = self.store.event(delivery)
+                self.assertEqual((row["state"], row["park_class"]), ("needs_attention", "time_budget"))
+                self.assertNotIn("step_retries", json.loads(row["stages"]))
+
+
+    def test_execution_transport_retries_stop_at_ten_and_preserve_stages(self) -> None:
+        self.started()
+        self.op("stage", stage="preserved", value={"github": "published"})
+        for attempt in range(1, 11):
+            now = time.time()
+            self.store.update_event("d1", state="dispatched", attempts=1, execution_id="ex-d1",
+                                    heartbeat_at=now)
+            with patch.object(bridge.time, "time", return_value=now):
+                failed = self.bridge.handle({"op": "fail_execution", "execution_id": "ex-d1",
+                                             "node": "Ensure session", "error": "socket hang up"})
+            self.assertEqual((failed["requeued"], failed["step_retries"]), (True, attempt))
+            row = self.store.event("d1")
+            self.assertEqual(row["state"], "accepted")
+            self.assertEqual(row["next_attempt_at"], now + 120.0)
+            self.assertEqual(json.loads(row["stages"])["preserved"], {"github": "published"})
+            self.assertEqual((self.fake.comment_posts, self.store.issue(REPO, 7)["blocked"]), (0, 0))
+        self.store.update_event("d1", state="dispatched", execution_id="ex-d1")
+        self.bridge.handle({"op": "fail_execution", "execution_id": "ex-d1",
+                            "node": "Ensure session", "error": "socket hang up"})
+        row = self.store.event("d1")
+        self.assertEqual((row["state"], row["park_class"], row["auto_retry_at"]),
+                         ("needs_attention", None, None))
+        self.assertEqual(self.fake.comment_posts, 1)
+        self.bridge.handle({"op": "fail_execution", "execution_id": "ex-d1",
+                            "node": "Ensure session", "error": "socket hang up"})
+        self.assertEqual(self.fake.comment_posts, 1)
+
+
+class ArchivePendingTests(BridgeTestCase):
+    def test_finish_commits_completion_and_retries_archive_failure_when_idle(self) -> None:
+        for number, answer in (
+            (7, (500, {"error": "runner failed"})),
+            (8, (409, {"error": "cleanup unconfirmed", "code": "archive-cleanup-unconfirmed"})),
+        ):
+            with self.subTest(status=answer[0]):
+                delivery = f"finish-{number}"
+                self.started(number, delivery)
+                sid = self.op("ensure_session", delivery)["session_id"]
+                self.fake.archive_answers[sid] = answer
+                self.assertTrue(self.op("finish", delivery, outcome="triaged")["ok"])
+                row = self.store.event(delivery)
+                self.assertEqual((row["state"], row["outcome"]), ("completed", "triaged"))
+                pending = json.loads(row["stages"])["archive_pending"]
+                self.assertIsInstance(pending["next_at"], (int, float))
+                del self.fake.archive_answers[sid]
+                self.dispatcher.tick(pending["next_at"] + 1)
+                self.assertFalse(self.fake.sessions[sid]["active"])
+                self.assertNotIn("archive_pending", json.loads(self.store.event(delivery)["stages"]))
+                self.assertEqual(self.fake.comment_posts, 0)
+
+    def test_archive_pending_waits_for_a_shared_active_slot(self) -> None:
+        self.started()
+        sid = self.op("ensure_session")["session_id"]
+        self.fake.archive_answers[sid] = 500, {"error": "runner failed"}
+        self.op("finish", outcome="triaged")
+        self.assertEqual(self.deliver(comment_payload(), event="issue_comment", delivery="sibling").outcome, "queued")
+        self.store.update_event("sibling", state="dispatched", heartbeat_at=time.time())
+        del self.fake.archive_answers[sid]
+        pending = json.loads(self.store.event("d1")["stages"])["archive_pending"]
+        calls = len(self.fake.calls)
+        self.dispatcher.tick(pending["next_at"] + 1)
+        self.assertNotIn(f"archive {sid}", self.fake.calls[calls:])
+        self.assertIn("archive_pending", json.loads(self.store.event("d1")["stages"]))
+        self.store.update_event("sibling", state="completed", outcome="triaged")
+        pending = json.loads(self.store.event("d1")["stages"])["archive_pending"]
+        self.dispatcher.tick(max(time.time(), pending["next_at"]) + 1)
+        self.assertFalse(self.fake.sessions[sid]["active"])
+        self.assertNotIn("archive_pending", json.loads(self.store.event("d1")["stages"]))
+
+    def test_cancelled_review_uses_the_same_archive_pending_queue(self) -> None:
+        self.use_reviewer_app()
+        self.started_review()
+        sid = self.op("ensure_session", "p1")["session_id"]
+        self.fake.prs[12]["head"]["sha"] = SHA_B
+        self.deliver(pr_payload(12, action="synchronize", sha=SHA_B), event="pull_request", delivery="push")
+        self.store.update_event("push", next_attempt_at=time.time() + 10000)
+        row = self.store.event("p1")
+        self.assertEqual((row["state"], row["outcome"]), ("completed", "cancelled"))
+        stages = json.loads(row["stages"])
+        self.assertIn("archive_pending", stages)
+        self.assertNotIn("archive", stages.get("cancelled", {}))
+        self.fake.archive_answers[sid] = 409, {"code": "archive-cleanup-unconfirmed", "error": "still alive"}
+        self.dispatcher.tick(max(time.time(), stages["archive_pending"]["next_at"]) + 1)
+        self.assertIn("archive_pending", json.loads(self.store.event("p1")["stages"]))
+        del self.fake.archive_answers[sid]
+        pending = json.loads(self.store.event("p1")["stages"])["archive_pending"]
+        self.dispatcher.tick(pending["next_at"] + 1)
+        self.assertFalse(self.fake.sessions[sid]["active"])
+        self.assertNotIn("archive_pending", json.loads(self.store.event("p1")["stages"]))
+
+
 class SessionTests(BridgeTestCase):
     def test_each_issue_and_repo_gets_its_own_worktree_session_and_reuses_it(self) -> None:
         self.started(7, "d1")
@@ -3963,40 +4158,91 @@ class SessionTests(BridgeTestCase):
         self.assertNotIn("serviceTier", self.fake.spawns[1])
         self.assertEqual(self.fake.tier_posts, [])
 
-    def test_resumed_standard_session_is_switched_to_fast(self) -> None:
-        # Sessions spawned before the bridge pinned the tier store 'standard'; the hub resumes them with it.
-        self.started()
-        old = self.op("ensure_session")["session_id"]
-        self.fake.sessions[old].update(active=False, serviceTier="standard")
-        again = self.op("ensure_session")
-        self.assertTrue(again["ok"], again)
-        self.assertTrue(again["resumed"])
-        self.assertEqual(self.fake.tier_posts, [(again["session_id"], {"serviceTier": "fast"})])
-        self.assertEqual(self.fake.sessions[again["session_id"]]["serviceTier"], "fast")
+    def test_inactive_ensure_archives_before_resume_with_distinct_timeouts(self) -> None:
+        for runner_owned in (True, False):
+            with self.subTest(runner_owned=runner_owned):
+                number = 7 if runner_owned else 8
+                delivery = f"barrier-{number}"
+                self.started(number, delivery)
+                sid = self.op("ensure_session", delivery)["session_id"]
+                self.fake.sessions[sid].update(active=False, runnerOwned=runner_owned)
+                self.fake.hub_calls.clear()
+                with patch.object(self.bridge.hapi, "request", wraps=self.bridge.hapi.request) as request:
+                    resumed = self.op("ensure_session", delivery)
+                self.assertTrue(resumed["resumed"], resumed)
+                lifecycle = [call for call in request.call_args_list
+                             if call.args[1].endswith(("/archive", "/resume"))]
+                self.assertEqual([(call.args[0], call.args[1], call.kwargs["timeout"]) for call in lifecycle[:2]],
+                                 [("POST", f"/api/sessions/{sid}/archive", 95.0),
+                                  ("POST", f"/api/sessions/{sid}/resume", 65.0)])
+                self.assertEqual([path for _, path in self.fake.hub_calls
+                                  if path.endswith(("/archive", "/resume"))][:2],
+                                 [f"/api/sessions/{sid}/archive", f"/api/sessions/{sid}/resume"])
+                self.op("finish", delivery, outcome="triaged")
 
-    def test_active_fast_session_posts_no_service_tier(self) -> None:
+    def test_archive_barrier_refusals_never_resume_or_spawn(self) -> None:
         self.started()
         sid = self.op("ensure_session")["session_id"]
-        self.assertEqual(self.fake.sessions[sid]["serviceTier"], "fast")
-        again = self.op("ensure_session")
-        self.assertEqual((again["session_id"], again["resumed"]), (sid, False))
-        self.assertEqual(self.fake.tier_posts, [])
+        self.fake.sessions[sid]["active"] = False
+        for status, data, retryable in (
+            (409, {"error": "cleanup unconfirmed", "code": "archive-cleanup-unconfirmed"}, False),
+            (500, {"error": "cleanup failed"}, False),
+            (503, {"error": "runner unavailable"}, True),
+            (504, {"error": "cleanup timed out"}, True),
+        ):
+            with self.subTest(status=status):
+                self.fake.archive_answers[sid] = status, data
+                self.fake.hub_calls.clear()
+                failed = self.op("ensure_session")
+                self.assertEqual((failed["ok"], failed["retryable"]), (False, retryable), failed)
+                if not retryable:
+                    self.assertEqual((failed["needs_operator"], failed["park_class"]), (True, None))
+                self.assertFalse(any(path.endswith("/resume") for _, path in self.fake.hub_calls))
+                self.assertEqual(len(self.fake.spawns), 1)
 
-    def test_service_tier_refusal_keeps_the_session_and_hub_errors_retry(self) -> None:
+    def test_archive_barrier_transport_failure_is_retryable(self) -> None:
+        self.started()
+        sid = self.op("ensure_session")["session_id"]
+        self.fake.sessions[sid]["active"] = False
+        original = self.bridge.hapi.request
+
+        def request(method: str, path: str, **kw: Any) -> tuple[int, Any]:
+            if path.endswith("/archive"):
+                raise bridge.TransportError("cleanup connection reset", not_sent=False)
+            return original(method, path, **kw)
+
+        with patch.object(self.bridge.hapi, "request", side_effect=request):
+            failed = self.op("ensure_session")
+        self.assertEqual((failed["ok"], failed["retryable"]), (False, True), failed)
+        self.assertEqual(len(self.fake.spawns), 1)
+
+    def test_active_session_needs_no_archive_or_service_tier_update(self) -> None:
         self.started()
         sid = self.op("ensure_session")["session_id"]
         self.fake.sessions[sid]["serviceTier"] = "standard"
-        self.fake.tier_status = 400
-        refused = self.op("ensure_session")
-        self.assertEqual((refused["ok"], refused["session_id"]), (True, sid))
-        self.fake.tier_status = 502
-        failed = self.op("ensure_session")
-        self.assertEqual((failed["ok"], failed["retryable"], failed["park_class"]), (False, True, "hub_5xx"))
-        self.assertEqual(len(self.fake.tier_posts), 2)
-        self.fake.tier_status = 200
-        self.assertEqual(self.op("ensure_session")["session_id"], sid)
-        self.assertEqual(self.fake.sessions[sid]["serviceTier"], "fast")
-        self.assertEqual(len(self.fake.spawns), 1)
+        self.fake.hub_calls.clear()
+        again = self.op("ensure_session")
+        self.assertEqual((again["session_id"], again["resumed"]), (sid, False))
+        self.assertFalse(any(path.endswith(("/archive", "/resume", "/service-tier"))
+                             for _, path in self.fake.hub_calls))
+
+    def test_inactive_session_with_another_active_event_is_not_archived(self) -> None:
+        self.started()
+        sid = self.op("ensure_session")["session_id"]
+        self.fake.sessions[sid]["active"] = False
+        self.assertEqual(self.deliver(comment_payload(7), event="issue_comment", delivery="sibling").outcome,
+                         "queued")
+        self.store.update_event("sibling", state="dispatched", heartbeat_at=time.time())
+        sibling = self.store.event("sibling")
+        self.assertEqual((sibling["repo"], sibling["issue_number"], sibling["state"]), (REPO, 7, "dispatched"))
+        self.assertNotEqual(sibling["delivery_id"], "d1")
+        self.fake.hub_calls.clear()
+        # Keep identity stable: Fake's normal resume creates a new ID, whose superseded-session cleanup
+        # archives the old ID independently of the pre-resume barrier this test covers.
+        with patch.object(self.bridge, "_resume", return_value=self.fake.sessions[sid]) as resume:
+            self.op("ensure_session", "d1")
+        resume.assert_called_once()
+        self.assertFalse(any(path.endswith("/archive") for _, path in self.fake.hub_calls))
 
     def test_session_of_a_removed_runner_machine_is_replaced_instead_of_resumed(self) -> None:
         # Live krema#55: after the runner home was replaced, every resume of an old session answered
@@ -4353,7 +4599,9 @@ class TurnTests(BridgeTestCase):
         self.fake.indeterminate.remove(self.lid)
         self.fake.invoke(self.sid, self.lid)
         self.say(self.result_line())
+        self.op("stage", stage="step_retries", value=9)
         self.assertEqual(self.op("session_turn")["state"], "done")
+        self.assertNotIn("step_retries", json.loads(self.store.event("d1")["stages"]))
         self.assertEqual([p["localId"] for p in self.fake.message_posts], [self.lid])
         self.assertEqual(bridge.Store(self.config.state_path).turn("d1", "implement")["consumed_id"], self.lid)
 
@@ -4498,7 +4746,8 @@ class TurnTests(BridgeTestCase):
         self.fake.invoke(self.sid, self.lid)
         self.say(f"{bridge.RESULT_TAG} {self.lid} " + '{"status":')
         self.fake.sessions[self.sid].update(active=False, thinking=True)
-        self.assertEqual(self.op("session_turn")["state"], "lost")
+        lost = self.op("session_turn")
+        self.assertEqual((lost["state"], lost["retryable"]), ("lost", True))
         turn = self.store.turn("d1", "implement")
         self.assertEqual((turn["state"], turn["local_id"], turn["consumed_id"]),
                          ("lost", self.lid + "-r1", None))
@@ -4896,7 +5145,7 @@ class TurnTests(BridgeTestCase):
         with self.resume_answers(500, "resume_failed"):
             failed = self.op("ensure_session")
         self.assertEqual((failed["ok"], failed["retryable"], failed["needs_operator"], failed["park_class"]),
-                         (False, False, True, "hub_5xx"))
+                         (False, False, True, None))
         self.assertEqual(len(self.fake.spawns), 1)
         issue = self.store.issue(REPO, 7)
         self.assertEqual((issue["session_state"], issue["session_id"]), ("ready", self.sid))
@@ -5459,6 +5708,24 @@ class TimeBudgetTests(BridgeTestCase):
         calls = len(self.fake.calls)
         self.dispatcher.tick(time.time() + 2 * bridge.TURN_GRACE_SECONDS)
         self.assertNotIn(f"archive {sid}", self.fake.calls[calls:])  # settled once
+
+    def test_time_budget_expiry_waits_for_confirmed_archive(self) -> None:
+        sid, _ = self.timed_out_comment()
+        now = time.time() + bridge.TURN_GRACE_SECONDS + 10
+        for answer in ((500, {"error": "runner failed"}),
+                       (409, {"error": "still alive", "code": "archive-cleanup-unconfirmed"})):
+            with self.subTest(status=answer[0]):
+                self.fake.archive_answers[sid] = answer
+                self.dispatcher.tick(now)
+                ev = self.store.event("c1")
+                self.assertEqual((ev["state"], ev["park_class"]), ("needs_attention", "time_budget"))
+                self.assertTrue(self.fake.sessions[sid]["active"])
+                self.assertIsNotNone(ev["auto_retry_at"])
+                now = ev["auto_retry_at"] + 1
+        del self.fake.archive_answers[sid]
+        self.dispatcher.tick(now)
+        self.assertEqual(self.store.event("c1")["park_class"], "time_budget_expired")
+        self.assertFalse(self.fake.sessions[sid]["active"])
 
     def test_dismiss_closes_only_a_parked_event_unblocks_and_removes_the_label(self) -> None:
         sid, _ = self.timed_out_comment()
@@ -7034,20 +7301,29 @@ class ReviewGateTests(BridgeTestCase):
 
     def test_fail_execution_classifies_n8n_transport_errors_only(self) -> None:
         cases = [
-            ("p1", 12, "Submit review", "The service refused the connection - perhaps it is offline",
-             "bridge_unreachable"),
-            ("p2", 13, "Run agent session (review)", "connect ECONNREFUSED 10.43.0.7:8080", "bridge_unreachable"),
+            ("p1", 12, "Submit review", "The service refused the connection - perhaps it is offline", True),
+            ("p2", 13, "Run agent session (review)", "connect ECONNREFUSED 10.43.0.7:8080", True),
+
             # A Code node handling agent output, or transport words inside other text, stays operator-owned.
-            ("p3", 14, "Parse review result", "socket hang up", None),
-            ("p4", 15, "Submit review", "agent wrote: socket hang up", None),
+            ("p3", 14, "Parse review result", "socket hang up", False),
+            ("p4", 15, "Submit review", "agent wrote: socket hang up", False),
         ]
         for delivery, number, node, error, expected in cases:
             with self.subTest(node=node, error=error):
                 self.started_review(number, delivery)
                 failed = self.bridge.handle({"op": "fail_execution", "execution_id": f"ex-{delivery}",
                                              "node": node, "error": error})
-                self.assertTrue(failed["ok"], failed)
-                self.assertEqual(self.store.event(delivery)["park_class"], expected)
+                if expected:
+                    self.assertTrue(failed["requeued"], failed)
+                else:
+                    self.assertTrue(failed["ok"], failed)
+                row = self.store.event(delivery)
+                self.assertEqual(row["state"], "accepted" if expected else "needs_attention")
+                self.assertIsNone(row["park_class"])
+                if expected:
+                    self.assertTrue(failed["requeued"])
+                    self.assertEqual(json.loads(row["stages"])["step_retries"], 1)
+                    self.assertEqual(self.fake.comments.get(number, []), [])
 
     def test_resume_failures_carry_hub_park_classes(self) -> None:
         sid, _ = self.review_turn()
@@ -7062,10 +7338,19 @@ class ReviewGateTests(BridgeTestCase):
         def unreachable() -> tuple[int, Any]:
             raise bridge.TransportError("connection reset", not_sent=False)
 
-        with patch.object(self.bridge.hapi, "request", side_effect=resume(lambda: (500, {"code": "internal"}))):
+        with patch.object(self.bridge.hapi, "request", side_effect=resume(
+                lambda: (500, {"error": "Thread belongs to another Codex runtime", "code": "resume_failed"}))):
             failed = self.op("ensure_session", "p1")
         self.assertEqual((failed["ok"], failed["retryable"], failed["needs_operator"], failed["park_class"]),
-                         (False, False, True, "hub_5xx"))
+                         (False, False, True, None))
+        self.assertIn("Thread belongs to another Codex runtime", failed["error"])
+        self.assertIn("resume_failed", failed["error"])
+        with patch.object(self.bridge.hapi, "request", side_effect=resume(
+                lambda: (503, {"error": "No machine online", "code": "no_machine_online"}))):
+            unavailable = self.op("ensure_session", "p1")
+        self.assertEqual((unavailable["retryable"], unavailable["park_class"]), (True, "hub_5xx"))
+        self.assertIn("No machine online", unavailable["error"])
+        self.assertIn("no_machine_online", unavailable["error"])
         with patch.object(self.bridge.hapi, "request", side_effect=resume(unreachable)):
             unknown = self.op("ensure_session", "p1")
         self.assertEqual((unknown["needs_operator"], unknown["park_class"]), (True, "hub_unreachable"))
@@ -7074,6 +7359,26 @@ class ReviewGateTests(BridgeTestCase):
         # n8n forwards the class to `fail`, which arms the automatic retry.
         self.assertEqual(self.park(node="Ensure session", park_class=unknown["park_class"])["park_class"],
                          "hub_unreachable")
+    def test_resume_ownership_failure_never_arms_review_auto_retry(self) -> None:
+        sid, _ = self.review_turn()
+        self.fake.sessions[sid]["active"] = False
+        original = self.bridge.hapi.request
+
+        def request(method: str, path: str, **kw: Any) -> tuple[int, Any]:
+            if path.endswith("/resume"):
+                return 500, {"code": "resume_failed", "error": "Thread belongs to another Codex runtime"}
+            return original(method, path, **kw)
+
+        with patch.object(self.bridge.hapi, "request", side_effect=request):
+            failed = self.op("ensure_session", "p1")
+        self.assertFalse(failed["retryable"])
+        self.assertIsNone(failed["park_class"])
+        self.op("fail", "p1", node="Ensure session", detail=failed["error"],
+                retryable=failed["retryable"], park_class=failed["park_class"])
+        row = self.store.event("p1")
+        self.assertEqual((row["state"], row["park_class"], row["auto_retry_at"]),
+                         ("needs_attention", None, None))
+        self.assertEqual(len(self.fake.spawns), 1)
 
     def test_auto_retry_marks_an_unanswered_turn_lost_and_the_resend_carries_the_notice(self) -> None:
         sid, lid = self.review_turn()
@@ -7254,162 +7559,33 @@ class ReviewGateTests(BridgeTestCase):
         self.assertEqual([self.decision_comments(n) for n in (12, 13, 14)], [[], [], []])
 
 
-OLD_SCHEMA = """
-CREATE TABLE events (
-    seq INTEGER PRIMARY KEY AUTOINCREMENT, delivery_id TEXT NOT NULL UNIQUE, semantic_key TEXT NOT NULL UNIQUE,
-    repo TEXT NOT NULL, kind TEXT NOT NULL CHECK (kind IN ('issue_opened', 'issue_comment')),
-    issue_number INTEGER NOT NULL, comment_id INTEGER, actor TEXT NOT NULL, title TEXT NOT NULL, body TEXT NOT NULL,
-    state TEXT NOT NULL DEFAULT 'accepted', attempts INTEGER NOT NULL DEFAULT 0,
-    next_attempt_at REAL NOT NULL DEFAULT 0, heartbeat_at REAL, stages TEXT NOT NULL DEFAULT '{}', outcome TEXT,
-    detail TEXT, received_at REAL NOT NULL, updated_at REAL NOT NULL);
-CREATE INDEX events_state_seq ON events (state, seq);
-CREATE TABLE issues (
-    repo TEXT NOT NULL, issue_number INTEGER NOT NULL, blocked INTEGER NOT NULL DEFAULT 0,
-    session_state TEXT NOT NULL DEFAULT 'none', session_id TEXT, pending_at REAL, worktree_path TEXT, branch TEXT,
-    superseded TEXT NOT NULL DEFAULT '[]', detail TEXT, updated_at REAL NOT NULL, PRIMARY KEY (repo, issue_number));
-CREATE TABLE turns (
-    delivery_id TEXT PRIMARY KEY, local_id TEXT NOT NULL UNIQUE, session_id TEXT NOT NULL,
-    state TEXT NOT NULL CHECK (state IN ('sending', 'sent')), idle_polls INTEGER NOT NULL DEFAULT 0,
-    updated_at REAL NOT NULL);
-INSERT INTO events (delivery_id, semantic_key, repo, kind, issue_number, actor, title, body, state, stages, outcome,
-                    received_at, updated_at)
-    VALUES ('old1', 'isac322/cc-lb#issue:7:opened', 'isac322/cc-lb', 'issue_opened', 7, 'isac322', 'Fix it', 'b',
-            'completed', '{"started": {}}', 'implemented', 1, 1);
-INSERT INTO events (delivery_id, semantic_key, repo, kind, issue_number, actor, title, body, state, stages, outcome,
-                    received_at, updated_at)
-    VALUES ('old10', 'isac322/cc-lb#issue:10:opened', 'isac322/cc-lb', 'issue_opened', 10, 'isac322', 'Fix', 'b',
-            'completed', '{}', 'implemented', 1, 1);
-INSERT INTO issues (repo, issue_number, session_state, session_id, branch, updated_at)
-    VALUES ('isac322/cc-lb', 7, 'ready', 's-old', 'hapi-issue-7', 1);
-INSERT INTO issues (repo, issue_number, session_state, session_id, branch, updated_at)
-    VALUES ('isac322/cc-lb', 8, 'ready', 's-8', 'hapi-issue-8', 1);
-INSERT INTO issues (repo, issue_number, session_state, session_id, branch, updated_at)
-    VALUES ('isac322/cc-lb', 9, 'pending', NULL, NULL, 1);
-INSERT INTO issues (repo, issue_number, session_state, session_id, branch, updated_at)
-    VALUES ('isac322/cc-lb', 10, 'none', NULL, NULL, 1);
-INSERT INTO turns (delivery_id, local_id, session_id, state, updated_at)
-    VALUES ('old1', 'issue-agent-old1', 's-old', 'sent', 1);
-"""
+class LegacyRowCompatibilityTests(BridgeTestCase):
+    """Current schema retains read compatibility with old row values, not old table layouts."""
 
+    def test_legacy_turn_and_nullable_event_fields_survive_restart(self) -> None:
+        self.started()
+        sid = self.op("ensure_session")["session_id"]
+        self.store.put_turn("d1", "legacy", "issue-agent-d1", sid, "sent", deadline_at=None)
+        self.store.update_event("d1", trusted=None, default_branch=None)
+        reopened = bridge.Store(self.config.state_path)
+        ev = reopened.event("d1")
+        turn = reopened.turn("d1")
+        self.assertEqual((ev["trusted"], ev["default_branch"]), (None, None))
+        self.assertEqual((turn["mode"], turn["local_id"], turn["deadline_at"]),
+                         ("legacy", "issue-agent-d1", None))
+        self.assertEqual(reopened.turn("d1", "legacy")["session_id"], sid)
+        self.assertTrue(self.op("finish", outcome="triaged")["ok"])
+        self.assertEqual(reopened.event("d1")["state"], "completed")
 
-class MigrationTests(unittest.TestCase):
-    def test_v1_state_is_migrated_in_place_idempotently(self) -> None:
-        with tempfile.TemporaryDirectory() as d:
-            path = os.path.join(d, "state.sqlite3")
-            conn = sqlite3.connect(path)
-            conn.executescript(OLD_SCHEMA)
-            conn.close()
-            bridge.Store(path)
-            store = bridge.Store(path)  # second start is a no-op
-            ev = store.event("old1")
-            self.assertEqual((ev["state"], ev["outcome"], ev["execution_id"]), ("completed", "implemented", None))
-            # Auto-retry columns arrive unarmed on rows recorded before they existed.
-            self.assertEqual((ev["park_class"], ev["auto_retries"], ev["auto_retry_at"]), (None, 0, None))
-            issue = store.issue(REPO, 7)
-            self.assertEqual((issue["session_id"], issue["phase"], issue["subject"], issue["pr_number"]),
-                             ("s-old", "implementing", "issue", None))
-            legacy = store.turn("old1", "legacy")
-            self.assertEqual((legacy["local_id"], legacy["session_id"]), ("issue-agent-old1", "s-old"))
-            self.assertEqual(store.turn("old1")["mode"], "legacy")
-            queued = store.enqueue({"delivery_id": "p1", "semantic_key": f"{REPO}#pr:12:review:{SHA_A}",
-                                    "repo": REPO, "kind": "pr_review", "issue_number": 12, "comment_id": None,
-                                    "actor": "isac322", "title": "t", "body": "", "default_branch": "master",
-                                    "head_sha": SHA_A})
-            self.assertEqual(queued, "queued")
-            self.assertGreater(store.event("p1")["seq"], ev["seq"])
-            store.put_turn("old1", "triage", "issue-agent-old1-triage", "s-old", "sent")
-            self.assertEqual(len(store.query("SELECT * FROM turns")), 2)
-
-    def test_v2_turns_table_accepts_lost_turns_after_upgrade(self) -> None:
-        with tempfile.TemporaryDirectory() as d:
-            path = os.path.join(d, "state.sqlite3")
-            conn = sqlite3.connect(path)
-            # The v2 turns table: 7 columns, no 'lost' state (spelled out: TURNS_DDL has gained columns since).
-            conn.executescript("""
-                CREATE TABLE turns (
-                    delivery_id TEXT NOT NULL,
-                    mode        TEXT NOT NULL,
-                    local_id    TEXT NOT NULL UNIQUE,
-                    session_id  TEXT NOT NULL,
-                    state       TEXT NOT NULL CHECK (state IN ('sending', 'sent')),
-                    idle_polls  INTEGER NOT NULL DEFAULT 0,
-                    updated_at  REAL NOT NULL,
-                    PRIMARY KEY (delivery_id, mode)
-                )""")
-            conn.execute("INSERT INTO turns VALUES ('d1', 'review', 'issue-agent-d1-review', 's1', 'sent', 2, 0)")
-            conn.commit()
-            conn.close()
-            store = bridge.Store(path)
-            store.put_turn("d1", "review", "issue-agent-d1-review-r1", "s1", "lost")
-            turn = store.turn("d1", "review")
-            self.assertEqual((turn["local_id"], turn["state"]), ("issue-agent-d1-review-r1", "lost"))
-            self.assertIsNone(turn["deadline_at"])  # upgraded rows gain the newer columns empty
-
-    def test_v2_events_table_gains_issue_edits_and_trust_keeping_rows(self) -> None:
-        with tempfile.TemporaryDirectory() as d:
-            path = os.path.join(d, "state.sqlite3")
-            v2 = bridge.EVENTS_DDL.format(name="events").replace(" 'issue_edited',", "") \
-                .replace(",\n    trusted         INTEGER", "")
-            self.assertNotIn("trusted", v2)
-            conn = sqlite3.connect(path)
-            conn.executescript(v2)
-            conn.execute("INSERT INTO events (delivery_id, semantic_key, repo, kind, issue_number, actor, title, body,"
-                         " state, received_at, updated_at) VALUES ('old1', 'k1', ?, 'issue_opened', 7, 'isac322',"
-                         " 't', 'b', 'completed', 1, 1)", (REPO,))
-            conn.commit()
-            conn.close()
-            bridge.Store(path)
-            store = bridge.Store(path)  # second start is a no-op
-            old = store.event("old1")
-            self.assertEqual((old["state"], old["trusted"]), ("completed", None))
-            store.issue(REPO, 7)  # creates the row
-            store.update_issue(REPO, 7, phase="implementing")
-            queued = store.enqueue({"delivery_id": "e1", "semantic_key": f"{REPO}#issue:7:edited:e1", "repo": REPO,
-                                    "kind": "issue_edited", "issue_number": 7, "comment_id": None, "actor": "isac322",
-                                    "title": "t", "body": "new", "default_branch": "master", "head_sha": None,
-                                    "trusted": True})
-            self.assertEqual(queued, "queued")
-            self.assertEqual(store.event("e1")["trusted"], 1)
-
-    def test_pre_v2_issues_with_an_implementation_continue_as_followups(self) -> None:
-        with tempfile.TemporaryDirectory() as d:
-            path = os.path.join(d, "state.sqlite3")
-            conn = sqlite3.connect(path)
-            conn.executescript(OLD_SCHEMA)
-            conn.close()
-            store = bridge.Store(path)
-            phases = {n: store.issue(REPO, n)["phase"] for n in (7, 8, 9, 10)}
-            # 7: implemented + branch, 8: branch with session only, 9: never implemented, 10: implemented event only
-            self.assertEqual(phases, {7: "implementing", 8: "implementing", 9: "none", 10: "implementing"})
-            self.assertEqual(bridge.Bridge._mode_hint({"kind": "issue_comment"}, phases[8]), "followup")
-            self.assertEqual(bridge.Bridge._mode_hint({"kind": "issue_comment"}, phases[9]), "triage")
-            # The backfill runs only when upgrading a pre-v2 file: a v2 issue that later gets a session stays put.
-            store.update_issue(REPO, 9, session_id="s-9", branch="hapi-issue-9")
-            store = bridge.Store(path)
-            self.assertEqual(store.issue(REPO, 9)["phase"], "none")
-            self.assertEqual(store.event("old1")["attention_pending"], 0)
-
-    def test_events_table_without_closed_issue_comment_kind_is_rebuilt_keeping_rows(self) -> None:
-        with tempfile.TemporaryDirectory() as d:
-            path = os.path.join(d, "state.sqlite3")
-            old = bridge.EVENTS_DDL.format(name="events").replace(", 'closed_issue_comment'", "")
-            self.assertNotIn("closed_issue_comment", old)
-            conn = sqlite3.connect(path)
-            conn.executescript(old)
-            conn.execute("INSERT INTO events (delivery_id, semantic_key, repo, kind, issue_number, actor, title, body,"
-                         " state, received_at, updated_at, trusted) VALUES ('old1', 'k1', ?, 'issue_opened', 7,"
-                         " 'stranger', 't', 'b', 'completed', 1, 1, 0)", (REPO,))
-            conn.commit()
-            conn.close()
-            bridge.Store(path)
-            store = bridge.Store(path)  # second start is a no-op
-            self.assertEqual((store.event("old1")["state"], store.event("old1")["trusted"]), ("completed", 0))
-            queued = store.enqueue({"delivery_id": "r1", "semantic_key": f"{REPO}#comment:5", "repo": REPO,
-                                    "kind": "closed_issue_comment", "issue_number": 7, "comment_id": 5,
-                                    "actor": "stranger", "title": "t", "body": "still broken",
-                                    "default_branch": "master", "head_sha": None, "trusted": False})
-            self.assertEqual(queued, "queued")
-            self.assertEqual(store.event("r1")["kind"], "closed_issue_comment")
+    def test_nullable_trust_and_default_branch_use_current_begin_contract(self) -> None:
+        self.assertEqual(self.deliver(issue_payload()).outcome, "queued")
+        self.store.update_event("d1", trusted=None, default_branch=None)
+        self.assertEqual(self.dispatcher.tick(), "dispatched")
+        begun = self.op("begin", attempt=1)
+        self.assertEqual(begun["status"], "started")
+        self.assertFalse(begun["event"]["trusted"])
+        self.assertTrue(self.op("ensure_session")["ok"])
+        self.assertTrue(self.op("finish", outcome="triaged")["ok"])
 
 class VisualEvidenceBridgeTests(BridgeTestCase):
     def setUp(self) -> None:

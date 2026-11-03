@@ -14,11 +14,6 @@ SOCKDIR="${ISSUE_AGENT_DOCKER_SOCKDIR:-/run/issue-agent-docker}"
 SOCK="$SOCKDIR/docker.sock"
 CHECKOUTS="${ISSUE_AGENT_CHECKOUTS:-/home/agent/checkouts}"
 
-# The native sidecar must not start the runner/publisher until the offline home
-# copy has been verified. Its startup probe gates all following containers.
-[ -s "$CHECKOUTS/.issue-agent-home-ready" ] ||
-  fail 'runner home is not ready; complete issue-agent-runner-home-migrate first'
-
 # The iptables firewall backend must drive nf_tables through iptables-nft; the
 # legacy (x_tables) backend is never an acceptable fallback.
 for tool in iptables ip6tables; do

@@ -234,6 +234,10 @@ _N8N_TRANSPORT_ERROR_RE = re.compile(
     r"The service refused the connection.*|connect ECONN(?:REFUSED|RESET) .*|socket hang up|read ECONNRESET"
     r"|getaddrinfo EAI_AGAIN .*|timeout of \d+ms exceeded", re.DOTALL)
 DISPATCH_BACKOFF = 60.0
+ARCHIVE_TIMEOUT = 95.0
+RESUME_SPAWN_TIMEOUT = 65.0
+STEP_RETRY_LIMIT = 10
+STEP_RETRY_BACKOFF = 120.0
 # A dispatched event whose workflow made no bridge call for this long is parked (`stale_dispatch`): its n8n
 # execution was lost (n8n, runner or bridge restart). Every live op refreshes ``heartbeat_at``; a running turn is
 # polled every 120 s and the longest single op (checkout plus spawn) stays far below this.
@@ -580,17 +584,6 @@ CREATE TABLE IF NOT EXISTS {name} (
     auto_retries    INTEGER NOT NULL DEFAULT 0,
     auto_retry_at   REAL
 )"""
-# Columns added to ``events`` after the v2 kinds; ALTER TABLE ADD COLUMN keeps existing rows.
-EVENT_COLUMNS = (
-    ("attention_pending", "INTEGER NOT NULL DEFAULT 0"),  # attention comment/label not yet both applied
-    ("attention_node", "TEXT"),
-    ("trusted", "INTEGER"),  # 1/0 collaborator verdict at intake; NULL for events recorded before it existed
-    ("pr_number", "INTEGER"),
-    ("park_class", "TEXT"),  # TRANSIENT_PARK_CLASSES (auto-retry-armed), or time_budget / time_budget_expired
-    ("auto_retries", "INTEGER NOT NULL DEFAULT 0"),  # automatic re-queues of this event so far
-    # when the dispatcher re-queues an armed park, or next looks for a time_budget park's late result
-    ("auto_retry_at", "REAL"),
-)
 ISSUES_DDL = """
 CREATE TABLE IF NOT EXISTS {name} (
     repo          TEXT NOT NULL,
@@ -611,14 +604,6 @@ CREATE TABLE IF NOT EXISTS {name} (
     cleanup_failures INTEGER NOT NULL DEFAULT 0,
     PRIMARY KEY (repo, issue_number)
 )"""
-# Columns added to ``issues`` after v1; ALTER TABLE ADD COLUMN keeps existing rows.
-ISSUE_COLUMNS = (
-    ("phase", "TEXT NOT NULL DEFAULT 'none'"),
-    ("subject", "TEXT NOT NULL DEFAULT 'issue'"),
-    ("pr_number", "INTEGER"),
-    ("attention_label", "INTEGER NOT NULL DEFAULT 0"),  # 1 while the bridge's needs-attention label is on GitHub
-    ("cleanup_failures", "INTEGER NOT NULL DEFAULT 0"),  # consecutive cleanup_closed sweeps that failed on it
-)
 TURNS_DDL = """
 CREATE TABLE IF NOT EXISTS {name} (
     delivery_id TEXT NOT NULL,
@@ -691,87 +676,12 @@ SCHEMA = ";\n".join([
 #       result it emits later is harvested under the same localId until session_turn hands it out (consumed_id)
 
 
-def _columns(conn: sqlite3.Connection, table: str) -> list[str]:
-    return [row[1] for row in conn.execute(f"PRAGMA table_info({table})")]
-
-
-def _rebuild(conn: sqlite3.Connection, table: str, ddl: str, fill: Mapping[str, str] | None = None) -> None:
-    """Recreate ``table`` from ``ddl`` keeping every row (SQLite cannot alter keys or CHECK constraints)."""
-    fill = fill or {}
-    old = _columns(conn, table)
-    conn.execute(f"DROP TABLE IF EXISTS {table}_new")
-    conn.execute(ddl.format(name=f"{table}_new"))
-    cols = [c for c in _columns(conn, f"{table}_new") if c in old]
-    extra = [c for c in fill if c not in old]
-    conn.execute(f"INSERT INTO {table}_new ({', '.join(cols + extra)}) "
-                 f"SELECT {', '.join(cols + [fill[c] for c in extra])} FROM {table}")
-    conn.execute(f"DROP TABLE {table}")
-    conn.execute(f"ALTER TABLE {table}_new RENAME TO {table}")
-
-
-def migrate(conn: sqlite3.Connection) -> None:
-    """Upgrade a v1/v2 state file in place. Idempotent; every existing row is kept."""
-    tables = {row[0]: row[1] or "" for row in conn.execute("SELECT name, sql FROM sqlite_master WHERE type = 'table'")}
-    if "events" in tables and any(token not in tables["events"]
-                                   for token in ("'issue_edited'", "'pr_repair'", "'closed_issue_comment'")):
-        _rebuild(conn, "events", EVENTS_DDL)  # widen event kinds while preserving existing deliveries
-    elif "events" in tables:
-        have = set(_columns(conn, "events"))
-        for col, decl in EVENT_COLUMNS:
-            if col not in have:
-                conn.execute(f"ALTER TABLE events ADD COLUMN {col} {decl}")
-    if "issues" in tables:
-        have = set(_columns(conn, "issues"))
-        for col, decl in ISSUE_COLUMNS:
-            if col not in have:
-                conn.execute(f"ALTER TABLE issues ADD COLUMN {col} {decl}")
-        if "phase" not in have:
-            # Pre-v2 issues already carrying an implementation continue as follow-ups, not fresh triage:
-            # v1 always implemented, so an `implemented` outcome or a recorded branch with a session means work exists.
-            implemented = ("EXISTS (SELECT 1 FROM events e WHERE e.repo = issues.repo"
-                           " AND e.issue_number = issues.issue_number AND e.outcome = 'implemented')"
-                           if "events" in tables else "0")
-            conn.execute("UPDATE issues SET phase = 'implementing' WHERE phase = 'none' AND subject = 'issue'"
-                         f" AND ({implemented} OR (branch IS NOT NULL AND session_id IS NOT NULL))")
-        if "attention_label" not in have and "events" in tables:
-            # Subjects parked before the flag existed carry the bridge's label; their next finish removes it.
-            conn.execute("UPDATE issues SET attention_label = 1 WHERE EXISTS (SELECT 1 FROM events e"
-                         " WHERE e.repo = issues.repo AND e.issue_number = issues.issue_number"
-                         " AND e.state = 'needs_attention')")
-    if "turns" in tables and "mode" not in _columns(conn, "turns"):
-        # v1 turns were keyed by delivery only; they stay readable under mode 'legacy'.
-        _rebuild(conn, "turns", TURNS_DDL, {"mode": "'legacy'"})
-    elif "turns" in tables and "'lost'" not in tables["turns"]:
-        _rebuild(conn, "turns", TURNS_DDL)  # widens the state CHECK for session-lost turns
-    if "turns" in tables:
-        have = set(_columns(conn, "turns"))
-        for col, decl in (("deadline_at", "REAL"), ("consumed_id", "TEXT")):
-            if col not in have:
-                conn.execute(f"ALTER TABLE turns ADD COLUMN {col} {decl}")
-    if "prs" in tables:
-        have = set(_columns(conn, "prs"))
-        for col, decl in (("latest_signal", "TEXT"), ("last_manual_id", "INTEGER"),
-                          ("manual_marks", "TEXT NOT NULL DEFAULT '{}'"),
-                          ("repair_streaks", "TEXT NOT NULL DEFAULT '{}'"),
-                          ("auto_merge", "INTEGER NOT NULL DEFAULT 0")):
-            if col not in have:
-                conn.execute(f"ALTER TABLE prs ADD COLUMN {col} {decl}")
-# Event: accepted -> dispatched -> completed | needs_attention
-# Issue session: none -> pending -> ready (pending may fall back to none)
 
 
 class Store:
     def __init__(self, path: str):
         self.path = path
         with closing(self._connect()) as conn:
-            conn.execute("PRAGMA journal_mode=WAL")
-            conn.execute("BEGIN IMMEDIATE")
-            try:
-                migrate(conn)
-            except BaseException:
-                conn.execute("ROLLBACK")
-                raise
-            conn.execute("COMMIT")
             conn.executescript(SCHEMA)
             conn.execute(
                 "INSERT OR IGNORE INTO prs (repo, pr_number, issue_number, updated_at)"
@@ -956,8 +866,8 @@ class Store:
         """A request for a new head cancels the running review of an older head instead of letting it finish.
 
         The cancelled event is terminal, so its workflow's next op gets ``event_terminal`` and nothing is
-        published; the dispatcher then stops its agent (``cancelled.archive`` stage). Its head key is released
-        so that head can be requested again; requests without a head (comments) never cancel.
+        published; ``archive_pending`` is settled once the subject has no other active event. Its head key is
+        released so that head can be requested again; requests without a head (comments) never cancel.
         ``automatic_only`` spares running reviews that carry a `review` comment (a request that queues
         nothing must not drop a human re-request)."""
         head = ev.get("head_sha")
@@ -971,7 +881,7 @@ class Store:
         ).fetchall()
         for row in running:
             stages = json.loads(row["stages"])
-            stages["cancelled"] = {"at": now, "archive": "started" in stages}
+            stages["archive_pending"] = {"next_at": 0}
             conn.execute(
                 "UPDATE events SET state = 'completed', outcome = 'cancelled', detail = ?, stages = ?,"
                 " semantic_key = CASE WHEN semantic_key = repo || '#pr:' || issue_number || ':review:' || head_sha"
@@ -2901,12 +2811,13 @@ class Bridge:
         # (``drain_rereview``) rather than lost.
         with self.store.tx() as conn:
             stages = json.loads(conn.execute("SELECT stages FROM events WHERE seq = ?", (ev["seq"],)).fetchone()[0])
+            stages["archive_pending"] = {"next_at": 0}
             if rereview is not None:
                 stages["rereview_pending"] = rereview
             conn.execute("UPDATE events SET state = 'completed', outcome = ?, detail = ?, stages = ?, updated_at = ?"
                          " WHERE seq = ?", (outcome, detail[:2000] if isinstance(detail, str) else None,
                                             json.dumps(stages), time.time(), ev["seq"]))
-        self._archive_session(ev)
+        self._settle_subject_archive(ev["delivery_id"])
         self._clear_attention_label(ev["repo"], int(ev["issue_number"]),
                                      target=self._event_target_number(ev))
         if pr_number:
@@ -3021,48 +2932,107 @@ class Bridge:
                 return
         self.store.update_issue(repo, number, attention_label=0)
 
-    def _archive_session(self, ev: sqlite3.Row) -> None:
-        """Stop the finished subject's agent process; the next event resumes it through ``ensure_session``.
+    def _other_active_event(self, repo: str, number: int, exclude_delivery: str | None = None) -> bool:
+        sql = ("SELECT 1 FROM events WHERE repo = ? AND issue_number = ?"
+               " AND state IN ('dispatching', 'dispatched')")
+        args: tuple[Any, ...] = (repo, number)
+        if exclude_delivery is not None:
+            sql += " AND delivery_id != ?"
+            args += (exclude_delivery,)
+        sql += " LIMIT 1"
+        return bool(self.store.query(sql, args))
 
-        Idle sessions otherwise keep their Codex process (and its MCP servers) alive until the runner restarts.
-        Best effort: the event is already completed, so a failure only leaves the process running."""
-        sid = self.store.issue(ev["repo"], int(ev["issue_number"]))["session_id"]
-        if sid:
-            self._archive_sid(ev["repo"], int(ev["issue_number"]), sid)
+    def _archive_barrier(self, repo: str, number: int, sid: str) -> None:
+        path = f"/api/sessions/{urllib.parse.quote(sid, safe='')}/archive"
+        try:
+            status, data = self.hapi.request("POST", path, body={}, timeout=ARCHIVE_TIMEOUT)
+        except TransportError as exc:
+            raise OpError(f"session archive transport failed: {exc}", retryable=True,
+                          park_class="hub_unreachable") from None
+        if status == 200:
+            return
+        code = data.get("code") if isinstance(data, dict) else None
+        message = data.get("error") or data.get("message") if isinstance(data, dict) else ""
+        if status == 409 and not code:
+            return
+        if status in (503, 504):
+            raise OpError(f"session archive failed: HTTP {status} {code or ''} {message or ''}".strip(),
+                          retryable=True, park_class="hub_5xx")
+        raise OpError(f"session archive failed: HTTP {status} {code or ''} {message or ''}".strip(),
+                      retryable=False, needs_operator=True, park_class=None)
+
+    def _set_archive_pending(self, delivery_id: str, next_at: float | None) -> None:
+        with self.store.tx() as conn:
+            row = conn.execute("SELECT stages FROM events WHERE delivery_id = ?", (delivery_id,)).fetchone()
+            if row is None:
+                return
+            stages = json.loads(row["stages"] or "{}")
+            if next_at is None:
+                stages.pop("archive_pending", None)
+            else:
+                stages["archive_pending"] = {"next_at": next_at}
+            conn.execute("UPDATE events SET stages = ?, updated_at = ? WHERE delivery_id = ?",
+                         (json.dumps(stages), time.time(), delivery_id))
+
+    def _settle_subject_archive(self, delivery_id: str) -> bool:
+        ev = self.store.event(delivery_id)
+        if ev is None:
+            return True
+        repo, number = ev["repo"], int(ev["issue_number"])
+        if self._other_active_event(repo, number, delivery_id):
+            self._set_archive_pending(delivery_id, time.time() + DISPATCH_BACKOFF)
+            return False
+        try:
+            with self.session_lock:
+                fresh = self.store.event(delivery_id)
+                if fresh is None:
+                    return True
+                if self._other_active_event(repo, number, delivery_id):
+                    self._set_archive_pending(delivery_id, time.time() + DISPATCH_BACKOFF)
+                    return False
+                sid = self.store.issue(repo, number)["session_id"]
+                if sid:
+                    self._archive_barrier(repo, number, sid)
+                self._set_archive_pending(delivery_id, None)
+                return True
+        except (OpError, TransportError) as exc:
+            LOG.warning("%s#%d session archive for %s pending: %s", repo, number, delivery_id, exc)
+            self._set_archive_pending(delivery_id, time.time() + DISPATCH_BACKOFF)
+            return False
 
     def _archive_sid(self, repo: str, number: int, sid: str) -> None:
-        """Archive one HAPI session (best effort; 409 means already inactive, nothing left to stop)."""
+        """Archive a replaced session without failing its replacement's recorded identity."""
         try:
-            status, data = self.hapi.request("POST", f"/api/sessions/{urllib.parse.quote(sid, safe='')}/archive",
-                                             body={})
+            self._archive_barrier(repo, number, sid)
         except (TransportError, OpError) as exc:
             LOG.warning("%s#%d session %s not archived: %s", repo, number, sid, exc)
-            return
-        if status not in (200, 409):
-            LOG.warning("%s#%d session %s not archived: HTTP %s %s", repo, number, sid, status,
-                        data.get("error") if isinstance(data, dict) else "")
 
-    def stop_cancelled_review(self, delivery_id: str) -> None:
-        """Stop the agent of a review cancelled mid-run (one attempt; the event is already terminal).
 
-        Skipped once another event on the pull request holds a dispatch slot: the session is shared, and that
-        event's agent must keep running."""
-        ev = self.store.event(delivery_id)
-        stages = json.loads(ev["stages"])
-        stages["cancelled"]["archive"] = False
-        self.store.update_event(delivery_id, stages=json.dumps(stages))
-        if self.store.query("SELECT 1 FROM events WHERE repo = ? AND issue_number = ?"
-                            " AND state IN ('dispatching', 'dispatched') LIMIT 1", (ev["repo"], ev["issue_number"])):
-            return
-        self._archive_session(ev)
+    def _requeue_transient_step(self, ev: sqlite3.Row, detail: str, now: float) -> dict[str, Any] | None:
+        stages = json.loads(ev["stages"] or "{}")
+        retries = int(stages.get("step_retries") or 0)
+        if retries >= STEP_RETRY_LIMIT:
+            return None
+        stages["step_retries"] = retries + 1
+        stages.pop("started", None)
+        with self.store.tx() as conn:
+            conn.execute(
+                "UPDATE events SET state = 'accepted', stages = ?, attempts = 0, execution_id = NULL,"
+                " heartbeat_at = NULL, detail = ?, next_attempt_at = ?, updated_at = ? WHERE seq = ?",
+                (json.dumps(stages), detail, now + STEP_RETRY_BACKOFF, now, ev["seq"]),
+            )
+        return {"requeued": True, "step_retries": retries + 1}
 
     def op_fail(self, req: dict[str, Any]) -> dict[str, Any]:
         ev = self._event(req, live=False)
         if ev["state"] == "completed" and ev["outcome"] == "cancelled":
             # A newer head cancelled this review; its workflow stops on the next op and lands here.
             return {"already": True}
+        if ev["state"] == "accepted" and int(json.loads(ev["stages"] or "{}").get("step_retries") or 0) > 0:
+            return {"already": True}
         if ev["state"] == "completed":
             raise OpError("event_terminal")
+        now = time.time()
         detail = req.get("detail")
         detail = detail[:2000] if isinstance(detail, str) and detail.strip() else "workflow reported failure"
         node = req.get("node")
@@ -3071,12 +3041,16 @@ class Bridge:
         if artifact_error is not None:
             suffix = "Artifact validation: " + json.dumps(artifact_error, separators=(",", ":"))
             detail = detail[:max(0, 2000 - len(suffix) - 2)] + "\n\n" + suffix
-        # n8n forwards the class of the bridge error (or of its own exhausted transport loop); anything outside
-        # the closed enum is ignored, so the park stays operator-owned. A turn the workflow stopped waiting on at
-        # its deadline is classed by the bridge (``time_budget``), so the dispatcher can harvest its late result.
-        park_class = req.get("park_class")
+        is_time_budget = (node or "").startswith(TIME_BUDGET_NODE) or self._past_deadline(ev, now)
+        retry_exhausted = False
+        if not is_time_budget and req.get("retryable") is True:
+            result = self._requeue_transient_step(ev, detail, now)
+            if result is not None:
+                return result
+            retry_exhausted = True
+        park_class = None if retry_exhausted else req.get("park_class")
         park_class = park_class if park_class in TRANSIENT_PARK_CLASSES else None
-        if (node or "").startswith(TIME_BUDGET_NODE) or self._past_deadline(ev, time.time()):
+        if is_time_budget:
             park_class = "time_budget"
         self.mark_attention(ev, detail, node, park_class=park_class)
         if ev["kind"] == "pr_repair" and ev["pr_number"]:
@@ -3093,6 +3067,8 @@ class Bridge:
         ev = self.store.event_by_execution(execution_id)
         if ev is None:
             raise OpError("unknown_execution")
+        if ev["state"] == "accepted":
+            return {"delivery_id": ev["delivery_id"], "already": True}
         if ev["state"] == "needs_attention":
             self.notify_attention(ev["delivery_id"])  # a notice that failed earlier is re-attempted
             return {"delivery_id": ev["delivery_id"], "already": True}
@@ -3100,12 +3076,17 @@ class Bridge:
             return {"delivery_id": ev["delivery_id"], "already": True}
         node, error = req.get("node"), req.get("error")
         detail = error[:2000] if isinstance(error, str) and error.strip() else "n8n execution failed"
-        # Only an n8n transport failure reaching the bridge is transient; any other node error (agent output
-        # handled by a Code node included) stays operator-owned.
+        now = time.time()
         transport = isinstance(node, str) and (node.startswith("Run agent session (") or node in _N8N_BRIDGE_NODES) \
             and isinstance(error, str) and _N8N_TRANSPORT_ERROR_RE.fullmatch(error.strip()) is not None
-        park_class = "bridge_unreachable" if transport else "time_budget" if self._past_deadline(ev, time.time()) \
-            else None
+        past_deadline = self._past_deadline(ev, now)
+        if transport and not past_deadline:
+            result = self._requeue_transient_step(ev, detail, now)
+            if result is not None:
+                return {"delivery_id": ev["delivery_id"], "already": False, **result}
+        park_class = "time_budget" if past_deadline else "bridge_unreachable" if transport else None
+        if transport and int(json.loads(ev["stages"] or "{}").get("step_retries") or 0) >= STEP_RETRY_LIMIT:
+            park_class = None
         self.mark_attention(ev, detail, node[:200] if isinstance(node, str) and node.strip() else None,
                             park_class=park_class)
         if ev["kind"] == "pr_repair" and ev["pr_number"]:
@@ -3280,10 +3261,8 @@ class Bridge:
                 self.store.update_issue(repo, number, blocked=0, detail=None)
                 self._clear_attention_label(repo, number,
                                             client=self.review_github if ev["kind"] == "pr_review" else None)
-        if self.store.turn(ev["delivery_id"]) is not None and not self.store.query(
-                "SELECT 1 FROM events WHERE repo = ? AND issue_number = ? AND state IN ('dispatching', 'dispatched')"
-                " LIMIT 1", (repo, number)):
-            self._archive_session(ev)  # an event holding a dispatch slot shares the session: leave it running
+        if self.store.turn(ev["delivery_id"]) is not None:
+            self._settle_subject_archive(ev["delivery_id"])
         return {"already": False}
 
     def _requeue(self, ev: sqlite3.Row, *, park_class: str | None = None) -> bool:
@@ -3398,7 +3377,19 @@ class Bridge:
         if deadline_at is None:
             deadline_at = self.store.anchor_turn_deadline(delivery_id, turn["mode"], now)
         if now >= deadline_at + TURN_GRACE_SECONDS:
-            self._archive_session(ev)
+            archived = False
+            try:
+                with self.session_lock:
+                    if not self._other_active_event(ev["repo"], int(ev["issue_number"]), delivery_id):
+                        sid = self.store.issue(ev["repo"], ev["issue_number"])["session_id"]
+                        if sid:
+                            self._archive_barrier(ev["repo"], int(ev["issue_number"]), sid)
+                        archived = True
+            except (OpError, TransportError) as exc:
+                LOG.warning("time-budget harvest of %s waits: session archive failed: %s", delivery_id, exc)
+            if not archived:
+                self.store.update_event(delivery_id, auto_retry_at=now + TIME_BUDGET_CHECK_SECONDS)
+                return "waiting"
             self.store.update_event(delivery_id, park_class="time_budget_expired", auto_retry_at=None)
             LOG.warning("%s#%d event %s: %s turn still without a result after the grace period; session archived",
                         ev["repo"], ev["issue_number"], delivery_id, turn["mode"])
@@ -3798,27 +3789,31 @@ class Bridge:
                 # Unresumable (removed runner machine, or the hub refuses resume for good): give it up and spawn a
                 # replacement below instead of parking the event.
                 if session.get("active"):
-                    dropped = None
-                elif self._orphaned(cfg, session):
+                    issue = self.store.issue(repo, number)
+                    return {"session_id": issue["session_id"], "worktree_path": issue["worktree_path"],
+                            "branch": issue["branch"], "resumed": False}
+                try:
+                    hold = self._holds_result(ev) or self._subject_holds_unresolved(repo, number)
+                except Exception as exc:
+                    LOG.warning("%s#%s session drop lookup failed; retaining identity: %s", repo, number, exc)
+                    hold = True
+                if self._orphaned(cfg, session):
                     dropped = "is bound to a removed runner machine"
-                elif (current := self._resume(repo, number, session)) is None:
-                    dropped = "cannot be resumed (resume_unavailable)"
                 else:
-                    # The resumed session is active: _ensure_service_tier below pins its tier.
-                    session, dropped, resumed = current, None, True
+                    if not hold and not self._other_active_event(repo, number, ev["delivery_id"]):
+                        self._archive_barrier(repo, number, session["id"])
+                    current = self._resume(repo, number, session)
+                    if current is None:
+                        dropped = "cannot be resumed (resume_unavailable)"
+                    else:
+                        session, dropped, resumed = current, None, True
                 if dropped is not None:
-                    try:
-                        hold = self._holds_result(ev) or self._subject_holds_unresolved(repo, number)
-                    except Exception as exc:
-                        LOG.warning("%s#%s session drop lookup failed; retaining identity: %s", repo, number, exc)
-                        hold = True
                     if hold:
                         LOG.warning("%s#%s session %s %s but an unresolved turn is retained",
                                     repo, number, session["id"], dropped)
                         dropped = None
                 if dropped is None:
                     issue = self.store.issue(repo, number)
-                    self._ensure_service_tier(cfg, issue["session_id"], session)
                     return {"session_id": issue["session_id"], "worktree_path": issue["worktree_path"],
                             "branch": issue["branch"], "resumed": resumed}
                 if not self._drop_session(repo, number, session["id"], dropped):
@@ -3835,42 +3830,21 @@ class Bridge:
             if len(matches) == 1:
                 session = self._follow(repo, number, matches[0])
                 issue = self.store.issue(repo, number)
-                self._ensure_service_tier(cfg, issue["session_id"], session)
                 return {"session_id": issue["session_id"], "worktree_path": issue["worktree_path"],
                         "branch": issue["branch"], "resumed": False, "recovered": True}
             if issue["session_state"] == "pending" and time.time() - (issue["pending_at"] or 0) < SPAWN_SETTLE_SECONDS:
                 raise OpError("previous spawn outcome still settling", retryable=True)
             return self._spawn(cfg, repo, number, name, self._existing_worktree(cfg, issue))
 
-    def _ensure_service_tier(self, cfg: RepoConfig, session_id: str, session: Mapping[str, Any]) -> None:
-        """Pin an active Codex session to CODEX_SERVICE_TIER so later resumes keep Fast mode.
-
-        An inactive session is left alone: the hub accepts the change only for active sessions, and the next
-        ensure after its resume sets it. A refusal (4xx) is logged and does not fail the event."""
-        if cfg.agent != "codex" or not session.get("active") or session.get("serviceTier") == CODEX_SERVICE_TIER:
-            return
-        try:
-            status, data = self.hapi.request(
-                "POST", f"/api/sessions/{urllib.parse.quote(session_id, safe='')}/service-tier",
-                body={"serviceTier": CODEX_SERVICE_TIER})
-        except TransportError as exc:
-            raise OpError(f"service tier update failed: {exc}", retryable=True,
-                          park_class="hub_unreachable") from None
-        if status == 200:
-            return
-        if status >= 500 or status == 0:
-            raise OpError(f"service tier update HTTP {status}", retryable=True, park_class=hub_park_class(status))
-        LOG.warning("session %s service tier %s refused: HTTP %s %s", session_id, CODEX_SERVICE_TIER, status, data)
 
     def _resume(self, repo: str, number: int, session: Mapping[str, Any]) -> dict[str, Any] | None:
-        """Resume an inactive session; None when the hub says it can never be resumed (409
-        ``resume_unavailable``: no native thread id, not even one recovered from its messages, and not a
-        never-started session the hub respawns itself), so the caller spawns a replacement. Other refusals keep
-        their class: 503 retryable, 500 ``resume_failed`` (the runner's resume command failed) an operator park
-        that review parks retry automatically as ``hub_5xx``."""
+        """Resume an inactive session; only 409 ``resume_unavailable`` permits a replacement.
+
+        A 503 is transient; other refusals keep the session identity and need an operator."""
         sid = session["id"]
         try:
-            status, data = self.hapi.request("POST", f"/api/sessions/{urllib.parse.quote(sid, safe='')}/resume", body={})
+            status, data = self.hapi.request("POST", f"/api/sessions/{urllib.parse.quote(sid, safe='')}/resume",
+                                             body={}, timeout=RESUME_SPAWN_TIMEOUT)
         except TransportError:
             # Outcome unknown: accept only what the hub now proves.
             current = self._follow(repo, number, sid)
@@ -3880,14 +3854,17 @@ class Bridge:
             raise OpError("session resume outcome unknown", needs_operator=True,
                           park_class="hub_unreachable") from None
         code = data.get("code") if isinstance(data, dict) else None
+        msg = (data.get("error") or data.get("message") or "") if isinstance(data, dict) else ""
         if status == 503:
-            raise OpError(f"resume failed: {code or 'hub unavailable'}", retryable=True, park_class="hub_5xx")
+            raise OpError(f"resume failed: HTTP {status} {code or ''} {msg}".strip(),
+                          retryable=True, park_class="hub_5xx")
         if status == 409 and code == "resume_unavailable":
             return None
         new_id = data.get("sessionId") if isinstance(data, dict) else None
-        if status != 200 or data.get("type") != "success" or not isinstance(new_id, str) or not new_id:
-            raise OpError(f"resume failed: HTTP {status} {code or ''}".strip(), needs_operator=True,
-                          park_class="hub_5xx" if status >= 500 else None)
+        if status != 200 or not isinstance(data, dict) or data.get("type") != "success" \
+                or not isinstance(new_id, str) or not new_id:
+            raise OpError(f"resume failed: HTTP {status} {code or ''} {msg}".strip(),
+                          retryable=False, needs_operator=True, park_class=None)
         return self._follow(repo, number, new_id)
 
     def _checkout(self, cfg: RepoConfig) -> None:
@@ -4303,13 +4280,19 @@ class Bridge:
                 self.store.consume_turn(ev["delivery_id"], mode, local_id)
                 if mode == "triage" and self.store.issue(ev["repo"], ev["issue_number"])["phase"] != "implementing":
                     self.store.update_issue(ev["repo"], ev["issue_number"], phase="triaged")
+                with self.store.tx() as conn:
+                    stages = json.loads(conn.execute("SELECT stages FROM events WHERE seq = ?", (ev["seq"],)).fetchone()[0])
+                    if "step_retries" in stages:
+                        stages.pop("step_retries", None)
+                        conn.execute("UPDATE events SET stages = ?, updated_at = ? WHERE seq = ?",
+                                     (json.dumps(stages), time.time(), ev["seq"]))
                 return {"state": "done", "session_id": sid, "mode": mode, "result": result}
             if not alive:
                 # The step died with the process (runner restart or eviction). Park the turn under a fresh localId so
                 # the workflow re-ensures the session and re-sends the step instead of waiting on a dead turn.
                 self.store.put_turn(ev["delivery_id"], mode, resend_local_id(ev["delivery_id"], mode, local_id),
                                     sid, "lost")
-                return {"state": "lost", "session_id": sid,
+                return {"state": "lost", "session_id": sid, "retryable": True,
                         "detail": "agent session ended mid-turn (runner restart or eviction)"}
             failure = provider_failure(last_message)
             if failure is not None:
@@ -6165,10 +6148,11 @@ class Dispatcher:
             except (OpError, TransportError) as exc:
                 LOG.warning("time-budget harvest of %s failed (next tick retries): %s", ev["delivery_id"], exc)
         for ev in self.store.query(
-            "SELECT delivery_id FROM events WHERE outcome = 'cancelled'"
-            " AND json_extract(stages, '$.cancelled.archive') = 1 ORDER BY seq"
+            "SELECT delivery_id FROM events WHERE json_extract(stages, '$.archive_pending') IS NOT NULL"
+            " AND json_extract(stages, '$.archive_pending.next_at') <= ? ORDER BY seq",
+            (now,),
         ):
-            self.bridge.stop_cancelled_review(ev["delivery_id"])
+            self.bridge._settle_subject_archive(ev["delivery_id"])
         for ev in self.store.query(
             "SELECT * FROM events WHERE state = 'dispatched' AND COALESCE(heartbeat_at, 0) < ?",
             (now - STALE_SECONDS,),

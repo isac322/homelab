@@ -4,6 +4,29 @@
 # No repository checkout, credential, or provider config is baked in; the
 # publisher sidecar clones repositories at runtime into the home PVC.
 
+# HAPI builder: same pinned source and patch as the hub image.
+FROM oven/bun:1.4.4@sha256:f2b798e7ce1c056cd2149a6be7f014b3fde68a0c7165a3011ce3896e8404a6cd AS hapi-builder
+ARG HAPI_SOURCE_SHA256=abf89478f96ab8aacc1d249c0ad0a79fd72c842f6a85123296a83ae19295f360
+WORKDIR /src
+RUN apt-get update \
+    && apt-get install -y --no-install-recommends ca-certificates curl patch \
+    && rm -rf /var/lib/apt/lists/*
+RUN curl -fsSLo /tmp/hapi.tar.gz "https://github.com/tiann/hapi/archive/1f4518df20469c38429cf8ee103ea6320e1087ed.tar.gz" \
+    && echo "${HAPI_SOURCE_SHA256}  /tmp/hapi.tar.gz" | sha256sum -c - \
+    && tar -xzf /tmp/hapi.tar.gz --strip-components=1 -C /src \
+    && rm /tmp/hapi.tar.gz
+COPY patches/hapi-0.34.0-lifecycle.patch /tmp/hapi-0.34.0-lifecycle.patch
+RUN patch -p1 < /tmp/hapi-0.34.0-lifecycle.patch \
+    && bun install --frozen-lockfile \
+    && mkdir -p shared/tools/tunwg \
+    && curl -fsSLo shared/tools/tunwg/tunwg-arm64-linux "https://github.com/tiann/tunwg/releases/download/v26.08.03%2B122a6d0/tunwg-arm64" \
+    && echo "d2d29afda075e26bb70140184b5ee6c8a8cf56b18f1fe56db3c002d7dbe5eef9  shared/tools/tunwg/tunwg-arm64-linux" | sha256sum -c - \
+    && curl -fsSLo shared/tools/tunwg/LICENSE "https://raw.githubusercontent.com/tiann/tunwg/122a6d0/LICENSE" \
+    && echo "d8ac11fb1304443975a04293266bc30227d0dbf01a44f9d51d9ece096aadbe36  shared/tools/tunwg/LICENSE" | sha256sum -c - \
+    && bun run build:web \
+    && bun run --cwd hub generate:embedded-web-assets \
+    && bun run --cwd cli build:exe:allinone --target bun-linux-arm64
+
 # docker:29.9.2-cli (linux/arm64): Docker CLI plus the buildx/compose plugins.
 # Docker 29's `docker build` requires buildx; the daemon is the pod's dockerd
 # sidecar (docker:29.9.2-dind), reached through DOCKER_HOST.
@@ -12,10 +35,6 @@ FROM docker:29.9.2-cli@sha256:5e6baf67325a79f64ed3bed6863954d5e05d0f3d4e57cbdb14
 # node:26.13.0-trixie-slim (linux/arm64). Node runs Codex's npm launcher.
 FROM node:26.13.0-trixie-slim@sha256:e4db4c914bf8ad241bd24804fc25d272d89bad97e68cdc8a1414862790a02c39
 
-# HAPI v0.34.0 (tiann/hapi commit 1f4518df20469c38429cf8ee103ea6320e1087ed);
-# must match the hub image. Checksum = release checksums.txt = asset digest.
-ARG HAPI_VERSION=0.34.0
-ARG HAPI_SHA256=4bb329b66b856c760e61d311f8bf8d0cb5cbb4c3d23c0870619ed80b599c1006
 # @openai/codex 0.166.0 (HAPI shared sessions require >= 0.154.0).
 # SHA-256 of the npm tarballs whose sha512 matched the registry `integrity`.
 ARG CODEX_VERSION=0.166.0
@@ -41,12 +60,8 @@ RUN apt-get update \
     && apt-get install -y --no-install-recommends \
         build-essential ca-certificates cmake curl git less openssh-client pkg-config procps python3 tini \
     && rm -rf /var/lib/apt/lists/*
-
-RUN curl -fsSLo /tmp/hapi.tar.gz "https://github.com/tiann/hapi/releases/download/v${HAPI_VERSION}/hapi-linux-arm64.tar.gz" \
-    && echo "${HAPI_SHA256}  /tmp/hapi.tar.gz" | sha256sum -c - \
-    && tar -xzf /tmp/hapi.tar.gz -C /usr/local/bin hapi \
-    && chmod 0755 /usr/local/bin/hapi \
-    && rm /tmp/hapi.tar.gz
+COPY --from=hapi-builder /src/cli/dist-exe/bun-linux-arm64/hapi /usr/local/bin/hapi
+RUN chmod 0755 /usr/local/bin/hapi
 
 # Same layout as `npm install -g`: bin/codex.js resolves the
 # @openai/codex-linux-arm64 package from the global node_modules.
@@ -133,7 +148,6 @@ COPY --chmod=0644 runner/gitignore /etc/issue-agent/gitignore
 COPY --chmod=0644 runner/codex/config.toml runner/codex/requirements.toml runner/codex/managed_config.toml /etc/codex/
 COPY --chmod=0755 runner/codex/hooks/ /etc/codex/hooks/
 COPY --chmod=0755 runner/bootstrap.sh /opt/issue-agent/bin/runner-bootstrap
-COPY --chmod=0755 runner/healthcheck.sh /opt/issue-agent/bin/runner-healthcheck
 COPY --chmod=0755 runner/publisher.py /opt/issue-agent/bin/publisher
 # Marks checkouts untrusted in CODEX_HOME (bootstrap and publisher /checkout).
 COPY --chmod=0755 runner/codex-untrust /opt/issue-agent/bin/codex-untrust

@@ -131,6 +131,46 @@ def implementation_result() -> dict:
         "local_checks": [{"command": "make test", "exit_code": 0}],
         "visual_evidence_manifest": "artifacts/visual-evidence.json",
     }
+SESSION_WORKFLOW = Path(__file__).with_name("n8n-session-workflow.json")
+MAIN_WORKFLOW = Path(__file__).with_name("n8n-workflow.json")
+
+
+def workflow_nodes(path: Path) -> dict[str, dict]:
+    return {node["name"]: node for node in json.loads(path.read_text())["nodes"]}
+
+
+class WorkflowContractTests(unittest.TestCase):
+    def test_session_workflow_uses_bridge_retry_and_front_door_failure_routing(self) -> None:
+        nodes = workflow_nodes(SESSION_WORKFLOW)
+        for removed in ("Session retries left?", "Wait before session retry",
+                        "Send retries left?", "Wait before send retry"):
+            self.assertNotIn(removed, nodes)
+        http_nodes = [node for node in nodes.values() if node["type"] == "n8n-nodes-base.httpRequest"]
+        self.assertTrue(http_nodes)
+        for node in http_nodes:
+            self.assertTrue(node.get("retryOnFail"), node["name"])
+            self.assertEqual(node.get("maxTries"), 5, node["name"])
+            self.assertEqual(node.get("waitBetweenTries"), 5000, node["name"])
+        failure = nodes["Return failure"]
+        assignments = {item["name"]: item for item in failure["parameters"]["assignments"]["assignments"]}
+        self.assertEqual(assignments["retryable"]["value"],
+                         "={{ $json.retryable === true || $json.state === 'lost' }}")
+        self.assertTrue(failure["parameters"]["includeOtherFields"])
+        workflow = json.loads(SESSION_WORKFLOW.read_text())
+        for name in ("Session status", "Send status"):
+            outputs = workflow["connections"][name]["main"]
+            self.assertEqual([[edge["node"] for edge in output] for output in outputs[1:]],
+                             [["Return failure"]])
+        turn_rules = nodes["Turn state"]["parameters"]["rules"]["values"]
+        lost_index = next(index for index, rule in enumerate(turn_rules) if rule["outputKey"] == "lost")
+        self.assertEqual([edge["node"] for edge in workflow["connections"]["Turn state"]["main"][lost_index]],
+                         ["Return failure"])
+
+    def test_main_mark_needs_attention_forwards_retryable(self) -> None:
+        node = workflow_nodes(MAIN_WORKFLOW)["Mark needs attention"]
+        body = node["parameters"]["jsonBody"]
+        self.assertIn("retryable: ($json.retryable === true)", body)
+
 
 
 class SessionWorkflowResultTests(unittest.TestCase):

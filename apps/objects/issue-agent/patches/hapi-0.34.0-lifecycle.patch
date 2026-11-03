@@ -1,0 +1,833 @@
+diff --git a/cli/src/codex/shared/registry.test.ts b/cli/src/codex/shared/registry.test.ts
+index d702cfa8..1370efe3 100644
+--- a/cli/src/codex/shared/registry.test.ts
++++ b/cli/src/codex/shared/registry.test.ts
+@@ -3,20 +3,38 @@ import { mkdtemp, mkdir, writeFile, rm } from 'node:fs/promises';
+ import { join } from 'node:path';
+ import { tmpdir } from 'node:os';
+ 
+-const state = vi.hoisted(() => ({ home: '', auth: 'token', processes: new Map<number, string | undefined>() }));
++const state = vi.hoisted(() => ({ home: '', auth: 'token', namespaceGeneration: 'boot:1', processes: new Map<number, string | undefined>() }));
+ vi.mock('@/configuration', () => ({ configuration: { get happyHomeDir() { return state.home; }, apiUrl: 'hub', get cliApiToken() { return state.auth; } } }));
+-vi.mock('@/utils/process', () => ({ isProcessAlive: (pid: number) => state.processes.has(pid), getProcessStartMarker: (pid: number) => state.processes.get(pid) }));
++vi.mock('@/utils/process', () => ({
++    isProcessAlive: (pid: number) => state.processes.has(pid),
++    getProcessStartMarker: (pid: number) => state.processes.get(pid),
++    getPidNamespaceGeneration: () => state.namespaceGeneration
++}));
+ import { findRuntime, readRuntimes, runtimeAlive, runtimeAuthHash, runtimeMayBeAlive, saveRuntime, withThreadOwnership, type CodexRuntimeRecord } from './registry';
+ 
+ const directories: string[] = [];
+ afterEach(async () => { state.processes.clear(); state.auth = 'token'; await Promise.all(directories.splice(0).map(path => rm(path, { recursive: true, force: true }))); });
+ async function fixture(): Promise<CodexRuntimeRecord> {
+     const home = await mkdtemp(join(tmpdir(), 'hapi-owner-')); directories.push(home); state.home = join(home, 'hapi');
+-    return { id: 'owner', pid: 1111, marker: 'worker-start', serverPid: 2222, serverMarker: 'server-start', command: 'codex', args: [],
++    return { id: 'owner', pid: 1111, marker: 'worker-start', namespaceGeneration: state.namespaceGeneration,
++        serverPid: 2222, serverMarker: 'server-start', command: 'codex', args: [],
+         codexHome: join(home, 'codex'), endpoint: 'unix://private', hub: 'hub', authHash: runtimeAuthHash(),
+         sessions: { sid: { threadId: 'thread', namespace: 'ns', active: true } } };
+ }
+ describe('shared runtime ownership', () => {
++    it('rejects runtimes from a previous container generation despite reused live PIDs', async () => {
++        const owner = { ...await fixture(), namespaceGeneration: 'boot:old' };
++        state.processes.set(owner.pid, owner.marker);
++        state.processes.set(owner.serverPid!, owner.serverMarker);
++        expect(runtimeAlive(owner)).toBe(false);
++        expect(runtimeMayBeAlive(owner)).toBe(false);
++        expect(runtimeMayBeAlive(owner, new Map([[owner.pid, owner.marker]]))).toBe(false);
++    });
++    it('persists the current namespace generation by default', async () => {
++        const owner = await fixture();
++        await saveRuntime(owner);
++        expect((await readRuntimes({ strict: true }))[0].namespaceGeneration).toBe(state.namespaceGeneration);
++    });
+     it('uses one complete process snapshot without per-record OS probes', async () => {
+         const owner = await fixture();
+         const probe = vi.spyOn(state.processes, 'has');
+diff --git a/cli/src/codex/shared/registry.ts b/cli/src/codex/shared/registry.ts
+index 190593e5..e4c73a95 100644
+--- a/cli/src/codex/shared/registry.ts
++++ b/cli/src/codex/shared/registry.ts
+@@ -5,12 +5,13 @@ import { randomUUID, createHash } from 'node:crypto';
+ import { realpathSync } from 'node:fs';
+ import { z } from 'zod';
+ import { configuration } from '@/configuration';
+-import { getProcessStartMarker, isProcessAlive } from '@/utils/process';
++import { getPidNamespaceGeneration, getProcessStartMarker, isProcessAlive } from '@/utils/process';
+ import { windowsGenerationMayBeAlive, type WindowsProcessTable } from '@/utils/windowsProcessStop';
+ import { withSettingsFileLock } from '@hapi/protocol/settingsFileLock';
+ 
+ const RuntimeSchema = z.object({
+     id: z.string(), pid: z.number().int().positive(), marker: z.string(),
++    namespaceGeneration: z.string().optional(),
+     serverPid: z.number().int().positive().optional(), serverMarker: z.string().optional(),
+     endpoint: z.string(), token: z.string().optional(),
+     command: z.string(), args: z.array(z.string()), codexHome: z.string(), hub: z.string(), authHash: z.string(),
+@@ -19,6 +20,11 @@ const RuntimeSchema = z.object({
+ });
+ export type CodexRuntimeRecord = z.infer<typeof RuntimeSchema>;
+ 
++function currentNamespaceGenerationMatches(record: CodexRuntimeRecord): boolean {
++    const current = getPidNamespaceGeneration();
++    return !(record.namespaceGeneration && current && record.namespaceGeneration !== current);
++}
++
+ export function runtimeDirectory(): string {
+     return join(configuration.happyHomeDir, 'codex-runtimes');
+ }
+@@ -30,6 +36,7 @@ export function codexHome(): string {
+ }
+ 
+ export function runtimeAlive(record: CodexRuntimeRecord): boolean {
++    if (!currentNamespaceGenerationMatches(record)) return false;
+     return isProcessAlive(record.pid) && getProcessStartMarker(record.pid) === record.marker;
+ }
+ 
+@@ -47,6 +54,7 @@ function generationMayBeAlive(pid: number, marker?: string, snapshot?: ReadonlyM
+     return !actual || !marker || actual === marker;
+ }
+ export function runtimeMayBeAlive(owner: CodexRuntimeRecord, snapshot?: ReadonlyMap<number, string | null> | WindowsProcessTable | null): boolean {
++    if (!currentNamespaceGenerationMatches(owner)) return false;
+     return generationMayBeAlive(owner.pid, owner.marker, snapshot)
+         || Boolean(owner.serverPid && generationMayBeAlive(owner.serverPid, owner.serverMarker, snapshot));
+ }
+@@ -70,13 +78,17 @@ async function readRecords(directory: string, strict = false): Promise<CodexRunt
+ }
+ 
+ export async function saveRuntime(record: CodexRuntimeRecord): Promise<void> {
++    const persisted = {
++        ...record,
++        namespaceGeneration: record.namespaceGeneration ?? getPidNamespaceGeneration() ?? undefined
++    };
+     // Ownership follows the native store, even when two launches use different
+     // HAPI_HOME / hub namespaces. These are files, not a global agent daemon.
+-    for (const directory of [join(record.codexHome, 'hapi-runtime-owners'), runtimeDirectory()]) {
++    for (const directory of [join(persisted.codexHome, 'hapi-runtime-owners'), runtimeDirectory()]) {
+         await mkdir(directory, { recursive: true, mode: 0o700 });
+-        const target = join(directory, `${record.id}.json`);
++        const target = join(directory, `${persisted.id}.json`);
+         const temporary = `${target}.${randomUUID()}.tmp`;
+-        await writeFile(temporary, JSON.stringify(record), { mode: 0o600 });
++        await writeFile(temporary, JSON.stringify(persisted), { mode: 0o600 });
+         await rename(temporary, target);
+     }
+ }
+diff --git a/cli/src/commands/runner.test.ts b/cli/src/commands/runner.test.ts
+index 706cbd16..0067654f 100644
+--- a/cli/src/commands/runner.test.ts
++++ b/cli/src/commands/runner.test.ts
+@@ -11,7 +11,12 @@ const {
+     runDoctorCommandMock,
+     initializeTokenMock,
+     existsSyncMock,
+-    statSyncMock
++    readFileSyncMock,
++    statSyncMock,
++    readRunnerStateMock,
++    isProcessAliveMock,
++    getProcessStartMarkerMock,
++    getPidNamespaceGenerationMock
+ } = vi.hoisted(() => ({
+     checkIfRunnerRunningAndCleanupStaleStateMock: vi.fn(),
+     listRunnerSessionsMock: vi.fn(async () => []),
+@@ -23,7 +28,12 @@ const {
+     runDoctorCommandMock: vi.fn(async () => {}),
+     initializeTokenMock: vi.fn(async () => {}),
+     existsSyncMock: vi.fn(() => true),
+-    statSyncMock: vi.fn(() => ({ isDirectory: () => true }))
++    readFileSyncMock: vi.fn(() => ''),
++    statSyncMock: vi.fn(() => ({ isDirectory: () => true, mtimeMs: Date.now() })),
++    readRunnerStateMock: vi.fn(async (): Promise<{ pid: number } | null> => null),
++    isProcessAliveMock: vi.fn(() => true),
++    getProcessStartMarkerMock: vi.fn(() => 'marker'),
++    getPidNamespaceGenerationMock: vi.fn(() => 'namespace')
+ }))
+ 
+ vi.mock('node:fs', async () => {
+@@ -31,9 +41,27 @@ vi.mock('node:fs', async () => {
+     return {
+         ...actual,
+         existsSync: existsSyncMock,
++        readFileSync: readFileSyncMock,
+         statSync: statSyncMock
+     }
+ })
++vi.mock('@/configuration', () => ({
++    configuration: {
++        runnerStateFile: '/tmp/runner.state.json',
++        runnerLockFile: '/tmp/runner.state.json.lock'
++    }
++}))
++
++vi.mock('@/persistence', () => ({
++    readRunnerState: readRunnerStateMock
++}))
++
++vi.mock('@/utils/process', () => ({
++    isProcessAlive: isProcessAliveMock,
++    getProcessStartMarker: getProcessStartMarkerMock,
++    getPidNamespaceGeneration: getPidNamespaceGenerationMock
++}))
++
+ 
+ vi.mock('@/runner/controlClient', () => ({
+     checkIfRunnerRunningAndCleanupStaleState: checkIfRunnerRunningAndCleanupStaleStateMock,
+@@ -75,7 +103,7 @@ describe('runnerCommand start', () => {
+     beforeEach(() => {
+         vi.clearAllMocks()
+         existsSyncMock.mockReturnValue(true)
+-        statSyncMock.mockReturnValue({ isDirectory: () => true })
++        statSyncMock.mockReturnValue({ isDirectory: () => true, mtimeMs: Date.now() })
+     })
+ 
+     it('stops an existing runner before starting a new detached runner', async () => {
+@@ -149,3 +177,44 @@ describe('runnerCommand stop-session', () => {
+         }
+     })
+ })
++
++describe('runnerCommand status --check', () => {
++    beforeEach(() => {
++        vi.clearAllMocks()
++        existsSyncMock.mockReturnValue(true)
++        readRunnerStateMock.mockResolvedValue({ pid: 4242 })
++        statSyncMock.mockReturnValue({ mtimeMs: Date.now(), isDirectory: () => true })
++        readFileSyncMock.mockReturnValue(JSON.stringify({ pid: 4242, marker: 'marker', namespaceGeneration: 'namespace' }))
++        isProcessAliveMock.mockReturnValue(true)
++        getProcessStartMarkerMock.mockReturnValue('marker')
++        getPidNamespaceGenerationMock.mockReturnValue('namespace')
++    })
++
++    it('returns success for a fresh, live runner with matching lock metadata', async () => {
++        const exitSpy = vi.spyOn(process, 'exit').mockImplementation(((code?: number) => {
++            throw new Error(`process.exit:${code ?? 'undefined'}`)
++        }) as never)
++        try {
++            await expect(runnerCommand.run(createContext(['status', '--check']))).rejects.toThrow('process.exit:0')
++            expect(runDoctorCommandMock).not.toHaveBeenCalled()
++        } finally {
++            exitSpy.mockRestore()
++        }
++    })
++
++    it('returns failure for a stale heartbeat', async () => {
++        statSyncMock.mockReturnValue({ mtimeMs: Date.now() - 181_000, isDirectory: () => true })
++        const exitSpy = vi.spyOn(process, 'exit').mockImplementation(((code?: number) => {
++            throw new Error(`process.exit:${code ?? 'undefined'}`)
++        }) as never)
++        const consoleErrorSpy = vi.spyOn(console, 'error').mockImplementation(() => {})
++        try {
++            await expect(runnerCommand.run(createContext(['status', '--check', '--max-age', '180'])))
++                .rejects.toThrow('process.exit:1')
++            expect(consoleErrorSpy).toHaveBeenCalledWith(expect.stringContaining('heartbeat'))
++        } finally {
++            consoleErrorSpy.mockRestore()
++            exitSpy.mockRestore()
++        }
++    })
++})
+diff --git a/cli/src/commands/runner.ts b/cli/src/commands/runner.ts
+index 75caa109..840e8481 100644
+--- a/cli/src/commands/runner.ts
++++ b/cli/src/commands/runner.ts
+@@ -1,7 +1,9 @@
+ import chalk from 'chalk'
+-import { existsSync, statSync } from 'node:fs'
++import { existsSync, readFileSync, statSync } from 'node:fs'
+ import { homedir } from 'node:os'
+ import { isAbsolute, resolve } from 'node:path'
++import { configuration } from '@/configuration'
++import { getPidNamespaceGeneration, getProcessStartMarker, isProcessAlive } from '@/utils/process'
+ import { startRunner } from '@/runner/run'
+ import {
+     checkIfRunnerRunningAndCleanupStaleState,
+@@ -13,6 +15,7 @@ import { getLatestRunnerLog } from '@/ui/logger'
+ import { spawnHappyCLI } from '@/utils/spawnHappyCLI'
+ import { runDoctorCommand } from '@/ui/doctor'
+ import { initializeToken } from '@/ui/tokenInit'
++import { readRunnerState } from '@/persistence'
+ import type { CommandDefinition } from './types'
+ 
+ /**
+@@ -81,6 +84,52 @@ async function waitForRunnerToStop(maxAttempts = 50): Promise<boolean> {
+     return false
+ }
+ 
++async function checkRunnerHealth(maxAgeSeconds: number): Promise<{ ok: true } | { ok: false; reason: string }> {
++    const state = await readRunnerState()
++    if (!state) return { ok: false, reason: 'runner.state.json is missing or invalid' }
++    let ageSeconds: number
++    try {
++        ageSeconds = (Date.now() - statSync(configuration.runnerStateFile).mtimeMs) / 1000
++    } catch {
++        return { ok: false, reason: 'runner.state.json cannot be stat-ed' }
++    }
++    if (ageSeconds > maxAgeSeconds) return { ok: false, reason: `runner heartbeat is ${ageSeconds.toFixed(0)}s old` }
++    if (!isProcessAlive(state.pid)) return { ok: false, reason: `runner PID ${state.pid} is not alive` }
++
++    if (existsSync(configuration.runnerLockFile)) {
++        let lock: unknown
++        try {
++            lock = JSON.parse(readFileSync(configuration.runnerLockFile, 'utf8'))
++        } catch {
++            return { ok: false, reason: 'runner lock file is invalid' }
++        }
++        if (lock && typeof lock === 'object' && !Array.isArray(lock)) {
++            const record = lock as Record<string, unknown>
++            const hasPid = 'pid' in record
++            const hasMarker = 'marker' in record
++            const hasNamespaceGeneration = 'namespaceGeneration' in record
++            if (hasPid && record.pid !== state.pid) {
++                return { ok: false, reason: 'runner lock PID does not match runner.state.json' }
++            }
++            if (hasMarker && typeof record.marker !== 'string') {
++                return { ok: false, reason: 'runner lock marker is invalid' }
++            }
++            if (hasNamespaceGeneration && typeof record.namespaceGeneration !== 'string') {
++                return { ok: false, reason: 'runner lock namespace generation is invalid' }
++            }
++            const marker = hasMarker ? record.marker : undefined
++            const namespaceGeneration = hasNamespaceGeneration ? record.namespaceGeneration : undefined
++            if (marker !== undefined && getProcessStartMarker(state.pid) !== marker) {
++                return { ok: false, reason: 'runner lock marker does not match runner.state.json' }
++            }
++            if (namespaceGeneration !== undefined && getPidNamespaceGeneration() !== namespaceGeneration) {
++                return { ok: false, reason: 'runner lock namespace generation is stale' }
++            }
++        }
++    }
++    return { ok: true }
++}
++
+ export const runnerCommand: CommandDefinition = {
+     name: 'runner',
+     requiresRuntimeAssets: true,
+@@ -181,7 +230,21 @@ export const runnerCommand: CommandDefinition = {
+         }
+ 
+         if (runnerSubcommand === 'status') {
+-            await runDoctorCommand('runner')
++            if (mutableArgs.includes('--check')) {
++                const maxAgeIndex = mutableArgs.indexOf('--max-age')
++                const maxAge = maxAgeIndex === -1 ? 180 : Number(mutableArgs[maxAgeIndex + 1])
++                if (!Number.isFinite(maxAge) || maxAge <= 0) {
++                    console.error('runner unhealthy: --max-age requires a positive number of seconds')
++                    process.exit(1)
++                }
++                const health = await checkRunnerHealth(maxAge)
++                if (!health.ok) {
++                    console.error(`runner unhealthy: ${health.reason}`)
++                    process.exit(1)
++                }
++            } else {
++                await runDoctorCommand('runner')
++            }
+             process.exit(0)
+         }
+ 
+@@ -201,7 +264,8 @@ ${chalk.bold('hapi runner')} - Runner management
+ ${chalk.bold('Usage:')}
+   hapi runner start              Start the runner (replaces existing runner)
+   hapi runner stop               Stop the runner (sessions stay alive)
+-  hapi runner status             Show runner status
++  hapi runner status [--check] [--max-age <sec>]
++                                 Show runner status; --check exits 1 when unhealthy.
+   hapi runner list               List active sessions
+ 
+ ${chalk.bold('Options:')}
+diff --git a/cli/src/persistence.runnerLock.test.ts b/cli/src/persistence.runnerLock.test.ts
+new file mode 100644
+index 00000000..3e3b4dce
+--- /dev/null
++++ b/cli/src/persistence.runnerLock.test.ts
+@@ -0,0 +1,57 @@
++import { afterAll, afterEach, beforeEach, describe, expect, it, vi } from 'vitest'
++import { readFileSync, writeFileSync, rmSync } from 'node:fs'
++import { join } from 'node:path'
++
++const state = vi.hoisted(() => {
++    const fs = require('node:fs') as typeof import('node:fs')
++    const os = require('node:os') as typeof import('node:os')
++    const path = require('node:path') as typeof import('node:path')
++    return { home: fs.mkdtempSync(path.join(os.tmpdir(), 'hapi-runner-lock-')), namespace: 'boot:100', alive: true, marker: 'current' as string | null }
++})
++vi.mock('@/configuration', () => ({ configuration: {
++    happyHomeDir: state.home,
++    runnerLockFile: join(state.home, 'runner.state.json.lock')
++} }))
++vi.mock('@/utils/process', () => ({
++    isProcessAlive: () => state.alive,
++    getProcessStartMarker: () => state.marker,
++    getPidNamespaceGeneration: () => state.namespace
++}))
++
++import { acquireRunnerLock, releaseRunnerLock } from './persistence'
++const lockPath = join(state.home, 'runner.state.json.lock')
++const foreignPid = process.pid + 100
++beforeEach(() => { state.namespace = 'boot:100'; state.alive = true; state.marker = 'current' })
++afterEach(() => rmSync(lockPath, { force: true }))
++afterAll(() => rmSync(state.home, { recursive: true, force: true }))
++
++describe('runner lock PID generation recovery', () => {
++    it.each([
++        { name: 'reused own PID', pid: process.pid, marker: 'current', namespaceGeneration: 'boot:100' },
++        { name: 'previous container', pid: foreignPid, marker: 'current', namespaceGeneration: 'boot:old' },
++        { name: 'reused foreign PID', pid: foreignPid, marker: 'old', namespaceGeneration: 'boot:100' }
++    ])('reclaims a stale lock from $name', async ({ name: _name, ...lock }) => {
++        writeFileSync(lockPath, JSON.stringify(lock))
++        const acquired = await acquireRunnerLock(2, 0)
++        expect(acquired).not.toBeNull()
++        expect(JSON.parse(readFileSync(lockPath, 'utf8'))).toEqual({ pid: process.pid, marker: 'current', namespaceGeneration: 'boot:100' })
++        await releaseRunnerLock(acquired!)
++    })
++
++    it('keeps another live PID when the marker probe is unavailable in the same namespace', async () => {
++        state.marker = null
++        const original = JSON.stringify({ pid: foreignPid, marker: 'recorded', namespaceGeneration: 'boot:100' })
++        writeFileSync(lockPath, original)
++        expect(await acquireRunnerLock(1, 0)).toBeNull()
++        expect(readFileSync(lockPath, 'utf8')).toBe(original)
++    })
++
++    it('reclaims a dead legacy numeric lock while retaining a live one', async () => {
++        writeFileSync(lockPath, String(foreignPid))
++        expect(await acquireRunnerLock(1, 0)).toBeNull()
++        state.alive = false
++        const acquired = await acquireRunnerLock(2, 0)
++        expect(acquired).not.toBeNull()
++        await releaseRunnerLock(acquired!)
++    })
++})
+diff --git a/cli/src/persistence.test.ts b/cli/src/persistence.test.ts
+index ad4b9690..41c2b9cb 100644
+--- a/cli/src/persistence.test.ts
++++ b/cli/src/persistence.test.ts
+@@ -23,7 +23,7 @@ vi.mock('@/configuration', () => ({
+     },
+ }))
+ 
+-import { updateSettings } from './persistence'
++import { acquireRunnerLock, releaseRunnerLock, updateSettings } from './persistence'
+ 
+ describe('updateSettings', () => {
+     afterEach(() => {
+@@ -46,3 +46,19 @@ describe('updateSettings', () => {
+         expect(readFileSync(settingsFile, 'utf8')).toBe('{not-json')
+     })
+ })
++
++describe('runner lock generation metadata', () => {
++    it('writes structured PID, process marker, and namespace generation metadata', async () => {
++        const lock = await acquireRunnerLock(1)
++        expect(lock).not.toBeNull()
++        const parsed = JSON.parse(readFileSync(join(dir, 'runner.state.json.lock'), 'utf8')) as {
++            pid: number
++            marker: string | null
++            namespaceGeneration: string | null
++        }
++        expect(parsed.pid).toBe(process.pid)
++        expect(parsed).toHaveProperty('marker')
++        expect(parsed).toHaveProperty('namespaceGeneration')
++        await releaseRunnerLock(lock!)
++    })
++})
+diff --git a/cli/src/persistence.ts b/cli/src/persistence.ts
+index 81c6a761..313c64b6 100644
+--- a/cli/src/persistence.ts
++++ b/cli/src/persistence.ts
+@@ -9,7 +9,7 @@ import { readFile, writeFile, mkdir, open, unlink, rename, chmod } from 'node:fs
+ import { existsSync, writeFileSync, readFileSync, unlinkSync } from 'node:fs'
+ import { withSettingsFileLock } from '@hapi/protocol/settingsFileLock'
+ import { configuration } from '@/configuration'
+-import { isProcessAlive } from '@/utils/process';
++import { getPidNamespaceGeneration, getProcessStartMarker, isProcessAlive } from '@/utils/process';
+ 
+ interface Settings {
+   // This ID is used as the actual database ID on the server
+@@ -210,27 +210,55 @@ export async function acquireRunnerLock(
+   maxAttempts: number = 5,
+   delayIncrementMs: number = 200
+ ): Promise<FileHandle | null> {
++  const currentNamespaceGeneration = getPidNamespaceGeneration();
+   for (let attempt = 1; attempt <= maxAttempts; attempt++) {
+     try {
+       // 'wx' ensures we only create if it doesn't exist (atomic lock acquisition)
+       const fileHandle = await open(configuration.runnerLockFile, 'wx');
+-      // Write PID to lock file for debugging
+-      await fileHandle.writeFile(String(process.pid));
++      await fileHandle.writeFile(JSON.stringify({
++        pid: process.pid,
++        marker: getProcessStartMarker(process.pid),
++        namespaceGeneration: currentNamespaceGeneration
++      }));
+       return fileHandle;
+-    } catch (error: any) {
+-      if (error.code === 'EEXIST') {
+-        // Lock file exists, check if process is still running
++    } catch (error: unknown) {
++      const code = error && typeof error === 'object' && 'code' in error ? error.code : undefined;
++      if (code === 'EEXIST') {
+         try {
+-          const lockPid = readFileSync(configuration.runnerLockFile, 'utf-8').trim();
+-          if (lockPid && !isNaN(Number(lockPid))) {
+-            if (!isProcessAlive(Number(lockPid))) {
+-              // Process doesn't exist, remove stale lock
++          const raw = readFileSync(configuration.runnerLockFile, 'utf-8').trim();
++          const parsed: unknown = raw ? JSON.parse(raw) : null;
++          const legacyPid = raw && /^[0-9]+$/.test(raw) ? Number(raw) : undefined;
++          const lock = legacyPid !== undefined
++            ? { pid: legacyPid, marker: undefined, namespaceGeneration: undefined }
++            : parsed && typeof parsed === 'object' && !Array.isArray(parsed) ? parsed as {
++              pid?: unknown;
++              marker?: unknown;
++              namespaceGeneration?: unknown;
++            } : null;
++          const lockPid = typeof lock?.pid === 'number' && Number.isSafeInteger(lock.pid) ? lock.pid : null;
++          if (lockPid !== null) {
++            const alive = isProcessAlive(lockPid);
++            const sameNamespace = typeof lock?.namespaceGeneration === 'string'
++              && currentNamespaceGeneration !== null
++              && lock.namespaceGeneration === currentNamespaceGeneration;
++            const namespaceMismatch = typeof lock?.namespaceGeneration === 'string'
++              && currentNamespaceGeneration !== null
++              && lock.namespaceGeneration !== currentNamespaceGeneration;
++            const marker = typeof lock?.marker === 'string' ? lock.marker : undefined;
++            const currentMarker = alive ? getProcessStartMarker(lockPid) : null;
++            const probeUnknownInSameNamespace = alive && sameNamespace && currentMarker === null;
++            const markerMismatch = marker !== undefined && currentMarker !== null && marker !== currentMarker;
++            const stale = lockPid === process.pid
++              || namespaceMismatch
++              || !alive
++              || (markerMismatch && !probeUnknownInSameNamespace);
++            if (stale) {
+               unlinkSync(configuration.runnerLockFile);
+-              continue; // Retry acquisition
++              continue;
+             }
+           }
+         } catch {
+-          // Can't read lock file, might be corrupted
++          // Can't read or safely validate the lock; preserve it and retry.
+         }
+       }
+ 
+diff --git a/cli/src/runner/run.stopSession.test.ts b/cli/src/runner/run.stopSession.test.ts
+index 58121682..33a7f3b6 100644
+--- a/cli/src/runner/run.stopSession.test.ts
++++ b/cli/src/runner/run.stopSession.test.ts
+@@ -9,8 +9,12 @@ const mocks = vi.hoisted(() => ({
+     controlServer: vi.fn(),
+     readRuntimes: vi.fn(),
+     findRuntime: vi.fn(),
++    runtimeControl: vi.fn(async () => {}),
++    runtimeAlive: vi.fn(() => true),
++    saveRuntime: vi.fn(async () => {}),
++    processAlive: true,
+     reapOrphans: vi.fn<typeof import('./orphanReap')['reapRunnerSpawnedOrphans']>(),
+-    kill: vi.fn(),
++    kill: vi.fn(async () => { mocks.processAlive = false; }),
+ }))
+ 
+ vi.mock('./controlServer', () => ({ startRunnerControlServer: mocks.controlServer }))
+@@ -28,9 +32,12 @@ vi.mock('@/ui/doctor', () => ({ getEnvironmentInfo: () => ({}) }))
+ vi.mock('@/codex/shared/registry', () => ({
+     readRuntimes: mocks.readRuntimes,
+     findRuntime: mocks.findRuntime,
++    runtimeAlive: mocks.runtimeAlive,
++    saveRuntime: mocks.saveRuntime,
+     runtimeAuthHash: () => 'test-auth',
+     runtimeMayBeAlive: () => true,
+ }))
++vi.mock('@/codex/shared/frontend', () => ({ runtimeControl: mocks.runtimeControl }))
+ vi.mock('@/runner/orphanReap', () => ({
+     reapRunnerSpawnedOrphans: mocks.reapOrphans,
+     findStopSessionOrphanTargets: vi.fn(),
+@@ -38,7 +45,7 @@ vi.mock('@/runner/orphanReap', () => ({
+ vi.mock('@/utils/process', async importOriginal => ({
+     ...await importOriginal<typeof import('@/utils/process')>(),
+     isWindows: () => false,
+-    isProcessAlive: () => true,
++    isProcessAlive: () => mocks.processAlive,
+     getProcessStartMarker: () => 'generation',
+     killProcess: mocks.kill,
+     killProcessTreeByPid: mocks.kill,
+@@ -81,8 +88,10 @@ describe('runner stop confirmation after shared Codex tracking loss', () => {
+ 
+     beforeEach(() => {
+         vi.clearAllMocks()
++        mocks.processAlive = true
+         record = {
+-            id: 'runtime', pid: 42, marker: 'generation', endpoint: 'unused',
++            id: 'runtime', pid: 42, marker: 'generation', namespaceGeneration: 'test-generation',
++            serverPid: 99, serverMarker: 'generation', endpoint: 'unused',
+             command: 'codex', args: [], codexHome: home,
+             hub: configuration.apiUrl, authHash: 'test-auth',
+             sessions: { target: { threadId: 'thread', namespace: 'test', active: false } },
+@@ -132,4 +141,23 @@ describe('runner stop confirmation after shared Codex tracking loss', () => {
+         await expect(stopSession('PID-42')).resolves.toBe('unknown')
+         expect(mocks.kill).not.toHaveBeenCalled()
+     })
++    it('kills an orphaned shared server and marks the active binding inactive', async () => {
++        record.sessions.target.active = true
++        record.serverPid = 99
++        record.serverMarker = 'generation'
++        mocks.findRuntime.mockResolvedValue(undefined)
++        mocks.runtimeAlive.mockReturnValue(false)
++        await expect(stopSession('target')).resolves.toBe('stopped')
++        expect(mocks.kill).toHaveBeenCalledWith(99)
++        expect(mocks.saveRuntime).toHaveBeenCalled()
++    })
++    it('does not kill a reused server PID when the original server generation is gone', async () => {
++        record.sessions.target.active = true
++        record.serverPid = 99
++        record.serverMarker = 'old-generation'
++        mocks.runtimeAlive.mockReturnValue(false)
++        await expect(stopSession('target')).resolves.toBe('stopped')
++        expect(mocks.kill).not.toHaveBeenCalled()
++        expect(mocks.saveRuntime).toHaveBeenCalled()
++    })
+ })
+diff --git a/cli/src/runner/run.ts b/cli/src/runner/run.ts
+index 386c0799..ab713546 100644
+--- a/cli/src/runner/run.ts
++++ b/cli/src/runner/run.ts
+@@ -42,8 +42,9 @@ import { join } from 'path';
+ import { buildMachineMetadata } from '@/agent/sessionFactory';
+ import { resolveWorkspaceRoots } from '@/utils/workspaceRoot';
+ import { hashRunnerCliApiToken, hashRunnerExtraHeaders } from './runnerIdentity';
+-import { readRuntimes, runtimeMayBeAlive, runtimeAuthHash } from '@/codex/shared/registry';
++import { readRuntimes, runtimeAlive, runtimeMayBeAlive, runtimeAuthHash, saveRuntime, type CodexRuntimeRecord } from '@/codex/shared/registry';
+ import { readWindowsProcessTable } from '@/utils/windowsProcessStop';
++import { withSettingsFileLock } from '@hapi/protocol/settingsFileLock';
+ import { coalesceStopRequests } from './stopSessionRequests';
+ import { scheduleCursorModelsPrewarm } from '@/modules/common/cursorModelsPrewarm';
+ import { isLinkedGitWorktree } from '@/utils/isLinkedGitWorktree';
+@@ -1200,8 +1201,8 @@ export async function startRunner(options: { workspaceRoots?: string[] } = {}):
+       // owner is conservative; caching a negative result could hide a new live
+       // owner after PID reuse. Binding files are reread on EVERY decision.
+       const possiblyLiveGenerations = new Set<string>();
+-      const runtimeGenerationKey = (record: Awaited<ReturnType<typeof readRuntimes>>[number]) =>
+-        JSON.stringify([record.pid, record.marker, record.serverPid, record.serverMarker]);
++      const runtimeGenerationKey = (record: CodexRuntimeRecord) =>
++        JSON.stringify([record.pid, record.marker, record.namespaceGeneration, record.serverPid, record.serverMarker]);
+       const readLiveRuntimesForStop = async () => {
+         try {
+           const scanStarted = Date.now();
+@@ -1272,6 +1273,67 @@ export async function startRunner(options: { workspaceRoots?: string[] } = {}):
+         return base;
+       };
+ 
++      const runtimeHasActiveSiblings = (runtime: CodexRuntimeRecord, targetSessionId: string): boolean =>
++        Object.entries(runtime.sessions).some(([id, session]) => id !== targetSessionId && session.active)
++        || Boolean(runtime.pendingCreations?.length);
++
++      const runtimeHasActiveSessions = (runtime: CodexRuntimeRecord): boolean =>
++        Object.values(runtime.sessions).some(session => session.active)
++        || Boolean(runtime.pendingCreations?.length);
++
++      const stopRuntimeServer = async (runtime: CodexRuntimeRecord, graceMs = 0): Promise<boolean> => {
++        if (!runtime.serverPid || !isProcessAlive(runtime.serverPid)) return true;
++        const initialMarker = getProcessStartMarker(runtime.serverPid);
++        if (initialMarker === null || !runtime.serverMarker) return false;
++        if (initialMarker !== runtime.serverMarker) return true;
++
++        const deadline = Date.now() + graceMs;
++        while (isProcessAlive(runtime.serverPid) && Date.now() < deadline) {
++          const marker = getProcessStartMarker(runtime.serverPid);
++          if (marker === null) return false;
++          if (marker !== runtime.serverMarker) return true;
++          const { promise, resolve } = Promise.withResolvers<void>();
++          setTimeout(resolve, 100);
++          await promise;
++        }
++        if (!isProcessAlive(runtime.serverPid)) return true;
++
++        const markerBeforeKill = getProcessStartMarker(runtime.serverPid);
++        if (markerBeforeKill === null) return false;
++        if (markerBeforeKill !== runtime.serverMarker) return true;
++        await killProcessTreeByPid(runtime.serverPid);
++        if (!isProcessAlive(runtime.serverPid)) return true;
++        const markerAfterKill = getProcessStartMarker(runtime.serverPid);
++        return markerAfterKill !== null && markerAfterKill !== runtime.serverMarker;
++      };
++
++      const recoverDeadSharedRuntime = async (
++        runtime: CodexRuntimeRecord
++      ): Promise<'stopped' | 'already_gone' | 'still_alive' | 'unknown' | null> => {
++        if (runtimeHasActiveSiblings(runtime, sessionId)) return 'still_alive';
++        if (!await stopRuntimeServer(runtime)) return 'still_alive';
++
++        const ownershipDirectory = join(runtime.codexHome, 'hapi-runtime-owners');
++        await fs.mkdir(ownershipDirectory, { recursive: true, mode: 0o700 });
++        const ownershipPath = join(ownershipDirectory, 'ownership');
++        const markedInactive = await withSettingsFileLock(ownershipPath, async () => {
++          const latest = (await readRuntimes({ strict: true })).find(candidate => candidate.id === runtime.id);
++          if (!latest || latest.hub !== runtime.hub || latest.authHash !== runtime.authHash
++            || latest.pid !== runtime.pid || latest.marker !== runtime.marker
++            || latest.serverPid !== runtime.serverPid || latest.serverMarker !== runtime.serverMarker
++            || latest.namespaceGeneration !== runtime.namespaceGeneration
++            || runtimeAlive(latest) || runtimeHasActiveSiblings(latest, sessionId)) return false;
++          const sessions = Object.fromEntries(Object.entries(latest.sessions).map(([id, session]) => [
++            id, { ...session, active: false }
++          ]));
++          await saveRuntime({ ...latest, sessions });
++          return true;
++        });
++        if (!markedInactive) return null;
++        rememberVerifiedExit(sessionId);
++        return await finishWithOrphanSweep('stopped');
++      };
++
+       const { findRuntime } = await import('@/codex/shared/registry');
+       const sharedRuntime = await findRuntime(sessionId);
+       if (sharedRuntime) {
+@@ -1282,26 +1344,45 @@ export async function startRunner(options: { workspaceRoots?: string[] } = {}):
+           if (tracked) {
+             const detach = detachSharedRootFromWrapper(tracked, sessionId);
+             if (detach.kind === 'keep_wrapper' || keepWrapperForSharedSiblings(tracked, sessionId)) {
+-              // App-server ended this root; sibling roots still need the wrapper.
+-              // Still argv-sweep other generations; PID filter skips this wrapper.
+               logger.debug(
+                 `[RUNNER RUN] Shared runtime stopped root ${sessionId}; wrapper PID ${sharedRuntime.pid} kept`
+               );
+               return await finishWithOrphanSweep('stopped');
+             }
+           }
+-          // Post-restart: TrackedSession may be gone; registry still lists siblings.
+-          const liveAfterStop = await readLiveRuntimesForStop();
+-          if (liveAfterStop === null) return 'still_alive';
+-          if (wrapperHasActiveSiblingRoots(liveAfterStop, sessionId, sharedRuntime.pid)) {
++          const currentRuntime = (await readRuntimes({ strict: true })).find(runtime => runtime.id === sharedRuntime.id) ?? sharedRuntime;
++          if (runtimeHasActiveSiblings(currentRuntime, sessionId)) {
+             logger.debug(
+               `[RUNNER RUN] Shared runtime stopped root ${sessionId}; registry siblings keep PID ${sharedRuntime.pid}`
+             );
+             return await finishWithOrphanSweep('stopped');
+           }
++          if (!runtimeHasActiveSessions(currentRuntime) && currentRuntime.serverPid
++            && !(await stopRuntimeServer(currentRuntime, 10_000))) {
++            return 'still_alive';
++          }
+           return await finishWithOrphanSweep('stopped');
+         } catch { return 'still_alive'; }
+       }
++      {
++        let deadRuntime: CodexRuntimeRecord | undefined;
++        try {
++          deadRuntime = (await readRuntimes({ strict: true })).find(runtime =>
++            runtime.hub === configuration.apiUrl
++            && runtime.authHash === runtimeAuthHash()
++            && runtime.sessions[sessionId]?.active
++            && !runtimeAlive(runtime)
++          );
++        } catch {
++          return 'still_alive';
++        }
++        if (deadRuntime) {
++          try {
++            const recovered = await recoverDeadSharedRuntime(deadRuntime);
++            if (recovered) return recovered;
++          } catch { return 'still_alive'; }
++        }
++      }
+       {
+         const probeRuntimes = await readLiveRuntimesForStop();
+         if (probeRuntimes === null) return 'still_alive';
+diff --git a/cli/src/utils/process.ts b/cli/src/utils/process.ts
+index cc4cb045..fe9d17bb 100644
+--- a/cli/src/utils/process.ts
++++ b/cli/src/utils/process.ts
+@@ -88,6 +88,26 @@ export function getSystemBootId(): string | null {
+     return null;
+   }
+ }
++export function getLinuxProcStartTicks(pid: number): number | null {
++  if (process.platform !== 'linux' || !Number.isSafeInteger(pid) || pid <= 0) return null;
++  try {
++    const stat = readFileSync(`/proc/${pid}/stat`, 'utf8');
++    const commEnd = stat.lastIndexOf(')');
++    if (commEnd === -1) return null;
++    const fields = stat.slice(commEnd + 1).trim().split(/\s+/);
++    const startTicks = Number(fields[19]);
++    return Number.isSafeInteger(startTicks) && startTicks >= 0 ? startTicks : null;
++  } catch {
++    return null;
++  }
++}
++
++export function getPidNamespaceGeneration(): string | null {
++  if (process.platform !== 'linux') return null;
++  const bootId = getSystemBootId();
++  const initStartTicks = getLinuxProcStartTicks(1);
++  return bootId !== null && initStartTicks !== null ? `${bootId}:${initStartTicks}` : null;
++}
+ 
+ export function getProcessThreadGroupId(pid: number): number | null {
+   if (process.platform !== 'linux' || !Number.isSafeInteger(pid) || pid <= 0) return null;
+diff --git a/cli/src/utils/processGeneration.test.ts b/cli/src/utils/processGeneration.test.ts
+index 57c644cb..960f2671 100644
+--- a/cli/src/utils/processGeneration.test.ts
++++ b/cli/src/utils/processGeneration.test.ts
+@@ -1,12 +1,12 @@
+ import { afterEach, describe, expect, it, vi } from 'vitest'
+-import { readFileSync } from 'node:fs'
++import { readFileSync, type PathOrFileDescriptor } from 'node:fs'
+ 
+ vi.mock('node:fs', async (importOriginal) => {
+     const actual = await importOriginal<typeof import('node:fs')>()
+     return { ...actual, readFileSync: vi.fn(actual.readFileSync) }
+ })
+ 
+-import { getSystemBootId, getProcessThreadGroupId, normalizeBootId } from './process'
++import { getLinuxProcStartTicks, getPidNamespaceGeneration, getSystemBootId, getProcessThreadGroupId, normalizeBootId } from './process'
+ 
+ const originalPlatform = Object.getOwnPropertyDescriptor(process, 'platform')!
+ const bootId = 'e7c92900-5693-4ba0-b40c-9dfc57512edb'
+@@ -46,13 +46,30 @@ describe('Linux recovered process identity', () => {
+         expect(getProcessThreadGroupId(2109)).toBeNull()
+     })
+ 
+-    it('keeps unavailable procfs evidence unknown', () => {
++    it('reads Linux PID start ticks after the command name', () => {
+         platform('linux')
+-        read.mockImplementation(() => { throw new Error('EACCES') })
+-        expect(getSystemBootId()).toBeNull()
+-        expect(getProcessThreadGroupId(2109)).toBeNull()
++        read.mockReturnValue('1234 (command (nested)) S 1 2 3 4 5 6 7 8 9 10 11 12 13 14 15 16 17 18 19 20\n')
++        expect(getLinuxProcStartTicks(1234)).toBe(19)
++        expect(read).toHaveBeenCalledWith('/proc/1234/stat', 'utf8')
++    })
++
++    it('combines boot identity with PID namespace init start ticks', () => {
++        platform('linux')
++        read.mockImplementation((path: PathOrFileDescriptor) => String(path).includes('boot_id') ? `${bootId}\n` : '1 (init) S 1 2 3 4 5 6 7 8 9 10 11 12 13 14 15 16 17 18 19\n')
++        expect(getPidNamespaceGeneration()).toBe(`${bootId}:19`)
+     })
+ 
++    it.each(['win32', 'darwin'])('does not probe namespace generation on %s', value => {
++        platform(value)
++        expect(getPidNamespaceGeneration()).toBeNull()
++        expect(read).not.toHaveBeenCalled()
++    })
++
++    it('keeps malformed proc stat unknown', () => {
++        platform('linux')
++        read.mockReturnValue('1 (init) S')
++        expect(getLinuxProcStartTicks(1)).toBeNull()
++    })
+     it.each(['win32', 'darwin'])('does not probe procfs on %s', value => {
+         platform(value)
+         expect(getSystemBootId()).toBeNull()
+diff --git a/hub/src/web/routes/sessions.ts b/hub/src/web/routes/sessions.ts
+index 6883e67b..4aa6453a 100644
+--- a/hub/src/web/routes/sessions.ts
++++ b/hub/src/web/routes/sessions.ts
+@@ -816,7 +816,7 @@ export function createSessionsRoutes(getSyncEngine: () => SyncEngine | null): Ho
+             return engine
+         }
+ 
+-        const sessionResult = requireSessionFromParam(c, engine, { requireActive: true })
++        const sessionResult = requireSessionFromParam(c, engine, { requireActive: false })
+         if (sessionResult instanceof Response) {
+             return sessionResult
+         }

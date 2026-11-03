@@ -242,7 +242,8 @@ K3s version과 순차 rollout은 기존 Rancher `system-upgrade-controller`가 �
   - `issue-agent-runner`(`issue-agent-runner` namespace): HAPI Runner로, Codex를 실행하며 네이티브 `CODEX_HOME`, checkout, 주제별 worktree를 home PVC에 보존한다. 같은 Pod의 `publisher` 사이드카(Service `issue-agent-publisher.issue-agent-runner`, 포트 8090)가 checkout clone과 branch push만 담당하고, native sidecar `dockerd`가 Pod 전용 Docker daemon을 제공한다. Runner Pod는 replica 1과 `Recreate`를 유지하며 replica를 늘리지 않는다.
 
   Hub, n8n, runner home(20Gi), bridge 상태는 각각 pillar-csi `ssd-ha`/`ssd-ha-retain` PVC에 저장하고, Docker 이미지와 build cache는 `issue-agent-runner-docker`(50Gi) PVC에 둔다. `issue-agent` namespace는 Pod Security `restricted`를 enforce하며 hub·n8n·bridge는 non-root다. `issue-agent-runner` namespace만 `privileged`를 enforce하고 audit·warn은 `restricted`로 둔다. 그 안에서 root·privileged로 실행하는 컨테이너는 `dockerd`뿐이고 runner와 publisher는 UID 1000 non-root다. 어느 Pod도 Kubernetes API 토큰을 마운트하지 않는다.
-- 흐름: 에이전트(Codex)는 GitHub에 아무것도 쓰지 않는다. 턴 끝에 `ISSUE_AGENT_RESULT <nonce> {json}` 한 줄로 구조화된 결과를 내고, bridge가 모드별 스키마로 검증한 뒤 n8n이 bridge op로 GitHub에 반영한다. 세션은 주제마다 하나다(이슈 `issue-<n>`, PR `review-pr-<n>`, HAPI branch는 `hapi-<worktree>`). bridge dispatcher는 저장소와 무관하게 전체에서 이벤트를 최대 10개(`MAX_ACTIVE_EVENTS`, 그중 `pr_review`는 최대 6개 `MAX_ACTIVE_REVIEWS`)까지 동시에 n8n에 넘기되, 같은 이슈·PR의 이벤트는 세션과 worktree를 공유하므로 한 번에 하나씩 들어온 순서대로 처리한다. 이벤트가 `finish`로 끝나면 bridge가 그 세션을 HAPI에서 archive해 Codex 프로세스를 멈추고, 같은 주제의 다음 이벤트가 같은 세션을 resume한다. 그래서 Runner에는 일하는 세션과 `needs_attention`으로 멈춘 세션만 떠 있다.
+- 흐름: 에이전트(Codex)는 GitHub에 아무것도 쓰지 않는다. 턴 끝에 `ISSUE_AGENT_RESULT <nonce> {json}` 한 줄로 구조화된 결과를 내고, bridge가 모드별 스키마로 검증한 뒤 n8n이 bridge op로 GitHub에 반영한다. 세션은 주제마다 하나다(이슈 `issue-<n>`, PR `review-pr-<n>`, HAPI branch는 `hapi-<worktree>`). bridge dispatcher는 저장소와 무관하게 전체에서 이벤트를 최대 10개(`MAX_ACTIVE_EVENTS`, 그중 `pr_review`는 최대 6개 `MAX_ACTIVE_REVIEWS`)까지 동시에 n8n에 넘기되, 같은 이슈·PR의 이벤트는 세션과 worktree를 공유하므로 한 번에 하나씩 들어온 순서대로 처리한다. `finish`는 `completed`를 먼저 커밋한 뒤 95초 archive를 시도하고, 실패 시 단일 `stages.archive_pending`을 남겨 Dispatcher가 유휴 시 회수한다. 비활성 세션을 재개할 때는 95초 archive 배리어 뒤 65초 resume을 호출하며, 형제 활성 이벤트가 있으면 archive하지 않는다.
+- HAPI `v0.34.0` 패치는 `stopSession`의 고아 `serverPid` 트리 정리, `/proc` starttime·`boot_id` 기반 runner/runtime 세대 marker, `hapi runner status --check [--max-age 180]`를 제공한다. HAPI 내장 30초 webhook 기본값을 사용하며 `HAPI_RUNNER_WEBHOOK_TIMEOUT_MS`는 없다. `_ensure_service_tier`와 `runner-healthcheck`는 삭제되었고 `runner/bootstrap.sh`와 `n8n-bootstrap.sh`는 유지되지만 구 state 삭제 및 단일 `workflow-import.json` 상태 처리 블록은 제거되었다. `issue-agent-runner-home-migrate`와 `.issue-agent-home-ready`는 삭제되었다. 구 `issue-agent/issue-agent-runner-home` Retain 백업 PVC는 보존한다.
   - triage: 누구나 연 `issues.opened`(저장소 collaborator·owner가 아닌 사용자의 새 이슈는 전체 저장소 합산 1시간(rolling)에 10개까지, 넘으면 `rate_limited`), 또는 구현 단계가 아닌 이슈의 새 댓글. 에이전트가 `gh`로 이슈와 댓글을 직접 읽고(관련 이슈·PR은 `gh search`로 검색) `isac-issue-triage`로 분석해 TriageResult를 낸다. n8n이 카탈로그 라벨을 적용하고 분석 댓글을 게시한다. `next_action`이 `implement`면 같은 실행·같은 세션에서 구현으로 넘어가고, `await_info`/`await_decision`이면 질문 댓글에서 멈춘다.
     - 신뢰와 기능 요청: 신뢰 사용자(collaborator 권한 `admin`/`write`)가 연 명확한 기능·문서 요청은 직접 지시로 보고 `enhancement`/`documentation` 라벨과 함께 바로 implement로 넘긴다(구조 변경이 필요하면 `triage:needs-structural-change`로 멈춘다). 비신뢰 사용자의 기능 요청은 바로 구현하지 않고 제안 트랙으로 간다: 현재 계약 확인, 실현 가능성 조사, 방향과 기각한 대안을 담은 제안 평가 댓글을 `enhancement` 라벨과 함께 게시하고 `await_decision`으로 멈춘다. 이후 신뢰 사용자가 댓글로 방향을 승인하면 다시 triage해 `triage:fix-direction-decided`와 `## Direction` 댓글을 남기고 implement로 넘어간다. 비신뢰 사용자의 댓글은 멘션이든 `agent:open-discussion` 경로든 추가 정보일 뿐 승인이 아니다. bridge는 actor의 신뢰 여부를 `begin` 응답의 `event.trusted`로 n8n에 넘기고, 에이전트는 그 밖의 사람을 `gh api repos/<owner>/<repo>/collaborators/<login>/permission`으로 확인한다. 버그와 기능 요청이 섞인 이슈는 따로 판정하고, 버그만 고치는 PR은 `Fixes` 대신 `Related to #<n>`을 쓴다.
     - 보안 취약점: 확인되거나 의심되는 취약점은 공개 위치에 아무것도 남기지 않는다. 라벨·이슈 댓글·재현 페이로드 없이 TriageResult의 `security_advisory`로 write-up을 내면, n8n의 `github.security_advisory` op가 issue App으로 비공개 draft repository security advisory(GHSA)를 만들고 이벤트를 `triaged`로 끝낸다. advisory 생성은 이벤트마다 한 번이다(재시도 시 기존 draft를 찾아 재사용).
@@ -304,10 +305,10 @@ kubectl --context homelab-backbone -n issue-agent-runner logs deployment/issue-a
 
 에이전트를 실행하는 모든 경로는 GitHub에 보이는 상태로 끝난다. 성공은 결과 댓글·리뷰, 실패는 해당 이슈/PR의 attention 댓글과 `agent:needs-attention` 라벨이다. attention 댓글에는 멈춘 n8n 노드 또는 단계, 이벤트 종류, delivery ID, n8n 실행 링크(`https://n8n.bhyoo.com/workflow/IssueAgentMain01/executions/<id>`), HAPI 세션 링크, 재시도 방법이 들어간다. 댓글과 라벨 중 하나라도 실패하면 bridge가 backoff 후 둘 다 적용될 때까지 다시 시도한다(숨은 marker로 중복 게시 없음).
 
-- 워크플로 노드 실패는 `Mark needs attention`(bridge `fail`)으로, 처리되지 않은 n8n 오류는 `settings.errorWorkflow`의 `IssueAgentError01`(Error Trigger → bridge `fail_execution`)로 들어온다. bridge 자신이 포기하는 경우(dispatch 8회 실패, heartbeat가 30분 끊긴 stale dispatch, n8n 응답 없음)도 같은 경로다. 자동 재시도는 일시적 오류로 멈춘 PR 리뷰와 시간 예산 park에만 한다.
-- 시간 예산: bridge가 모드별 턴 마감(triage 1시간, review 2시간, implement·followup 6시간)을 정해 에이전트에게 알린다. 마감을 넘긴 턴은 `time_budget`으로 멈추고, 에이전트가 그 뒤에라도 답하면 bridge가 같은 턴의 결과를 수거해 이벤트를 자동으로 다시 진행한다. 마감 뒤 1시간 안에 답이 없으면 세션을 archive하고 운영자 확인을 기다린다.
-- attention 상태가 되면 그 이슈/PR은 block되고, 이후 이벤트는 쌓이기만 하고 dispatch되지 않는다.
-- 원인을 고친 뒤 `retry_event`로 그 이벤트를 다시 큐에 넣는다. 기록된 단계는 유지되어 이어서 실행되고, 성공하면 `finish`가 `agent:needs-attention`을 제거한다. 에이전트가 이미 답했지만 결과가 처리되지 않은 턴은 다시 보내지 않고 그 결과를 수거한다. 그 이벤트를 다시 실행하지 않고 이후 이벤트만 진행하려면 `unblock_issue`(`{"op":"unblock_issue","repo":"owner/name","issue_number":N}`)를 쓴다. 이때 라벨은 다음 성공 실행이 제거한다. 더 처리할 필요가 없는 멈춘 이벤트(주제가 닫힘 등)는 `dismiss_event`(`{"op":"dismiss_event","delivery_id":"<delivery-id>","reason":"<사유>"}`)로 닫는다. 이벤트를 `dismissed`로 끝내고, block과 라벨을 풀고, 세션을 archive한다. 그 이벤트가 PR repair lease를 쥐고 있었으면 lease를 풀고 PR을 다시 reconcile 대상으로 표시한다. 상태 확인은 `issue-agent-records bridge events`로 한다.
+- 워크플로 노드 실패는 `Mark needs attention`(`bridge fail`)으로, 처리되지 않은 n8n 오류는 `IssueAgentError01`의 `fail_execution`으로 들어온다. HTTP 노드는 5회×5초 엔진 재시도만 수행한다. `Session status`·`Send status`의 성공 외 출력과 `Turn state`의 `lost`는 `Return failure`로 모이며, bridge가 앞단 `step_retries`를 최대 10회·120초 간격으로 조용히 재큐잉한다.
+- `finish`는 완료를 먼저 커밋하고 archive를 시도한다. 실패하면 `stages.archive_pending`을 남기며 Dispatcher가 같은 주제의 활성 슬롯이 없을 때 회수한다. 취소된 리뷰도 같은 단일 키를 사용한다. 시간 예산 유예가 끝나도 archive 성공 전에는 `time_budget_expired`로 확정하지 않는다.
+- `_resume`의 500 `resume_failed` ownership 충돌은 `park_class: null`로 operator park하고 자동 `pr_review` 재시도를 하지 않는다. 503만 `retryable: true, park_class: "hub_5xx"`이며, 409 `resume_unavailable`만 대체 spawn 후보이다. `session_turn`의 `lost`는 `retryable: true`를 반환하고 완료 시 `step_retries`를 초기화한다.
+- retryable `fail`/`fail_execution`은 댓글·라벨·`blocked=1` 없이 `state="accepted"`, `next_attempt_at=now+120`, 원래 `stages`·`localId`·`pr_repair` lease를 보존해 최대 10회 재큐잉한다. 11번째에만 `park_class: null` attention을 한 번 게시하고, accepted 상태의 늦은 중복 실패는 `already: true`다.
 
 ```bash
 kubectl --context homelab-backbone -n issue-agent exec deploy/issue-agent-bridge -c bridge -- python -B -c '
@@ -327,28 +328,7 @@ merge 강제는 ruleset `issue-agent review`가 맡는다: `isac322/flareway`(`m
 
 #### n8n UI 수정
 
-n8n은 시작 전 `n8n-bootstrap.sh`로 자격증명을 고정 ID로 갱신하고, 오류 워크플로 `IssueAgentError01`, 세션 하위 워크플로 `IssueAgentSession01`, 메인 `IssueAgentMain01`, 수신 `IssueAgentIntake01` 순으로 Git 원본을 동기화한다. 워크플로별 마지막 가져오기 기록은 `/home/node/.n8n/issue-agent/workflow-import-<id>.json`(`sourceSha256`, `versionId`)이다. 규칙은 다음과 같다.
-
-- n8n에 워크플로가 없으면 가져와 게시한다.
-- Git 원본 sha256이 기록과 같으면 아무것도 하지 않는다. UI 수정본이 그대로 실행된다.
-- Git 원본이 바뀌었고 저장된 `versionId`가 기록과 같으면(UI 미수정) 가져와 게시한다.
-- Git 원본이 바뀌었는데 UI에서도 수정됐으면 가져오지 않고 로그에 `CONFLICT workflow <id> ...`를 남긴다. UI 수정본이 계속 실행된다.
-
-UI에서 고쳤거나 `CONFLICT`가 나면 다음 순서로 조정한다.
-
-1. `issue-agent-records n8n-workflows`로 현재 워크플로와 `versionId`를 export해 Git 원본과 비교한다.
-2. UI 변경을 유지하려면 그 내용을 해당 Git 원본(`n8n-workflow.json`, `n8n-session-workflow.json`, `n8n-intake-workflow.json`, `n8n-error-workflow.json`)에 옮긴다. `id`와 `settings.errorWorkflow`(메인·수신은 `IssueAgentError01`, 세션·오류 워크플로는 없음)는 그대로 둔다. 버리려면 Git 원본을 그대로 둔다.
-3. Git을 최종본으로 가져오려면 export한 현재 `versionId`를 `workflow-import-<id>.json`의 `versionId`에 기록하고 `sourceSha256`을 비운 뒤 n8n을 재시작한다. 다음 시작에서 Git 원본을 가져와 게시한다. `versionId`를 기록하지 않으면 Git 원본이 UI 수정본과 같아도 계속 `CONFLICT`이고, `sourceSha256`을 비우지 않으면 Git 원본이 바뀌지 않은 경우 UI 수정본이 남는다.
-
-```bash
-kubectl --context homelab-backbone -n issue-agent exec deploy/issue-agent-n8n -- cat /home/node/.n8n/issue-agent/workflow-import-IssueAgentMain01.json
-kubectl --context homelab-backbone -n issue-agent exec deploy/issue-agent-n8n -- node -e '
-const fs = require("fs"), [file, version] = process.argv.slice(1);
-const state = JSON.parse(fs.readFileSync(file, "utf8"));
-fs.writeFileSync(file, JSON.stringify({ ...state, sourceSha256: "", versionId: version }));
-' /home/node/.n8n/issue-agent/workflow-import-IssueAgentMain01.json '<live-versionId>'
-kubectl --context homelab-backbone -n issue-agent rollout restart deployment/issue-agent-n8n
-```
+n8n은 시작 시 Git 원본 워크플로를 `IssueAgentError01`, `IssueAgentSession01`, `IssueAgentMain01`, `IssueAgentIntake01` 순서로 동기화한다. 내부 `workflow-import.json` 단일 파일은 삭제되었고, `/home/node/.n8n/issue-agent/workflow-import-<id>.json`처럼 워크플로별 상태 파일을 사용한다. UI 수정 충돌은 `issue-agent-records n8n-workflows`로 현재 `versionId`와 Git 원본을 비교해 해당 JSON 원본에 반영한 뒤 조정한다.
 
 n8n 실행 기록은 성공·실패 모두 저장하며 자동 정리하지 않는다. 단, 수신 워크플로 `IssueAgentIntake01`은 delivery마다 원본 본문을 담으므로 실패 실행만 저장한다(GitHub App의 Recent Deliveries에 모든 응답이 남는다).
 
@@ -356,7 +336,7 @@ n8n 실행 기록은 성공·실패 모두 저장하며 자동 정리하지 않�
 
 기록 조회·내보내기는 [`issue-agent-records`](apps/objects/issue-agent/operations/issue-agent-records), 온라인 SQLite 백업은 [`issue-agent-backup`](apps/objects/issue-agent/operations/issue-agent-backup)을 사용한다. 사용법·복원 전제조건은 [운영 절차](apps/objects/issue-agent/operations/README.md)에 있다. 네이티브 기록은 보관된 세션도 조회할 수 있다. 원본 DB 백업은 인증 자료가 포함될 수 있는 비공개 운영자 자료이며 외부 조회용 export와 구분한다.
 
-두 스크립트는 hub·bridge·n8n을 `--namespace`(기본 `issue-agent`)에서, Runner를 `--runner-namespace`(기본 `issue-agent-runner`)에서 읽는다. [`issue-agent-runner-home-migrate`](apps/objects/issue-agent/operations/issue-agent-runner-home-migrate)는 namespace 전환 때 기존 `issue-agent/issue-agent-runner-home`을 새 `issue-agent-runner/issue-agent-runner-home`으로 한 번 복사·검증하고 ready marker를 쓴다. marker가 없으면 Runner Pod는 시작하지 않는다. 기존 claim은 PV `Retain`과 Argo CD `Prune=false,Delete=false`로 남기며 자동 삭제하지 않는다. 전환 중에는 Runner와 publisher가 멈추므로 무중단 전환이 아니다. Runner 안의 [`issue-agent-docker-smoke`](apps/objects/issue-agent/operations/issue-agent-docker-smoke)는 Pod 전용 Docker daemon의 build와 bind mount를 확인한다. 부작용과 실행 순서는 [운영 절차](apps/objects/issue-agent/operations/README.md)에 있다.
+세 스크립트는 hub·bridge·n8n을 `--namespace`(기본 `issue-agent`)에서, Runner를 `--runner-namespace`(기본 `issue-agent-runner`)에서 읽는다. `issue-agent-runner-home-migrate`와 `.issue-agent-home-ready`는 더 이상 존재하지 않으며, 구 `issue-agent/issue-agent-runner-home` Retain 백업 PVC만 보존된다. Runner 안의 [`issue-agent-docker-smoke`](apps/objects/issue-agent/operations/issue-agent-docker-smoke)는 Pod 전용 Docker daemon의 build와 bind mount를 확인한다. 부작용과 실행 순서는 [운영 절차](apps/objects/issue-agent/operations/README.md)에 있다.
 
 기존 Archon은 새 시스템 webhook 전환 검증 후 완전히 제거했다. 전용 코드·Kubernetes/ArgoCD 정의 19개, `archon` namespace와 두 PVC(20Gi+1Gi), rock5bp의 backing zvol, `archon.bhyoo.com`·`archon-webhook.bhyoo.com` DNS가 제거됐다. 재사용하는 GitHub App과 인증 경로는 `ironeater`로 이름을 바꿨다. GitHub의 기존 이슈·PR은 삭제하지 않았다.
 
@@ -375,7 +355,6 @@ HTTPS 강제는 별도 apply로 나눈다. GitHub은 DNS가 전파되고 도메�
 sleep·retry·실패 무시·fallback으로 인증서 대기를 대신하지 않는다. 2번 확인 조건을 만족하지 못하면 3번을 보류하고 차단 상태로 남긴다.
 
 계정 수준 GitHub Pages 도메인 확인은 개인 계정용 provider/API가 없어 승인된 경우에만 GitHub 계정 화면에서 요청·검증한다. `res-cc-lb-pages.tf`의 TXT 레코드는 그 화면이 발급한 공개 DNS 챌린지를 IaC로 관리하며, DNS 전파 확인 후 같은 계정에서 검증한다. 저장소 visibility·Pages cname·HTTPS 설정은 UI로 변경하지 않는다.
-
 Search Console의 cc-lb Domain 속성도 본인 계정에서 발급한 공개 TXT 챌린지를 같은 파일로 관리한다. Google 로그인·속성 확인·sitemap 제출은 승인된 계정으로 처리하며, Google Analytics 스크립트나 기존 GCP ADC 설정을 추가·변경하지 않는다.
 
 Bing에서 Search Console Domain 속성 가져오기가 바로 제공되지 않으면 등록된 같은 사이트의 CNAME 확인 방식을 쓴다. `res-cc-lb-pages.tf`는 Bing 화면이 발급한 상대 alias를 cc-lb 사이트 호스트 아래에 DNS-only CNAME으로 관리한다. 적용 후 공개 DNS가 `verify.bing.com`으로 해석되는지 확인한 뒤 같은 본인 계정에서 Verify하고 sitemap을 제출한다.

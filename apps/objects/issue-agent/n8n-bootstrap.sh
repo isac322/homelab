@@ -160,11 +160,6 @@ require("fs").renameSync(`${file}.tmp`, file);
   fi
 }
 
-# One-time move of the single-workflow state file to the per-workflow name, so the
-# main workflow's import history carries over instead of reporting a CONFLICT.
-if [ -s "$state_dir/workflow-import.json" ] && [ ! -e "$state_dir/workflow-import-$main_id.json" ]; then
-  mv "$state_dir/workflow-import.json" "$state_dir/workflow-import-$main_id.json"
-fi
 
 sync_workflow "$error_id" "$source_dir/n8n-error-workflow.json"
 sync_workflow "$session_id" "$source_dir/n8n-session-workflow.json"
