@@ -215,19 +215,6 @@ in
         replaceExisting = true;
         mode = "0644";
       };
-      "rancher/k3s/registries.yaml" = {
-        text = ''
-          mirrors:
-            docker.io:
-              endpoint:
-                - "http://127.0.0.1:30500"
-            ghcr.io:
-              endpoint:
-                - "http://127.0.0.1:30501"
-        '';
-        replaceExisting = true;
-        mode = "0644";
-      };
     }
     // lib.optionalAttrs maskUnattendedUpgradesLogindDelay {
       "systemd/logind.conf.d/unattended-upgrades-logind-maxdelay.conf" = {

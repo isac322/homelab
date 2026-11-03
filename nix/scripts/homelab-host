@@ -323,6 +323,7 @@ prepare_native_runtime_handoff() {
 set -eu
 if test "$ROLE" = server || test "$ROLE" = agent; then
   install -m 0600 /dev/null /run/homelab-k3s-firewall-reconcile.defer
+  rm -f /etc/rancher/k3s/registries.yaml.system-manager-backup
 fi
 legacy_zram=false
 for unit in zram-swap.service ksm.service thp-madvise.service; do
@@ -461,6 +462,8 @@ if test "$ROLE" = server || test "$ROLE" = agent; then
   systemctl restart systemd-logind.service
 fi
 if test "$ROLE" = server || test "$ROLE" = agent; then
+  rm -f /etc/rancher/k3s/registries.yaml /etc/rancher/k3s/registries.yaml.system-manager-backup
+  rm -rf /var/lib/rancher/k3s/agent/etc/containerd/certs.d/docker.io /var/lib/rancher/k3s/agent/etc/containerd/certs.d/ghcr.io
   systemctl restart homelab-k3s.service
   if test "$ROLE" = server; then
     attempt=0
@@ -602,6 +605,12 @@ verify_legacy_cleanup() {
         assert_path_absent "$link"
       done
     done
+    if test "$REQUIRE_K3S_BINARY" = true; then
+      assert_path_absent /etc/rancher/k3s/registries.yaml
+      assert_path_absent /etc/rancher/k3s/registries.yaml.system-manager-backup
+      assert_path_absent /var/lib/rancher/k3s/agent/etc/containerd/certs.d/docker.io
+      assert_path_absent /var/lib/rancher/k3s/agent/etc/containerd/certs.d/ghcr.io
+    fi
 REMOTE_VERIFY_LEGACY_CLEANUP
 }
 rollback_state() {
