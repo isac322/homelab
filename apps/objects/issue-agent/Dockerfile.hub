@@ -3,12 +3,12 @@
 # Build context: apps/objects/issue-agent (see .dockerignore). linux/arm64 only.
 
 # debian:trixie-slim (linux/arm64)
-FROM debian:trixie-slim@sha256:62bd423aeee912639ca8ee681c2b762cb3e25137e0a92b20be455898a9f034ad
+FROM debian:trixie-slim@sha256:f6b08b09a05725f9431502d3b5714f5c4576e82c1a84fa1debe0c24a7e0c3ec4
 
-# HAPI v0.30.7 (tiann/hapi commit 0239edf38e2da653d662f31039e24ccea04c7837).
+# HAPI v0.34.0 (tiann/hapi commit 1f4518df20469c38429cf8ee103ea6320e1087ed).
 # Checksum from the release checksums.txt; equals the GitHub asset digest.
-ARG HAPI_VERSION=0.30.7
-ARG HAPI_SHA256=4c11ed308412e4510289ed5e5875a43f60f7ee5cee9cbfdc0e2d97f55851a193
+ARG HAPI_VERSION=0.34.0
+ARG HAPI_SHA256=4bb329b66b856c760e61d311f8bf8d0cb5cbb4c3d23c0870619ed80b599c1006
 
 RUN apt-get update \
     && apt-get install -y --no-install-recommends ca-certificates curl tini \

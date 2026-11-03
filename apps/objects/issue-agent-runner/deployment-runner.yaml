@@ -35,7 +35,7 @@ spec:
         # from falling back to the upstream entrypoint's TCP listener.
         - name: dockerd
           restartPolicy: Always
-          image: ghcr.io/isac322/issue-agent-dockerd:29.9.2-20261024@sha256:9185ace7fb76486a815eb713b62d5614b00d8ac323958cdcc60e261bc36d721e
+          image: ghcr.io/isac322/issue-agent-dockerd:29.9.2-20261103@sha256:5ba5f964d079241c267755e1011a34ab1293e9d528b6c0e2a16b4a1b88c13a84
           command:
             - /opt/issue-agent/bin/dockerd-start
           env:
@@ -59,8 +59,8 @@ spec:
             failureThreshold: 6
           resources:
             requests:
-              cpu: 10m
-              memory: 160Mi
+              cpu: 50m
+              memory: 640Mi
             limits:
               memory: 8Gi
           securityContext:
@@ -99,7 +99,7 @@ spec:
         # the bounding set, even though 8317 needs none.
         - name: model-proxy
           restartPolicy: Always
-          image: docker.io/library/caddy:2.11.7-alpine@sha256:d8542f48d34a9cf4e4c11a478865229840e87e4c96ea3f439101f31a5d35f75f
+          image: docker.io/library/caddy:2.11.7-alpine@sha256:e70b164da81ef698b3ad19af799ea6086ce6d9e48ed4079eb9fe26f6fbf14ee5
           command:
             - caddy
             - run
@@ -142,7 +142,7 @@ spec:
           resources:
             requests:
               cpu: 5m
-              memory: 24Mi
+              memory: 32Mi
             limits:
               memory: 128Mi
           securityContext:
@@ -174,10 +174,9 @@ spec:
                     operator: In
                     values:
                       - rock5bp
-                      - macmini
       containers:
         - name: runner
-          image: ghcr.io/isac322/issue-agent-runner:0.30.7-codex0.164.0-20261024@sha256:326c06971406f23e248a34312ec0bbde6325d8ce1fdcdb6d6fabf7343cff36f9
+          image: ghcr.io/isac322/issue-agent-runner:0.34.0-codex0.166.0-20261103@sha256:94a49380ccc891883ecc85fce5135e4127197df841bdb1bdf568ccd7f85e302d
           env:
             - name: HOME
               value: /home/agent
@@ -237,18 +236,16 @@ spec:
             failureThreshold: 5
           resources:
             requests:
-              cpu: 100m
-              memory: 2560Mi
-            # Blast wall sized to the allowed concurrency, measured 2026-10-13:
-            # 14d working-set P99 ~3.4Gi, but the 10:10Z OOMKill (5.95Gi) was
-            # censored at the 6Gi limit. Uncensored model: one codex session
-            # with its MCP servers ~751Mi RSS, each of its max_threads=2
-            # sub-agents adds ~275Mi (own codegraph 1.6.2/context-mode/hapi
-            # mcp), working set ~1.15 x RSS. At MAX_ACTIVE_EVENTS=5 that is
-            # 5 x 1.27Gi RSS -> ~7.4Gi working set (7.5Gi would leave ~1%).
-            # Builds run in dockerd's cgroup, not here. 1.2 x 7.4Gi -> 9Gi.
+              cpu: 250m
+              memory: 4Gi
+            # Blast wall sized to MAX_ACTIVE_EVENTS=10 (MAX_ACTIVE_REVIEWS=6) on
+            # rock5bp (28.95Gi allocatable): one Codex session (~751Mi RSS) plus
+            # max_threads=2 sub-agents (~275Mi each with CodeGraph/context-mode/
+            # hapi MCP) and an 872k context window is ~1.5Gi working set; 10
+            # active sessions ~15Gi working set, 1.2 x 15Gi -> 18Gi. Builds run
+            # in dockerd's cgroup, not here.
             limits:
-              memory: 9Gi
+              memory: 18Gi
           securityContext:
             allowPrivilegeEscalation: false
             capabilities:
@@ -285,7 +282,7 @@ spec:
         # Same image as the runner; /checkout also marks the checkout and its
         # worktrees untrusted in CODEX_HOME (codex-untrust).
         - name: publisher
-          image: ghcr.io/isac322/issue-agent-runner:0.30.7-codex0.164.0-20261024@sha256:326c06971406f23e248a34312ec0bbde6325d8ce1fdcdb6d6fabf7343cff36f9
+          image: ghcr.io/isac322/issue-agent-runner:0.34.0-codex0.166.0-20261103@sha256:94a49380ccc891883ecc85fce5135e4127197df841bdb1bdf568ccd7f85e302d
           command:
             - /usr/bin/tini
             - --

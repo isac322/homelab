@@ -9,21 +9,21 @@
 # sidecar (docker:29.9.2-dind), reached through DOCKER_HOST.
 FROM docker:29.9.2-cli@sha256:5e6baf67325a79f64ed3bed6863954d5e05d0f3d4e57cbdb14809346814bbfdb AS docker-cli
 
-# node:26.12.1-trixie-slim (linux/arm64). Node runs Codex's npm launcher.
-FROM node:26.12.1-trixie-slim@sha256:36793bcbb160a6a16cede1e62b93f84e26b78a972a8a4c0b879c1c12f22761ec
+# node:26.13.0-trixie-slim (linux/arm64). Node runs Codex's npm launcher.
+FROM node:26.13.0-trixie-slim@sha256:e4db4c914bf8ad241bd24804fc25d272d89bad97e68cdc8a1414862790a02c39
 
-# HAPI v0.30.7 (tiann/hapi commit 0239edf38e2da653d662f31039e24ccea04c7837);
+# HAPI v0.34.0 (tiann/hapi commit 1f4518df20469c38429cf8ee103ea6320e1087ed);
 # must match the hub image. Checksum = release checksums.txt = asset digest.
-ARG HAPI_VERSION=0.30.7
-ARG HAPI_SHA256=4c11ed308412e4510289ed5e5875a43f60f7ee5cee9cbfdc0e2d97f55851a193
-# @openai/codex 0.164.0 (HAPI shared sessions require >= 0.154.0).
+ARG HAPI_VERSION=0.34.0
+ARG HAPI_SHA256=4bb329b66b856c760e61d311f8bf8d0cb5cbb4c3d23c0870619ed80b599c1006
+# @openai/codex 0.166.0 (HAPI shared sessions require >= 0.154.0).
 # SHA-256 of the npm tarballs whose sha512 matched the registry `integrity`.
-ARG CODEX_VERSION=0.164.0
-ARG CODEX_SHA256=afb117ec0d382744583dd13154ba0ca6b0f1980f8ed6a23bffb3aaadb6226e30
-ARG CODEX_LINUX_ARM64_SHA256=048a62731ce28aa000508efcc032302e58488ca079970dcae06d28df39ae5ce0
-# GitHub CLI 2.103.2; checksum = release checksums.txt = asset digest.
-ARG GH_VERSION=2.103.2
-ARG GH_SHA256=4c3e99a50bd8b181a3fe9d69b25dd978bac768148d88f01507c6b4d1ef61a443
+ARG CODEX_VERSION=0.166.0
+ARG CODEX_SHA256=67ee6f4069d9328956401f54ac202c20369233159058af9f4ec1af731b87f5b7
+ARG CODEX_LINUX_ARM64_SHA256=9044e840397864fc6c539d13719b25fb26abb35d5353366cbabf7b4555406acd
+# GitHub CLI 2.103.3; checksum = release checksums.txt = asset digest.
+ARG GH_VERSION=2.103.3
+ARG GH_SHA256=ee32df2323c8847f5fac6cb6b4b69ca75828e9329a8f22f677021f7b3306ce63
 # rustup 1.29.2 (versioned archive). Toolchains install lazily into the home PVC.
 ARG RUSTUP_VERSION=1.29.2
 ARG RUSTUP_SHA256=a9c168dbea81a84671c6b7a5c1795cb0eb699020110d107ddfca427bd797e697

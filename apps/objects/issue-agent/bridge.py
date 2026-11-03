@@ -202,11 +202,11 @@ mutation($reviewId: ID!, $event: PullRequestReviewEvent!, $body: String!) {
 }"""
 
 MAX_DISPATCH_ATTEMPTS = 8
-MAX_ACTIVE_EVENTS = 5  # events in n8n at once, across every repository
+MAX_ACTIVE_EVENTS = 10  # events in n8n at once, across every repository
 # pr_review events in n8n at once (each runs a high-effort agent turn with sub-agents; runner memory is sized
 # for this many, see apps/objects/issue-agent-runner/deployment-runner.yaml). Issue and repair events still
 # dispatch past capped reviews.
-MAX_ACTIVE_REVIEWS = 2
+MAX_ACTIVE_REVIEWS = 6
 # Transient park classes (set only by the bridge or n8n, never from agent text). A parked pr_review event of
 # such a class is re-queued automatically after AUTO_RETRY_BACKOFF[auto_retries], at most AUTO_RETRY_LIMIT
 # times; `stale_dispatch` only once (its cause is unobservable: a runner, hub, n8n or bridge restart).

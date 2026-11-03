@@ -78,7 +78,7 @@ log() { printf 'issue-agent-backup: %s\n' "$*" >&2; }
 k() {
   local ns="$1"
   shift
-  kubectl --context "$CONTEXT" --namespace "$ns" "$@"
+  KUBECTL_REMOTE_COMMAND_WEBSOCKETS=false kubectl --context "$CONTEXT" --namespace "$ns" "$@"
 }
 
 pod_for() {
@@ -130,10 +130,16 @@ rc=0
 tar -C "$data" --exclude="./$name" --exclude="./$name-wal" --exclude="./$name-shm" \
   --exclude="./$name-journal" --exclude='./.issue-agent-backup.*' \
   --exclude=./settings.json --exclude=./jwt-secret.json --exclude=./runtime \
-  -cf - . -C "$snap" "$name" || rc=$?
+  -cf "$snap/out.tar" . -C "$snap" "$name" || rc=$?
 # GNU tar: 1 = a non-database file changed while being read.
 [ "$rc" -le 1 ] || exit "$rc"
 [ "$rc" -eq 0 ] || echo "hub: warning: a non-database file changed while being archived" >&2
+bytes="$(wc -c <"$snap/out.tar" | tr -d ' \n')"
+cat "$snap/out.tar"
+rm -f "$snap/out.tar"
+printf '__BACKUP_BYTES__=%s\n' "$bytes" >&2
+exec >&-
+cat >/dev/null || true
 SH
 
 # n8n (node; no tar/python in the image): sqlite3 snapshot + minimal ustar writer.
@@ -152,7 +158,14 @@ const open = (p, mode) => new Promise((res, rej) => { const d = new sqlite3.Data
 const run = (d, sql, params = []) => new Promise((res, rej) => d.run(sql, params, (e) => (e ? rej(e) : res())));
 const all = (d, sql) => new Promise((res, rej) => d.all(sql, [], (e, r) => (e ? rej(e) : res(r))));
 const close = (d) => new Promise((res, rej) => d.close((e) => (e ? rej(e) : res())));
-const write = (buf) => new Promise((res) => { if (out.write(buf)) res(); else out.once("drain", res); });
+let totalBytes = 0;
+const write = (buf) => {
+  totalBytes += buf.length;
+  return new Promise((res, rej) => {
+    const ok = out.write(buf, (e) => { if (e) rej(e); });
+    if (ok) res(); else out.once("drain", res);
+  });
+};
 
 function octal(buf, off, len, value) { buf.write(value.toString(8).padStart(len - 1, "0") + "\0", off, len, "ascii"); }
 function paxRecord(key, value) {
@@ -195,7 +208,7 @@ async function addFile(abs, name) {
   const fd = fs.openSync(abs, "r");
   try {
     let left = st.size;
-    const chunk = Buffer.alloc(1 << 20);
+    const chunk = Buffer.alloc(1 << 16);
     while (left > 0) {
       const n = fs.readSync(fd, chunk, 0, Math.min(chunk.length, left), null);
       if (n === 0) { console.error(`n8n: warning: ${name} shrank while reading; zero-padded`); await write(Buffer.alloc(left)); break; }
@@ -235,6 +248,12 @@ async function main() {
   await walk(home, "");
   await addFile(snap, dbName);
   await write(Buffer.alloc(1024));
+  while (out.writableLength > 0) await new Promise((r) => setTimeout(r, 20));
+  await new Promise((r) => setTimeout(r, 100));
+  try { fs.closeSync(1); } catch {}
+  console.error(`__BACKUP_BYTES__=${totalBytes}`);
+  process.stdin.resume();
+  await new Promise((res) => process.stdin.once("end", res));
 }
 main().catch((e) => { console.error(`n8n: ${e && e.message ? e.message : e}`); process.exit(1); });
 JS
@@ -268,7 +287,19 @@ for name in os.listdir(base):
     if name.startswith(PREFIX):
         subprocess.run(["rm", "-rf", "--", os.path.join(base, name)], check=True)
 snapdir = tempfile.mkdtemp(prefix=PREFIX, dir=base)
-tar = tarfile.open(fileobj=sys.stdout.buffer, mode="w|", format=tarfile.PAX_FORMAT)
+class _CountWriter:
+    def __init__(self, raw):
+        self.raw = raw
+        self.total = 0
+    def write(self, b):
+        self.raw.write(b)
+        self.total += len(b)
+        return len(b)
+    def flush(self):
+        self.raw.flush()
+
+cw = _CountWriter(sys.stdout.buffer)
+tar = tarfile.open(fileobj=cw, mode="w|", format=tarfile.PAX_FORMAT)
 try:
     def snapshot(path, rel):
         dst_path = os.path.join(snapdir, "db")
@@ -341,9 +372,88 @@ try:
         info.size, info.mtime, info.mode = len(data), int(time.time()), 0o600
         tar.addfile(info, io.BytesIO(data))
     tar.close()
+    cw.flush()
+    sys.stderr.write("__BACKUP_BYTES__=%d\n" % cw.total)
+    sys.stderr.flush()
+    os.close(1)
+    while sys.stdin.buffer.read(4096):
+        pass
 finally:
     subprocess.run(["rm", "-rf", "--", snapdir])
 PY
+
+stream_exec() {
+  local out="$1" ns="$2"
+  shift 2
+  KUBECTL_REMOTE_COMMAND_WEBSOCKETS=false python3 -c '
+import os, re, selectors, subprocess, sys
+
+out_path, *cmd = sys.argv[1:]
+p = subprocess.Popen(cmd, stdin=subprocess.PIPE, stdout=subprocess.PIPE, stderr=subprocess.PIPE)
+assert p.stdin is not None and p.stdout is not None and p.stderr is not None
+sel = selectors.DefaultSelector()
+sel.register(p.stdout, selectors.EVENT_READ, "out")
+sel.register(p.stderr, selectors.EVENT_READ, "err")
+expected = None
+got = 0
+err_buf = b""
+
+def consume_err(data, final=False):
+    global expected, err_buf
+    err_buf += data
+    while b"\n" in err_buf or (final and err_buf):
+        if b"\n" in err_buf:
+            raw, err_buf = err_buf.split(b"\n", 1)
+            raw += b"\n"
+        else:
+            raw, err_buf = err_buf, b""
+        line = raw.decode("utf-8", errors="replace")
+        m = re.match(r"^__BACKUP_BYTES__=(\d+)\s*$", line)
+        if m:
+            expected = int(m.group(1))
+        else:
+            sys.stderr.write(line)
+            sys.stderr.flush()
+
+with open(out_path, "wb") as out:
+    while sel.get_map() and not (expected is not None and got >= expected):
+        for key, _ in sel.select(timeout=1.0):
+            chunk = os.read(key.fd, 1 << 16)
+            if not chunk:
+                sel.unregister(key.fileobj)
+                if key.data == "err":
+                    consume_err(b"", final=True)
+                continue
+            if key.data == "out":
+                out.write(chunk)
+                got += len(chunk)
+            else:
+                consume_err(chunk)
+try:
+    p.stdin.close()
+except OSError:
+    pass
+while "err" in [k.data for k in sel.get_map().values()]:
+    for key, _ in sel.select(timeout=1.0):
+        if key.data != "err":
+            sel.unregister(key.fileobj)
+            continue
+        chunk = os.read(key.fd, 1 << 16)
+        if not chunk:
+            sel.unregister(key.fileobj)
+            consume_err(b"", final=True)
+        else:
+            consume_err(chunk)
+sel.close()
+p.stdout.close()
+p.stderr.close()
+rc = p.wait(timeout=30)
+if expected is None or got != expected:
+    sys.stderr.write(f"stream_exec: byte count mismatch (got={got}, expected={expected})\n")
+    sys.exit(rc or 1)
+sys.exit(rc)
+' "$out" kubectl --context "$CONTEXT" --namespace "$ns" exec -i "$@"
+}
 
 capture() {
   local component="$1" file="$DIR/$1.tar" ns="$NAMESPACE" container="$1" pod rc=0
@@ -351,15 +461,15 @@ capture() {
   [[ "$component" != runner ]] || ns="$RUNNER_NAMESPACE"
   pod="$(pod_for "$ns" "issue-agent-$component")"
   case "$component" in
-    hub) k "$ns" exec "$pod" -c hub -- sh -c "$HUB_SH" >"$file" || rc=$? ;;
-    n8n) k "$ns" exec "$pod" -c n8n -- node -e "$N8N_JS" >"$file" || rc=$? ;;
+    hub) stream_exec "$file" "$ns" "$pod" -c hub -- sh -c "$HUB_SH" || rc=$? ;;
+    n8n) stream_exec "$file" "$ns" "$pod" -c n8n -- node --max-old-space-size=128 -e "$N8N_JS" || rc=$? ;;
     bridge)
-      k "$ns" exec "$pod" -c bridge -- python -B -c "$PY_TAR" \
-        '{"base":"/var/lib/issue-agent-bridge","include":["."],"exclude":[],"checkouts":null}' >"$file" || rc=$? ;;
+      stream_exec "$file" "$ns" "$pod" -c bridge -- python -B -c "$PY_TAR" \
+        '{"base":"/var/lib/issue-agent-bridge","include":["."],"exclude":[],"checkouts":null}' || rc=$? ;;
     runner)
-      k "$ns" exec "$pod" -c runner -- python3 -B -c "$PY_TAR" \
+      stream_exec "$file" "$ns" "$pod" -c runner -- python3 -B -c "$PY_TAR" \
         '{"base":"/home/agent","include":[".codex",".hapi"],"exclude":[".codex/config.toml",".codex/auth.json",".codex/AGENTS.md",".codex/tmp",".codex/.tmp",".codex/shell_snapshots",".codex/app-server-control",".codex/hapi-runtime-owners",".codex/thread-writer-locks",".codex/skills/.system",".hapi/codex-runtimes",".hapi/runtime",".hapi/locks"],"checkouts":"/home/agent/checkouts"}' \
-        >"$file" || rc=$? ;;
+        || rc=$? ;;
   esac
   [[ "$rc" -eq 0 ]] || die "$component capture failed (exit $rc); partial file left at $file"
   tar -tf "$file" >/dev/null || die "$component archive is not a readable tar: $file"

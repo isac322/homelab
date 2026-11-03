@@ -29,7 +29,7 @@ spec:
           type: RuntimeDefault
       containers:
         - name: n8n
-          image: docker.io/n8nio/n8n:2.45.7@sha256:9a8d8dcea75667496695d7810d7e1fe018a65efb36cc499d347f3931b3957b5d
+          image: docker.io/n8nio/n8n:2.46.4@sha256:4384b9ff20a78bc1708c35ce7864f84f724611de7801fb36d715998db7c000f1
           command:
             - /bin/sh
             - /etc/issue-agent-n8n/n8n-bootstrap.sh
@@ -51,7 +51,7 @@ spec:
             - name: DB_TYPE
               value: sqlite
             - name: DB_SQLITE_POOL_SIZE
-              value: "2"
+              value: "4"
             - name: N8N_DIAGNOSTICS_ENABLED
               value: "false"
             - name: N8N_VERSION_NOTIFICATIONS_ENABLED
@@ -123,7 +123,7 @@ spec:
           resources:
             requests:
               cpu: 100m
-              memory: 512Mi
+              memory: 704Mi
             limits:
               memory: 2Gi
           securityContext:

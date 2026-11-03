@@ -2878,30 +2878,34 @@ class DispatchTests(BridgeTestCase):
             self.assertEqual(self.deliver(pr_payload(n), event="pull_request", delivery=f"r{n}").outcome, "queued")
 
     def test_reviews_are_capped_while_issue_events_still_dispatch(self) -> None:
-        self.queue_reviews(12, 13, 14)
+        self.assertEqual((bridge.MAX_ACTIVE_EVENTS, bridge.MAX_ACTIVE_REVIEWS), (10, 6))
+        prs = list(range(12, 12 + bridge.MAX_ACTIVE_REVIEWS + 1))
+        self.queue_reviews(*prs)
         self.deliver(issue_payload(30), delivery="i30")
-        for _ in range(3):
+        for _ in range(bridge.MAX_ACTIVE_REVIEWS + 1):
             self.assertEqual(self.dispatcher.tick(), "dispatched")
-        # The third review waits for a review slot; the issue queued after it is not held up.
-        self.assertEqual([body["delivery_id"] for _, body in self.fake.dispatched], ["r12", "r13", "i30"])
-        self.assertEqual(bridge.MAX_ACTIVE_REVIEWS, 2)
+        # The (MAX_ACTIVE_REVIEWS + 1)-th review waits for a review slot; the issue queued after it is not held up.
+        expected = [f"r{n}" for n in prs[:-1]] + ["i30"]
+        self.assertEqual([body["delivery_id"] for _, body in self.fake.dispatched], expected)
         self.assertEqual(self.dispatcher.tick(), "busy")
-        self.assertEqual(self.store.event("r14")["state"], "accepted")
+        waiting = f"r{prs[-1]}"
+        self.assertEqual(self.store.event(waiting)["state"], "accepted")
         self.assertEqual(self.op("begin", "r12", attempt=1)["status"], "started")
         self.assertTrue(self.op("finish", "r12", outcome="reviewed")["ok"])
         self.assertEqual(self.dispatcher.tick(), "dispatched")
-        self.assertEqual(self.fake.dispatched[-1][1]["delivery_id"], "r14")
+        self.assertEqual(self.fake.dispatched[-1][1]["delivery_id"], waiting)
 
     def test_a_dispatching_review_over_the_cap_keeps_its_slot(self) -> None:
         # The cap only gates picking a new review: one already holding a slot (POST outcome unknown) is re-sent.
-        self.queue_reviews(12, 13, 14)
-        self.assertEqual(self.dispatcher.tick(), "dispatched")
-        self.assertEqual(self.dispatcher.tick(), "dispatched")
+        prs = list(range(12, 12 + bridge.MAX_ACTIVE_REVIEWS + 1))
+        self.queue_reviews(*prs)
+        for _ in range(bridge.MAX_ACTIVE_REVIEWS):
+            self.assertEqual(self.dispatcher.tick(), "dispatched")
         self.assertEqual(self.dispatcher.tick(), "busy")
-        self.store.update_event("r14", state="dispatching", next_attempt_at=0)
+        over = f"r{prs[-1]}"
+        self.store.update_event(over, state="dispatching", next_attempt_at=0)
         self.assertEqual(self.dispatcher.tick(), "dispatched")
-        self.assertEqual([body["delivery_id"] for _, body in self.fake.dispatched], ["r12", "r13", "r14"])
-
+        self.assertEqual([body["delivery_id"] for _, body in self.fake.dispatched], [f"r{n}" for n in prs])
     def test_review_request_supersedes_parked_review_and_runs(self) -> None:
         # Live cc-lb#890: the attention notice told the user to comment `@bulgasaribot review`, but the queued
         # comment never dispatched because the parked review kept the pull request blocked.
