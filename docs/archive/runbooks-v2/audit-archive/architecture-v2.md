@@ -36,7 +36,7 @@ AFTER (v2)
   cert-manager           ──> TLS 인증서 발급
   external-dns           ──> DNS 레코드 자동화
   ArgoCD                 ──> GitOps
-  cloudflare-gateway     ──> 외부 터널 (독립 GatewayClass)
+  Public webhook tunnel ──> 당시 외부 터널 (독립 GatewayClass; 현행 Flareway 구성은 README 참고)
 ```
 
 ## Cilium 기능 활성화 목록 (확정)

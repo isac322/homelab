@@ -50,11 +50,10 @@ Generated: 2026-04-18T18:09:57+09:00
 
 ## 클러스터 컴포넌트
 
-### Namespaces (22개)
+### Namespaces (당시 22개, 폐기한 공개 Tunnel namespace 행은 제외)
 NAME                 STATUS   AGE
 argocd               Active   349d
 cert-manager         Active   349d
-cloudflare-gateway   Active   31d
 cnpg-system          Active   349d
 default              Active   349d
 democratic-csi       Active   191d
@@ -88,16 +87,9 @@ object-storage   versitygw           traefik   versitygw.bhyoo.com,s3.bhyoo.com,
 prometheus       shared-grafana      traefik   grafana.bhyoo.com                                     10.222.0.3   80, 443   158d
 prometheus       shared-prometheus   traefik   prometheus.bhyoo.com                                  10.222.0.3   80, 443   157d
 
-### Gateway API (이미 설치됨)
-GatewayClass:
-NAME         CONTROLLER                                        ACCEPTED   AGE
-cloudflare   github.com/pl4nty/cloudflare-kubernetes-gateway   True       31d
-Gateways:
-NAMESPACE            NAME                CLASS        ADDRESS   PROGRAMMED   AGE
-cloudflare-gateway   cloudflare-tunnel   cloudflare             True         31d
-HTTPRoutes:
-NAMESPACE   NAME             HOSTNAMES                      AGE
-argocd      argocd-webhook   ["argocd-webhook.bhyoo.com"]   31d
+### Gateway API (당시 이미 설치됨)
+
+공개 webhook용 독립 GatewayClass·Gateway와 `argocd/argocd-webhook` HTTPRoute가 있었다. 해당 controller의 운영 구성은 2026-11-03 Flareway로 이전해 이 과거 목록에서 폐기한 리소스 식별자를 제외했다. 공용 Gateway API CRD는 Cilium과 함께 계속 사용한다.
 
 ### NetworkPolicies (Thanos용 4개만)
 NAMESPACE    NAME                    POD-SELECTOR                                                                                                 AGE
@@ -149,6 +141,6 @@ tlsroutes.gateway.networking.k8s.io                     2026-04-04T15:33:49Z
 4. **Traefik 전용 annotation 미사용**: router.entrypoints만 사용 - Gateway API로 이전 용이.
 5. **Gateway API CRDs 이미 설치됨**: 새 CRD 설치 불필요.
 6. **ArgoCD app 중 backbone-traefik이 OutOfSync**: 전환 시 이 상태 고려.
-7. **cloudflare-tunnel Gateway 사용 중**: cloudflare-gateway class, 독립적이므로 영향 없음.
+7. **공개 Tunnel Gateway 사용 중**: 당시 독립 GatewayClass여서 Cilium 전환의 영향이 없었다.
 8. **CiliumNetworkPolicy로 교체 가능한 기존 NetworkPolicy 4개**: Thanos 네임스페이스 내부.
 9. **hostNetwork Pod 16개**: democratic-csi, node-exporter, zfs-localpv - Cilium과 호환성 이슈 없음.

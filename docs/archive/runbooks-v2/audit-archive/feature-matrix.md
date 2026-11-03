@@ -123,7 +123,7 @@ defaultLBServiceIPAM: nodeipam  # 모든 LB 서비스 기본값
 | external-dns | Keep | | Cilium과 무관 |
 | ArgoCD | Keep | | GitOps 엔진 |
 | democratic-csi, zfs-localpv (hostNetwork Pods) | Keep | | Cilium과 호환성 이슈 없음 |
-| cloudflare-gateway (GatewayClass: cloudflare) | Keep | | 독립적 Gateway controller, Cilium Gateway와 공존 |
+| Public webhook tunnel (당시 독립 GatewayClass) | Keep | | Cilium Gateway와 공존. 운영 구성은 2026-11-03 Flareway로 이전 |
 
 ---
 
@@ -133,7 +133,7 @@ defaultLBServiceIPAM: nodeipam  # 모든 LB 서비스 기본값
 |------|------|
 | Replace (기존 컴포넌트 제거) | 4개 (Flannel, kube-proxy, static-lb, Traefik) |
 | Augment (Cilium으로 강화) | 6개 (bpf.masquerade, socketLB, installNoConntrackIptablesRules, bandwidthManager/BBR, CNP/CCNP, Hubble) |
-| Keep (유지) | 주요 6개 (WireGuard, ansible iptables role, CoreDNS, cert-manager, ArgoCD, cloudflare-gateway) |
+| Keep (유지) | 주요 6개 (WireGuard, ansible iptables role, CoreDNS, cert-manager, ArgoCD, public webhook tunnel) |
 | Skip (활성화 X) | 주요 10개 (netkit, BIG TCP, L2Announcement, BGP, HTTP3, L7 policy, Host Firewall, Service Mesh, Cluster Mesh, Egress Gateway) |
 
 ## 최종 Cilium 활성 기능 체크리스트 (v2 타겟)

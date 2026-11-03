@@ -12,13 +12,6 @@ resource "aws_ssm_parameter" "cf_api_token_for_cert_manager_dns_challenge" {
   value       = cloudflare_api_token.k8s_cert_manager_dns_challenge.value
 }
 
-resource "aws_ssm_parameter" "cf_api_token_for_cloudflared_gateway" {
-  name        = "/homelab/cluster/${var.k8s_cluster_name}/token/cloudflare/cloudflared-gateway"
-  description = "Cloudflare API token for cloudflared-gateway"
-  type        = "SecureString"
-  value       = cloudflare_api_token.k8s_cloudflared_gateway.value
-}
-
 resource "aws_ssm_parameter" "cf_account_id" {
   name        = "/homelab/cluster/${var.k8s_cluster_name}/cloudflare/account-id"
   description = "Cloudflare Account ID"
@@ -57,7 +50,6 @@ data "aws_iam_policy_document" "secret_read" {
     resources = concat(
       [
         aws_ssm_parameter.cf_api_token_for_external_dns.arn,
-        aws_ssm_parameter.cf_api_token_for_cloudflared_gateway.arn,
         aws_ssm_parameter.cf_api_token_for_cert_manager_dns_challenge.arn,
         aws_ssm_parameter.cf_account_id.arn,
       ],

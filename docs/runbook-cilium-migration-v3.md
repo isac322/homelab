@@ -68,7 +68,7 @@
 
 - 배포된 HTTPRoute: **2개**
   - `argocd/argocd-server` (helm chart `values/argo-cd/backbone.yaml`의 `server.httproute`로 배포) — `argocd.bhyoo.com`, parentRef=`bhyoo-gateway`
-  - `argocd/argocd-webhook` (file `apps/objects/argocd/httproute-webhook.yaml`로 배포) — `argocd-webhook.bhyoo.com`, parentRef=`cloudflare-gateway/cloudflare-tunnel`
+  - `argocd/argocd-webhook` (file `apps/objects/argocd/httproute-webhook.yaml`로 배포) — `argocd-webhook.bhyoo.com`, 당시 별도 공개 Tunnel Gateway에 연결. 이 운영 구성은 2026-11-03 Flareway로 이전했다.
 - 작성됐지만 **미배포** HTTPRoute (5개 파일, 8개 route): `apps/objects/cilium-gateway/httproutes/{hindsight,immich,monitoring,versitygw}.yaml` (versitygw 3개, monitoring 2개, hindsight 2개, immich 1개)
   - 미배포 원인: `argocd/appprojects/networking.yaml`의 `destinations`가 `kube-system, cilium-secrets, ingress-ctrl`만 허용. HTTPRoute YAML의 namespace는 `argocd, hindsight, immich, object-storage, prometheus`라 ArgoCD가 거부.
 - `bhyoo-gateway` Listener `https`의 `Attached Routes: 1`. 즉 argocd 1개만 연결.
@@ -86,7 +86,7 @@
   - `versitygw.bhyoo.com`
   - `s3.bhyoo.com`
   - `admin-s3.bhyoo.com`
-- 정상: `argocd.bhyoo.com` (HTTPRoute 존재), `argocd-webhook.bhyoo.com` (별도 cloudflare gateway 경유).
+- 정상: `argocd.bhyoo.com` (HTTPRoute 존재), `argocd-webhook.bhyoo.com` (당시 별도 공개 Tunnel 경유).
 
 ### 0.5 외부 DNS 현황
 
