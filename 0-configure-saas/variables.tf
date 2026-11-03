@@ -73,19 +73,6 @@ variable "hermes_yjyou_telegram_token" {
   sensitive = true
 }
 
-variable "github_app_id_arc_cc_lb" {
-  type = string
-}
-
-variable "github_app_installation_id_arc_cc_lb" {
-  type = string
-}
-
-variable "github_app_private_key_arc_cc_lb" {
-  type      = string
-  sensitive = true
-}
-
 variable "github_app_private_key_ironeater" {
   type        = string
   description = "Private key of the ironeater GitHub App (App ID 5063990) used by the issue-agent platform."

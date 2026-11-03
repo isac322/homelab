@@ -112,30 +112,6 @@ resource "aws_ssm_parameter" "hermes_yjyou_telegram_token" {
   value       = var.hermes_yjyou_telegram_token
 }
 
-resource "aws_ssm_parameter" "github_app_id_arc_cc_lb" {
-  count       = var.github_app_id_arc_cc_lb == null ? 0 : 1
-  name        = "/homelab/cluster/${var.k8s_cluster_name}/github-app/arc-cc-lb/id"
-  description = "GitHub App id for ARC runners on isac322/cc-lb"
-  type        = "String"
-  value       = var.github_app_id_arc_cc_lb
-}
-
-resource "aws_ssm_parameter" "github_app_installation_id_arc_cc_lb" {
-  count       = var.github_app_installation_id_arc_cc_lb == null ? 0 : 1
-  name        = "/homelab/cluster/${var.k8s_cluster_name}/github-app/arc-cc-lb/installation-id"
-  description = "GitHub App installation id for ARC runners on isac322/cc-lb"
-  type        = "String"
-  value       = var.github_app_installation_id_arc_cc_lb
-}
-
-resource "aws_ssm_parameter" "github_app_private_key_arc_cc_lb" {
-  count       = var.github_app_private_key_arc_cc_lb == null ? 0 : 1
-  name        = "/homelab/cluster/${var.k8s_cluster_name}/github-app/arc-cc-lb/private-key"
-  description = "GitHub App private key for ARC runners on isac322/cc-lb"
-  type        = "SecureString"
-  value       = var.github_app_private_key_arc_cc_lb
-}
-
 resource "aws_ssm_parameter" "github_app_private_key_ironeater" {
   count       = nonsensitive(var.github_app_private_key_ironeater != null) ? 1 : 0
   name        = "/homelab/cluster/${var.k8s_cluster_name}/github-app/ironeater/private-key"
@@ -181,9 +157,6 @@ data "aws_iam_policy_document" "secret_read" {
       var.openai_proxy == null ? [] : [aws_ssm_parameter.hermes_openai_proxy[0].arn],
       var.gemini_api_key == null ? [] : [aws_ssm_parameter.hermes_gemini_api_key[0].arn],
       var.grafana_telegram_chat_id == null ? [] : [aws_ssm_parameter.grafana_telegram_chat_id[0].arn],
-      var.github_app_id_arc_cc_lb == null ? [] : [aws_ssm_parameter.github_app_id_arc_cc_lb[0].arn],
-      var.github_app_installation_id_arc_cc_lb == null ? [] : [aws_ssm_parameter.github_app_installation_id_arc_cc_lb[0].arn],
-      var.github_app_private_key_arc_cc_lb == null ? [] : [aws_ssm_parameter.github_app_private_key_arc_cc_lb[0].arn],
       nonsensitive(var.github_app_private_key_ironeater != null) ? [aws_ssm_parameter.github_app_private_key_ironeater[0].arn] : [],
       nonsensitive(var.github_app_private_key_ironeater_reviewer != null) ? [aws_ssm_parameter.github_app_private_key_ironeater_reviewer[0].arn] : [],
     )

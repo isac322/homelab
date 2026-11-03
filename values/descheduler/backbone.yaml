@@ -50,12 +50,10 @@ deschedulerPolicy:
         - name: LowNodeUtilization
           args:
             useDeviationThresholds: true
-            # Running CI jobs, BuildKit builds and agent sessions would be killed
-            # mid-run; their nodes are fixed by affinity anyway.
+            # Running agent sessions would be killed mid-run; their nodes are
+            # fixed by affinity anyway.
             evictableNamespaces:
               exclude:
-                - arc-runners
-                - arc-systems
                 - issue-agent-runner
             thresholds:
               cpu: 5

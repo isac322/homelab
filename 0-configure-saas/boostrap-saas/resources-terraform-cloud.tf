@@ -258,31 +258,6 @@ resource "tfe_variable" "hermes_yjyou_telegram_token" {
   workspace_id = tfe_workspace.backbone.id
 }
 
-resource "tfe_variable" "github_app_id_arc_cc_lb" {
-  key          = "github_app_id_arc_cc_lb"
-  value        = var.github_app_id_arc_cc_lb
-  description  = "GitHub App credentials for ARC runners on isac322/cc-lb"
-  category     = "terraform"
-  workspace_id = tfe_workspace.backbone.id
-}
-
-resource "tfe_variable" "github_app_installation_id_arc_cc_lb" {
-  key          = "github_app_installation_id_arc_cc_lb"
-  value        = var.github_app_installation_id_arc_cc_lb
-  description  = "GitHub App credentials for ARC runners on isac322/cc-lb"
-  category     = "terraform"
-  workspace_id = tfe_workspace.backbone.id
-}
-
-resource "tfe_variable" "github_app_private_key_arc_cc_lb" {
-  key          = "github_app_private_key_arc_cc_lb"
-  value        = var.github_app_private_key_arc_cc_lb
-  description  = "GitHub App credentials for ARC runners on isac322/cc-lb"
-  category     = "terraform"
-  sensitive    = true
-  workspace_id = tfe_workspace.backbone.id
-}
-
 resource "tfe_variable" "github_app_private_key_ironeater" {
   key          = "github_app_private_key_ironeater"
   value        = var.github_app_private_key_ironeater

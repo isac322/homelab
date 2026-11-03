@@ -78,9 +78,6 @@ module "dns_secrets" {
   hermes_isacmes_telegram_token               = var.hermes_isacmes_telegram_token
   hermes_isacmes_jay_telegram_token           = var.hermes_isacmes_jay_telegram_token
   hermes_yjyou_telegram_token                 = var.hermes_yjyou_telegram_token
-  github_app_id_arc_cc_lb                     = var.github_app_id_arc_cc_lb
-  github_app_installation_id_arc_cc_lb        = var.github_app_installation_id_arc_cc_lb
-  github_app_private_key_arc_cc_lb            = var.github_app_private_key_arc_cc_lb
   github_app_private_key_ironeater            = var.github_app_private_key_ironeater
   github_app_private_key_ironeater_reviewer   = var.github_app_private_key_ironeater_reviewer
 
