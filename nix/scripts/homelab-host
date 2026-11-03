@@ -392,7 +392,7 @@ fi
 hostnamectl set-hostname "$HOST_NAME"
 if command -v locale-gen >/dev/null 2>&1; then locale-gen; fi
 if command -v debconf-set-selections >/dev/null 2>&1; then
-  printf 'tzdata tzdata/Areas select Asia\ntzdata tzdata/Zones/Asia select Seoul\n' | debconf-set-selections
+  printf 'tzdata tzdata/Areas select Asia\ntzdata tzdata/Areas seen true\ntzdata tzdata/Zones/Asia select Seoul\ntzdata tzdata/Zones/Asia seen true\n' | debconf-set-selections
 fi
 systemd-tmpfiles --create --prefix=/etc
 systemctl restart systemd-resolved.service

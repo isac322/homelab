@@ -387,12 +387,12 @@
             assert n2p1.environment.etc."locale.gen".replaceExisting;
             assert n2p1.environment.etc.timezone.replaceExisting;
             assert n2p1.environment.etc.timezone.mode == "0644";
-            assert n2p1.environment.etc."apt/apt.conf.d/90-homelab-timezone".replaceExisting;
-            assert n2p1.environment.etc."apt/apt.conf.d/90-homelab-timezone".mode == "0644";
+            assert n2p1.environment.etc."dpkg/dpkg.cfg.d/90-homelab-timezone".replaceExisting;
+            assert n2p1.environment.etc."dpkg/dpkg.cfg.d/90-homelab-timezone".mode == "0644";
             assert
-              n2p1.environment.etc."apt/apt.conf.d/90-homelab-timezone".text
-              == "DPkg::Post-Invoke { \"test -n \\\"\${DPKG_ROOT:-}\\\" || { ln -snf ${toString n2p1.environment.etc.localtime.source} /etc/localtime && echo Asia/Seoul > /etc/timezone; }\"; };\n";
-            assert !(builtins.hasAttr "apt/apt.conf.d/90-homelab-timezone" macmini.environment.etc);
+              n2p1.environment.etc."dpkg/dpkg.cfg.d/90-homelab-timezone".text
+              == "pre-invoke=if [ -z \"\${DPKG_ROOT:-}\" ] && [ -e /usr/share/zoneinfo/Asia/Seoul ]; then ln -snf /usr/share/zoneinfo/Asia/Seoul /etc/localtime; fi\npost-invoke=if [ -z \"\${DPKG_ROOT:-}\" ]; then ln -snf ${toString n2p1.environment.etc.localtime.source} /etc/localtime && echo Asia/Seoul > /etc/timezone; fi\n";
+            assert !(builtins.hasAttr "dpkg/dpkg.cfg.d/90-homelab-timezone" macmini.environment.etc);
             assert lib.hasInfix "nvme_fabrics"
               macmini.system-manager.preActivationAssertions.nvmeTcpDkms.script;
             assert lib.hasInfix "nvme_tcp" macmini.system-manager.preActivationAssertions.nvmeTcpDkms.script;

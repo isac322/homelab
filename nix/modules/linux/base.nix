@@ -140,11 +140,12 @@ in
         source = "${pkgs.tzdata}/share/zoneinfo/Asia/Seoul";
         replaceExisting = true;
       };
-      "apt/apt.conf.d/90-homelab-timezone" = lib.mkIf (hostConfig.packageBackend == "apt") {
+      "dpkg/dpkg.cfg.d/90-homelab-timezone" = lib.mkIf (hostConfig.packageBackend == "apt") {
         mode = "0644";
         replaceExisting = true;
         text = ''
-          DPkg::Post-Invoke { "test -n \"''${DPKG_ROOT:-}\" || { ln -snf ${pkgs.tzdata}/share/zoneinfo/Asia/Seoul /etc/localtime && echo Asia/Seoul > /etc/timezone; }"; };
+          pre-invoke=if [ -z "''${DPKG_ROOT:-}" ] && [ -e /usr/share/zoneinfo/Asia/Seoul ]; then ln -snf /usr/share/zoneinfo/Asia/Seoul /etc/localtime; fi
+          post-invoke=if [ -z "''${DPKG_ROOT:-}" ]; then ln -snf ${pkgs.tzdata}/share/zoneinfo/Asia/Seoul /etc/localtime && echo Asia/Seoul > /etc/timezone; fi
         '';
       };
       "tmpfiles.d/20-homelab-resolv.conf" = {
