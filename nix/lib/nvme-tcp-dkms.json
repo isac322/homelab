@@ -5,15 +5,15 @@
       "nvme-fabrics",
       "nvme-tcp"
     ],
-    "kernelRelease": "7.1.13-3-2-ARCH",
+    "kernelRelease": "7.2.12-3-1-ARCH",
     "headersPackage": "linux-asahi-headers",
     "baseline": {
-      "version": "7.1.13",
-      "hash": "sha256-YU2V+v3LXM4rZiDn7cavu2Br/9RlVAVYaBXYRoeEGtc="
+      "version": "7.2.12",
+      "hash": "sha256-uxhGio3Il4qgDKpkRudT97baP+5Wtrfzixb5QwugLU8="
     },
     "transport": {
-      "version": "7.1.13",
-      "hash": "sha256-YU2V+v3LXM4rZiDn7cavu2Br/9RlVAVYaBXYRoeEGtc="
+      "version": "7.2.15",
+      "hash": "sha256-0Pax1zJMk3zK61xMpwhL/Pcdsu2z4tOjHwrYOmgYCas="
     }
   },
   "rock5bp": {

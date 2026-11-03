@@ -1,20 +1,20 @@
 #!/usr/bin/env bash
 # Select and install one node's NVMe/TCP DKMS package.
 #
-#   select <host> [--baseline <version>]
-#     Test-build the transport sources of every newer release in the node's
-#     kernel stable series, newest first, against the node's real kernel
+#   select <host> [--kernel <kernelver>] [--baseline <version>]
+#     Test-build the transport sources of every newer release in the target
+#     kernel's stable series (defaulting to the newest headers-installed
+#     NVMe-capable kernel on the node), newest first, against that kernel's
 #     headers and Module.symvers in a scratch directory, and record the first
 #     one that compiles and links in nix/lib/nvme-tcp-dkms.json. Nothing is
 #     installed. Commit the resulting declaration.
 #   install <host>
 #     Build the declared package with Nix and install it with the node's
-#     package manager. The node must run a kernel of the declared stable
-#     series, not necessarily the exact release `select` validated against:
-#     DKMS builds for every headers-installed kernel of the series and the
-#     in-package ABI check rejects kernels whose NVMe headers differ. Loaded
-#     modules are not replaced until the next reboot or an explicit module
-#     reload.
+#     package manager. Supports both steady-state kernels in the declared
+#     series and pre-reboot series upgrades when the running kernel already has
+#     the declared NVMe modules loaded and newer headers of the declared series
+#     are staged on disk. Loaded modules are not replaced until the next reboot
+#     or an explicit module reload.
 set -euo pipefail
 root=${HOMELAB_REPO_ROOT:-$(git rev-parse --show-toplevel 2>/dev/null || pwd)}
 declarations="$root/nix/lib/nvme-tcp-dkms.json"
@@ -23,7 +23,7 @@ stable_git=https://git.kernel.org/pub/scm/linux/kernel/git/stable/linux.git
 
 usage() {
   cat >&2 <<'EOF'
-Usage: nvme-tcp-dkms select <host> [--baseline <upstream-version>]
+Usage: nvme-tcp-dkms select <host> [--kernel <kernelver>] [--baseline <upstream-version>]
        nvme-tcp-dkms install <host>
 EOF
   exit 2
@@ -58,22 +58,42 @@ tarball_name() { printf 'linux-%s.tar.xz\n' "$1"; }
 sri() { nix_cmd hash convert --hash-algo sha256 --to sri "$1"; }
 
 select_source() {
-  local host=$1 baseline=${2:-} role modules files subdir kernel headers series major sums work
+  local host=$1 baseline=${2:-} target_kernel=${3:-} role modules files subdir core_config kernel headers series major sums work
   local baseline_hex candidate log file module object archive selected='' rejected=()
   role=$(declared "$host" .role)
   mapfile -t modules < <(declared "$host" '.modules[]')
   subdir=$(nix_cmd eval --raw "$root#nvmeTcpDkms.roles.$role.subdir")
+  core_config=$(nix_cmd eval --raw "$root#nvmeTcpDkms.roles.$role.coreConfig")
   mapfile -t files < <(
     nix_cmd eval --json "$root#nvmeTcpDkms.moduleSources" \
       | jq -r --args '[$ARGS.positional[] as $m | .[$m]] | unique[]' "${modules[@]}"
   )
-  kernel=$(remote "$host" 'uname -r')
+  if [[ -n "$target_kernel" ]]; then
+    remote "$host" "test -e '/lib/modules/$target_kernel/build'" || {
+      echo "kernel headers /lib/modules/$target_kernel/build do not exist on $host" >&2
+      return 1
+    }
+    kernel=$target_kernel
+  else
+    kernel=$(remote "$host" "
+      running=\$(uname -r)
+      for dir in /lib/modules/*; do
+        [ -e \"\$dir/build\" ] || continue
+        k=\${dir##*/}
+        [ \"\$k\" = \"\$running\" ] || grep -qE '^$core_config=(y|m)\$' \"\$dir/build/.config\" 2>/dev/null || continue
+        printf '%s\n' \"\$k\"
+      done | sort -V | tail -n 1
+    ")
+    [[ -n "$kernel" ]] || {
+      echo "no kernel headers with $core_config installed on $host" >&2
+      return 1
+    }
+  fi
   # The package depends on the exact vendor headers package it was selected against.
-  # shellcheck disable=SC2016 # expanded on the node
-  headers=$(remote "$host" '
-    makefile=$(readlink -f "/lib/modules/$(uname -r)/build")/Makefile
-    if command -v pacman >/dev/null; then pacman -Qqo "$makefile"; else dpkg -S "$makefile" | cut -d: -f1; fi
-  ')
+  headers=$(remote "$host" "
+    makefile=\$(readlink -f '/lib/modules/$kernel/build')/Makefile
+    if command -v pacman >/dev/null; then pacman -Qqo \"\$makefile\"; else dpkg -S \"\$makefile\" | cut -d: -f1; fi
+  ")
   [[ "$headers" =~ ^[A-Za-z0-9.+_-]+$ ]] || {
     echo "$host kernel headers are not owned by a single package: $headers" >&2
     return 1
@@ -146,14 +166,13 @@ select_source() {
     fi
     cp "$work/Makefile" "$work/tree/Makefile"
     log="$work/build.log"
-    # shellcheck disable=SC2016 # expanded on the node
-    if tar -C "$work/tree" -cf - . | remote "$host" '
+    if tar -C "$work/tree" -cf - . | remote "$host" "
       set -e
-      d=$(mktemp -d /var/tmp/nvme-tcp-select.XXXXXX)
-      trap "rm -rf \"$d\"" EXIT
-      tar -xf - -C "$d"
-      make -s -C "/lib/modules/$(uname -r)/build" M="$d" modules 2>&1
-    ' > "$log" 2>&1; then
+      d=\$(mktemp -d /var/tmp/nvme-tcp-select.XXXXXX)
+      trap 'rm -rf \"\$d\"' EXIT
+      tar -xf - -C \"\$d\"
+      make -s -C '/lib/modules/$kernel/build' M=\"\$d\" modules 2>&1
+    " > "$log" 2>&1; then
       selected=$candidate
       break
     fi
@@ -184,7 +203,8 @@ select_source() {
 }
 
 install_package() {
-  local host=$1 decl kernel series package version dkms_name format core_config out file installed
+  local host=$1 decl kernel series package version dkms_name format core_config out file installed mod
+  local -a modules=() sys_modules=()
   decl=$(nix_cmd eval --json "$root#nvmeTcpDkms.hosts.$host")
   series=$(jq -r .series <<< "$decl")
   package=$(jq -r .packageName <<< "$decl")
@@ -192,11 +212,39 @@ install_package() {
   dkms_name=$(jq -r .dkmsName <<< "$decl")
   format=$(jq -r .packageFormat <<< "$decl")
   core_config=$(jq -r .coreConfig <<< "$decl")
+  mapfile -t modules < <(jq -r '.modules[]' <<< "$decl")
+  for mod in "${modules[@]}"; do sys_modules+=("${mod//-/_}"); done
   kernel=$(remote "$host" 'uname -r')
-  [[ "$kernel" == "$series".* ]] || {
-    echo "$host runs $kernel, outside the declared $series series; run select first" >&2
-    return 1
-  }
+  if [[ "$kernel" != "$series".* ]]; then
+    remote "$host" "set -eu
+      for mod in ${sys_modules[*]}; do
+        [ -d \"/sys/module/\$mod\" ] || {
+          echo '$host runs $kernel outside declared series $series and module '\$mod' is not loaded' >&2
+          exit 1
+        }
+      done
+      staged=
+      for dir in /lib/modules/*; do
+        [ -e \"\$dir/build\" ] || continue
+        k=\${dir##*/}
+        [ \"\$k\" = '$kernel' ] && continue
+        grep -qE '^$core_config=(y|m)\$' \"\$dir/build/.config\" 2>/dev/null || continue
+        newest=\$(printf '%s\n%s\n' '$kernel' \"\$k\" | sort -V | tail -n 1)
+        [ \"\$newest\" = \"\$k\" ] || continue
+        case \"\$k\" in
+          '$series'.*) staged=\"\$staged \$k\" ;;
+          *)
+            echo '$host has staged kernel '\$k' outside declared series $series; run select first' >&2
+            exit 1
+            ;;
+        esac
+      done
+      [ -n \"\$staged\" ] || {
+        echo '$host runs $kernel outside declared series $series and has no newer $series.x headers staged; run select first' >&2
+        exit 1
+      }
+    "
+  fi
   case "$format" in
     deb) installed=$(remote "$host" "dpkg-query -W -f='\${Version}' $package 2>/dev/null || true") ;;
     pacman) installed=$(remote "$host" "pacman -Q $package 2>/dev/null | cut -d' ' -f2 || true") ;;
@@ -226,11 +274,17 @@ install_package() {
   # requires.
   remote "$host" "set -u
     failed=
+    built=
     for dir in /lib/modules/*; do
       [ -e \"\$dir/build\" ] || continue
       k=\${dir##*/}
       # Excluded by BUILD_EXCLUSIVE_CONFIG: no NVMe core, so NVMe/TCP cannot work there.
       [ \"\$k\" = '$kernel' ] || grep -qE '^$core_config=(y|m)\$' \"\$dir/build/.config\" 2>/dev/null || continue
+      case \"\$k\" in
+        '$series'.*) ;;
+        *) continue ;;
+      esac
+      built=\"\$built \$k\"
       sudo -n dkms status -m $dkms_name -v $version -k \"\$k\" | grep -q ': installed' && continue
       sudo -n dkms install -m $dkms_name -v $version -k \"\$k\" || {
         failed=\"\$failed \$k\"
@@ -238,6 +292,10 @@ install_package() {
       }
     done
     sudo -n dkms status -m $dkms_name -v $version
+    [ -n \"\$built\" ] || {
+      echo 'no $series.x kernel headers found on $host for $dkms_name $version' >&2
+      exit 1
+    }
     [ -z \"\$failed\" ] || {
       echo '$dkms_name $version failed to build for:'\"\$failed\" >&2
       exit 1
@@ -253,13 +311,15 @@ shift 2
 case "$command" in
   select)
     baseline=
+    target_kernel=
     while (( $# )); do
       case "$1" in
         --baseline) baseline=${2:?}; shift 2 ;;
+        --kernel) target_kernel=${2:?}; shift 2 ;;
         *) usage ;;
       esac
     done
-    select_source "$host" "$baseline"
+    select_source "$host" "$baseline" "$target_kernel"
     ;;
   install)
     (( $# == 0 )) || usage
