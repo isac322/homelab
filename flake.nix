@@ -344,7 +344,7 @@
             assert !rock.systemd.services.homelab-zfs-scrub-nas.restartIfChanged;
             assert rock.systemd.services.homelab-zfs-scrub-nas.serviceConfig.Type == "exec";
             assert !(builtins.hasAttr "homelab-zfs-scrub-nas" rpi5.systemd.timers);
-            assert builtins.length topology.requiredLinks == 36;
+            assert builtins.length topology.requiredLinks == 37;
             assert !(builtins.hasAttr "wg1" topology);
             assert gracefulShutdownConfigured;
             assert toString n2p1.environment.etc.${unattendedLogindPath}.source == "/dev/null";
