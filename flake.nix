@@ -386,6 +386,13 @@
             assert n2p1.environment.etc."locale.conf".replaceExisting;
             assert n2p1.environment.etc."locale.gen".replaceExisting;
             assert n2p1.environment.etc.timezone.replaceExisting;
+            assert n2p1.environment.etc.timezone.mode == "0644";
+            assert n2p1.environment.etc."apt/apt.conf.d/90-homelab-timezone".replaceExisting;
+            assert n2p1.environment.etc."apt/apt.conf.d/90-homelab-timezone".mode == "0644";
+            assert
+              n2p1.environment.etc."apt/apt.conf.d/90-homelab-timezone".text
+              == "DPkg::Post-Invoke { \"test -n \\\"\${DPKG_ROOT:-}\\\" || { ln -snf ${toString n2p1.environment.etc.localtime.source} /etc/localtime && echo Asia/Seoul > /etc/timezone; }\"; };\n";
+            assert !(builtins.hasAttr "apt/apt.conf.d/90-homelab-timezone" macmini.environment.etc);
             assert n2p1.environment.etc."sysctl.d/99-kubernetes-network.conf".replaceExisting;
             assert n2p1.environment.etc."udev/rules.d/60-io-scheduler.rules".replaceExisting;
             assert

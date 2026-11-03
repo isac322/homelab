@@ -391,6 +391,9 @@ if test "$ROLE" = server || test "$ROLE" = agent; then
 fi
 hostnamectl set-hostname "$HOST_NAME"
 if command -v locale-gen >/dev/null 2>&1; then locale-gen; fi
+if command -v debconf-set-selections >/dev/null 2>&1; then
+  printf 'tzdata tzdata/Areas select Asia\ntzdata tzdata/Zones/Asia select Seoul\n' | debconf-set-selections
+fi
 systemd-tmpfiles --create --prefix=/etc
 systemctl restart systemd-resolved.service
 for path in /etc /etc/ssh /etc/ssh/authorized_keys.d; do
@@ -1368,6 +1371,10 @@ done
 actual=$(readlink /etc/localtime 2>/dev/null || true)
 test "$actual" = "$LOCALTIME_SOURCE" || {
   printf 'unexpected /etc/localtime target: %s (expected %s)\n' "${actual:-missing}" "$LOCALTIME_SOURCE" >&2
+  exit 1
+}
+test ! -L /etc/timezone || {
+  echo "/etc/timezone must not be a symlink" >&2
   exit 1
 }
 grep -qx "Asia/Seoul" /etc/timezone || {

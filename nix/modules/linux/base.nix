@@ -133,11 +133,19 @@ in
       };
       timezone = {
         text = "Asia/Seoul\n";
+        mode = "0644";
         replaceExisting = true;
       };
       "localtime" = {
         source = "${pkgs.tzdata}/share/zoneinfo/Asia/Seoul";
         replaceExisting = true;
+      };
+      "apt/apt.conf.d/90-homelab-timezone" = lib.mkIf (hostConfig.packageBackend == "apt") {
+        mode = "0644";
+        replaceExisting = true;
+        text = ''
+          DPkg::Post-Invoke { "test -n \"''${DPKG_ROOT:-}\" || { ln -snf ${pkgs.tzdata}/share/zoneinfo/Asia/Seoul /etc/localtime && echo Asia/Seoul > /etc/timezone; }"; };
+        '';
       };
       "tmpfiles.d/20-homelab-resolv.conf" = {
         text = "L+ /etc/resolv.conf - - - - /run/systemd/resolve/stub-resolv.conf\n";
