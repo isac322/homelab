@@ -9,7 +9,7 @@ controllers:
     containers:
       main:
         image:
-          tag: v3.3.5@sha256:485d546a2e31d6a8b4db8423fcba5c109de8c218d93410af115fd1ccfc4352a6
+          tag: v3.3.6@sha256:e1981983b1c13f6024b57d72e7ecae3342eed1581201ab09fb248932d86c593a
         env:
           REDIS_HOSTNAME: '{{ printf "%s-valkey" .Release.Name }}'
           # Add the env vars to connect to your database here.
@@ -212,10 +212,10 @@ server:
       enabled: true
       type: hostPath
       hostPath: /usr/lib/aarch64-linux-gnu/libwayland-server.so.0
-    # These files are verbatim copies of immich v3.3.5 server dist JS with only the
+    # These files are verbatim copies of immich v3.3.6 server dist JS with only the
     # local RKMPP/OpenCL tonemap and frame-cropping deltas applied (see the
     # media-patch-configmap.yaml commit history and the PR #30022 port). They are
-    # valid ONLY for the server image tag pinned in this values file (v3.3.5).
+    # valid ONLY for the server image tag pinned in this values file (v3.3.6).
     # To regenerate: extract the six dist files from
     # ghcr.io/immich-app/immich-server:<tag> (docker create --platform linux/arm64
     # + docker cp), apply the local delta via git merge-file (base = old upstream
@@ -253,7 +253,7 @@ machine-learning:
         main:
           image:
             repository: ghcr.io/isac322/immich-machine-learning
-            tag: v3.3.5-rknn@sha256:7a0048535a479c4908c7818c71babc9a811aa199f40b9aeddcfb413de03edb66
+            tag: v3.3.6-rknn@sha256:b544b27c50d794aeb606594aaafbb0524f1bf19d6e06937dfee0a0f0da1b7d062
           env:
             MACHINE_LEARNING_RKNN_THREADS: 3
             # Upstream v2 models fold the XLM-R position-id CumSum away at export

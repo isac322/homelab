@@ -3,7 +3,7 @@
 api:
   replicaCount: 1
   image:
-    tag: "1.1.0-slim@sha256:b97af4787f35f0f897cc85299e1c800e265ff98e1d70c900c58a7f9903cb5b7d"
+    tag: "1.2.0-slim@sha256:38482a3f53bd4bc6b7af5c49fb6fa52dd86144ec901053f64f104e85c8eb9702"
   resources:
     requests:
       cpu: 25m
@@ -67,7 +67,7 @@ controlPlane:
   enabled: true
   replicaCount: 1
   image:
-    tag: "1.1.0@sha256:373f86848649a8dadc9b2d9ecf1d18b4c446162ca7b556fc4152e92ef433e983"
+    tag: "1.2.0@sha256:f5188033c202a1ed69c47f470472dd02df97c937781374ab306564f570fd38fb"
   resources:
     requests:
       cpu: 10m
