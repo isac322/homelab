@@ -23,8 +23,7 @@ gatewayClass:
   config:
     accountRefName: bhyoo
     connector:
-      # Preserve the currently deployed, digest-pinned connector during migration.
-      image: docker.io/cloudflare/cloudflared:2026.10.3@sha256:faa8e0a1475f137c910be6025f43c8e4092fdd35461b31e19fd1390657a1ff39
+      image: docker.io/cloudflare/cloudflared:2026.10.7@sha256:4955524a78b915f2f5ab2d9fa76ed35bfbd7d67fb907c92a22526a6d207bd975
       replicas: 2
       resources:
         requests:
