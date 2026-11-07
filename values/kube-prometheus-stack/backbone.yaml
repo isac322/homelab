@@ -1348,7 +1348,7 @@ grafana:
   sidecar:
     image:
       tag: 2.14.3
-      sha: 52d311dc9c5cfc8eb3bc3fb3f22b3e302ee773e556eb7c052b1634d55c7be8fa
+      sha: 52d311dcedd587421a236c4d6c621f05614c40a51386e955e0699dca97ec0880
     resources:
       requests:
         cpu: 5m
@@ -1768,7 +1768,7 @@ prometheus:
     retention: 30d
 
     thanos:
-      image: quay.io/thanos/thanos:v0.42.5@sha256:0a546b98486bc164bc526a26d0fb69e0131e39f7e1c4a9db97aa28c88c48d885
+      image: quay.io/thanos/thanos:v0.42.5@sha256:0a546b98a8dd47735456ab389983675ee363d68127e334937a9fceeea10da5e7
       version: v0.42.5
       resources:
         requests:

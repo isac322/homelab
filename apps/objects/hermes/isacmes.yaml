@@ -10,7 +10,7 @@ spec:
       enabled: false
   image:
     repository: nousresearch/hermes-agent
-    tag: v0.23.0@sha256:adb789098b32b8f64d09fa5dfcc90bf5fffa03e2df3609e696a5d902267d3782
+    tag: v0.23.0@sha256:adb7890916de63245523492be8f68f9d2095fecbec4e2a6dab7960381f0fc002
   resources:
     requests:
       cpu: 50m
@@ -19,7 +19,7 @@ spec:
       memory: 3Gi
   initContainers:
     - name: install-hermes-lcm
-      image: nousresearch/hermes-agent:v0.23.0@sha256:adb789098b32b8f64d09fa5dfcc90bf5fffa03e2df3609e696a5d902267d3782
+      image: nousresearch/hermes-agent:v0.23.0@sha256:adb7890916de63245523492be8f68f9d2095fecbec4e2a6dab7960381f0fc002
       command:
         - /bin/sh
         - -ec
@@ -127,7 +127,7 @@ spec:
         - name: hermes-lcm
           mountPath: /lcm
     - name: install-default-skills
-      image: nousresearch/hermes-agent:v0.23.0@sha256:adb789098b32b8f64d09fa5dfcc90bf5fffa03e2df3609e696a5d902267d3782
+      image: nousresearch/hermes-agent:v0.23.0@sha256:adb7890916de63245523492be8f68f9d2095fecbec4e2a6dab7960381f0fc002
       command:
         - /bin/sh
         - -e
@@ -174,7 +174,7 @@ spec:
         - name: hermes-default-skills
           mountPath: /skills
     - name: patch-openai-native-web-search
-      image: nousresearch/hermes-agent:v0.23.0@sha256:adb789098b32b8f64d09fa5dfcc90bf5fffa03e2df3609e696a5d902267d3782
+      image: nousresearch/hermes-agent:v0.23.0@sha256:adb7890916de63245523492be8f68f9d2095fecbec4e2a6dab7960381f0fc002
       command:
         - /opt/hermes/.venv/bin/python
         - /patch/patch.py

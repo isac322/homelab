@@ -253,7 +253,7 @@ machine-learning:
         main:
           image:
             repository: ghcr.io/isac322/immich-machine-learning
-            tag: v3.3.6-rknn@sha256:b544b27c50d794aeb606594aaafbb0524f1bf19d6e06937dfee0a0f0da1b7d062
+            tag: v3.3.6-rknn@sha256:b544b27c50d794aeb606594aaafb0524f1bf19d6e06937dfe0ae0f0da1b7d062
           env:
             MACHINE_LEARNING_RKNN_THREADS: 3
             # Upstream v2 models fold the XLM-R position-id CumSum away at export

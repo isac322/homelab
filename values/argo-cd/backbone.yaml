@@ -87,7 +87,7 @@ dex:
 redis:
   image:
     repository: ecr-public.aws.com/docker/library/redis
-    tag: 8.10.3-alpine@sha256:71885d8c8020f0fbebbfabbd4dc9fd15cad3faab8f2d8ae71ee0ffbc46df3f57
+    tag: 8.10.3-alpine@sha256:71885d8cc6e42f2bc0aa2eb853bfc4be200b5108a46ac50e117ae1df0531fb80
     imagePullPolicy: IfNotPresent
   extraArgs:
     - --maxmemory
