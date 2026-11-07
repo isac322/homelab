@@ -842,7 +842,7 @@ diff --git a/hub/src/web/routes/sessions.ts b/hub/src/web/routes/sessions.ts
 index 6883e67b..4aa6453a 100644
 --- a/hub/src/web/routes/sessions.ts
 +++ b/hub/src/web/routes/sessions.ts
-@@ -816,7 +816,7 @@ export function createSessionsRoutes(getSyncEngine: () => SyncEngine | null): Ho
+@@ -999,7 +999,7 @@ export function createSessionsRoutes(getSyncEngine: () => SyncEngine | null): Ho
              return engine
          }
  

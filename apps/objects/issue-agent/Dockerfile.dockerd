@@ -29,8 +29,8 @@ RUN go test ./... \
     && CGO_ENABLED=0 GOOS=$TARGETOS GOARCH=$TARGETARCH \
        go build -trimpath -ldflags='-s -w' -o /out/issue-agent-chown-sweep .
 
-# docker:29.9.2-dind (linux/arm64); matches the runner image's docker:29.9.2-cli.
-FROM docker:29.9.2-dind@sha256:9e79b879b177fbd72c34376a3dd3d91747da5db49e1f560f76aea59561471977
+# docker:29.9.3-dind (linux/arm64); matches the runner image's docker:29.9.3-cli.
+FROM docker:29.9.3-dind@sha256:a4bbf4cfd8b06ff12a3553cc7b5068b5d2b323d27532ba8e17089cdff3a8af97
 
 # The dind image already ships iptables/ip6tables on the nf_tables
 # backend; fail the build if they ever resolve to legacy. util-linux provides

@@ -149,14 +149,14 @@ Procedure:
 4. Recreate worktrees from `checkouts-manifest.txt`. The branches are on GitHub.
    Uncommitted or unpushed work listed there cannot be recovered from this backup.
 
-## Runner lifecycle and HAPI v0.34.0
+## Runner lifecycle and HAPI v0.34.3
 
 The active runner starts directly in `issue-agent-runner`; there is no
 `issue-agent-runner-home-migrate` command and no `.issue-agent-home-ready` marker.
 The old `issue-agent/issue-agent-runner-home` Retain backup PVC remains preserved
 for separately approved recovery, but it is not part of normal startup or cutover.
 
-HAPI `v0.34.0` includes the runner lifecycle patch: `stopSession` removes an
+HAPI `v0.34.3` includes the runner lifecycle patch: `stopSession` removes an
 orphaned
 `serverPid` tree only when no sibling session is active and waits for the final
 root process to exit normally. Linux `acquireRunnerLock` and `CodexRuntimeRecord`

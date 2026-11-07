@@ -6,12 +6,12 @@
 
 # HAPI builder: same pinned source and patch as the hub image.
 FROM oven/bun:1.4.4@sha256:f2b798e7ce1c056cd2149a6be7f014b3fde68a0c7165a3011ce3896e8404a6cd AS hapi-builder
-ARG HAPI_SOURCE_SHA256=abf89478f96ab8aacc1d249c0ad0a79fd72c842f6a85123296a83ae19295f360
+ARG HAPI_SOURCE_SHA256=8b1ff90fc0af1ca54484e73a6a9f4524cc24d7a6c98c1138935951a403267258
 WORKDIR /src
 RUN apt-get update \
     && apt-get install -y --no-install-recommends ca-certificates curl patch \
     && rm -rf /var/lib/apt/lists/*
-RUN curl -fsSLo /tmp/hapi.tar.gz "https://github.com/tiann/hapi/archive/1f4518df20469c38429cf8ee103ea6320e1087ed.tar.gz" \
+RUN curl -fsSLo /tmp/hapi.tar.gz "https://github.com/tiann/hapi/archive/893260ac9bacc96ab931b1bfcd8d5d9533db6c4a.tar.gz" \
     && echo "${HAPI_SOURCE_SHA256}  /tmp/hapi.tar.gz" | sha256sum -c - \
     && tar -xzf /tmp/hapi.tar.gz --strip-components=1 -C /src \
     && rm /tmp/hapi.tar.gz
@@ -27,25 +27,25 @@ RUN patch -p1 < /tmp/hapi-0.34.0-lifecycle.patch \
     && bun run --cwd hub generate:embedded-web-assets \
     && bun run --cwd cli build:exe:allinone --target bun-linux-arm64
 
-# docker:29.9.2-cli (linux/arm64): Docker CLI plus the buildx/compose plugins.
+# docker:29.9.3-cli (linux/arm64): Docker CLI plus the buildx/compose plugins.
 # Docker 29's `docker build` requires buildx; the daemon is the pod's dockerd
-# sidecar (docker:29.9.2-dind), reached through DOCKER_HOST.
-FROM docker:29.9.2-cli@sha256:5e6baf67325a79f64ed3bed6863954d5e05d0f3d4e57cbdb14809346814bbfdb AS docker-cli
+# sidecar (docker:29.9.3-dind), reached through DOCKER_HOST.
+FROM docker:29.9.3-cli@sha256:035209e4a5ad108b3292d00313678a84b9887d7cca45ac0d3c93d5a5ddc47425 AS docker-cli
 
 # node:26.13.0-trixie-slim (linux/arm64). Node runs Codex's npm launcher.
 FROM node:26.13.0-trixie-slim@sha256:e4db4c914bf8ad241bd24804fc25d272d89bad97e68cdc8a1414862790a02c39
 
-# @openai/codex 0.166.0 (HAPI shared sessions require >= 0.154.0).
+# @openai/codex 0.167.0 (HAPI shared sessions require >= 0.154.0).
 # SHA-256 of the npm tarballs whose sha512 matched the registry `integrity`.
-ARG CODEX_VERSION=0.166.0
-ARG CODEX_SHA256=67ee6f4069d9328956401f54ac202c20369233159058af9f4ec1af731b87f5b7
-ARG CODEX_LINUX_ARM64_SHA256=9044e840397864fc6c539d13719b25fb26abb35d5353366cbabf7b4555406acd
+ARG CODEX_VERSION=0.167.0
+ARG CODEX_SHA256=e858522a37b85b5bbe695919190cfb0974aee5ae739d84d8d629c39735fb03a9
+ARG CODEX_LINUX_ARM64_SHA256=e24d7b6f0af5695a36c04692c3a79672bdadebcac7c44005259cb3cad36ac40e
 # GitHub CLI 2.103.3; checksum = release checksums.txt = asset digest.
 ARG GH_VERSION=2.103.3
 ARG GH_SHA256=ee32df2323c8847f5fac6cb6b4b69ca75828e9329a8f22f677021f7b3306ce63
-# rustup 1.29.2 (versioned archive). Toolchains install lazily into the home PVC.
-ARG RUSTUP_VERSION=1.29.2
-ARG RUSTUP_SHA256=a9c168dbea81a84671c6b7a5c1795cb0eb699020110d107ddfca427bd797e697
+# rustup 1.29.3 (versioned archive). Toolchains install lazily into the home PVC.
+ARG RUSTUP_VERSION=1.29.3
+ARG RUSTUP_SHA256=9f608c142e0e38a78957d0661ba1dfaf0b6fb37184cfaa4b9a0aa57af6184282
 # sccache 0.19.0 (static musl build); checksum = release .sha256 = asset digest.
 ARG SCCACHE_VERSION=0.19.0
 ARG SCCACHE_SHA256=3e47fc4a71b1ddd1b4294a0de9d34498922fdf41e3cd0bda5df3954e3d6deb9d
