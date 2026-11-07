@@ -6,7 +6,7 @@ terraform {
     }
     cloudflare = {
       source  = "cloudflare/cloudflare"
-      version = "~> 5.24.0"
+      version = "~> 5.28.0"
     }
     postmark = {
       source  = "jcf/postmark"

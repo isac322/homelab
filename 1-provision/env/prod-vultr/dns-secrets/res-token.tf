@@ -30,9 +30,9 @@ resource "cloudflare_api_token" "k8s_external_dns" {
         { id = local.zone_permission_groups["Zone Read"] },
         { id = local.zone_permission_groups["DNS Write"] },
       ]
-      resources = {
+      resources = jsonencode({
         "com.cloudflare.api.account.zone.*" = "*"
-      }
+      })
     }
   ]
 }
@@ -46,8 +46,8 @@ resource "cloudflare_api_token" "k8s_cert_manager_dns_challenge" {
       { id = local.zone_permission_groups["Zone Read"] },
       { id = local.zone_permission_groups["DNS Write"] },
     ]
-    resources = {
+    resources = jsonencode({
       "com.cloudflare.api.account.zone.*" = "*"
-    }
+    })
   }]
 }
