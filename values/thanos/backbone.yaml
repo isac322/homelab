@@ -5,9 +5,9 @@ global:
 image:
   registry: quay.io
   repository: thanos/thanos
-  tag: v0.42.4
+  tag: v0.42.5
   # Same digest as the kube-prometheus-stack sidecar image.
-  digest: sha256:b567818fe608067eb0f1d7c2c4fe361e7ad83c8a256234c97685f1d0bf670cc8
+  digest: sha256:0a546b98486bc164bc526a26d0fb69e0131e39f7e1c4a9db97aa28c88c48d885
 
 metrics:
   enabled: true
