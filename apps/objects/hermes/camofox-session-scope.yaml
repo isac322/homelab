@@ -80,7 +80,11 @@ data:
 
     compile(target_codex.read_text(), str(target_codex), "exec")
 
-    print("patched OpenAI native web search")
+    (target_codex.parent / "pvc_user_site.pth").write_text(
+        "/opt/data/.local/python-packages\n"
+    )
+
+    print("patched OpenAI native web search and pvc_user_site.pth")
 ---
 apiVersion: v1
 kind: ConfigMap

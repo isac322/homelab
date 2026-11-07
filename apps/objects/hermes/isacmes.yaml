@@ -10,7 +10,7 @@ spec:
       enabled: false
   image:
     repository: nousresearch/hermes-agent
-    tag: v0.22.5@sha256:9c5561579f3ffdf333401797094ac3a743738d6c25d40f4331c7bf77b694238d
+    tag: v0.23.0@sha256:adb789098b32b8f64d09fa5dfcc90bf5fffa03e2df3609e696a5d902267d3782
   resources:
     requests:
       cpu: 50m
@@ -19,7 +19,7 @@ spec:
       memory: 3Gi
   initContainers:
     - name: install-hermes-lcm
-      image: nousresearch/hermes-agent:v0.22.5@sha256:9c5561579f3ffdf333401797094ac3a743738d6c25d40f4331c7bf77b694238d
+      image: nousresearch/hermes-agent:v0.23.0@sha256:adb789098b32b8f64d09fa5dfcc90bf5fffa03e2df3609e696a5d902267d3782
       command:
         - /bin/sh
         - -ec
@@ -29,9 +29,74 @@ spec:
           TARGET_COMMIT="49e99a272d2d461e5c90732e7ef2bc20e96f0826"
           TARGET_SHA256="4c055c79e91ab1738fb70f325b265fce26c3c818c352e640a64e1d3dbdeb2182"
           RECEIPT_FILE="$TARGET_DIR/.version"
-          rm -f /opt/data/plugins/hindsight/pyproject.toml "$TARGET_DIR/pyproject.toml"
+
+          /opt/hermes/.venv/bin/python - <<'PY'
+          import hashlib, io, json, shutil, sys, tempfile, urllib.request, zipfile
+          from pathlib import Path
+          sys.path.insert(0, "/opt/hermes")
+          from hermes_cli.plugins_cmd_git import _clone_plugin_repo
+          from hermes_cli.plugins_cmd_catalog import write_catalog_sidecar_record
+
+          plugins_dir = Path("/opt/data/plugins")
+          plugins_dir.mkdir(parents=True, exist_ok=True)
+          meta_path = plugins_dir / ".install-metadata.json"
+          try:
+              meta = json.loads(meta_path.read_text()) if meta_path.is_file() else {}
+          except Exception:
+              meta = {}
+
+          specs = [
+              ("camofox", "https://github.com/NousResearch/hermes-official-plugins", "e7a218f26db88426ab3e7376f0e000b6e356f5e7", "camofox", "official"),
+              ("hindsight", "https://github.com/vectorize-io/hindsight", "f14cc1eb5624b0374cb4d82768eb2e0b9c21ae24", "hindsight-integrations/hermes", "community"),
+          ]
+          for name, repo, sha, subdir, tier in specs:
+              dest = plugins_dir / name
+              sidecar = dest / ".hermes-catalog.json"
+              cur_sha = None
+              if sidecar.is_file():
+                  try:
+                      cur_sha = json.loads(sidecar.read_text()).get("sha")
+                  except Exception:
+                      cur_sha = None
+              if cur_sha != sha or not (dest / "__init__.py").is_file():
+                  with tempfile.TemporaryDirectory(dir="/lcm") as tmp:
+                      clone_dir = Path(tmp) / name
+                      _clone_plugin_repo(clone_dir, repo, sha, subdir=subdir)
+                      if dest.exists():
+                          shutil.rmtree(dest)
+                      shutil.copytree(clone_dir / subdir, dest)
+                      write_catalog_sidecar_record(dest, {"name": name, "repo": repo, "tier": tier}, sha)
+              (dest / "pyproject.toml").unlink(missing_ok=True)
+              meta[name] = {
+                  "catalog": {"name": name, "pin": sha, "repo": repo, "sha": sha, "tier": tier},
+                  "pinned": True,
+                  "revision": sha,
+                  "source": f"{repo}#{subdir}",
+              }
+          meta_path.write_text(json.dumps(meta, indent=2, sort_keys=True) + "\n")
+
+          pkg_dir = Path("/opt/data/.local/python-packages")
+          pkg_stamp = pkg_dir / ".version"
+          expected_pkg_ver = "hindsight-client-1.2.0_aiohttp-retry-2.9.1"
+          if not pkg_stamp.is_file() or pkg_stamp.read_text().strip() != expected_pkg_ver:
+              if pkg_dir.exists():
+                  shutil.rmtree(pkg_dir)
+              pkg_dir.mkdir(parents=True, exist_ok=True)
+              wheels = [
+                  ("https://files.pythonhosted.org/packages/py3/h/hindsight-client/hindsight_client-1.2.0-py3-none-any.whl", "690c728a17207a9e4df0b26c32abd1dfee627d1895615881f30ed709ab4126c3"),
+                  ("https://files.pythonhosted.org/packages/py3/a/aiohttp-retry/aiohttp_retry-2.9.1-py3-none-any.whl", "66d2759d1921838256a05a3f80ad7e724936f083e35be5abb5e16eed6be6dc54"),
+              ]
+              for url, exp_sha in wheels:
+                  data = urllib.request.urlopen(url, timeout=30).read()
+                  assert hashlib.sha256(data).hexdigest() == exp_sha, f"sha mismatch: {url}"
+                  with zipfile.ZipFile(io.BytesIO(data)) as zf:
+                      zf.extractall(pkg_dir)
+              pkg_stamp.write_text(expected_pkg_ver + "\n")
+          PY
+          chown 1000:1000 /opt/data/.local && chown -R 1000:1000 /opt/data/plugins /opt/data/.local/python-packages
 
           if [ -f "$RECEIPT_FILE" ] && [ "$(cat "$RECEIPT_FILE")" = "$TARGET_COMMIT" ]; then
+            rm -f "$TARGET_DIR/pyproject.toml"
             echo "hermes-lcm ($TARGET_COMMIT) is already installed. Skipping."
             exit 0
           fi
@@ -62,7 +127,7 @@ spec:
         - name: hermes-lcm
           mountPath: /lcm
     - name: install-default-skills
-      image: nousresearch/hermes-agent:v0.22.5@sha256:9c5561579f3ffdf333401797094ac3a743738d6c25d40f4331c7bf77b694238d
+      image: nousresearch/hermes-agent:v0.23.0@sha256:adb789098b32b8f64d09fa5dfcc90bf5fffa03e2df3609e696a5d902267d3782
       command:
         - /bin/sh
         - -e
@@ -109,7 +174,7 @@ spec:
         - name: hermes-default-skills
           mountPath: /skills
     - name: patch-openai-native-web-search
-      image: nousresearch/hermes-agent:v0.22.5@sha256:9c5561579f3ffdf333401797094ac3a743738d6c25d40f4331c7bf77b694238d
+      image: nousresearch/hermes-agent:v0.23.0@sha256:adb789098b32b8f64d09fa5dfcc90bf5fffa03e2df3609e696a5d902267d3782
       command:
         - /opt/hermes/.venv/bin/python
         - /patch/patch.py
@@ -219,6 +284,10 @@ spec:
     - name: hermes-patched-files
       mountPath: /opt/hermes/agent/transports/codex.py
       subPath: codex.py
+      readOnly: true
+    - name: hermes-patched-files
+      mountPath: /opt/hermes/.venv/lib/python3.14/site-packages/pvc_user_site.pth
+      subPath: pvc_user_site.pth
       readOnly: true
   sidecars:
     - name: camofox
@@ -333,12 +402,13 @@ spec:
           readOnly: true
   config:
     raw:
-      _config_version: 50
+      _config_version: 52
       approvals:
         mode: "off"
       agent:
         disabled_toolsets:
           - computer_use
+          - browser
         reasoning_effort: medium
       model:
         default: gpt-6.1-sol
@@ -383,6 +453,7 @@ spec:
           - hermes-lcm
           - security-guidance
           - disk-cleanup
+          - camofox
       context:
         engine: lcm
       browser:
