@@ -1,13 +1,13 @@
 type: postgresql
 mode: standalone
 version:
-  postgresql: "17"
+  postgresql: "18"
 
 nameOverride: immich
 
 cluster:
   instances: 1
-  imageName: ghcr.io/tensorchord/cloudnative-vectorchord:17.11-1.1.1@sha256:bb7eb8442f76b1e74911f28585019a77022911f8cfa2ddcfb166ea6af85abd09
+  imageName: ghcr.io/tensorchord/cloudnative-vectorchord:18.6-1.1.1@sha256:c7672bc011351a587cc292a94aac7eeebb593ed2e120077bd9c9944c9467db93
   resources:
     requests:
       cpu: 100m
@@ -60,6 +60,21 @@ cluster:
 
 backups:
   enabled: true
+  method: plugin
+  pluginConfiguration:
+    name: barman-cloud.cloudnative-pg.io
+  objectStore:
+    create: true
+    helmHook: false
+    annotations:
+      argocd.argoproj.io/sync-wave: "-1"
+  instanceSidecarConfiguration:
+    resources:
+      requests:
+        cpu: 10m
+        memory: 64Mi
+      limits:
+        memory: 256Mi
   endpointURL: "http://versitygw-hdd.object-storage.svc:7070"
   provider: s3
   data:
@@ -74,9 +89,13 @@ backups:
     name: immich-s3-creds
   s3:
     bucket: cnpg-immich-backup-hdd
+    path: "/pg18"
     region: ap-northeast-2
   scheduledBackups:
     - name: daily-backup # Weekly on Sunday at midnight
       schedule: "0 0 0 * * 0" # Weekly on Sunday at midnight
       backupOwnerReference: self
+      method: plugin
+      pluginConfiguration:
+        name: barman-cloud.cloudnative-pg.io
   retentionPolicy: "30d"

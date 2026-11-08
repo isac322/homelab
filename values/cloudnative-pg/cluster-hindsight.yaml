@@ -64,6 +64,21 @@ cluster:
 
 backups:
   enabled: true
+  method: plugin
+  pluginConfiguration:
+    name: barman-cloud.cloudnative-pg.io
+  objectStore:
+    create: true
+    helmHook: false
+    annotations:
+      argocd.argoproj.io/sync-wave: "-1"
+  instanceSidecarConfiguration:
+    resources:
+      requests:
+        cpu: 10m
+        memory: 64Mi
+      limits:
+        memory: 256Mi
   endpointURL: "http://versitygw-hdd.object-storage.svc:7070"
   provider: s3
   data:
@@ -83,4 +98,7 @@ backups:
     - name: daily-backup
       schedule: "0 0 2 * * *"
       backupOwnerReference: self
+      method: plugin
+      pluginConfiguration:
+        name: barman-cloud.cloudnative-pg.io
   retentionPolicy: "7d"

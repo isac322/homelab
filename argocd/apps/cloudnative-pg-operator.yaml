@@ -33,3 +33,40 @@ spec:
     syncOptions:
       - CreateNamespace=true
       - ServerSideApply=true
+---
+apiVersion: argoproj.io/v1alpha1
+kind: Application
+metadata:
+  name: cnpg-plugin-barman-cloud
+  finalizers:
+    - resources-finalizer.argocd.argoproj.io
+spec:
+  destination:
+    name: backbone
+    namespace: cnpg-system
+  project: cloudnative-pg
+  sources:
+    - repoURL: https://github.com/isac322/homelab.git
+      targetRevision: HEAD
+      ref: homelab
+    - chart: plugin-barman-cloud
+      helm:
+        releaseName: barman-cloud
+        valueFiles:
+          - values.yaml
+          - $homelab/values/cloudnative-pg/plugin-barman-cloud.yaml
+      repoURL: https://cloudnative-pg.github.io/charts/
+      targetRevision: 0.8.1
+  syncPolicy:
+    automated:
+      prune: true
+      selfHeal: true
+    retry:
+      backoff:
+        duration: 5s
+        factor: 2
+        maxDuration: 3m0s
+      limit: 100
+    syncOptions:
+      - CreateNamespace=true
+      - ServerSideApply=true
