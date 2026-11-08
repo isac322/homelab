@@ -229,7 +229,8 @@ _PROVIDER_ERROR_RE = re.compile(
     r"|Codex thread entered systemError|Connection failed:|Error while reading the server response:"
     r"|request timed out|Flex capacity unavailable)")
 # n8n transport failures reaching the bridge (n8n error workflow `error.message`), by failed node.
-_N8N_BRIDGE_NODES = ("Ensure session", "Send step to agent", "Check turn", "Submit review", "Finish reviewed")
+_N8N_BRIDGE_NODES = ("Ensure session", "Send step to agent", "Check turn", "Review guard", "Submit review",
+                     "Finish reviewed")
 _N8N_TRANSPORT_ERROR_RE = re.compile(
     r"The service refused the connection.*|connect ECONN(?:REFUSED|RESET) .*|socket hang up|read ECONNRESET"
     r"|getaddrinfo EAI_AGAIN .*|timeout of \d+ms exceeded", re.DOTALL)
@@ -1580,6 +1581,56 @@ def _authored_by(review: Mapping[str, Any], login: str | None) -> bool:
     return bool(login) and isinstance(user, dict) and (user.get("login") or "").casefold() == login.casefold()
 
 
+MAX_BASE_MERGE_DEPTH = 5
+MAX_COMPARE_FILES = 300
+_HUNK_HEADER_RE = re.compile(r"^@@ -\d+(?:,\d+)? \+\d+(?:,\d+)? @@", re.MULTILINE)
+
+
+def _normalize_compare_files(files: Any) -> list[tuple[Any, ...]] | None:
+    """Canonical representation of GitHub compare ``files`` with ``@@ -a,b +c,d @@`` line numbers stripped.
+
+    Returns None when ``files`` is missing, empty, truncated at GitHub's 300-file cap, or contains an entry
+    whose content cannot be verified (neither a ``patch`` string nor a 40-hex blob ``sha``).
+    """
+    if not isinstance(files, list) or not (0 < len(files) < MAX_COMPARE_FILES):
+        return None
+    out: list[tuple[Any, ...]] = []
+    for f in files:
+        if not isinstance(f, dict):
+            return None
+        filename = f.get("filename")
+        status = f.get("status")
+        additions = f.get("additions")
+        deletions = f.get("deletions")
+        changes = f.get("changes")
+        prev = f.get("previous_filename")
+        if (not isinstance(filename, str) or not filename or not isinstance(status, str) or not status
+                or not isinstance(additions, int) or not isinstance(deletions, int) or not isinstance(changes, int)
+                or (prev is not None and not isinstance(prev, str))):
+            return None
+        patch = f.get("patch")
+        sha = f.get("sha")
+        if isinstance(patch, str):
+            content: tuple[str, str] = ("patch", _HUNK_HEADER_RE.sub("@@", patch))
+        elif patch is None and isinstance(sha, str) and _SHA_RE.fullmatch(sha):
+            content = ("sha", sha)
+        else:
+            return None
+        out.append((filename, prev, status, additions, deletions, changes, content))
+    return out
+
+
+def _same_pr_diff(before: Any, after: Any) -> bool:
+    if not isinstance(before, dict) or not isinstance(after, dict):
+        return False
+    if (before.get("status") not in ("ahead", "diverged")
+            or after.get("status") != "ahead" or after.get("behind_by") != 0):
+        return False
+    norm_before = _normalize_compare_files(before.get("files"))
+    norm_after = _normalize_compare_files(after.get("files"))
+    return norm_before is not None and norm_before == norm_after
+
+
 def _pr_signal(
     cfg: RepoConfig,
     delivery: str,
@@ -2558,6 +2609,7 @@ class Bridge:
             "github.issue_reopen": self.op_github_issue_reopen,
             "github.labels": self.op_github_labels,
             "github.review": self.op_github_review,
+            "github.review_carryover": self.op_github_review_carryover,
             "github.security_advisory": self.op_github_security_advisory,
             "github.visual_evidence": self.op_github_visual_evidence,
             "github.pr_upsert": self.op_github_pr_upsert,
@@ -5039,6 +5091,213 @@ class Bridge:
             conn.execute("UPDATE events SET head_sha = ?, semantic_key = ?, updated_at = ? WHERE seq = ?",
                          (head, key, now, ev["seq"]))
         return "started"
+
+    def _clean_base_merge(self, repo: str, prior_sha: str, head: str, base_sha: str, *,
+                          client: GitHub | None = None) -> tuple[str, set[str]] | None:
+        """When ``head`` reaches ``prior_sha`` along a first-parent chain of at most ``MAX_BASE_MERGE_DEPTH``
+        two-parent merge commits whose second parents are on ``base_sha`` and the pull request's 3-dot diff
+        against ``head``'s base parent is unchanged from ``prior_sha``, return ``(base_parent, walked_shas)``;
+        otherwise None."""
+        curr = head
+        walked: set[str] = set()
+        top_base_parent: str | None = None
+        for _ in range(MAX_BASE_MERGE_DEPTH):
+            status, commit = self._gh_raw("GET", f"/repos/{repo}/commits/{curr}", client=client)
+            if status in (404, 422):
+                return None
+            if status != 200 or not isinstance(commit, dict):
+                raise OpError(f"github GET /repos/{repo}/commits/{curr} HTTP {status}",
+                              retryable=status >= 500 or status == 429)
+            parents = commit.get("parents")
+            if not isinstance(parents, list) or len(parents) != 2:
+                return None
+            p0 = parents[0].get("sha") if isinstance(parents[0], dict) else None
+            p1 = parents[1].get("sha") if isinstance(parents[1], dict) else None
+            if not (isinstance(p0, str) and _SHA_RE.fullmatch(p0)
+                    and isinstance(p1, str) and _SHA_RE.fullmatch(p1)):
+                return None
+            if p1 != base_sha:
+                c_status, cmp = self._gh_raw("GET", f"/repos/{repo}/compare/{p1}...{base_sha}", client=client)
+                if c_status in (404, 422):
+                    return None
+                if c_status != 200 or not isinstance(cmp, dict):
+                    raise OpError(f"github GET /repos/{repo}/compare/{p1}...{base_sha} HTTP {c_status}",
+                                  retryable=c_status >= 500 or c_status == 429)
+                if cmp.get("status") not in ("identical", "ahead") or cmp.get("behind_by") != 0:
+                    return None
+            walked.add(curr)
+            if top_base_parent is None:
+                top_base_parent = p1
+            if p0 == prior_sha:
+                break
+            curr = p0
+        else:
+            return None
+        if top_base_parent is None:
+            return None
+        b_status, before = self._gh_raw("GET", f"/repos/{repo}/compare/{top_base_parent}...{prior_sha}", client=client)
+        if b_status in (404, 422):
+            return None
+        if b_status != 200 or not isinstance(before, dict):
+            raise OpError(f"github GET /repos/{repo}/compare/{top_base_parent}...{prior_sha} HTTP {b_status}",
+                          retryable=b_status >= 500 or b_status == 429)
+        a_status, after = self._gh_raw("GET", f"/repos/{repo}/compare/{top_base_parent}...{head}", client=client)
+        if a_status in (404, 422):
+            return None
+        if a_status != 200 or not isinstance(after, dict):
+            raise OpError(f"github GET /repos/{repo}/compare/{top_base_parent}...{head} HTTP {a_status}",
+                          retryable=a_status >= 500 or a_status == 429)
+        if not _same_pr_diff(before, after):
+            return None
+        return top_base_parent, walked
+
+    def _dismissed_by_push(self, repo: str, number: int, review_id: Any, prior_sha: str, walked_shas: set[str], *,
+                           client: GitHub | None = None) -> bool:
+        """Whether a ``DISMISSED`` review ``review_id`` on ``prior_sha`` was an approval dismissed automatically by
+        GitHub when one of ``walked_shas`` was pushed (``dismiss_stale_reviews_on_push``), never by a human."""
+        if not isinstance(review_id, int):
+            return False
+        statuses = self._gh("GET", f"/repos/{repo}/commits/{prior_sha}/statuses?per_page=100", client=client)
+        if not isinstance(statuses, list):
+            raise OpError("github commit statuses: unexpected response", retryable=True)
+        latest_status = next((s for s in statuses if isinstance(s, dict)
+                              and s.get("context") == self.config.review_status_context), None)
+        if latest_status is None or latest_status.get("state") != "success":
+            return False
+        events = self._paged(f"/repos/{repo}/issues/{number}/events", MAX_IDEMPOTENCY_PAGES, strict=True, client=client)
+        dismissals = [e.get("dismissed_review") for e in events
+                      if isinstance(e, dict) and e.get("event") == "review_dismissed"
+                      and isinstance(e.get("dismissed_review"), dict)
+                      and e["dismissed_review"].get("review_id") == review_id]
+        if not dismissals:
+            return False
+        last = dismissals[-1]
+        return (str(last.get("state") or "").upper() == "APPROVED"
+                and last.get("dismissal_message") is None
+                and last.get("dismissal_commit_id") in walked_shas)
+
+    def op_github_review_carryover(self, req: dict[str, Any]) -> dict[str, Any]:
+        ev = self._event(req)
+        if ev["kind"] != "pr_review":
+            raise OpError("github.review_carryover applies to pr_review events")
+        number = int(ev["issue_number"])
+        with self._keyed_lock(("github-review", ev["repo"], number)):
+            return self._carryover_review(ev)
+
+    def _carryover_review(self, ev: sqlite3.Row) -> dict[str, Any]:
+        repo, number, delivery = ev["repo"], int(ev["issue_number"]), ev["delivery_id"]
+        gh = self.review_github
+        reviewer = self.reviewer_login()
+        head = ev["head_sha"]
+        if (gh is None or not reviewer or self._explicit_review(ev)
+                or not isinstance(head, str) or not _SHA_RE.fullmatch(head)
+                or self.store.turn(delivery) is not None):
+            return {"carried_over": False, "reason": "not_eligible"}
+        try:
+            pr = self._get_pr(repo, number, client=gh)
+            live_head = (pr.get("head") or {}).get("sha")
+            base_sha = (pr.get("base") or {}).get("sha")
+            if (pr.get("state") != "open" or pr.get("draft")
+                    or live_head != head or not isinstance(base_sha, str) or not _SHA_RE.fullmatch(base_sha)):
+                return {"carried_over": False, "reason": "head_or_state_changed"}
+            reviews = [r for r in self._paged(f"/repos/{repo}/pulls/{number}/reviews", MAX_IDEMPOTENCY_PAGES,
+                                              strict=True, client=gh) if r.get("state") != "PENDING"]
+            existing = self._own_review_of(reviews, reviewer, head)
+        except OpError as exc:
+            if exc.retryable:
+                raise
+            LOG.warning("review carryover check of %s#%s skipped: %s", repo, number, exc)
+            return {"carried_over": False, "reason": "check_failed"}
+        if existing is not None:
+            submitted = REVIEW_STATE_EVENTS.get(existing.get("state"), existing.get("state"))
+            if submitted == "APPROVE":
+                return {
+                    "carried_over": True, "from_sha": None, "base_sha": None, "head_sha": head,
+                    "review_id": existing.get("id"), "html_url": existing.get("html_url"),
+                    "event_submitted": submitted, "created": False,
+                    "commit_status": self._record_verdict(repo, delivery, head, head, "APPROVE",
+                                                         existing.get("html_url")),
+                }
+            return {"carried_over": False, "reason": "already_reviewed_non_approval"}
+        try:
+            author = ((pr.get("user") or {}).get("login") or "").casefold()
+            if reviewer and author == reviewer.casefold():
+                return {"carried_over": False, "reason": "self_review"}
+            latest_by_author: dict[str, dict[str, Any]] = {}
+            for r in reviews:
+                author_login = (r.get("user") or {}).get("login")
+                if author_login and r.get("state") in ("APPROVED", "CHANGES_REQUESTED", "DISMISSED"):
+                    latest_by_author[author_login.casefold()] = r
+            if any(r.get("state") == "CHANGES_REQUESTED" for r in latest_by_author.values()):
+                return {"carried_over": False, "reason": "changes_requested"}
+            prior = next((r for r in reversed(reviews)
+                          if _authored_by(r, reviewer) and _review_marker(r) is not None and self._review_head_of(r)),
+                         None)
+            prior_sha = self._review_head_of(prior) if prior is not None else None
+            if prior is None or not prior_sha or prior_sha == head:
+                return {"carried_over": False, "reason": "no_prior_review"}
+            prior_state = prior.get("state")
+            if prior_state not in ("APPROVED", "DISMISSED"):
+                return {"carried_over": False, "reason": "prior_not_approved"}
+            merge_info = self._clean_base_merge(repo, prior_sha, head, base_sha, client=gh)
+            if merge_info is None:
+                return {"carried_over": False, "reason": "not_clean_base_merge"}
+            base_parent, walked_shas = merge_info
+            if prior_state == "DISMISSED" and not self._dismissed_by_push(
+                    repo, number, prior.get("id"), prior_sha, walked_shas, client=gh):
+                return {"carried_over": False, "reason": "prior_dismissed"}
+            node_id, pending, threads = self._review_state(repo, number, client=gh)
+            bots = {_login_key(login) for login in (reviewer, self.config.github_bot_login) if login}
+            if any(not t["is_resolved"] or human_after_bot(t, bots) for t in threads):
+                return {"carried_over": False, "reason": "open_threads"}
+        except OpError as exc:
+            if exc.retryable:
+                raise
+            LOG.warning("review carryover check of %s#%s skipped: %s", repo, number, exc)
+            return {"carried_over": False, "reason": "check_failed"}
+
+        marker = f"{BOT_MARKER_PREFIX}:{delivery}:review:{head} -->"
+        body = (f"🟢 **GREEN** — Approval carried over from `{prior_sha}` after a clean base-branch merge "
+                f"(`{base_parent[:12]}`) with no changes to the pull request diff.")
+        footer = review_footer(reviewer, pushes_reviewed=self.review_github is not None)
+        tail = f"\n\n{footer}" if footer else ""
+        for leftover in pending:
+            _, error = self._graphql_try(REVIEW_DELETE_MUTATION, {"reviewId": leftover}, client=gh)
+            if error is not None and error.retryable:
+                raise error
+            if error is not None:
+                LOG.warning("review carryover of %s#%s: leftover pending review %s not deleted: %s",
+                            repo, number, leftover, error)
+        data, error = self._graphql_try(REVIEW_ADD_MUTATION, {"pullRequestId": node_id, "commitOID": head},
+                                        client=gh)
+        if error is not None and not error.retryable:
+            LOG.warning("review carryover of %s#%s: pending review not created: %s", repo, number, error)
+            return {"carried_over": False, "reason": "review_add_rejected"}
+        if error is not None:
+            raise error
+        review_id = ((data.get("addPullRequestReview") or {}).get("pullRequestReview") or {}).get("id")
+        if not isinstance(review_id, str):
+            raise OpError("github review carryover: no pending review id", retryable=True)
+        data, error = self._graphql_try(REVIEW_SUBMIT_MUTATION, {
+            "reviewId": review_id, "event": "APPROVE", "body": f"{marker}\n{body}{tail}"}, client=gh)
+        if error is not None and not error.retryable:
+            try:
+                self._graphql_try(REVIEW_DELETE_MUTATION, {"reviewId": review_id}, client=gh)
+            except OpError:
+                pass
+            LOG.warning("review carryover of %s#%s: review submit rejected: %s", repo, number, error)
+            return {"carried_over": False, "reason": "review_submit_rejected"}
+        if error is not None:
+            raise error
+        review = (data.get("submitPullRequestReview") or {}).get("pullRequestReview")
+        if not isinstance(review, dict):
+            raise OpError("github review carryover submit: unexpected response", retryable=True)
+        return {
+            "carried_over": True, "from_sha": prior_sha, "base_sha": base_parent, "head_sha": head,
+            "review_id": review.get("databaseId"), "html_url": review.get("url"), "event_submitted": "APPROVE",
+            "created": True,
+            "commit_status": self._record_verdict(repo, delivery, head, head, "APPROVE", review.get("url")),
+        }
 
     def op_github_review(self, req: dict[str, Any]) -> dict[str, Any]:
         ev = self._event(req)

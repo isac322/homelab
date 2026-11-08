@@ -172,6 +172,26 @@ class WorkflowContractTests(unittest.TestCase):
         self.assertIn("retryable: ($json.retryable === true)", body)
 
 
+    def test_main_review_route_runs_review_guard_before_session(self) -> None:
+        nodes = workflow_nodes(MAIN_WORKFLOW)
+        self.assertIn("Review guard", nodes)
+        self.assertIn("Review carried over?", nodes)
+        workflow = json.loads(MAIN_WORKFLOW.read_text())
+        route_rules = nodes["Route by mode"]["parameters"]["rules"]["values"]
+        review_index = next(i for i, r in enumerate(route_rules) if r["outputKey"] == "review")
+        self.assertEqual([e["node"] for e in workflow["connections"]["Route by mode"]["main"][review_index]],
+                         ["Review guard"])
+        self.assertEqual([e["node"] for e in workflow["connections"]["Review guard"]["main"][0]],
+                         ["Review carried over?"])
+        outputs = workflow["connections"]["Review carried over?"]["main"]
+        self.assertEqual([[e["node"] for e in out] for out in outputs],
+                         [["Finish reviewed"], ["Prepare review step"], ["Mark needs attention"]])
+        payload, = run_main_nodes(
+            [{"name": "Review guard"}],
+            items={"Begin": {"event": {"delivery_id": "d-review-1"}}},
+        )
+        self.assertEqual(payload, {"op": "github.review_carryover", "delivery_id": "d-review-1"})
+
 
 class SessionWorkflowResultTests(unittest.TestCase):
     def assert_result_roundtrip(self, mode: str, result: dict) -> None:

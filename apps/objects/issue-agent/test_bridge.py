@@ -39,6 +39,7 @@ REPO = "isac322/cc-lb"
 OTHER = "isac322/other"
 SHA_A = "a" * 40
 SHA_B = "b" * 40
+SHA_C = "c" * 40
 NEEDS = bridge.NEEDS_ATTENTION
 
 
@@ -139,6 +140,8 @@ class Fake:
         self.pr_state_reads: list[int] = []
         self.state_read_head: str | None = None  # GraphQL-only head, simulating cross-API propagation
         self.default_sha = SHA_B
+        self.commit_parents: dict[str, list[str]] = {}  # sha -> parent shas
+        self.compares: dict[str, tuple[int, Any] | dict[str, Any]] = {}  # "<base>...<head>" -> response
         self.issue_states: dict[int, dict[str, Any]] = {}  # GET /repos/<repo>/issues/<n>; absent -> 404
         self.issue_patches: list[tuple[int, dict[str, Any]]] = []  # PATCH /repos/<repo>/issues/<n>
         self.issue_comments: dict[int, dict[str, Any]] = {}  # GET /repos/<repo>/issues/comments/<id>; absent -> 404
@@ -535,7 +538,17 @@ class Fake:
         if rest[0] == "commits" and rest[2:] == ["statuses"]:
             return 200, self.statuses.get(rest[1], [])
         if rest[0] == "commits" and len(rest) == 2:
-            return 200, {"sha": rest[1], "commit": {"committer": {"date": self.commit_dates.get(rest[1], iso_ago(0))}}}
+            return 200, {
+                "sha": rest[1],
+                "parents": [{"sha": p} for p in self.commit_parents.get(rest[1], [])],
+                "commit": {"committer": {"date": self.commit_dates.get(rest[1], iso_ago(0))}},
+            }
+        if rest[0] == "compare" and len(rest) == 2:
+            spec = urllib.parse.unquote(rest[1])
+            if spec not in self.compares:
+                return 404, {"message": "Not Found"}
+            entry = self.compares[spec]
+            return entry if isinstance(entry, tuple) else (200, entry)
         if rest[:3] == ["git", "ref", "heads"]:
             branch = "/".join(rest[3:])
             return ((200, {"object": {"sha": self.branch_heads[branch]}}) if branch in self.branch_heads
@@ -7558,6 +7571,146 @@ class ReviewGateTests(BridgeTestCase):
         self.assertTrue(self.op("github.review", "p3", result=variant(DECISION, event="REQUEST_CHANGES"))["ok"])
         self.assertEqual([self.decision_comments(n) for n in (12, 13, 14)], [[], [], []])
 
+
+    # -- Clean base-branch merge review carry-over -------------------------------
+
+    def setup_clean_base_merge(self, number: int = 12, prior_sha: str = SHA_A, merge_sha: str = SHA_C,
+                               base_sha: str = SHA_B, *, patch_before: str = "@@ -10,3 +10,4 @@\n context\n+added\n",
+                               patch_after: str | None = None) -> None:
+        """Approve ``prior_sha`` with the review App, then advance the PR to a merge commit ``merge_sha``
+        whose parents are ``[prior_sha, base_sha]``."""
+        self.started_review(number, "p1", sha=prior_sha)
+        self.assertTrue(self.op("github.review", "p1",
+                                result=variant(REVIEW_OK, head_sha=prior_sha, event="APPROVE", comments=[]))["ok"])
+        self.assertTrue(self.op("finish", "p1", outcome="reviewed")["ok"])
+        pr = self.fake.prs[number]
+        pr["head"]["sha"] = merge_sha
+        pr["base"]["sha"] = base_sha
+        self.fake.commit_parents[merge_sha] = [prior_sha, base_sha]
+        after_patch = patch_before if patch_after is None else patch_after
+        self.fake.compares[f"{base_sha}...{prior_sha}"] = {
+            "status": "diverged", "ahead_by": 1, "behind_by": 1,
+            "files": [{"filename": "a.py", "status": "modified", "additions": 1, "deletions": 0, "changes": 1,
+                       "patch": patch_before}],
+        }
+        self.fake.compares[f"{base_sha}...{merge_sha}"] = {
+            "status": "ahead", "ahead_by": 2, "behind_by": 0,
+            "files": [{"filename": "a.py", "status": "modified", "additions": 1, "deletions": 0, "changes": 1,
+                       "patch": after_patch}],
+        }
+        push = pr_payload(number, action="synchronize", sha=merge_sha)
+        self.assertEqual(self.deliver(push, event="pull_request", delivery="s1").outcome, "queued")
+        self.assertEqual(self.dispatcher.tick(), "dispatched")
+        self.assertEqual(self.op("begin", "s1", attempt=1)["status"], "started")
+
+    def test_clean_base_merge_carries_over_approval_and_status_even_with_shifted_hunk_lines(self) -> None:
+        self.setup_clean_base_merge(
+            patch_before="@@ -191,6 +191,14 @@ fn f()\n context\n+added\n",
+            patch_after="@@ -190,6 +190,14 @@ fn f()\n context\n+added\n",
+        )
+        res = self.op("github.review_carryover", "s1")
+        self.assertTrue(res["ok"], res)
+        self.assertEqual((res["carried_over"], res["from_sha"], res["base_sha"], res["head_sha"],
+                          res["event_submitted"], res["created"]),
+                         (True, SHA_A, SHA_B, SHA_C, "APPROVE", True))
+        self.assertEqual(self.latest_status(SHA_C), ("success", f"Approved by {REVIEWER}"))
+        self.assertTrue(self.fake.reviews[-1]["body"].startswith(f"<!-- issue-agent:s1:review:{SHA_C} -->\n"))
+        self.assertTrue(self.op("finish", "s1", outcome="reviewed")["ok"])
+        # The sweep sees the carried-over marker and queues nothing.
+        self.assertEqual(self.bridge.sweep_open_prs(time.time()), 0)
+
+    def test_two_hop_clean_base_merge_and_push_dismissed_approval_carry_over(self) -> None:
+        sha_m1 = "4" * 40
+        sha_b1 = "5" * 40
+        self.setup_clean_base_merge(prior_sha=SHA_A, merge_sha=SHA_C, base_sha=SHA_B)
+        self.fake.commit_parents[SHA_C] = [sha_m1, SHA_B]
+        self.fake.commit_parents[sha_m1] = [SHA_A, sha_b1]
+        self.fake.compares[f"{sha_b1}...{SHA_B}"] = {"status": "ahead", "ahead_by": 1, "behind_by": 0, "files": []}
+        # Simulate dismiss_stale_reviews_on_push dismissing the prior approval when sha_m1 was pushed.
+        prior_review = self.fake.reviews[-1]
+        prior_review["state"] = "DISMISSED"
+        self.fake.issue_events[12] = [{
+            "event": "review_dismissed",
+            "dismissed_review": {
+                "review_id": prior_review["id"],
+                "state": "approved",
+                "dismissal_message": None,
+                "dismissal_commit_id": sha_m1,
+            },
+        }]
+        res = self.op("github.review_carryover", "s1")
+        self.assertEqual((res["ok"], res["carried_over"], res["from_sha"]), (True, True, SHA_A))
+        self.assertEqual(self.latest_status(SHA_C), ("success", f"Approved by {REVIEWER}"))
+
+    def test_human_dismissed_approval_is_not_carried_over(self) -> None:
+        self.setup_clean_base_merge()
+        prior_review = self.fake.reviews[-1]
+        prior_review["state"] = "DISMISSED"
+        self.fake.issue_events[12] = [{
+            "event": "review_dismissed",
+            "dismissed_review": {
+                "review_id": prior_review["id"],
+                "state": "approved",
+                "dismissal_message": "Wait, found a race condition",
+                "dismissal_commit_id": None,
+            },
+        }]
+        res = self.op("github.review_carryover", "s1")
+        self.assertEqual((res["ok"], res["carried_over"], res["reason"]), (True, False, "prior_dismissed"))
+        self.assertEqual(len(self.fake.reviews), 1)
+
+    def test_carryover_rejects_diff_change_rebase_truncated_compare_open_thread_and_self_pr(self) -> None:
+        clean_file = [{"filename": "a.py", "status": "modified", "additions": 1, "deletions": 0, "changes": 1,
+                       "patch": "@@ -10,3 +10,4 @@\n context\n+added\n"}]
+        # 1. Diff changed in merge commit (e.g., manual conflict resolution edited a line).
+        self.setup_clean_base_merge(patch_after="@@ -10,3 +10,4 @@\n context\n+different\n")
+        res = self.op("github.review_carryover", "s1")
+        self.assertEqual((res["ok"], res["carried_over"], res["reason"]), (True, False, "not_clean_base_merge"))
+        self.fake.compares[f"{SHA_B}...{SHA_C}"]["files"] = list(clean_file)
+
+        # 2. Rebase (1-parent commit) instead of 2-parent merge commit.
+        self.fake.commit_parents[SHA_C] = [SHA_B]
+        res = self.op("github.review_carryover", "s1")
+        self.assertEqual((res["ok"], res["carried_over"], res["reason"]), (True, False, "not_clean_base_merge"))
+        self.fake.commit_parents[SHA_C] = [SHA_A, SHA_B]
+
+        # 3. Compare truncated at 300 files or missing both patch and blob sha.
+        many = [{"filename": f"f{i}.py", "status": "modified", "additions": 1, "deletions": 0, "changes": 1,
+                 "patch": "@@ -1,1 +1,2 @@\n+x"} for i in range(300)]
+        self.fake.compares[f"{SHA_B}...{SHA_A}"]["files"] = many
+        self.fake.compares[f"{SHA_B}...{SHA_C}"]["files"] = many
+        res = self.op("github.review_carryover", "s1")
+        self.assertEqual((res["ok"], res["carried_over"], res["reason"]), (True, False, "not_clean_base_merge"))
+
+        no_patch_or_sha = [{"filename": "big.bin", "status": "modified", "additions": 0, "deletions": 0, "changes": 0}]
+        self.fake.compares[f"{SHA_B}...{SHA_A}"]["files"] = no_patch_or_sha
+        self.fake.compares[f"{SHA_B}...{SHA_C}"]["files"] = no_patch_or_sha
+        res = self.op("github.review_carryover", "s1")
+        self.assertEqual((res["ok"], res["carried_over"], res["reason"]), (True, False, "not_clean_base_merge"))
+        self.fake.compares[f"{SHA_B}...{SHA_A}"]["files"] = list(clean_file)
+        self.fake.compares[f"{SHA_B}...{SHA_C}"]["files"] = list(clean_file)
+
+        # 4. Unresolved review thread blocks carryover.
+        self.fake.threads = [PullRequestOpsTests.thread("T1", (501, REVIEWER, "t"), resolved=False)]
+        res = self.op("github.review_carryover", "s1")
+        self.assertEqual((res["ok"], res["carried_over"], res["reason"]), (True, False, "open_threads"))
+        self.fake.threads = []
+
+        # 5. Self-authored pull request by the review App is not carried over as APPROVE.
+        self.fake.prs[12]["user"]["login"] = REVIEWER
+        res = self.op("github.review_carryover", "s1")
+        self.assertEqual((res["ok"], res["carried_over"], res["reason"]), (True, False, "self_review"))
+    def test_carryover_status_failure_is_retryable_and_idempotent(self) -> None:
+        self.setup_clean_base_merge()
+        self.fake.status_fail = True
+        failed = self.op("github.review_carryover", "s1")
+        self.assertEqual((failed["ok"], failed["retryable"]), (False, True))
+        self.assertEqual(len(self.fake.reviews), 2)
+        self.fake.status_fail = False
+        retried = self.op("github.review_carryover", "s1")
+        self.assertEqual((retried["ok"], retried["carried_over"], retried["created"]), (True, True, False))
+        self.assertEqual(len(self.fake.reviews), 2)
+        self.assertEqual(self.latest_status(SHA_C), ("success", f"Approved by {REVIEWER}"))
 
 class LegacyRowCompatibilityTests(BridgeTestCase):
     """Current schema retains read compatibility with old row values, not old table layouts."""

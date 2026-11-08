@@ -21,7 +21,7 @@ resource "github_repository_ruleset" "cc_lb_default" {
     non_fast_forward = true
 
     required_status_checks {
-      strict_required_status_checks_policy = true
+      strict_required_status_checks_policy = false
       do_not_enforce_on_create             = true
 
       # GitHub Actions (app id 15368).
