@@ -1,5 +1,5 @@
 image:
-  digest: sha256:a9e6aa2ce520d768a76e79a15fb4061ca3f4098871f78cb5953d5cfafc9c37f8
+  digest: sha256:44f049d4357e8181f8b5049d426917fa62f5d1b8c622ee0d8f4f350ec3e3f152
 
 controllers:
   gateway: true

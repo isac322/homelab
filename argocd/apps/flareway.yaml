@@ -15,7 +15,7 @@ spec:
       ref: homelab
     - repoURL: ghcr.io/isac322/charts
       chart: flareway
-      targetRevision: 0.3.3
+      targetRevision: 0.4.0
       helm:
         releaseName: flareway
         valueFiles:

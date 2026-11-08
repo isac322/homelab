@@ -223,13 +223,13 @@ K3s version과 순차 rollout은 기존 Rancher `system-upgrade-controller`가 �
 
 ### 공개 webhook ingress (Flareway)
 
-- `argocd/apps/flareway.yaml`은 chart `0.3.3`과 controller digest를 고정하며, `apps/objects/flareway/`는 전용 계정 권한·Tunnel·Gateway를 관리한다. 공개 listener는 `argocd-webhook.bhyoo.com/api/webhook`과 `issue-agent-webhook.bhyoo.com/webhooks/github`만 정확히 일치시킨다. 일반 앱과 NAS ingress는 계속 Cilium을 사용한다.
+- `argocd/apps/flareway.yaml`은 chart `0.4.0`과 controller digest를 고정하며, `apps/objects/flareway/`는 전용 계정 권한·Tunnel·Gateway를 관리한다. 공개 listener는 `argocd-webhook.bhyoo.com/api/webhook`과 `issue-agent-webhook.bhyoo.com/webhooks/github`만 정확히 일치시킨다. 일반 앱과 NAS ingress는 계속 Cilium을 사용한다.
 - Gateway API Standard `v1.6.3` CRD의 GitOps 소유자는 별도 `argocd/apps/gateway-api-crds.yaml`이다. Flareway 제거 시에도 Cilium이 쓰는 공용 CRD를 삭제하지 않는다.
 - 전용 Cloudflare 토큰은 Terraform이 계정 하나와 `bhyoo.com` zone에 한정해 발급하고, ESO가 SSM의 `/homelab/cluster/backbone/token/cloudflare/flareway`에서 가져온다. webhook hostname만 로그인 없이 허용하며, n8n의 원본 본문 서명 검증을 유지한다. 새 Tunnel은 복구 시 원격 리소스를 보존하도록 `Orphan` 정책을 사용한다.
 - Tier 1 초기 배정은 2026-11-03 사용자가 승인했다. controller `100m / 64Mi / 128Mi`, cloudflared 각 `100m / 24Mi / 48Mi`, Envoy 각 `100m / 128Mi / 256Mi`(CPU 요청 / 메모리 요청 / 메모리 상한)이며 데이터 경로는 2 replica다. CPU 상한은 없다. controller와 전용 Envoy의 14일 정상 이력이 쌓이면 다시 산정한다.
 - 검증: `python cluster-setup/verify-public-webhooks.py --context homelab-backbone`. Kubernetes Secret 읽기 권한이 필요하다. 실제 공개 경로로 부작용 없는 서명된 GitHub ping을 보내고 정상 응답, 잘못된 서명 거부, 정확한 경로 경계, Pod 자원·배치와 Cilium Gateway 상태를 확인한다.
 - Tunnel 교체 시 두 controller가 동일 DNS를 쓰지 않도록 기존 child Application의 자동 동기화까지 정지한다. 외부 DNS 소유권 충돌의 기본 재확인 간격은 300초다. 짧은 중단으로 이전할 때는 새 controller를 정지한 상태에서 DNS를 넘긴 뒤 시작하여 즉시 재관측하게 한다. 삭제 구간에 NXDOMAIN을 받은 클라이언트는 negative cache가 만료될 때까지 별도 지연이 생길 수 있다.
-- 비활성 controller 그룹의 sweep도 실행돼 불필요한 403을 기록하는 결함은 [Flareway #163](https://github.com/isac322/flareway/issues/163)으로 추적한다. 이를 감추려고 토큰 권한을 넓히거나 DNS·Tunnel sweep을 끄지 않는다.
+- 비활성 controller 그룹(`access`, `privateNetwork`, `device`, `organization`)은 `0.4.0`부터 drift sweep에서도 제외되므로 최소 권한 토큰을 그대로 유지하고 DNS·Tunnel sweep만 실행한다.
 
 ### Issue agent (n8n + HAPI)
 
