@@ -45,6 +45,11 @@ import {
   id = "flareway"
 }
 
+import {
+  to = github_repository_ruleset.flareway_default
+  id = "flareway:24166581"
+}
+
 # The repository, its Pages configuration, and its auto-created github-pages
 # environment predate Terraform. Remove these import blocks only when
 # bootstrapping a new repository that does not exist yet.
@@ -83,6 +88,11 @@ import {
   id = "krema:github-pages:61197925"
 }
 
+import {
+  to = github_repository_ruleset.krema_default
+  id = "krema:24166583"
+}
+
 # The repository predates Terraform; its Pages site and github-pages
 # environment do not exist yet and are created by Terraform.
 import {
@@ -103,6 +113,11 @@ import {
 import {
   to = github_actions_repository_permissions.pillar_csi
   id = "pillar-csi"
+}
+
+import {
+  to = github_repository_ruleset.pillar_csi_default
+  id = "pillar-csi:14477852"
 }
 
 # cc-lb predates Terraform. Pages and its DNS record do not exist yet;

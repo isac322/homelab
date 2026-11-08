@@ -67,36 +67,83 @@ resource "github_actions_repository_permissions" "flareway" {
   sha_pinning_required = false
 }
 
-resource "github_branch_protection" "flareway_main" {
-  repository_id = github_repository.flareway.node_id
-  pattern       = "main"
+resource "github_repository_ruleset" "flareway_default" {
+  name        = "issue-agent review"
+  repository  = github_repository.flareway.name
+  target      = "branch"
+  enforcement = "active"
 
-  enforce_admins                  = true
-  required_linear_history         = true
-  require_conversation_resolution = true
-  allows_force_pushes             = false
-  allows_deletions                = false
-  lock_branch                     = false
-
-  required_status_checks {
-    strict = true
-    contexts = [
-      "Cloudflare SDK parity",
-      "Container build and runtime",
-      "Envoy component tests",
-      "GatewayHTTP conformance",
-      "Generation diff",
-      "Lint",
-      "Schema, build, Helm, and Kustomize",
-      "Unit and envtest",
-    ]
+  bypass_actors {
+    actor_id    = 5
+    actor_type  = "RepositoryRole"
+    bypass_mode = "always"
   }
 
-  required_pull_request_reviews {
-    required_approving_review_count = 0
-    dismiss_stale_reviews           = false
-    require_code_owner_reviews      = false
-    require_last_push_approval      = false
+  conditions {
+    ref_name {
+      include = ["~DEFAULT_BRANCH"]
+      exclude = []
+    }
+  }
+
+  rules {
+    deletion         = true
+    non_fast_forward = true
+
+    pull_request {
+      allowed_merge_methods             = ["squash"]
+      dismiss_stale_reviews_on_push     = true
+      require_code_owner_review         = false
+      require_last_push_approval        = true
+      required_approving_review_count   = 1
+      required_review_thread_resolution = false
+    }
+
+    required_status_checks {
+      strict_required_status_checks_policy = true
+      do_not_enforce_on_create             = false
+
+      required_check {
+        context        = "issue-agent/review"
+        integration_id = 5118831
+      }
+      required_check {
+        context        = "Generation diff"
+        integration_id = 15368
+      }
+      required_check {
+        context        = "Lint"
+        integration_id = 15368
+      }
+      required_check {
+        context        = "Unit and envtest"
+        integration_id = 15368
+      }
+      required_check {
+        context        = "Envoy component tests"
+        integration_id = 15368
+      }
+      required_check {
+        context        = "Schema, build, Helm, and Kustomize"
+        integration_id = 15368
+      }
+      required_check {
+        context        = "Container build and runtime"
+        integration_id = 15368
+      }
+      required_check {
+        context        = "GatewayHTTP conformance"
+        integration_id = 15368
+      }
+      required_check {
+        context        = "Cloudflare SDK parity"
+        integration_id = 15368
+      }
+    }
+  }
+
+  lifecycle {
+    prevent_destroy = true
   }
 }
 

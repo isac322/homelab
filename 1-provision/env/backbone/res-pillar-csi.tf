@@ -113,3 +113,55 @@ resource "github_actions_variable" "pillar_csi_cf_web_analytics_token" {
   variable_name = "CF_WEB_ANALYTICS_TOKEN"
   value         = cloudflare_web_analytics_site.pillar_csi.site_token
 }
+
+resource "github_repository_ruleset" "pillar_csi_default" {
+  name        = "master"
+  repository  = github_repository.pillar_csi.name
+  target      = "branch"
+  enforcement = "active"
+
+  bypass_actors {
+    actor_id    = 5
+    actor_type  = "RepositoryRole"
+    bypass_mode = "always"
+  }
+
+  conditions {
+    ref_name {
+      include = ["~DEFAULT_BRANCH"]
+      exclude = []
+    }
+  }
+
+  rules {
+    deletion         = true
+    non_fast_forward = true
+
+    pull_request {
+      allowed_merge_methods             = ["squash"]
+      dismiss_stale_reviews_on_push     = true
+      require_code_owner_review         = false
+      require_last_push_approval        = true
+      required_approving_review_count   = 1
+      required_review_thread_resolution = false
+    }
+
+    required_status_checks {
+      strict_required_status_checks_policy = true
+      do_not_enforce_on_create             = false
+
+      required_check {
+        context        = "issue-agent/review"
+        integration_id = 5118831
+      }
+      required_check {
+        context        = "CI gate"
+        integration_id = 15368
+      }
+    }
+  }
+
+  lifecycle {
+    prevent_destroy = true
+  }
+}
