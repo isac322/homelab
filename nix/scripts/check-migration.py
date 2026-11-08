@@ -4487,7 +4487,7 @@ require(
     "apps/objects/k3s-system-upgrade/k3s-upgrade-plan.yaml",
     "name: server-plan",
     "name: agent-plan",
-    "version: v1.36.5+k3s1",
+    "channel: https://update.k3s.io/v1-release/channels/v1.36",
     "image: rancher/k3s-upgrade",
 )
 if (root / "nix/k3s-package.nix").exists():
