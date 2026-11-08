@@ -146,3 +146,49 @@ import {
   to = github_repository_ruleset.cc_lb_default
   id = "cc-lb:17108968"
 }
+
+# kwin-mcp predates Terraform; adopt existing repository, environments, and ruleset.
+import {
+  to = github_repository.kwin_mcp
+  id = "kwin-mcp"
+}
+
+import {
+  to = github_repository_vulnerability_alerts.kwin_mcp
+  id = "kwin-mcp"
+}
+
+import {
+  to = github_repository_dependabot_security_updates.kwin_mcp
+  id = "kwin-mcp"
+}
+
+import {
+  to = github_actions_repository_permissions.kwin_mcp
+  id = "kwin-mcp"
+}
+
+import {
+  to = github_repository_environment.kwin_mcp_github_pages
+  id = "kwin-mcp:github-pages"
+}
+
+import {
+  to = github_repository_environment_deployment_policy.kwin_mcp_github_pages_gh_pages
+  id = "kwin-mcp:github-pages:63171081"
+}
+
+import {
+  to = github_repository_environment_deployment_policy.kwin_mcp_github_pages_main
+  id = "kwin-mcp:github-pages:63284244"
+}
+
+import {
+  to = github_repository_environment.kwin_mcp_pypi
+  id = "kwin-mcp:pypi"
+}
+
+import {
+  to = github_repository_ruleset.kwin_mcp_default
+  id = "kwin-mcp:14473115"
+}
