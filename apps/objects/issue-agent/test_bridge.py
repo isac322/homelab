@@ -1912,6 +1912,25 @@ class PrRepairTests(BridgeTestCase):
         self.assertTrue(all(o in ("queued", "busy", "active") for o in outcomes))
         delivery = self.repair_delivery()
         self.assertEqual(self.store.pr_state(REPO, 144)["active_delivery"], delivery)
+    def test_reconcile_pr_repair_enqueue_aborts_on_concurrent_revision_bump(self) -> None:
+        self.managed_pr()
+        original_findings = self.bridge._pr_findings
+        signal = {"id": 901, "kind": "issue_comment", "body": "fix the boundary"}
+
+        def findings(repo: str, state: dict[str, Any]) -> dict[str, Any]:
+            result = original_findings(repo, state)
+            with self.store.tx() as conn:
+                self.store._dirty_pr(conn, REPO, 144, time.time(), signal)
+            return result
+
+        with patch.object(self.bridge, "_pr_findings", side_effect=findings):
+            self.assertEqual(self.bridge.reconcile_pr(REPO, 144), "conflict")
+        after = self.store.pr_state(REPO, 144)
+        self.assertEqual(json.loads(after["latest_signal"]), signal)
+        self.assertEqual(after["dirty"], 1)
+        self.assertIsNone(after["active_delivery"])
+        self.assertEqual(self.store.query("SELECT * FROM events WHERE kind = 'pr_repair'"), [])
+
 
     def test_unknown_or_cross_api_head_mismatch_neither_repairs_nor_notifies(self) -> None:
         pr = self.managed_pr(merge_state="UNKNOWN", mergeable="UNKNOWN")
@@ -2878,17 +2897,45 @@ class DispatchTests(BridgeTestCase):
         self.assertEqual(self.dispatcher.tick(later), "idle")
         self.assertEqual(self.events(), [("d1", "needs_attention"), ("c1", "accepted")])
         self.assertEqual(self.fake.labels[7], [NEEDS])
-        # Only review parks are retried automatically; an issue event's stale dispatch waits for an operator.
         parked = self.store.event("d1")
-        self.assertEqual((parked["park_class"], parked["auto_retry_at"]), (None, None))
+        self.assertEqual((parked["park_class"], parked["auto_retry_at"] is not None),
+                         ("stale_dispatch", True))
         self.assertEqual(self.op("begin", "d1", attempt=1)["status"], "terminal")
-        self.assertTrue(self.op("retry_event", "d1")["ok"])
-        self.assertEqual(self.dispatcher.tick(later + 10), "dispatched")
+        self.assertEqual(self.dispatcher.tick(parked["auto_retry_at"] + 1), "dispatched")
         self.assertEqual(self.fake.dispatched[-1][1]["delivery_id"], "d1")
         # The parked run's old heartbeat must not park the retried dispatch before n8n begins it.
         self.assertEqual(self.dispatcher.tick(later + 20), "busy")
         self.assertEqual(self.events(), [("d1", "dispatched"), ("c1", "accepted")])
         self.assertEqual(self.op("begin", "d1", attempt=1)["status"], "started")
+
+    def test_begin_is_idempotent_for_same_execution_id_and_stale_repair_retries_once(self) -> None:
+        self.deliver(issue_payload(), delivery="d1")
+        self.assertEqual(self.dispatcher.tick(), "dispatched")
+        for execution_id in ("ex-d1", "ex-d1"):
+            begun = self.bridge.handle({"op": "begin", "delivery_id": "d1",
+                                        "execution_id": execution_id, "attempt": 1})
+            self.assertEqual(begun["status"], "started")
+        duplicate = self.bridge.handle({"op": "begin", "delivery_id": "d1",
+                                        "execution_id": "ex-other", "attempt": 1})
+        self.assertEqual(duplicate["status"], "duplicate")
+        self.assertTrue(self.op("finish", "d1", outcome="triaged")["ok"])
+
+        self.fake.add_pr(144, author=BOT, ref="hapi-issue-141", body="Fixes #141")
+        self.fake.prs[144].update(mergeStateStatus="BEHIND", mergeable="MERGEABLE")
+        self.store.track_pr(REPO, 144, 141, SHA_A)
+        self.assertEqual(self.bridge.reconcile_pr(REPO, 144), "queued")
+        self.assertEqual(self.dispatcher.tick(), "dispatched")
+        delivery = self.store.pr_state(REPO, 144)["active_delivery"]
+        self.assertIsNotNone(delivery)
+        dispatched = len(self.fake.dispatched)
+        self.assertEqual(self.dispatcher.tick(time.time() + bridge.STALE_SECONDS + 10), "idle")
+        parked = self.store.event(delivery)
+        self.assertEqual((parked["state"], parked["park_class"]), ("needs_attention", "stale_dispatch"))
+        self.assertIsNotNone(parked["auto_retry_at"])
+        self.assertEqual(self.dispatcher.tick(parked["auto_retry_at"] + 1), "dispatched")
+        self.assertEqual(len(self.fake.dispatched), dispatched + 1)
+        self.assertEqual(self.store.event(delivery)["state"], "dispatched")
+        self.assertEqual(self.store.pr_state(REPO, 144)["active_delivery"], delivery)
 
     def queue_reviews(self, *numbers: int) -> None:
         for n in numbers:
@@ -3028,7 +3075,7 @@ class DispatchTests(BridgeTestCase):
         # The running review checked out before the comment's replies; the request runs once more, and a
         # comment carries no head, so it never cancels the running review.
         self.started_review(12, "p1")
-        command = comment_payload(12, 500, body="@bulgasaribot review", on_pr=True)
+        command = comment_payload(12, 500, body="Addressed the thread.\n\n@bulgasaribot review", on_pr=True)
         self.assertEqual(self.deliver(command, event="issue_comment", delivery="c1").outcome, "queued")
         self.assertEqual(self.events(), [("p1", "dispatched"), ("c1", "accepted")])
         self.assertTrue(self.op("github.review", "p1", result=REVIEW_OK)["ok"])
@@ -3922,6 +3969,34 @@ class LifecycleOpsTests(BridgeTestCase):
 
 
 class StepRetryTests(BridgeTestCase):
+    def test_resumed_mode_keeps_consumed_implement_turn_on_step_retry(self) -> None:
+        self.started()
+        self.assertTrue(self.op("ensure_session", "d1")["ok"])
+        self.assertTrue(self.op("finish", "d1", outcome="triaged")["ok"])
+        self.store.update_issue(REPO, 7, phase="implementing")
+        self.assertEqual(self.deliver(comment_payload(), event="issue_comment", delivery="c1").outcome, "queued")
+        self.assertEqual(self.dispatcher.tick(), "dispatched")
+        self.assertEqual(self.op("begin", "c1", attempt=1)["status"], "started")
+        sid = self.op("ensure_session", "c1")["session_id"]
+        sent = self.op("session_send", "c1", mode="implement", instructions="Implement it.")
+        self.assertEqual(sent["delivery"], "sent")
+        lid = sent["local_id"]
+        self.fake.invoke(sid, lid)
+        self.fake.codex(sid, "message", message=f"done.\n{bridge.RESULT_TAG} {lid} "
+                                     f"{json.dumps(TimeBudgetTests.RESULT)}")
+        done = self.op("session_turn", "c1")
+        self.assertEqual((done["state"], done["mode"]), ("done", "implement"))
+        self.assertEqual(self.store.turn("c1", "implement")["consumed_id"], lid)
+
+        failed = self.op("fail", "c1", retryable=True, node="Upsert pull request", detail="github 502")
+        self.assertEqual((failed["requeued"], failed["step_retries"]), (True, 1))
+        event = self.store.event("c1")
+        self.assertEqual((event["state"], json.loads(event["stages"])["step_retries"]),
+                         ("accepted", 1))
+        self.assertEqual(self.dispatcher.tick(event["next_attempt_at"] + 1), "dispatched")
+        begun = self.op("begin", "c1", attempt=1)
+        self.assertEqual(begun["mode_hint"], "implement")
+
     def test_retryable_failures_release_slots_quietly_for_all_event_kinds(self) -> None:
         for index, kind in enumerate(("issue_opened", "issue_comment", "pr_review", "pr_repair",
                                       "closed_issue_comment")):
@@ -4112,6 +4187,15 @@ class ArchivePendingTests(BridgeTestCase):
 
 
 class SessionTests(BridgeTestCase):
+    def test_session_lock_is_scoped_per_subject(self) -> None:
+        issue_lock = self.bridge._session_lock(REPO, 7)
+        other_lock = self.bridge._session_lock(REPO, 8)
+        self.assertIsNot(issue_lock, other_lock)
+        self.assertTrue(issue_lock.acquire(blocking=False))
+        self.addCleanup(issue_lock.release)
+        self.assertTrue(other_lock.acquire(blocking=False))
+        other_lock.release()
+
     def test_each_issue_and_repo_gets_its_own_worktree_session_and_reuses_it(self) -> None:
         self.started(7, "d1")
         first = self.op("ensure_session", "d1")
@@ -4577,6 +4661,35 @@ class TurnTests(BridgeTestCase):
                 "questions": [], "summary": "nothing needed", "blockers": [], "local_checks": [],
                 "visual_evidence_manifest": None, **fields}
         return f"done.\n{bridge.RESULT_TAG} {nonce or self.lid} {json.dumps(data)}"
+
+    def test_session_rotates_on_finish_when_turn_input_tokens_exceed_budget(self) -> None:
+        self.assertEqual(self.send()["delivery"], "sent")
+        self.fake.invoke(self.sid, self.lid)
+        self.fake.codex(self.sid, "token_count",
+                        info={"last": {"inputTokens": 250000}})
+        self.say(self.result_line())
+        done = self.op("session_turn")
+        self.assertEqual(done["state"], "done")
+        self.assertIn("rotate_session", json.loads(self.store.event("d1")["stages"]))
+        self.assertEqual(self.store.turn("d1", "implement")["consumed_id"], self.lid)
+
+        self.assertTrue(self.op("finish", "d1", outcome="triaged")["ok"])
+        issue = self.store.issue(REPO, 7)
+        self.assertEqual((issue["session_state"], issue["session_id"]), ("none", None))
+        self.assertIn(self.sid, json.loads(issue["superseded"]))
+        self.assertFalse(self.fake.sessions[self.sid]["active"])
+
+        self.assertEqual(self.deliver(comment_payload(), event="issue_comment", delivery="c1").outcome,
+                         "queued")
+        self.assertEqual(self.dispatcher.tick(), "dispatched")
+        self.assertEqual(self.op("begin", "c1", attempt=1)["status"], "started")
+        fresh = self.op("ensure_session", "c1")
+        self.assertTrue(fresh["ok"], fresh)
+        self.assertFalse(fresh["resumed"])
+        self.assertNotEqual(fresh["session_id"], self.sid)
+        self.assertEqual(len(self.fake.spawns), 2)
+        self.assertTrue(self.fake.spawns[-1]["directory"].endswith("/issue-7"))
+
 
     def say(self, text: str) -> None:
         self.fake.codex(self.sid, "message", message=text)
@@ -5547,7 +5660,7 @@ class UnresolvedIdentityTests(BridgeTestCase):
         before = dict(self.store.turn("d1", "implement"))
         posts, spawns = len(self.fake.message_posts), len(self.fake.spawns)
         calls = len(self.fake.calls)
-        with self.bridge.session_lock:
+        with self.bridge._session_lock(REPO, 7):
             self.assertTrue(self.bridge._subject_holds_unresolved(REPO, 7))
         self.assert_hold(current)
         self.assertEqual(dict(self.store.turn("d1", "implement")), before)

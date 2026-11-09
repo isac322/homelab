@@ -59,7 +59,7 @@ import urllib.parse
 import urllib.request
 from contextlib import closing, contextmanager
 from dataclasses import dataclass
-from typing import Any, Callable, Iterator, Mapping
+from typing import Any, Callable, Iterable, Iterator, Mapping
 
 LOG = logging.getLogger("issue-agent-bridge")
 
@@ -229,8 +229,16 @@ _PROVIDER_ERROR_RE = re.compile(
     r"|Codex thread entered systemError|Connection failed:|Error while reading the server response:"
     r"|request timed out|Flex capacity unavailable)")
 # n8n transport failures reaching the bridge (n8n error workflow `error.message`), by failed node.
-_N8N_BRIDGE_NODES = ("Ensure session", "Send step to agent", "Check turn", "Review guard", "Submit review",
-                     "Finish reviewed")
+_N8N_BRIDGE_NODES = (
+    "Begin", "Ensure session", "Send step to agent", "Check turn",
+    "Record triage result", "Post triage comment", "Publish triage advisory",
+    "Add triage labels", "Close duplicate or invalid", "Finish triaged", "Finish triage",
+    "Upload visual evidence", "Push branch", "Upsert pull request",
+    "Compose implement report", "Finish implemented",
+    "Review guard", "Submit review", "Finish reviewed", "Finish review",
+    "Record reopen result", "Reopen issue", "Post reopen verdict", "Finish reopen",
+    "Mark needs attention",
+)
 _N8N_TRANSPORT_ERROR_RE = re.compile(
     r"The service refused the connection.*|connect ECONN(?:REFUSED|RESET) .*|socket hang up|read ECONNRESET"
     r"|getaddrinfo EAI_AGAIN .*|timeout of \d+ms exceeded", re.DOTALL)
@@ -247,6 +255,22 @@ STALE_SECONDS = 30 * 60.0
 # session_turn reports a turn still running past it as 'expired' and the workflow parks it (`time_budget`).
 TURN_BUDGET_SECONDS = {"triage": 3600.0, "review": 7200.0, "implement": 21600.0, "followup": 21600.0,
                        "reopen_check": 3600.0}
+SESSION_MAX_INPUT_TOKENS = 240_000
+
+def turn_input_tokens(messages: Iterable[Mapping[str, Any]]) -> int:
+    """Latest positive per-step inputTokens reported by Codex token_count events in ``messages``, else 0."""
+    last_input = 0
+    for m in messages:
+        content = m.get("content") if isinstance(m, Mapping) else None
+        inner = content.get("content") if isinstance(content, Mapping) else None
+        data = inner.get("data") if isinstance(inner, Mapping) else None
+        if isinstance(data, Mapping) and data.get("type") == "token_count":
+            info = data.get("info") if isinstance(data.get("info"), Mapping) else {}
+            last = info.get("last") if isinstance(info.get("last"), Mapping) else {}
+            inp = last.get("inputTokens")
+            if isinstance(inp, int) and not isinstance(inp, bool) and inp > 0:
+                last_input = inp
+    return last_input
 # A `time_budget` park whose turn still has no result this long after its deadline gets its session archived;
 # until then the dispatcher looks for a late result every TIME_BUDGET_CHECK_SECONDS.
 TURN_GRACE_SECONDS = 3600.0
@@ -2584,7 +2608,6 @@ class Bridge:
         self.publisher = publisher
         self.clock = clock
         self.sleep = sleep
-        self.session_lock = threading.Lock()
         # At most one in-flight attention notice per delivery and one check-then-post per comment
         # key; ``setdefault`` makes lock lookup atomic. Entries are kept forever: deleting a key
         # while another thread holds its lock would reopen the race they close.
@@ -2643,6 +2666,10 @@ class Bridge:
     def _keyed_lock(self, key: Any) -> threading.Lock:
         return self._keyed_locks.setdefault(key, threading.Lock())
 
+    def _session_lock(self, repo: str, number: int) -> threading.Lock:
+        return self._keyed_lock(("session", repo, int(number)))
+
+
     def registry(self) -> Registry:
         try:
             return load_registry(self.config.registry_file)
@@ -2691,15 +2718,24 @@ class Bridge:
         return f"{prefix}-{ev['issue_number']}"
 
     def _resumed_mode(self, ev: sqlite3.Row) -> str | None:
-        """Mode of the event's sent step whose result the workflow never consumed, else None.
+        """Mode of the event's sent step that a retried execution must resume, else None.
 
-        A retried event resumes that step: session_send answers 'already' and session_turn harvests the result, so
-        a retried implement does not drift to 'followup' because its send already moved the phase to 'implementing'.
+        A retried event resumes a sent turn while it has not recorded its mode's durable result stage
+        (``RESULT_STAGES``) or terminated on a correction suffix, so a retried implement after a downstream
+        GitHub/publisher failure does not drift to 'followup' because its send already moved the phase to
+        'implementing'.
         """
         turn = self.store.turn(ev["delivery_id"])
-        if turn is not None and turn["state"] == "sent" and turn["mode"] in MODES and not self._consumed(ev, turn):
+        if turn is None or turn["state"] != "sent" or turn["mode"] not in MODES:
+            return None
+        if not self._consumed(ev, turn):
             return turn["mode"]
-        return None
+        stage = RESULT_STAGES.get(turn["mode"])
+        if stage is not None and stage in json.loads(ev["stages"]):
+            return None
+        if str(turn["local_id"]).endswith(CORRECTION_SUFFIX):
+            return None
+        return turn["mode"]
 
     @staticmethod
     def _mode_hint(ev: sqlite3.Row, phase: str) -> str:
@@ -2739,9 +2775,15 @@ class Bridge:
             if row["state"] in TERMINAL_STATES:
                 status = "terminal"
             elif "started" in stages:
-                # Another execution owns this event; a crashed owner is resolved by the
-                # stale sweep or an explicit retry_event, never by a parallel takeover.
-                status = "duplicate"
+                # A repeated Begin from the same n8n execution is the lost-response case, not a duplicate
+                # execution. Keep the original durable start record and return the normal started payload.
+                if row["state"] == "dispatched" and execution_id is not None \
+                        and str(row["execution_id"] or "") == execution_id:
+                    status = "started"
+                else:
+                    # Another execution owns this event; a crashed owner is resolved by the
+                    # stale sweep or an explicit retry_event, never by a parallel takeover.
+                    status = "duplicate"
             elif row["state"] not in ("dispatching", "dispatched"):
                 # Only an event holding a dispatch slot may start; the dispatcher enforces the cap.
                 status = "not_dispatched"
@@ -3046,7 +3088,7 @@ class Bridge:
             self._set_archive_pending(delivery_id, time.time() + DISPATCH_BACKOFF)
             return False
         try:
-            with self.session_lock:
+            with self._session_lock(repo, number):
                 fresh = self.store.event(delivery_id)
                 if fresh is None:
                     return True
@@ -3056,6 +3098,8 @@ class Bridge:
                 sid = self.store.issue(repo, number)["session_id"]
                 if sid:
                     self._archive_barrier(repo, number, sid)
+                    if json.loads(fresh["stages"] or "{}").get("rotate_session"):
+                        self._drop_session(repo, number, sid, "context budget reached")
                 self._set_archive_pending(delivery_id, None)
                 return True
         except (OpError, TransportError) as exc:
@@ -3196,7 +3240,7 @@ class Bridge:
         return "\n".join(lines)
 
     def mark_attention(self, ev: sqlite3.Row, detail: str, node: str | None = None, *,
-                       park_class: str | None = None) -> None:
+                       park_class: str | None = None, now: float | None = None) -> None:
         """Park the event, then make it visible on GitHub (``notify_attention``).
 
         Parking claims the retry slot (``next_attempt_at`` in the future) in the same write, so the
@@ -3215,15 +3259,44 @@ class Bridge:
             backoff = PROVIDER_ERROR_BACKOFF if park_class == "provider_error" else AUTO_RETRY_BACKOFF
             limit = STALE_DISPATCH_RETRY_LIMIT if park_class == "stale_dispatch" \
                 else len(PROVIDER_ERROR_BACKOFF) if park_class == "provider_error" else AUTO_RETRY_LIMIT
-            kind_ok = bool(ev["head_sha"]) if ev["kind"] == "pr_review" else park_class == "provider_error"
+            kind_ok = bool(ev["head_sha"]) if ev["kind"] == "pr_review" \
+                else park_class in ("provider_error", "stale_dispatch")
             armed = park_class in TRANSIENT_PARK_CLASSES and kind_ok and retries < limit
-            now = time.time()
-            self.store.update_issue(ev["repo"], ev["issue_number"], blocked=1, detail=detail)
-            self.store.update_event(ev["delivery_id"], state="needs_attention", detail=detail,
-                                    attention_pending=1, attention_node=node,
-                                    next_attempt_at=now + DISPATCH_BACKOFF,
-                                    park_class=park_class if armed or park_class == "time_budget" else None,
-                                    auto_retry_at=now + backoff[retries] if armed else None)
+            now = time.time() if now is None else now
+            if park_class == "stale_dispatch":
+                with self.store.tx() as conn:
+                    current = conn.execute("SELECT * FROM events WHERE delivery_id = ?",
+                                           (ev["delivery_id"],)).fetchone()
+                    if current is None or current["state"] != "dispatched" \
+                            or float(current["heartbeat_at"] or 0) >= now - STALE_SECONDS:
+                        return
+                    ev = current
+                    retries = int(ev["auto_retries"] or 0)
+                    backoff = PROVIDER_ERROR_BACKOFF if park_class == "provider_error" else AUTO_RETRY_BACKOFF
+                    limit = STALE_DISPATCH_RETRY_LIMIT if park_class == "stale_dispatch" \
+                        else len(PROVIDER_ERROR_BACKOFF) if park_class == "provider_error" else AUTO_RETRY_LIMIT
+                    kind_ok = bool(ev["head_sha"]) if ev["kind"] == "pr_review" \
+                        else park_class in ("provider_error", "stale_dispatch")
+                    armed = park_class in TRANSIENT_PARK_CLASSES and kind_ok and retries < limit
+                    conn.execute("UPDATE issues SET blocked = 1, detail = ?, updated_at = ?"
+                                 " WHERE repo = ? AND issue_number = ?",
+                                 (detail, now, ev["repo"], ev["issue_number"]))
+                    conn.execute(
+                        "UPDATE events SET state = 'needs_attention', detail = ?, attention_pending = 1,"
+                        " attention_node = ?, next_attempt_at = ?, park_class = ?, auto_retry_at = ?, updated_at = ?"
+                        " WHERE delivery_id = ? AND state = 'dispatched'"
+                        " AND COALESCE(heartbeat_at, 0) < ?",
+                        (detail, node, now + DISPATCH_BACKOFF,
+                         park_class if armed or park_class == "time_budget" else None,
+                         now + backoff[retries] if armed else None, now, ev["delivery_id"],
+                         now - STALE_SECONDS))
+            else:
+                self.store.update_issue(ev["repo"], ev["issue_number"], blocked=1, detail=detail)
+                self.store.update_event(ev["delivery_id"], state="needs_attention", detail=detail,
+                                        attention_pending=1, attention_node=node,
+                                        next_attempt_at=now + DISPATCH_BACKOFF,
+                                        park_class=park_class if armed or park_class == "time_budget" else None,
+                                        auto_retry_at=now + backoff[retries] if armed else None)
         LOG.error("%s#%d event %s needs attention: %s", ev["repo"], ev["issue_number"], ev["delivery_id"], detail)
         self.notify_attention(ev["delivery_id"])
 
@@ -3309,7 +3382,7 @@ class Bridge:
         if ev["state"] != "needs_attention":
             raise OpError("not_needs_attention")
         with self._keyed_lock(("attention", ev["delivery_id"])):
-            with self.session_lock:
+            with self._session_lock(ev["repo"], int(ev["issue_number"])):
                 # Same lock as the time-budget harvest and retry_event: a parked event is re-queued or dismissed,
                 # never both.
                 with self.store.tx() as conn:
@@ -3345,7 +3418,7 @@ class Bridge:
             # A retry before the first send needs current evidence, not a parked snapshot.
             # Keep snapshots once a send may have landed so localId delivery remains idempotent.
             stages.pop("repair_snapshot", None)
-        with self.session_lock:
+        with self._session_lock(ev["repo"], int(ev["issue_number"])):
             # Same lock as session_send/session_turn, so a live operation cannot finish the turn in between.
             if park_class is not None:
                 fresh = self.store.event(ev["delivery_id"])
@@ -3448,7 +3521,7 @@ class Bridge:
         if now >= deadline_at + TURN_GRACE_SECONDS:
             archived = False
             try:
-                with self.session_lock:
+                with self._session_lock(ev["repo"], int(ev["issue_number"])):
                     if not self._other_active_event(ev["repo"], int(ev["issue_number"]), delivery_id):
                         sid = self.store.issue(ev["repo"], ev["issue_number"])["session_id"]
                         if sid:
@@ -3545,7 +3618,7 @@ class Bridge:
         now = time.time() if now is None else now
         ev = self.store.event(delivery_id)
         if ev is None or ev["state"] != "needs_attention" or ev["park_class"] not in TRANSIENT_PARK_CLASSES \
-                or ev["kind"] != "pr_review" and ev["park_class"] != "provider_error":
+                or ev["kind"] != "pr_review" and ev["park_class"] not in ("provider_error", "stale_dispatch"):
             return "skipped"
         review = ev["kind"] == "pr_review"
         repo, number = ev["repo"], int(ev["issue_number"])
@@ -3571,7 +3644,7 @@ class Bridge:
             if head != ev["head_sha"]:
                 self._end_parked_review(ev, "superseded", f"head moved while parked: {ev['head_sha']} -> {head}")
                 return "superseded"
-        with self.session_lock:
+        with self._session_lock(repo, number):
             # Same lock as session_send/session_turn/retry_event: nothing changes the turn in between.
             ev = self.store.event(delivery_id)
             if ev is None or ev["state"] != "needs_attention" or ev["park_class"] not in TRANSIENT_PARK_CLASSES:
@@ -3586,9 +3659,10 @@ class Bridge:
                     return "waiting"
                 if state == "answered":
                     result = validate_result(turn["mode"], raw, number)
-                    if isinstance(result, str):
-                        # Schema-invalid results are never retried automatically. The notice runs again so a
-                        # review's status says an operator is needed.
+                    non_actionable = isinstance(result, str) or result.get("status") in ("blocked", "needs_info") \
+                        or (turn["mode"] == "triage"
+                            and result.get("next_action") in ("await_info", "await_decision"))
+                    if non_actionable:
                         self.store.update_event(delivery_id, park_class=None, auto_retry_at=None,
                                                 attention_pending=1, next_attempt_at=0)
                         return "operator"
@@ -3736,12 +3810,15 @@ class Bridge:
         return False
 
     def _drop_session(self, repo: str, number: int, session_id: str, reason: str) -> bool:
-        """Give up an unresumable session (caller holds ``session_lock``) only without unresolved ownership."""
+        """Give up an unresumable session (caller holds the subject lock) only without unresolved ownership."""
         if not self._abandon_turns(repo, number, session_id):
             LOG.warning("%s#%s session %s retained: unresolved turn ownership", repo, number, session_id)
             return False
         LOG.warning("%s#%s session %s %s; starting a new session", repo, number, session_id, reason)
-        self.store.update_issue(repo, number, session_state="none", pending_at=None)
+        issue = self.store.issue(repo, number)
+        superseded = list(dict.fromkeys([*json.loads(issue["superseded"] or "[]"), session_id]))
+        self.store.update_issue(repo, number, session_state="none", session_id=None, pending_at=None,
+                                superseded=json.dumps(superseded))
         return True
 
     def _abandon_turns(self, repo: str, number: int, session_id: str) -> bool:
@@ -3851,7 +3928,7 @@ class Bridge:
         ev = self._event(req)
         cfg = self._repo(ev)
         repo, number = ev["repo"], int(ev["issue_number"])
-        with self.session_lock:
+        with self._session_lock(repo, number):
             issue = self.store.issue(repo, number)
             if issue["session_state"] == "ready" and issue["session_id"]:
                 session = self._follow(repo, number, issue["session_id"])
@@ -4152,7 +4229,7 @@ class Bridge:
             self.store.update_issue(ev["repo"], ev["issue_number"], phase="implementing")
         elif mode == "review":
             self.store.update_issue(ev["repo"], ev["issue_number"], phase="reviewing")
-        with self.session_lock:
+        with self._session_lock(ev["repo"], int(ev["issue_number"])):
             issue = self._ready_session(ev)
             session_id = issue["session_id"]
             turn = self.store.turn(delivery, mode)
@@ -4277,7 +4354,7 @@ class Bridge:
         mode = req.get("mode")
         if mode is not None and mode not in MODES:
             raise OpError(f"mode must be one of {'|'.join(MODES)}")
-        with self.session_lock:
+        with self._session_lock(ev["repo"], int(ev["issue_number"])):
             turn = self.store.turn(ev["delivery_id"], mode)
             if turn is None or turn["state"] != "sent":
                 raise OpError("no delivered message for this event; call session_send")
@@ -4348,14 +4425,21 @@ class Bridge:
                     return self._request_correction(ev, mode, sid, local_id, result)
                 # The workflow takes a valid result now; a retry must re-run the step rather than harvest it again.
                 already_consumed = self._consumed(ev, turn)
+                input_tokens = turn_input_tokens(later)
                 self.store.consume_turn(ev["delivery_id"], mode, local_id)
                 if mode == "triage" and self.store.issue(ev["repo"], ev["issue_number"])["phase"] != "implementing":
                     self.store.update_issue(ev["repo"], ev["issue_number"], phase="triaged")
-                if not already_consumed:
+                if not already_consumed or input_tokens >= SESSION_MAX_INPUT_TOKENS:
                     with self.store.tx() as conn:
                         stages = json.loads(conn.execute("SELECT stages FROM events WHERE seq = ?", (ev["seq"],)).fetchone()[0])
+                        changed = False
                         if "step_retries" in stages:
                             stages.pop("step_retries", None)
+                            changed = True
+                        if input_tokens >= SESSION_MAX_INPUT_TOKENS:
+                            stages["rotate_session"] = input_tokens
+                            changed = True
+                        if changed:
                             conn.execute("UPDATE events SET stages = ?, updated_at = ? WHERE seq = ?",
                                          (json.dumps(stages), time.time(), ev["seq"]))
                 return {"state": "done", "session_id": sid, "mode": mode, "result": result}
@@ -4458,7 +4542,7 @@ class Bridge:
                     continue
                 if not dry_run:
                     # ensure_session takes the same lock: no event can spawn into a half-deleted subject.
-                    with self.session_lock:
+                    with self._session_lock(repo, number):
                         if self._subject_active(repo, number):
                             skipped.append(subject)
                             continue
@@ -4604,7 +4688,7 @@ class Bridge:
         return closed_at if closed.timestamp() < cutoff else None
 
     def _cleanup_subject(self, repo: str, number: int) -> None:
-        """Delete every HAPI session, then the runner files, then reset the row (caller holds ``session_lock``).
+        """Delete every HAPI session, then the runner files, then reset the row (caller holds the subject lock).
 
         A failure stops before the row reset, so the next run retries whatever is left."""
         issue = self.store.issue(repo, number)
@@ -6347,8 +6431,18 @@ class Bridge:
                 active = conn.execute("SELECT 1 FROM events WHERE repo = ? AND issue_number = ? "
                                       "AND state IN ('accepted', 'dispatching', 'dispatched') LIMIT 1",
                                       (repo, row["issue_number"])).fetchone()
+                if active is not None:
+                    return "active"
                 digest = hashlib.sha256(f"{repo}:{number}:{fingerprint}:{now}".encode()).hexdigest()[:48]
                 delivery = f"pr-repair-{digest}"
+                updated = conn.execute(
+                    "UPDATE prs SET active_delivery = ?, attempted_key = ?, dirty = 0, head_sha = ?,"
+                    " latest_signal = NULL, repair_streaks = ?, updated_at = ?"
+                    " WHERE repo = ? AND pr_number = ? AND revision = ?",
+                    (delivery, fingerprint, state["head_sha"], json.dumps(streaks, sort_keys=True), now,
+                     repo, number, row["revision"]))
+                if not updated.rowcount:
+                    return "conflict"
                 inserted = conn.execute(
                     "INSERT OR IGNORE INTO events (delivery_id, semantic_key, repo, kind, issue_number, pr_number,"
                     " actor, title, body, default_branch, head_sha, stages, received_at, updated_at) "
@@ -6360,11 +6454,6 @@ class Bridge:
                 )
                 if not inserted.rowcount:
                     return "unchanged"
-                conn.execute("UPDATE prs SET active_delivery = ?, attempted_key = ?, dirty = 0, head_sha = ?,"
-                             " latest_signal = NULL, repair_streaks = ?, updated_at = ?"
-                             " WHERE repo = ? AND pr_number = ?",
-                             (delivery, fingerprint, state["head_sha"], json.dumps(streaks, sort_keys=True), now,
-                              repo, number))
             return "queued"
         finally:
             lock.release()
@@ -6438,7 +6527,7 @@ class Dispatcher:
         # (``mark_attention`` armed them).
         for ev in self.store.query(
             "SELECT delivery_id FROM events WHERE state = 'needs_attention'"
-            " AND (kind = 'pr_review' OR park_class = 'provider_error')"
+            " AND (kind = 'pr_review' OR park_class IN ('provider_error', 'stale_dispatch'))"
             f" AND attention_pending = 0 AND park_class IN ({', '.join('?' for _ in TRANSIENT_PARK_CLASSES)})"
             " AND auto_retry_at <= ? ORDER BY seq",
             (*TRANSIENT_PARK_CLASSES, now),
@@ -6469,7 +6558,7 @@ class Dispatcher:
         ):
             # The cause (runner, hub, n8n or bridge restart) is not observable here: retried once whatever it was.
             self.bridge.mark_attention(ev, "workflow made no progress for this event (stale dispatch)",
-                                       park_class="stale_dispatch")
+                                       park_class="stale_dispatch", now=now)
         self.bridge.release_maintenance(now)
         with self.store.tx() as conn:
             # Read in the dispatch transaction: a lease recorded concurrently is either seen here or was recorded
