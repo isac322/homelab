@@ -8,7 +8,7 @@ called only by the bridge (bearer token the agent container cannot read).
   GET  /healthz
   POST /checkout {repo}                        -> {path, created, default_branch}
   POST /resolve  {repo, branch}                -> {sha}
-  POST /push     {repo, branch, expected_sha}  -> {sha}
+  POST /push     {repo, branch, expected_sha, stale_sha?} -> {sha}
   POST /cleanup  {repo, worktree, branch, codex_session_ids} -> {removed}
   POST /worktree/restore {repo, worktree, branch} -> {restored, path, already} | {restored: false, reason}
   POST /visual-evidence {repo, worktree, pr_number, head_sha, base_sha, manifest_path, marker, body,
@@ -345,32 +345,50 @@ def do_resolve(repo: str, branch: str) -> dict:
     return {"sha": fetch_branch(repo, branch)}
 
 
-def do_push(repo: str, branch: str, expected_sha: str) -> dict:
+def do_push(repo: str, branch: str, expected_sha: str, stale_sha: str | None = None) -> dict:
     token = read_secret(PUSH_TOKEN_FILE, "push token")
     sha = fetch_branch(repo, branch)
     # The caller resolved the branch first; refuse if it moved since.
     if sha != expected_sha:
         raise PublisherError(HTTPStatus.CONFLICT, "sha_mismatch", f"{branch} is at {sha}, expected {expected_sha}")
 
-    push_args = [
-        "--git-dir", mirror_path(repo),
-        "push", "--quiet", "--porcelain", "--no-verify", "--",
-        f"https://github.com/{repo}.git",
-        f"{sha}:refs/heads/{branch}",
-    ]
-    for attempt in range(len(PUSH_RETRY_DELAYS) + 1):
-        result = run_git(push_args, token=token)
-        output = "\n".join(part for part in (result.stdout.strip(), result.stderr.strip()) if part)
-        if result.returncode == 0:
-            break
-        if any(marker in output for marker in ("non-fast-forward", "fetch first", "[rejected]", "stale info", "cannot lock ref", "failed to update ref")):
-            raise PublisherError(HTTPStatus.CONFLICT, "non_fast_forward", output or "non-fast-forward")
-        if attempt < len(PUSH_RETRY_DELAYS):
-            time.sleep(PUSH_RETRY_DELAYS[attempt])
-            continue
-        raise PublisherError(HTTPStatus.BAD_GATEWAY, "push_failed", output or "git push failed")
-    log.info("pushed %s %s -> %s", repo, branch, sha)
-    return {"sha": sha}
+    mirror = mirror_path(repo)
+
+    def push(refspec: str, *, lease: str | None = None) -> None:
+        push_args = [
+            "--git-dir", mirror,
+            "push", "--quiet", "--porcelain", "--no-verify",
+        ]
+        if lease is not None:
+            push_args.append(f"--force-with-lease=refs/heads/{branch}:{lease}")
+        push_args += [
+            "--", f"https://github.com/{repo}.git",
+            refspec,
+        ]
+        for attempt in range(len(PUSH_RETRY_DELAYS) + 1):
+            result = run_git(push_args, token=token)
+            output = "\n".join(part for part in (result.stdout.strip(), result.stderr.strip()) if part)
+            if result.returncode == 0:
+                return
+            if any(marker in output for marker in ("non-fast-forward", "fetch first", "[rejected]", "stale info", "cannot lock ref", "failed to update ref")):
+                raise PublisherError(HTTPStatus.CONFLICT, "non_fast_forward", output or "non-fast-forward")
+            if attempt < len(PUSH_RETRY_DELAYS):
+                time.sleep(PUSH_RETRY_DELAYS[attempt])
+                continue
+            raise PublisherError(HTTPStatus.BAD_GATEWAY, "push_failed", output or "git push failed")
+
+    if stale_sha is not None and stale_sha != expected_sha:
+        result = run_git(["--git-dir", mirror, "merge-base", "--is-ancestor", stale_sha, expected_sha])
+        if result.returncode != 0:
+            raise PublisherError(
+                HTTPStatus.CONFLICT,
+                "non_fast_forward",
+                f"{stale_sha} is not an ancestor of {expected_sha}",
+            )
+        push(f"{stale_sha}:refs/heads/{branch}", lease=expected_sha)
+    push(f"{expected_sha}:refs/heads/{branch}")
+    log.info("pushed %s %s -> %s", repo, branch, expected_sha)
+    return {"sha": expected_sha}
 
 
 def inside(path: str, root: str) -> bool:
@@ -1419,13 +1437,15 @@ class Handler(BaseHTTPRequestHandler):
         if scheme.lower() != "bearer" or not hmac.compare_digest(supplied.strip().encode(), expected.encode()):
             raise PublisherError(HTTPStatus.UNAUTHORIZED, "unauthorized", "missing or invalid bearer token")
 
-    def body(self, fields: dict[str, re.Pattern], *, nullable: tuple[str, ...] = (),
+    def body(self, fields: dict[str, re.Pattern], *, optional: dict[str, re.Pattern] | None = None,
+             nullable: tuple[str, ...] = (),
              lists: dict[str, re.Pattern] | None = None, ints: tuple[str, ...] = (),
              objects: tuple[str, ...] = (), booleans: tuple[str, ...] = (),
              max_body: int = MAX_BODY) -> dict:
-        """Validated JSON body: ``fields`` are strings, ``lists`` string arrays,
-        ``ints`` positive integers, and ``booleans`` actual JSON booleans."""
+        """Validated JSON body: ``fields`` are required strings, ``optional`` strings are optional,
+        ``lists`` string arrays, ``ints`` positive integers, and ``booleans`` actual JSON booleans."""
         lists = lists or {}
+        optional = optional or {}
         if (self.headers.get("Content-Type") or "").split(";")[0].strip().lower() != "application/json":
             raise PublisherError(HTTPStatus.UNSUPPORTED_MEDIA_TYPE, "invalid_request", "Content-Type must be application/json")
         try:
@@ -1440,7 +1460,7 @@ class Handler(BaseHTTPRequestHandler):
             raise PublisherError(HTTPStatus.BAD_REQUEST, "invalid_request", "body is not valid JSON") from None
         if not isinstance(data, dict):
             raise PublisherError(HTTPStatus.BAD_REQUEST, "invalid_request", "body must be a JSON object")
-        unknown = sorted(set(data) - set(fields) - set(lists) - set(ints) - set(objects) - set(booleans))
+        unknown = sorted(set(data) - set(fields) - set(optional) - set(lists) - set(ints) - set(objects) - set(booleans))
         if unknown:
             raise PublisherError(HTTPStatus.BAD_REQUEST, "invalid_request", f"unknown fields: {', '.join(unknown)}")
         values = {}
@@ -1449,6 +1469,13 @@ class Handler(BaseHTTPRequestHandler):
             if value is None and name in nullable:
                 values[name] = None
                 continue
+            if not isinstance(value, str) or not pattern.fullmatch(value):
+                raise PublisherError(HTTPStatus.BAD_REQUEST, "invalid_request", f"invalid {name}")
+            values[name] = value
+        for name, pattern in optional.items():
+            if name not in data:
+                continue
+            value = data[name]
             if not isinstance(value, str) or not pattern.fullmatch(value):
                 raise PublisherError(HTTPStatus.BAD_REQUEST, "invalid_request", f"invalid {name}")
             values[name] = value
@@ -1487,9 +1514,14 @@ class Handler(BaseHTTPRequestHandler):
                 with repo_lock(args["repo"]):
                     self.reply(HTTPStatus.OK, do_resolve(args["repo"], args["branch"]))
             elif self.path == "/push":
-                args = self.body({"repo": REPO_RE, "branch": BRANCH_RE, "expected_sha": SHA_RE})
+                args = self.body(
+                    {"repo": REPO_RE, "branch": BRANCH_RE, "expected_sha": SHA_RE},
+                    optional={"stale_sha": SHA_RE},
+                )
                 with repo_lock(args["repo"]):
-                    self.reply(HTTPStatus.OK, do_push(args["repo"], args["branch"], args["expected_sha"]))
+                    self.reply(HTTPStatus.OK, do_push(
+                        args["repo"], args["branch"], args["expected_sha"], args.get("stale_sha"),
+                    ))
             elif self.path == "/visual-evidence":
                 args = self.body(
                     {"repo": REPO_RE, "worktree": WORKTREE_RE, "head_sha": SHA_RE,

@@ -121,7 +121,7 @@ CLEANUP_AFTER_DAYS = 0  # a subject closed this long loses its agent state; 0 = 
 MAX_CLEANUP_CODEX_IDS = 50  # per publisher /cleanup request
 ACTIVE_EVENT_STATES = ("accepted", "dispatching", "dispatched")
 # A push updates the branch ref immediately but the open PR's head asynchronously.
-PR_HEAD_WAIT_SECONDS = 60.0
+PR_HEAD_WAIT_SECONDS = 15.0
 PR_HEAD_WAIT_INTERVAL = 2.0
 REVIEW_STATE_EVENTS = {"APPROVED": "APPROVE", "CHANGES_REQUESTED": "REQUEST_CHANGES", "COMMENTED": "COMMENT"}
 DEFAULT_REVIEW_STATUS_CONTEXT = "issue-agent/review"
@@ -2967,12 +2967,23 @@ class Bridge:
         """A review someone asked for (a `review` comment, its own or folded into it) or a re-review after a
         no-change repair: it reviews the live head even when the review App already reviewed it."""
         return ev["comment_id"] is not None or ":rereview:" in (ev["semantic_key"] or "")
+    def _is_bare_review_command(self, body: str | None) -> bool:
+        """Whether ``body`` contains only the review command for the configured reviewer App."""
+        if not isinstance(body, str):
+            return False
+        reviewer = self.reviewer_login()
+        if not reviewer:
+            return False
+        slug = reviewer.removesuffix("[bot]")
+        command = re.compile(rf"@{re.escape(slug)}(?:\[bot\])?\s+review", re.IGNORECASE)
+        return command.sub("", body, count=1).strip() == ""
 
     def _clear_attention_label(self, repo: str, number: int, target: int | None = None,
                                *, client: GitHub | None = None) -> None:
         """Clear the failure notice from the issue and, for PR repairs, the PR surface."""
         issue = self.store.issue(repo, number)
         if issue is None or not issue["attention_label"]:
+
             return
         for current in dict.fromkeys(num for num in (target, issue["pr_number"], number) if num is not None):
             try:
@@ -3077,6 +3088,11 @@ class Bridge:
 
     def op_fail(self, req: dict[str, Any]) -> dict[str, Any]:
         ev = self._event(req, live=False)
+        req_execution_id = req.get("execution_id")
+        if (isinstance(req_execution_id, str) and req_execution_id
+                and ev["execution_id"] is not None
+                and str(req_execution_id) != str(ev["execution_id"])):
+            return {"already": True}
         if ev["state"] == "completed" and ev["outcome"] == "cancelled":
             # A newer head cancelled this review; its workflow stops on the next op and lands here.
             return {"already": True}
@@ -3324,6 +3340,7 @@ class Bridge:
         it was re-queued. Retryable turn lookup failures propagate, so the event stays parked."""
         stages = json.loads(ev["stages"])
         stages.pop("started", None)
+        stages.pop("step_retries", None)
         if ev["kind"] == "pr_repair" and self.store.turn(ev["delivery_id"]) is None:
             # A retry before the first send needs current evidence, not a parked snapshot.
             # Keep snapshots once a send may have landed so localId delivery remains idempotent.
@@ -3583,6 +3600,7 @@ class Bridge:
                                         turn["session_id"], "lost")
             stages = json.loads(ev["stages"])
             stages.pop("started", None)
+            stages.pop("step_retries", None)
             retries = int(ev["auto_retries"] or 0) + 1
             stages["auto_retry"] = {"n": retries, "at": now, "park_class": ev["park_class"]}
             self.store.update_event(delivery_id, state="accepted", stages=json.dumps(stages), attempts=0,
@@ -5018,15 +5036,22 @@ class Bridge:
         # An automatic request ends 'already_reviewed' when another request already published a review of the
         # head it is about to review — e.g. a push cancelled a run whose review POST landed before this row
         # queued. The check runs before the live-head read so a GitHub hiccup cannot skip it.
-        if not explicit:
+        bare = self._is_bare_review_command(ev["body"])
+        if not explicit or (bare and ev["head_sha"] is not None):
             with self.store.tx() as conn:
                 if conn.execute("SELECT 1 FROM events WHERE seq = ? AND state IN ('dispatching', 'dispatched')",
                                 (ev["seq"],)).fetchone() is None:
                     return "terminal"
+                published = (
+                    " AND CAST(json_extract(stages, '$.review_published.at') AS REAL) >= ?"
+                    if explicit else "")
+                args: tuple[Any, ...] = (repo, number, ev["seq"], ev["head_sha"])
+                if explicit:
+                    args += (ev["received_at"],)
                 if conn.execute(
                         "SELECT 1 FROM events WHERE repo = ? AND kind = 'pr_review' AND issue_number = ?"
-                        " AND seq != ? AND json_extract(stages, '$.review_published.sha') = ? LIMIT 1",
-                        (repo, number, ev["seq"], ev["head_sha"])).fetchone() is not None:
+                        " AND seq != ? AND json_extract(stages, '$.review_published.sha') = ?"
+                        + published + " LIMIT 1", args).fetchone() is not None:
                     conn.execute(
                         "UPDATE events SET state = 'completed', outcome = 'already_reviewed', detail = ?,"
                         " semantic_key = CASE"
@@ -5044,7 +5069,7 @@ class Bridge:
             return "started"
         if not isinstance(head, str) or not _SHA_RE.fullmatch(head):
             return "started"
-        if explicit and head == ev["head_sha"]:
+        if explicit and head == ev["head_sha"] and not bare:
             return "started"
         # The checks and the retarget (or the end) are one write: a request for the live head cannot insert
         # between them and get itself or this run to review the same head twice. A request for another head
@@ -5054,7 +5079,16 @@ class Bridge:
                             (ev["seq"],)).fetchone() is None:
                 return "terminal"
             ended, outcome, detail = False, "", ""
-            if auto_retried and head != ev["head_sha"]:
+            if explicit and bare:
+                ended = conn.execute(
+                    "SELECT 1 FROM events WHERE repo = ? AND kind = 'pr_review' AND issue_number = ?"
+                    " AND seq != ? AND json_extract(stages, '$.review_published.sha') = ?"
+                    " AND CAST(json_extract(stages, '$.review_published.at') AS REAL) >= ? LIMIT 1",
+                    (repo, number, ev["seq"], head, ev["received_at"]),
+                ).fetchone() is not None
+                if ended:
+                    outcome, detail = "already_reviewed", f"another request already published a review of {head}"
+            elif auto_retried and head != ev["head_sha"]:
                 ended, outcome = True, "head_moved"
                 detail = f"pull request head moved from {ev['head_sha']} to {head} while the review was parked"
             elif not explicit:
@@ -5092,6 +5126,7 @@ class Bridge:
                     key = f"{ev['semantic_key']}:retargeted:{ev['delivery_id']}"
             conn.execute("UPDATE events SET head_sha = ?, semantic_key = ?, updated_at = ? WHERE seq = ?",
                          (head, key, now, ev["seq"]))
+
         return "started"
 
     def _clean_base_merge(self, repo: str, prior_sha: str, head: str, base_sha: str, *,
@@ -5191,7 +5226,7 @@ class Bridge:
         gh = self.review_github
         reviewer = self.reviewer_login()
         head = ev["head_sha"]
-        if (gh is None or not reviewer or self._explicit_review(ev)
+        if (gh is None or not reviewer
                 or not isinstance(head, str) or not _SHA_RE.fullmatch(head)
                 or self.store.turn(delivery) is not None):
             return {"carried_over": False, "reason": "not_eligible"}
@@ -5211,6 +5246,8 @@ class Bridge:
             LOG.warning("review carryover check of %s#%s skipped: %s", repo, number, exc)
             return {"carried_over": False, "reason": "check_failed"}
         if existing is not None:
+            if self._explicit_review(ev):
+                return {"carried_over": False, "reason": "not_eligible"}
             submitted = REVIEW_STATE_EVENTS.get(existing.get("state"), existing.get("state"))
             if submitted == "APPROVE":
                 return {
@@ -5221,6 +5258,8 @@ class Bridge:
                                                          existing.get("html_url")),
                 }
             return {"carried_over": False, "reason": "already_reviewed_non_approval"}
+        if self._explicit_review(ev) and not self._is_bare_review_command(ev["body"]):
+            return {"carried_over": False, "reason": "not_eligible"}
         try:
             author = ((pr.get("user") or {}).get("login") or "").casefold()
             if reviewer and author == reviewer.casefold():
@@ -6000,6 +6039,22 @@ class Bridge:
             ref_sha = data.get("object", {}).get("sha") if status == 200 and isinstance(data, dict) else None
             if ref_sha != head:
                 raise OpError(f"pull request head {sha} is not {head}; push first", retryable=True)
+            deadline = self.clock() + PR_HEAD_WAIT_SECONDS
+            while True:
+                self.sleep(PR_HEAD_WAIT_INTERVAL)
+                fresh = self._gh("GET", f"/repos/{repo}/pulls/{pr['number']}")
+                if isinstance(fresh, dict) and (fresh.get("head") or {}).get("sha") == head:
+                    return fresh
+                if self.clock() >= deadline:
+                    break
+            try:
+                self.publisher.request(
+                    "/push", {"repo": repo, "branch": branch, "expected_sha": head, "stale_sha": sha},
+                    timeout=PUBLISHER_PUSH_TIMEOUT,
+                )
+            except OpError as exc:
+                if exc.retryable:
+                    raise
             deadline = self.clock() + PR_HEAD_WAIT_SECONDS
             while True:
                 self.sleep(PR_HEAD_WAIT_INTERVAL)

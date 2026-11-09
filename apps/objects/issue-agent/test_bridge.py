@@ -3560,6 +3560,17 @@ class ReviewSweepTests(BridgeTestCase):
         self.assertEqual(self.op("begin", "s2", attempt=1)["status"], "terminal")
         self.assertEqual(self.store.event("s2")["outcome"], "already_reviewed")
         self.assertEqual(len(self.fake.review_posts), 1)
+    def test_bare_review_comment_waiting_behind_a_published_push_review_ends_already_reviewed(self) -> None:
+        self.started_review(12, "p1")
+        command = comment_payload(12, 701, body="@haechibot review", on_pr=True)
+        self.assertEqual(self.deliver(command, event="issue_comment", delivery="c1").outcome, "queued")
+        self.assertTrue(self.op("github.review", "p1", result=REVIEW_OK)["ok"])
+        self.assertTrue(self.op("finish", "p1", outcome="reviewed")["ok"])
+        self.assertEqual(self.dispatcher.tick(), "dispatched")
+        self.assertEqual(self.op("begin", "c1", attempt=1)["status"], "terminal")
+        self.assertEqual(self.store.event("c1")["outcome"], "already_reviewed")
+        self.assertEqual(len(self.fake.review_posts), 1)
+
 
     def test_published_evidence_ends_an_automatic_request_though_the_head_read_fails(self) -> None:
         # As above, but GitHub fails the start's head read: the local evidence still ends the new request for A.
@@ -6891,21 +6902,23 @@ class PullRequestOpsTests(BridgeTestCase):
     def test_pr_upsert_waits_for_lagging_pr_head(self) -> None:
         self.started()
         self.op("ensure_session")
-        self.fake.add_pr(88, sha=SHA_B)
+        self.fake.add_pr(88, sha=SHA_A)
         self.fake.branch_heads["hapi-issue-7"] = SHA_B
+        self.fake.worktree_heads["hapi-issue-7"] = SHA_B
         now = 0.0
 
         def fake_sleep(seconds: float) -> None:
             nonlocal now
             now += seconds
-            if now >= 4:  # third read still lags; the fourth one converges
-                self.fake.prs[88]["head"]["sha"] = SHA_B
 
         self.bridge.clock, self.bridge.sleep = lambda: now, fake_sleep
         updated = self.op("github.pr_upsert", head_sha=SHA_B, title="t", body="Fixes #7")
         self.assertTrue(updated["ok"], updated)
         self.assertEqual(updated["number"], 88)
+        self.assertEqual(self.fake.pushes, [{"repo": REPO, "branch": "hapi-issue-7", "expected_sha": SHA_B,
+                                             "stale_sha": SHA_A}])
         self.assertEqual(self.fake.pr_patches, [{"title": "t", "body": "Fixes #7"}])
+
 
     def test_pr_upsert_push_first_error_when_branch_ref_differs(self) -> None:
         self.started()
@@ -7628,6 +7641,19 @@ class ReviewGateTests(BridgeTestCase):
         self.assertTrue(self.op("finish", "s1", outcome="reviewed")["ok"])
         # The sweep sees the carried-over marker and queues nothing.
         self.assertEqual(self.bridge.sweep_open_prs(time.time()), 0)
+    def test_bare_review_comment_carries_over_unreviewed_clean_base_merge_head(self) -> None:
+        self.setup_clean_base_merge()
+        self.store.update_event("s1", comment_id=901, body="@haechibot review")
+        result = self.op("github.review_carryover", "s1")
+        self.assertEqual((result["ok"], result["carried_over"], result["from_sha"]), (True, True, SHA_A))
+
+    def test_review_comment_does_not_carry_over_an_already_reviewed_head(self) -> None:
+        self.setup_clean_base_merge()
+        self.assertTrue(self.op("github.review_carryover", "s1")["carried_over"])
+        self.store.update_event("s1", comment_id=902, body="@haechibot review")
+        result = self.op("github.review_carryover", "s1")
+        self.assertEqual((result["ok"], result["carried_over"], result["reason"]), (True, False, "not_eligible"))
+
 
     def test_two_hop_clean_base_merge_and_push_dismissed_approval_carry_over(self) -> None:
         sha_m1 = "4" * 40

@@ -176,7 +176,7 @@ spec:
                       - rock5bp
       containers:
         - name: runner
-          image: ghcr.io/isac322/issue-agent-runner:0.34.3-codex0.167.0-20261109-single-review-body@sha256:471a30c9d175c7b6168b5191335c0c60339abded11be11397307cdce64a648ea
+          image: ghcr.io/isac322/issue-agent-runner:0.34.3-codex0.167.0-20261110-pr-head-nudge@sha256:2fefa485871a0a7b1b57d1c3694ea28e38257e125f376bf224b0f7fa780b23b9
           env:
             - name: HOME
               value: /home/agent
@@ -281,7 +281,7 @@ spec:
         # Same image as the runner; /checkout also marks the checkout and its
         # worktrees untrusted in CODEX_HOME (codex-untrust).
         - name: publisher
-          image: ghcr.io/isac322/issue-agent-runner:0.34.3-codex0.167.0-20261109-single-review-body@sha256:471a30c9d175c7b6168b5191335c0c60339abded11be11397307cdce64a648ea
+          image: ghcr.io/isac322/issue-agent-runner:0.34.3-codex0.167.0-20261110-pr-head-nudge@sha256:2fefa485871a0a7b1b57d1c3694ea28e38257e125f376bf224b0f7fa780b23b9
           command:
             - /usr/bin/tini
             - --

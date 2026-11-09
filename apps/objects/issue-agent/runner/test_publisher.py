@@ -759,6 +759,66 @@ def git(*args: str, cwd: str) -> str:
     return result.stdout.strip()
 
 
+class PushEndpointTest(EndpointCase):
+    EXPECTED = "b" * 40
+    STALE = "a" * 40
+    NOT_ANCESTOR = "c" * 40
+
+    def post(self, body: dict) -> tuple[int, dict]:
+        return self.call("POST", "/push", json.dumps(body).encode())
+
+    def request(self, stale_sha: str) -> dict:
+        return {
+            "repo": REPO,
+            "branch": "hapi-issue-7",
+            "expected_sha": self.EXPECTED,
+            "stale_sha": stale_sha,
+        }
+
+    def test_stale_sha_rewinds_then_fast_forwards_remote_ref(self) -> None:
+        remote_ref = {"sha": self.EXPECTED}
+        transitions: list[str] = []
+
+        def push_git(args: list[str], **kwargs) -> subprocess.CompletedProcess:
+            if "merge-base" in args:
+                return subprocess.CompletedProcess(args, 0, stdout="", stderr="")
+            self.assertIn("push", args)
+            refspec = args[-1]
+            self.assertEqual(remote_ref["sha"], self.EXPECTED if not transitions else self.STALE)
+            remote_ref["sha"] = refspec.split(":", 1)[0]
+            transitions.append(remote_ref["sha"])
+            return subprocess.CompletedProcess(args, 0, stdout="", stderr="")
+
+        with patch.object(publisher, "read_secret", return_value=TOKEN), \
+                patch.object(publisher, "fetch_branch", return_value=self.EXPECTED), \
+                patch.object(publisher, "mirror_path", return_value="/mirror.git"), \
+                patch.object(publisher, "run_git", side_effect=push_git) as run_git:
+            status, payload = self.post(self.request(self.STALE))
+
+        self.assertEqual((status, payload), (HTTPStatus.OK, {"sha": self.EXPECTED}))
+        self.assertEqual(transitions, [self.STALE, self.EXPECTED])
+        self.assertIn(
+            f"--force-with-lease=refs/heads/hapi-issue-7:{self.EXPECTED}",
+            run_git.call_args_list[1].args[0],
+        )
+        self.assertEqual(run_git.call_args_list[2].args[0][-1],
+                         f"{self.EXPECTED}:refs/heads/hapi-issue-7")
+        self.assertEqual(remote_ref["sha"], self.EXPECTED)
+
+    def test_stale_sha_must_be_an_ancestor(self) -> None:
+        failed_ancestor = subprocess.CompletedProcess([], 1, stdout="", stderr="")
+        with patch.object(publisher, "read_secret", return_value=TOKEN), \
+                patch.object(publisher, "fetch_branch", return_value=self.EXPECTED), \
+                patch.object(publisher, "mirror_path", return_value="/mirror.git"), \
+                patch.object(publisher, "run_git", return_value=failed_ancestor) as run_git:
+            status, payload = self.post(self.request(self.NOT_ANCESTOR))
+
+        self.assertEqual((status, payload["error"]), (HTTPStatus.CONFLICT, "non_fast_forward"))
+        self.assertEqual(payload["detail"],
+                         f"{self.NOT_ANCESTOR} is not an ancestor of {self.EXPECTED}")
+        self.assertEqual(run_git.call_count, 1)
+
+
 class WorktreeRestoreTest(EndpointCase):
     """A real base clone whose issue-7 worktree was removed (`git worktree remove --force`), keeping its branch."""
 

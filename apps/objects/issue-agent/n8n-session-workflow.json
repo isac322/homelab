@@ -206,7 +206,7 @@
     },
     {
       "parameters": {
-        "amount": 120,
+        "amount": 20,
         "unit": "seconds"
       },
       "id": "d2da89a3-e084-513a-bfb9-bf5c7ad199e7",
@@ -456,7 +456,7 @@
           "conditions": [
             {
               "id": "e1f20050-d758-5eb6-9c5f-46e9eca66b32",
-              "leftValue": "={{ $json.state !== 'expired' && $runIndex < 720 }}",
+              "leftValue": "={{ $json.state !== 'expired' && $runIndex < 4320 }}",
               "operator": {
                 "type": "boolean",
                 "operation": "true",
@@ -795,7 +795,7 @@
     "executionOrder": "v1",
     "saveManualExecutions": true,
     "saveDataErrorExecution": "all",
-    "saveDataSuccessExecution": "all",
+    "saveDataSuccessExecution": "none",
     "saveExecutionProgress": true,
     "timezone": "UTC",
     "callerPolicy": "workflowsFromSameOwner"
