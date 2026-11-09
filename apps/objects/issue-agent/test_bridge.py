@@ -4690,6 +4690,21 @@ class TurnTests(BridgeTestCase):
         self.assertEqual(len(self.fake.spawns), 2)
         self.assertTrue(self.fake.spawns[-1]["directory"].endswith("/issue-7"))
 
+        # An idle turn without a result line in an over-budget session rotates immediately as 'lost' (retryable).
+        sid2 = fresh["session_id"]
+        sent2 = self.op("session_send", "c1", mode="followup", instructions="Follow up.")
+        lid2 = sent2["local_id"]
+        self.fake.invoke(sid2, lid2)
+        self.fake.codex(sid2, "token_count", info={"last": {"inputTokens": 260000}})
+        self.fake.codex(sid2, "message", message="ISSUE_AGENT_RESULT wrong-nonce {}")
+        for _ in range(bridge.IDLE_WITHOUT_RESULT_LIMIT - 1):
+            self.assertEqual(self.op("session_turn", "c1")["state"], "running")
+        rotated = self.op("session_turn", "c1")
+        self.assertEqual((rotated["state"], rotated["retryable"]), ("lost", True))
+        issue = self.store.issue(REPO, 7)
+        self.assertEqual((issue["session_state"], issue["session_id"]), ("none", None))
+        self.assertIn(sid2, json.loads(issue["superseded"]))
+        self.assertEqual(self.store.turn("c1", "followup")["state"], "lost")
 
     def say(self, text: str) -> None:
         self.fake.codex(self.sid, "message", message=text)

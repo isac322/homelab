@@ -3437,11 +3437,16 @@ class Bridge:
                         or self._turn_failed_on_provider(ev, turn) is not None or \
                         self._session_gone(ev, turn)
                 if resend:
+                    over_budget = self._turn_exceeded_context_budget(ev, turn)
                     # Re-running the step needs a new message: under the old localId session_send reports
                     # 'already' and session_turn re-reads the same turn.
                     self.store.put_turn(ev["delivery_id"], turn["mode"],
                                         resend_local_id(ev["delivery_id"], turn["mode"], turn["local_id"]),
                                         turn["session_id"], "lost")
+                    if over_budget:
+                        sid = self.store.issue(ev["repo"], ev["issue_number"])["session_id"] or turn["session_id"]
+                        self._archive_sid(ev["repo"], int(ev["issue_number"]), sid)
+                        self._drop_session(ev["repo"], int(ev["issue_number"]), sid, "context budget reached")
             # Drop the parked run's heartbeat and execution: the dispatcher keeps an existing heartbeat, so an
             # old one would make the stale sweep park the retried event again before n8n can begin it.
             self.store.update_event(ev["delivery_id"], state="accepted", stages=json.dumps(stages), attempts=0,
@@ -3468,6 +3473,14 @@ class Bridge:
             if assistant_texts(m):
                 last_message = m
         return provider_failure(last_message)
+
+    def _turn_exceeded_context_budget(self, ev: sqlite3.Row, turn: sqlite3.Row) -> bool:
+        try:
+            session = self._follow(ev["repo"], ev["issue_number"], turn["session_id"])
+            history = self._history_from(session["id"], turn["local_id"])
+        except OpError:
+            return False
+        return bool(history and turn_input_tokens(history[1:]) >= SESSION_MAX_INPUT_TOKENS)
 
     def _session_gone(self, ev: sqlite3.Row, turn: sqlite3.Row) -> bool:
         """Whether the turn's session is out of reach or the agent process is gone."""
@@ -4464,6 +4477,13 @@ class Bridge:
             idle = turn["idle_polls"] + 1
             self.store.put_turn(ev["delivery_id"], mode, local_id, turn["session_id"], "sent", idle)
             if idle >= IDLE_WITHOUT_RESULT_LIMIT:
+                if turn_input_tokens(later) >= SESSION_MAX_INPUT_TOKENS:
+                    self.store.put_turn(ev["delivery_id"], mode, resend_local_id(ev["delivery_id"], mode, local_id),
+                                        sid, "lost")
+                    self._archive_sid(ev["repo"], int(ev["issue_number"]), sid)
+                    self._drop_session(ev["repo"], int(ev["issue_number"]), sid, "context budget reached")
+                    return {"state": "lost", "session_id": sid, "retryable": True,
+                            "detail": "agent session exceeded context budget without a result line"}
                 return self._attention("agent is idle but produced no result line for this step")
             return {"state": "running", "session_id": sid, "pending_requests": 0}
 
