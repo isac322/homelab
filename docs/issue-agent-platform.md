@@ -271,7 +271,7 @@ followup 턴은 PR을 이슈와 맞춘다. 에이전트는 `gh issue view`와 `g
 
   ReviewResult에는 `open_items`(문자열 배열, 최대 20개·각 200자)도 있다. event가 COMMENT나 REQUEST_CHANGES일 때만 허용되며 비어 있어도 된다(대체된 조언 같은 정보성 COMMENT). 에이전트 자신의 COMMENT가 결정 사항, 미확인 P0–P2 의심, 덮이지 않은 lens 때문이면 이유마다 한 항목을 적는다(`### 리뷰 판정 정책`). bridge가 `_review()`에서 검증한다.
 
-  decision 댓글: 에이전트 자신의 event가 COMMENT이고(stale 안내나 자기 PR downgrade로 바뀐 COMMENT는 제외) `head_sha`가 live head이며 `open_items`가 비어 있지 않으면, bridge는 리뷰 App으로 project owner(없으면 저장소 owner)를 멘션해 maintainer가 답하고 `@haechibot review`를 달 때까지 merge가 막혀 있다고 알리는 댓글을 남긴다. marker `review-decision:<n>:<정규화·정렬한 open_items의 hash>`와 기존 `_comment` marker lock으로 같은 PR의 같은 항목 집합에는 head가 바뀌어도 한 번만 남긴다. 게시 실패는 재시도할 수 있다. COMMENT로 끝난 리뷰가 아무 안내 없이 merge를 막는 막다른 상태를 없애기 위해서다.
+  decision 안내(리뷰 본문 통합): 에이전트 자신의 event가 COMMENT이고(stale 안내나 자기 PR downgrade로 바뀐 COMMENT는 제외) `head_sha`가 live head이며 `open_items`가 비어 있지 않으면, bridge는 별도 PR 댓글을 달지 않고 리뷰 본문 안에 marker `<!-- issue-agent:review-decision:<n>:<정규화·정렬한 open_items의 hash> -->`와 안내 문구를 합쳐 한 번에 게시한다. 이전 리뷰 본문에 같은 marker가 없을 때만 project owner(없으면 저장소 owner)를 멘션하고, 이미 본문에 적힌 `open_items` 항목은 중복 나열하지 않는다. COMMENT로 끝난 리뷰가 아무 안내 없이 merge를 막는 막다른 상태를 없애면서 알림과 댓글이 두 번으로 나뉘지 않게 한다.
 
 라벨은 bridge `LABEL_CATALOG`의 이름만 허용한다(목록은 README `#### 라벨`). 저장소에 없으면 카탈로그 설명·색으로 만들고, 같은 그룹(`repro:*`, direction, kind) 라벨을 추가하면 나머지를 같은 op에서 제거한다. `agent:needs-attention`은 bridge만 다룬다.
 

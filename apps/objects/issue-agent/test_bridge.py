@@ -4617,6 +4617,10 @@ class TurnTests(BridgeTestCase):
         self.assertNotIn("step_retries", json.loads(self.store.event("d1")["stages"]))
         self.assertEqual([p["localId"] for p in self.fake.message_posts], [self.lid])
         self.assertEqual(bridge.Store(self.config.state_path).turn("d1", "implement")["consumed_id"], self.lid)
+        # Downstream step retries after the turn is already consumed must not be wiped when the turn is re-read.
+        self.op("stage", stage="step_retries", value=2)
+        self.assertEqual(self.op("session_turn")["state"], "done")
+        self.assertEqual(json.loads(self.store.event("d1")["stages"])["step_retries"], 2)
 
     def test_turn_completes_only_with_nonce_result_after_invocation(self) -> None:
         self.send()
@@ -6949,7 +6953,7 @@ DECISION: dict[str, Any] = variant(REVIEW_OK, event="COMMENT", comments=[], open
 
 class ReviewGateTests(BridgeTestCase):
     """Review publication and recovery with the review App: C1''/C2' publication, C3'' automatic retries of
-    transient review parks, C4 error status, C7' decision comment."""
+    transient review parks, C4 error status, C7' in-review decision notice."""
 
     def setUp(self) -> None:
         super().setUp()
@@ -6990,8 +6994,9 @@ class ReviewGateTests(BridgeTestCase):
         latest = self.fake.statuses[sha][0]
         return latest["state"], latest["description"]
 
-    def decision_comments(self, number: int = 12) -> list[str]:
-        return [c["body"] for c in self.fake.comments.get(number, []) if ":review-decision:" in c["body"]]
+    def decision_reviews(self, number: int = 12) -> list[str]:
+        return [r["body"] for r in self.fake.reviews
+                if r.get("pull", number) == number and ":review-decision:" in (r.get("body") or "")]
 
     # -- C1''/C2': publication ---------------------------------------------------
 
@@ -7506,23 +7511,31 @@ class ReviewGateTests(BridgeTestCase):
         self.assertTrue(self.op("fail", "d1", detail="boom")["ok"])
         self.assertEqual(self.fake.status_posts, [])
 
-    # -- C7': decision comment -----------------------------------------------------
+    # -- C7': in-review decision notice ------------------------------------------
 
-    def test_comment_verdict_posts_one_decision_comment_mentioning_the_owner(self) -> None:
+    def test_comment_verdict_folds_decision_mention_into_review_without_extra_comment(self) -> None:
         self.started_review(12, "p1")
         published = self.op("github.review", "p1", result=DECISION)
         self.assertTrue(published["ok"], published)
-        [body] = self.decision_comments()
-        self.assertTrue(body.startswith("<!-- issue-agent:review-decision:12:"))
+        self.assertEqual(self.fake.comments.get(12, []), [])
+        [body] = self.decision_reviews()
+        self.assertIn("<!-- issue-agent:review-decision:12:", body)
         self.assertIn("@isac322", body)  # no project_owner configured: the repository owner
         for item in DECISION["open_items"]:
             self.assertIn(f"- {item}", body)
         self.assertIn("`@haechibot review`", body)
-        self.assertEqual(published["decision_comment"], self.fake.comments[12][-1]["html_url"])
         again = self.op("github.review", "p1", result=DECISION)
-        self.assertEqual((again["created"], len(self.decision_comments()), len(self.fake.review_posts)), (False, 1, 1))
+        self.assertEqual((again["created"], len(self.decision_reviews()), len(self.fake.review_posts)), (False, 1, 1))
 
-    def test_the_same_open_items_on_a_new_head_post_nothing_and_new_items_mention_the_project_owner(self) -> None:
+    def test_comment_verdict_does_not_repeat_open_items_already_in_review_body(self) -> None:
+        self.started_review(12, "p1")
+        already = variant(DECISION, body=f"Needs input.\n\n- {DECISION['open_items'][0]}")
+        self.assertTrue(self.op("github.review", "p1", result=already)["ok"])
+        [body] = self.decision_reviews()
+        self.assertEqual(body.count(DECISION["open_items"][0]), 1)
+        self.assertEqual(body.count(DECISION["open_items"][1]), 1)
+
+    def test_the_same_open_items_on_a_new_head_do_not_remention_and_new_items_mention_the_project_owner(self) -> None:
         self.started_review(12, "p1")
         self.assertTrue(self.op("github.review", "p1", result=DECISION)["ok"])
         self.assertTrue(self.op("finish", "p1", outcome="reviewed")["ok"])
@@ -7536,26 +7549,23 @@ class ReviewGateTests(BridgeTestCase):
         same = variant(DECISION, head_sha=SHA_B, open_items=["unrefuted p1:  a.py:3 races the cleanup",
                                                              "MAINTAINER decision: keep the SELinux fallback?"])
         self.assertTrue(self.op("github.review", "s1", result=same)["ok"])
-        self.assertEqual(len(self.decision_comments()), 1)
+        self.assertTrue(self.op("finish", "s1", outcome="reviewed")["ok"])
+        self.assertEqual(len(self.decision_reviews()), 1)
+        self.assertNotIn("@isac322", self.fake.reviews[-1]["body"])
         self.write_registry({"defaults": {"agent": "codex"}, "repositories": {REPO: {"project_owner": "octo"}}})
-        changed = variant(same, open_items=["Maintainer decision: keep the SELinux fallback?"])
-        self.assertTrue(self.op("github.review", "s1", result=changed)["ok"])
-        comments = self.decision_comments()
-        self.assertEqual(len(comments), 2)
-        self.assertIn("@octo", comments[-1])
+        pr["head"]["sha"] = SHA_C
+        push2 = pr_payload(12, action="synchronize", sha=SHA_C)
+        self.assertEqual(self.deliver(push2, event="pull_request", delivery="s2").outcome, "queued")
+        self.assertEqual(self.dispatcher.tick(), "dispatched")
+        self.assertEqual(self.op("begin", "s2", attempt=1)["status"], "started")
+        changed = variant(same, head_sha=SHA_C, open_items=["Maintainer decision: keep the SELinux fallback?"])
+        self.assertTrue(self.op("github.review", "s2", result=changed)["ok"])
+        reviews = self.decision_reviews()
+        self.assertEqual(len(reviews), 2)
+        self.assertIn("@octo", reviews[-1])
+        self.assertEqual(self.fake.comments.get(12, []), [])
 
-    def test_decision_comment_failure_is_retryable_and_not_duplicated(self) -> None:
-        self.started_review(12, "p1")
-        self.fake.issue_writes_fail = True
-        failed = self.op("github.review", "p1", result=DECISION)
-        self.assertEqual((failed["ok"], failed["retryable"]), (False, True))
-        self.assertEqual(len(self.fake.review_posts), 1)
-        self.fake.issue_writes_fail = False
-        retried = self.op("github.review", "p1", result=DECISION)
-        self.assertEqual((retried["ok"], retried["created"]), (True, False))
-        self.assertEqual((len(self.fake.review_posts), len(self.decision_comments())), (1, 1))
-
-    def test_no_decision_comment_for_stale_downgraded_or_change_request_reviews(self) -> None:
+    def test_no_decision_mention_for_stale_downgraded_or_change_request_reviews(self) -> None:
         # Stale: the head moved while the review ran, so the items are about a head nobody merges.
         self.started_review(12, "p1")
         self.fake.prs[12]["head"]["sha"] = SHA_B
@@ -7569,8 +7579,8 @@ class ReviewGateTests(BridgeTestCase):
         # A change request listing its open items blocks on its own; no decision is pending.
         self.started_review(14, "p3")
         self.assertTrue(self.op("github.review", "p3", result=variant(DECISION, event="REQUEST_CHANGES"))["ok"])
-        self.assertEqual([self.decision_comments(n) for n in (12, 13, 14)], [[], [], []])
-
+        self.assertEqual([self.decision_reviews(n) for n in (12, 13, 14)], [[], [], []])
+        self.assertEqual([self.fake.comments.get(n, []) for n in (12, 13, 14)], [[], [], []])
 
     # -- Clean base-branch merge review carry-over -------------------------------
 

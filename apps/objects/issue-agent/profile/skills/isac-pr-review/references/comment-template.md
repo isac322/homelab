@@ -12,27 +12,32 @@ For GUI, KWin, or web user-visible changes, inspect the visual-evidence links in
 
 이벤트는 판정으로 정한다(PRR-25, PRR-56): `GREEN` → `APPROVE`, `BLOCKING` → `REQUEST_CHANGES`, `OPEN` → `COMMENT`, 판정이 아닌 안내 → `COMMENT`. 리뷰 계정이 PR 작성자면 GitHub가 approve·request-changes를 거부하므로 bridge가 같은 본문을 `COMMENT`로 게시한다. 에이전트는 판정대로 event를 적는다.
 
-판정 줄에는 CI·required check 상태나 `PR-ready`를 쓰지 않는다. CI 결과는 근거로도 인용하지 않는다(PRR-38). `Verified`에는 리뷰어가 직접 실행하거나 읽어 확인한 것만 적는다.
+판정 줄에는 CI·required check 상태나 `PR-ready`를 쓰지 않는다. CI 결과는 근거로도 인용하지 않는다(PRR-38).
+
+**중복 금지 원칙**:
+- PR diff 안의 줄에 고정할 수 있는 새 finding은 `ReviewResult.comments[]` 인라인 코멘트에만 담고 `ReviewResult.body`에는 다시 적지 않는다(한 리뷰 카드 안에서 인라인 코멘트가 본문 바로 아래에 함께 표시되며, diff 밖이라 GitHub가 거부한 줄은 bridge가 자동으로 본문에 합친다). 본문의 `## Blocking` / `## Non-blocking`은 **diff 밖이라 인라인 코멘트로 달 수 없는 finding이 있을 때만** 쓰고, 없으면 섹션 자체를 생략한다.
+- 결정 요청(`## Decision needed`)은 본문에 한 번만 적고 `ReviewResult.open_items[]`에 한 줄 요약을 넣는다. 같은 결정 요청을 `ReviewResult.comments[]` 인라인 코멘트나 본문 `## Open items`에 중복해서 쓰지 않는다.
+- `## Verified`에는 실행한 재현·검증 명령과 적용한 base 브랜치 지침 파일만 적는다. diff·PR 메타데이터·스레드 읽기 같은 기본 절차나, 인라인 코멘트·`## Lenses`에서 이미 다룬 소스 읽기 내용과 finding 요약을 `## Verified`에 중복하지 않는다.
+- `## Lenses`에는 렌즈별 커버리지 근거(`file:line`과 probe 또는 `argument+challenger`)만 한 줄로 적고, 이미 위나 인라인 코멘트에 낸 finding·결정 사항을 다시 요약하지 않는다.
 
 ```markdown
 **Verdict: BLOCKING** reviewed at <head-sha>
 
 <One or two sentences: does this PR fix the claimed problem at its root cause, and what must change before merge. Mention a merge conflict with <base> here if there is one.>
 
-## Blocking
+## Blocking (only for findings outside the PR diff; omit when all blocking findings are in `comments[]`)
 - **P1** `path/to/file.go:123`: <mechanism: what breaks, for whom, under which input>. Fix: <smallest change; hazards of the fix itself, e.g. the lock it adds covers <I/O> with timeout <t>>. Evidence: <command run in <container/image> or line reference>.
 
-## Open items
-- <one line per decision, unrefuted P0–P2 concern, or uncovered lens; same text as `open_items`>
+## Open items (only for unrefuted P0–P2 concerns, uncovered lenses, or maintainer holds not already covered in `## Decision needed`)
+- <one line per item>
 
-## Non-blocking
+## Non-blocking (only for findings outside the PR diff; omit when all non-blocking findings are in `comments[]`)
 - **P3** `path/to/file_test.go:45`: <issue>. Suggestion: <change>.
 
 ## Verified
 - Reproduced <symptom> on merge-base <sha> with `<command>` in `<image>` (`docker run --rm --network none`): fails.
 - Same reproducer on this head rebased onto main <sha>: passes. Healthy control: passes.
 - Repository instructions applied (base <sha>): `AGENTS.md`, `CLAUDE.md`, `CONTRIBUTING.md`, <...>.
-
 ## Not verified
 - <area or environment not exercised, and why; probes that could not run in an isolated container, or long-running suites left to CI (PRR-57), and the argument used instead>.
 
@@ -56,7 +61,7 @@ For GUI, KWin, or web user-visible changes, inspect the visual-evidence links in
 **Verdict: GREEN** reviewed at <head-sha>. No blocking findings.
 ```
 
-`OPEN`일 때 첫 줄. `OPEN`은 메인테이너의 결정이나 증거 없이는 승인할 수 없는 상태다(PRR-47, PRR-49, PRR-53). 결정 항목·hold가 남으면 다른 blocking finding이나 prove-or-fix 우려가 있어도 `OPEN`이다. 예외는 PRR-48 [U]의 확인된 PR 도입 취약점뿐이다(PRR-56). 그때 blocking finding은 `## Blocking`에 그대로 적는다. 이유마다 `## Open items`에 한 줄, `open_items`에 한 항목을 적는다:
+`OPEN`일 때 첫 줄. `OPEN`은 메인테이너의 결정이나 증거 없이는 승인할 수 없는 상태다(PRR-47, PRR-49, PRR-53). 결정 항목·hold가 남으면 다른 blocking finding이나 prove-or-fix 우려가 있어도 `OPEN`이다. 예외는 PRR-48 [U]의 확인된 PR 도입 취약점뿐이다(PRR-56). 그때 diff 안의 blocking finding은 `ReviewResult.comments[]`에, diff 밖의 blocking finding만 `## Blocking`에 적는다:
 
 ```markdown
 **Verdict: OPEN** reviewed at <head-sha>. <n> open items need a maintainer decision or evidence before approval.
@@ -68,7 +73,7 @@ For GUI, KWin, or web user-visible changes, inspect the visual-evidence links in
 - **P1 (unrefuted)** `path/to/file.py:77`: <mechanism> when <concrete trigger>. Prove or fix: commit a test or probe that would fail if this were real, or change the code to <fix>.
 ```
 
-결정 요청(보안 정책 우회, 제품 결정, PRR-47)은 본문에 `isac-decision-brief` 형식의 결정 브리프(배경, 선택지와 각 결과, 권고)를 두고, `## Open items`와 `open_items`에는 200자 이하의 짧은 항목만 둔다. 본문과 `open_items`에서 @멘션하지 않는다. project owner 멘션과 재리뷰 요청 안내는 bridge의 결정 요청 코멘트(C7')가 한 번 한다:
+결정 요청(보안 정책 우회, 제품 결정, PRR-47)은 본문에 `isac-decision-brief` 형식의 결정 브리프(배경, 선택지와 각 결과, 권고)를 한 번만 두고, `open_items`에는 200자 이하의 짧은 항목만 둔다(같은 결정 항목을 `## Open items`나 `ReviewResult.comments[]` 인라인 코멘트에 중복해서 적지 않는다). 본문과 `open_items`에서 @멘션하지 않는다. project owner 멘션과 재리뷰 요청 안내는 bridge가 리뷰 본문에 합쳐(C7') 한 번 게시한다:
 
 ```markdown
 ## Decision needed
@@ -77,11 +82,7 @@ For GUI, KWin, or web user-visible changes, inspect the visual-evidence links in
 - B: <option> — <consequence>.
 - C: <option> — <consequence>.
 Recommendation: <option and why>.
-
-## Open items
-- Maintainer decision: <policy/product choice at file:line>. Options: <A | B | C>.
 ```
-
 메인테이너 hold가 있으면 `- Maintainer hold by <login> (<link>) is still in place.`를 `Open items`에 둔다(@ 없이). 답한 사람의 write 이상 권한을 확인하지 못했으면 그 항목을 그대로 두고 `- Maintainer decision: <item>. Waiting for an answer from a user with verified write access.`처럼 적는다(PRR-47). 자기 루프 가드로 같은 head를 다시 낼 때는 요약 문단에 `No maintainer answer since <previous review link>; open items unchanged.`만 적는다.
 
 공개 저장소에서 이 PR이 들여오지 않은 보안 finding(기존 취약점, PRR-19)은 세부 없이 적고, 비공개 보고 경로를 메인테이너가 정해 달라고 요청한다. 세부는 결과의 어떤 필드에도 넣지 않는다(`references/review-dimensions.md` §5). 이 문구는 blocking finding이 아니다:
@@ -111,9 +112,9 @@ PR이 들여온 취약점(기본 브랜치와 최신 릴리스에 없음, PRR-48
 | `BLOCKING` (구현 봇 PR의 "prove or fix" 포함) | `REQUEST_CHANGES` | 남은 결정·hold, 미반박 P0–P2 우려, 덮이지 않은 트리거 렌즈마다 한 항목. 확인된 finding만 있으면 `[]` |
 | superseded 닫기 권고, 판정 없는 정보 | `COMMENT` | `[]` |
 
-- 필드는 항상 넣는다. 최대 20개, 항목마다 200자 이하의 영어 한 문장이다. 위치(`file:line`)와 무엇이 필요한지(결정, 증거, 렌즈 재실행)를 담는다. 이유는 남은 결정·hold, 미반박 P0–P2 우려, 덮이지 않은 트리거 렌즈 세 가지뿐이다. 확인된 blocking finding은 body/comments에 적고 그 이유만으로 `open_items`에 중복하지 않는다(PRR-56). @멘션하지 않는다.
+- 필드는 항상 넣는다. 최대 20개, 항목마다 200자 이하의 영어 한 문장이다. 위치(`file:line`)와 무엇이 필요한지(결정, 증거, 렌즈 재실행)를 담는다. 이유는 남은 결정·hold, 미반박 P0–P2 우려, 덮이지 않은 트리거 렌즈 세 가지뿐이다. 확인된 blocking finding은 `comments`(diff 밖이면 `body`)에 적고 그 이유만으로 `open_items`에 중복하지 않는다(PRR-56). @멘션하지 않는다.
 - 공개될 수 있다. PRR-19 세부, 비밀 값, 익스플로잇 입력은 넣지 않는다.
-- bridge는 event가 `COMMENT`이고, `head_sha`가 현재 head이고, `open_items`가 비어 있지 않을 때만 project owner를 멘션하는 결정 요청 코멘트를 PR에 한 번 게시한다. 같은 항목 집합에는 다시 게시하지 않으니, 상태가 그대로인 항목은 같은 문구를 유지하고 바뀐 항목만 새로 쓴다.
+- bridge는 event가 `COMMENT`이고, `head_sha`가 현재 head이고, `open_items`가 비어 있지 않을 때만 project owner 멘션과 결정 요청 안내를 별도 코멘트가 아니라 리뷰 본문 안에 한 번 합쳐 게시한다. 같은 항목 집합에는 다시 멘션하지 않으니, 상태가 그대로인 항목은 같은 문구를 유지하고 바뀐 항목만 새로 쓴다.
 
 ## 재리뷰 본문
 
@@ -121,27 +122,24 @@ PR이 들여온 취약점(기본 브랜치와 최신 릴리스에 없음, PRR-48
 **Verdict: GREEN** re-reviewed at <new-head-sha> (previous: <old-head-sha>)
 
 ## Previous findings
-- Closed: P1 `file.go:123` <short title>. Fixed at `file.go:130`; regression test `TestX` fails without the fix.
+- Closed: P1 `file.go:123` <short title> (details in thread reply).
 - Open: P2 `file_test.go:45` <short title>. Unchanged.
 - Closed: open item "<text>". Maintainer <login> (verified write access) decided <decision> (<link>).
 
 ## Fix hazards
 - <head가 이전 리뷰(이 봇 포함)의 제안을 따른 수정이고 그 출처가 커밋 메시지, 스레드 답글, 또는 제안과 일치하는 diff로 보이면 첫 문장에 "This head applies the fix suggested in <link>."를 쓰고, 그 수정이 들여온 hazard를 같은 단락에 적는다. 그 hazard에서 나온 finding도 같은 링크를 단다. 출처가 보이지 않으면 이 문장을 쓰지 않는다.> <for fix commits: locks across blocking I/O and their timeouts, record-vs-act order, cancellation/signal windows, cleanup — what was checked and how>.
-
-## New findings
-- None.
 ```
 
-재리뷰도 merge-base 기준 전체 diff를 다시 리뷰한다(PRR-29). 기본 브랜치를 머지한 head면 들어온 변경과 PR의 상호작용을 `Verified`나 finding에 적는다(PRR-54). 이전 리뷰의 `Considered` 항목을 새 head에서 다시 보고, 여전히 버릴 수 있으면 다시 적는다.
+재리뷰도 merge-base 기준 전체 diff를 다시 리뷰한다(PRR-29). 기본 브랜치를 머지한 head면 들어온 변경과 PR의 상호작용을 `Verified`나 finding에 적는다(PRR-54). 이전 리뷰의 `Considered` 항목을 새 head에서 다시 보고, 여전히 버릴 수 있으면 다시 적는다. 새 finding이 PR diff 안이면 `ReviewResult.comments[]`에만 내고, diff 밖의 새 finding이 있을 때만 본문에 `## New findings` 섹션을 둔다(없으면 `## New findings` 섹션 생략).
 
 ## 인라인 finding과 스레드 답글
 
-- 새 finding 중 PR diff 안의 줄에 고정할 수 있는 것은 `ReviewResult.comments[]`에 `path`, `line`, `side`(추가·문맥 줄은 `RIGHT`), `start_line`, `body`로 담는다. 한 줄 코멘트는 `start_line: null`이고, 여러 줄 코멘트는 `start_line`이 범위의 첫 줄이며 `line`보다 작다. 본문의 `## Blocking`/`## Non-blocking` 목록에도 같은 finding을 남긴다. diff 밖이면 본문에만 둔다.
+- 새 finding 중 PR diff 안의 줄에 고정할 수 있는 것은 `ReviewResult.comments[]`에 `path`, `line`, `side`(추가·문맥 줄은 `RIGHT`), `start_line`, `body`(심각도 `**P1**`–`**P3**`, 메커니즘, 수정안, 근거)로만 담고, `ReviewResult.body`에는 중복해서 적지 않는다. 한 줄 코멘트는 `start_line: null`이고, 여러 줄 코멘트는 `start_line`이 범위의 첫 줄이며 `line`보다 작다. diff 밖의 finding만 `ReviewResult.body`의 `## Blocking`/`## Non-blocking`(재리뷰는 `## New findings`)에 둔다.
 - 재리뷰에서 `ReviewResult.thread_replies[]`는 PRR-29 조건에 맞는 스레드에만 `comment_id`와 함께 낸다. `reviewThreads`에서 스레드마다 `isResolved`와 댓글의 `author{login}`·`createdAt`을 읽고 고른다.
   - 해결되지 않은(`isResolved: false`) 봇 스레드 중 새 head에서 finding 상태가 바뀐 것. 예: `Fixed at <new-head-sha>: <file:line evidence>.`(`resolve: true`) / `Partially fixed at <new-head-sha>: <what remains>.` / `Regressed at <new-head-sha>: <why>.` 수정이 새 head에서 확인된 것만 `resolve: true`다.
   - 해결 여부와 무관하게 봇의 마지막 댓글 뒤에 사람(리뷰 App·이슈 App 봇이 아닌 계정)이 댓글을 단 스레드. 그 댓글에 답한다.
-- 그 밖의 스레드에는 답글을 내지 않는다. 이미 해결된 스레드를 다시 확인하지 않고(`Closed at …` 금지), 상태가 그대로인 열린 스레드에 `Still open …`을 달지 않는다. 라운드별 상태는 본문 `## Previous findings`의 Closed/Open이 기록한다.
-- 이미 해결된 스레드의 finding이 새 head에서 회귀하면 그 스레드에 답하지 않고 `ReviewResult.comments[]`에 새 인라인 finding으로 내며, 본문에 이전 finding을 언급한다(예: `Regression of the earlier finding <link>: …`).
+- 그 밖의 스레드에는 답글을 내지 않는다. 이미 해결된 스레드를 다시 확인하지 않고(`Closed at …` 금지), 상태가 그대로인 열린 스레드에 `Still open …`을 달지 않는다. 라운드별 상태는 본문 `## Previous findings`의 한 줄 Closed/Open 요약이 기록하며, 스레드 답글(`thread_replies[]`)에 적은 상세 설명을 본문에 중복해서 복붙하지 않는다.
+- 이미 해결된 스레드의 finding이 새 head에서 회귀하면 그 스레드에 답하지 않고 `ReviewResult.comments[]`에 새 인라인 finding으로 내며, 그 인라인 본문에 이전 finding을 언급한다(예: `Regression of the earlier finding <link>: …`).
 
 ## 닫기 권고 (외부·오래된 PR)
 

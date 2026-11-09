@@ -2077,8 +2077,8 @@ _REVIEW_SCHEMA = """\
 {"status":"reviewed|blocked",
  "head_sha":"40-hex PR head the review is about" (required iff reviewed),
  "event":"APPROVE|REQUEST_CHANGES|COMMENT" (required iff reviewed),
- "body":"English markdown <=60000 (review body per isac-pr-review comment-template; on re-review first section lists prior findings Closed/Open)",
- "comments":[{"path":"str","line":int>=1,"side":"RIGHT|LEFT","start_line":null | int < line,"body":"<=20000"}] (max 50, new inline findings; start_line null for a single-line comment, first line of the range for a multi-line one),
+ "body":"English markdown <=60000 (review body per isac-pr-review comment-template; do not repeat inline comments here; on re-review first section lists prior findings Closed/Open)",
+ "comments":[{"path":"str","line":int>=1,"side":"RIGHT|LEFT","start_line":null | int < line,"body":"<=20000"}] (max 50, new diff-anchored findings; do not duplicate in body; start_line null for a single-line comment, first line of the range for a multi-line one),
  "thread_replies":[{"comment_id":int (databaseId of any comment in an existing review thread),"body":"<=20000","resolve":bool}] (max 100; only for an unresolved thread whose finding changed at this head, or a thread where a human commented after your latest comment; never re-confirm a resolved thread),
  "open_items":[strings <=200] (max 20; one item per maintainer decision, unrefuted P0-P2 concern or uncovered triggered lens that keeps the verdict from APPROVE; only with event COMMENT or REQUEST_CHANGES, may be empty),
  "summary":"<=2000",
@@ -4329,15 +4329,17 @@ class Bridge:
                         return self._attention(f"invalid agent result after a correction request: {result}")
                     return self._request_correction(ev, mode, sid, local_id, result)
                 # The workflow takes a valid result now; a retry must re-run the step rather than harvest it again.
+                already_consumed = self._consumed(ev, turn)
                 self.store.consume_turn(ev["delivery_id"], mode, local_id)
                 if mode == "triage" and self.store.issue(ev["repo"], ev["issue_number"])["phase"] != "implementing":
                     self.store.update_issue(ev["repo"], ev["issue_number"], phase="triaged")
-                with self.store.tx() as conn:
-                    stages = json.loads(conn.execute("SELECT stages FROM events WHERE seq = ?", (ev["seq"],)).fetchone()[0])
-                    if "step_retries" in stages:
-                        stages.pop("step_retries", None)
-                        conn.execute("UPDATE events SET stages = ?, updated_at = ? WHERE seq = ?",
-                                     (json.dumps(stages), time.time(), ev["seq"]))
+                if not already_consumed:
+                    with self.store.tx() as conn:
+                        stages = json.loads(conn.execute("SELECT stages FROM events WHERE seq = ?", (ev["seq"],)).fetchone()[0])
+                        if "step_retries" in stages:
+                            stages.pop("step_retries", None)
+                            conn.execute("UPDATE events SET stages = ?, updated_at = ? WHERE seq = ?",
+                                         (json.dumps(stages), time.time(), ev["seq"]))
                 return {"state": "done", "session_id": sid, "mode": mode, "result": result}
             if not alive:
                 # The step died with the process (runner restart or eviction). Park the turn under a fresh localId so
@@ -5373,13 +5375,11 @@ class Bridge:
             # submit landed still resolves the threads it closed.
             resolved = self._resolve_replied(kept, gh)
             submitted = REVIEW_STATE_EVENTS.get(existing.get("state"), existing.get("state"))
-            out = {"review_id": existing.get("id"), "html_url": existing.get("html_url"),
-                   "event_submitted": submitted, "replies": replies, "dropped_replies": dropped,
-                   "resolved": resolved, "created": False, "stale": stale,
-                   "commit_status": self._record_verdict(repo, delivery, reviewed, head, submitted,
-                                                         existing.get("html_url"))}
-            out["decision_comment"] = None if stale else self._decision_comment(repo, number, reviewed, result)
-            return out
+            return {"review_id": existing.get("id"), "html_url": existing.get("html_url"),
+                    "event_submitted": submitted, "replies": replies, "dropped_replies": dropped,
+                    "resolved": resolved, "created": False, "stale": stale,
+                    "commit_status": self._record_verdict(repo, delivery, reviewed, head, submitted,
+                                                          existing.get("html_url"))}
         event, body = result["event"], result["body"]
         author = ((pr.get("user") or {}).get("login") or "").casefold()
         if event != "COMMENT" and reviewer and author == reviewer:
@@ -5445,8 +5445,10 @@ class Bridge:
             self._graphql(REVIEW_REPLY_ADD_MUTATION,
                           {"reviewId": review_id, "threadId": thread["thread_id"], "body": r["body"]}, client=gh)
         section = f"\n\n{findings_section(folded)}" if folded else ""
+        decision_text = self._decision_section(repo, number, reviewed, result, reviews, stale=stale)
+        decision = f"\n\n{decision_text}" if decision_text else ""
         data, error = self._graphql_try(REVIEW_SUBMIT_MUTATION, {
-            "reviewId": review_id, "event": event, "body": f"{marker}\n{body}{section}{tail}"}, client=gh)
+            "reviewId": review_id, "event": event, "body": f"{marker}\n{body}{section}{decision}{tail}"}, client=gh)
         if error is not None and stale and not error.retryable:
             # The fallback comment must land even when the pending review cannot be cleared.
             try:
@@ -5463,12 +5465,10 @@ class Bridge:
         if not isinstance(review, dict):
             raise OpError("github review submit: unexpected response", retryable=True)
         resolved = self._resolve_replied(kept, gh)
-        out = {"review_id": review.get("databaseId"), "html_url": review.get("url"), "event_submitted": event,
-               "replies": replies, "dropped_replies": dropped, "resolved": resolved, "created": True,
-               "inline_folded": bool(folded), "stale": stale,
-               "commit_status": self._record_verdict(repo, delivery, reviewed, head, event, review.get("url"))}
-        out["decision_comment"] = None if stale else self._decision_comment(repo, number, reviewed, result)
-        return out
+        return {"review_id": review.get("databaseId"), "html_url": review.get("url"), "event_submitted": event,
+                "replies": replies, "dropped_replies": dropped, "resolved": resolved, "created": True,
+                "inline_folded": bool(folded), "stale": stale,
+                "commit_status": self._record_verdict(repo, delivery, reviewed, head, event, review.get("url"))}
 
     def _resolve_replied(self, kept: list[tuple[dict[str, Any], dict[str, Any]]],
                          gh: GitHub | None) -> list[str]:
@@ -5494,41 +5494,37 @@ class Bridge:
                 return None
             return self._review_status(repo, head, event, target_url, reviewed)
 
-    def _decision_comment(self, repo: str, number: int, reviewed: str, result: Mapping[str, Any]) -> str | None:
+    def _decision_section(self, repo: str, number: int, reviewed: str, result: Mapping[str, Any],
+                          reviews: Sequence[Mapping[str, Any]], *, stale: bool) -> str:
         """When the agent's own verdict on the live head is COMMENT because of open items (maintainer decisions,
-        unrefuted P0-P2 concerns, uncovered lenses), mention the project owner (else the repository owner) once
-        per pull request and set of open items: merge stays blocked until a maintainer answers. A downgraded
-        APPROVE/REQUEST_CHANGES (the App's own pull request) or a stale review never posts one. Returns the
-        comment URL; a failure is retryable (the retried op reuses the review and posts the comment)."""
+        unrefuted P0-P2 concerns, uncovered lenses), fold a one-time project-owner mention into the review body
+        once per pull request and set of open items: merge stays blocked until a maintainer answers. A downgraded
+        APPROVE/REQUEST_CHANGES (the App's own pull request) or a stale review never includes it."""
         items = result.get("open_items") or []
         reviewer = self.reviewer_login()
-        if result.get("event") != "COMMENT" or not items or self.review_github is None or not reviewer:
-            return None
+        if stale or result.get("event") != "COMMENT" or not items or self.review_github is None or not reviewer:
+            return ""
         normalised = sorted(" ".join(i.split()).casefold() for i in items)
         digest = hashlib.sha256("\n".join(normalised).encode()).hexdigest()[:16]
+        decision_marker = f"{BOT_MARKER_PREFIX}:review-decision:{number}:{digest} -->"
+        if any(decision_marker in (r.get("body") or "") for r in reviews if _authored_by(r, reviewer)):
+            return ""
         try:
             cfg = self.registry().get(repo)
         except OpError:
             cfg = None
         owner = (cfg.project_owner if cfg else None) or repo.split("/", 1)[0]
-        command = review_command(reviewer)
+        body = result.get("body") or ""
+        missing = [" ".join(i.split()) for i in items if " ".join(i.split()) not in body]
         lines = [
+            decision_marker,
             f"@{owner} the review of `{reviewed}` is **COMMENT**, not an approval: these items need a maintainer "
             f"decision or answer. Merge stays blocked (`{self.config.review_status_context}` is not successful) "
             "until they are resolved.",
-            "",
-            *(f"- {' '.join(i.split())}" for i in items),
-            "",
-            f"Reply on the pull request, then comment `{command}` to request another review."
-            if command else "Reply on the pull request, then request another review.",
         ]
-        try:
-            posted = self._comment(repo, number, f"review-decision:{number}:{digest}", "\n".join(lines),
-                                   client=self.review_github)
-        except (OpError, TransportError) as exc:
-            raise OpError(f"review decision comment not posted: {getattr(exc, 'error', exc)}",
-                          retryable=True) from None
-        return posted["url"]
+        if missing:
+            lines.extend(["", *(f"- {item}" for item in missing)])
+        return "\n".join(lines)
 
     def _review_published(self, delivery_id: str, sha: str) -> None:
         """Record that this event's review of ``sha`` reached GitHub (or already carried our marker). The
