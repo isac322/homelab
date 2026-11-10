@@ -5,12 +5,12 @@
 # Official Bun image tag; the arm64 build runs in the target architecture.
 FROM oven/bun:1.4.4@sha256:f2b798e7ce1c056cd2149a6be7f014b3fde68a0c7165a3011ce3896e8404a6cd AS hapi-builder
 
-ARG HAPI_SOURCE_SHA256=8b1ff90fc0af1ca54484e73a6a9f4524cc24d7a6c98c1138935951a403267258
+ARG HAPI_SOURCE_SHA256=37284481f62e89fae264953adb914fe5a8a7e98bb5e6cb60b67621d578c10d20
 WORKDIR /src
 RUN apt-get update \
     && apt-get install -y --no-install-recommends ca-certificates curl patch \
     && rm -rf /var/lib/apt/lists/*
-RUN curl -fsSLo /tmp/hapi.tar.gz "https://github.com/tiann/hapi/archive/893260ac9bacc96ab931b1bfcd8d5d9533db6c4a.tar.gz" \
+RUN curl -fsSLo /tmp/hapi.tar.gz "https://github.com/tiann/hapi/archive/2161a9ff9652011b270dc135fe763dc4e52b7790.tar.gz" \
     && echo "${HAPI_SOURCE_SHA256}  /tmp/hapi.tar.gz" | sha256sum -c - \
     && tar -xzf /tmp/hapi.tar.gz --strip-components=1 -C /src \
     && rm /tmp/hapi.tar.gz
@@ -27,7 +27,7 @@ RUN patch -p1 < /tmp/hapi-0.34.0-lifecycle.patch \
     && bun run --cwd cli build:exe:allinone --target bun-linux-arm64
 
 # debian:trixie-slim (linux/arm64)
-FROM debian:trixie-slim@sha256:f6b08b09a05725f9431502d3b5714f5c4576e82c1a84fa1debe0c24a7e0c3ec4
+FROM debian:trixie-slim@sha256:24a01011d10eba3a023bc8585b9650b8b29021240d4217c05b905e09ef4a5232
 COPY --from=hapi-builder /src/cli/dist-exe/bun-linux-arm64/hapi /usr/local/bin/hapi
 RUN chmod 0755 /usr/local/bin/hapi
 

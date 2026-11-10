@@ -205,7 +205,7 @@ pillar-csi#155에서 PR 열기 → 31초 뒤 force-push → 3초 뒤 `@haechibot
 이벤트가 `finish`로 끝나면 bridge는 먼저 `completed`를 기록한 뒤 HAPI 세션 archive를 시도한다. archive는 `POST /api/sessions/:id/archive`를 95초 동기 배리어로 호출하며, 실패해도 완료 상태는 유지하고 `stages.archive_pending = {"next_at": ...}`를 남긴다. Dispatcher가 같은 주제에 활성 슬롯이 없을 때 이 항목을 회수한다. 취소된 리뷰도 같은 `archive_pending` 경로를 쓴다. 다음 이벤트는 `ensure_session`에서 archive 배리어가 성공한 뒤 65초 timeout의 resume 경로로 같은 대화를 다시 띄운다. 활성 세션이나 같은 주제의 형제 활성 이벤트가 있으면 archive를 호출하지 않는다. `200`과 코드 없는 `409`는 성공이며, `archive-cleanup-unconfirmed`는 대체 spawn 없이 operator park다. 시간 예산 유예가 끝나도 archive가 확정되기 전에는 `time_budget_expired`로 바꾸지 않는다. HAPI는 archive로 Codex 프로세스와 MCP 서버를 멈춘다.
 
 
-HAPI `v0.34.3` Runner 패치는 Linux `/proc/1/stat` starttime과 `boot_id`로 `namespaceGeneration`을 만들고, `/proc/<pid>/stat` starttime marker로 `acquireRunnerLock`과 `CodexRuntimeRecord` 세대를 판별한다. `stopSession`은 형제 활성 세션이 없을 때만 dead-wrapper의 `serverPid` 트리를 정리하고 마지막 root 정상 종료를 기다린다. 비활성 Codex 세션도 Hub의 `POST /sessions/:id/service-tier`를 허용한다.
+HAPI `v0.34.4` Runner 패치는 Linux `/proc/1/stat` starttime과 `boot_id`로 `namespaceGeneration`을 만들고, `/proc/<pid>/stat` starttime marker로 `acquireRunnerLock`과 `CodexRuntimeRecord` 세대를 판별한다. `stopSession`은 형제 활성 세션이 없을 때만 dead-wrapper의 `serverPid` 트리를 정리하고 마지막 root 정상 종료를 기다린다. 비활성 Codex 세션도 Hub의 `POST /sessions/:id/service-tier`를 허용한다.
 
 Runner와 n8n의 `bootstrap.sh`/`n8n-bootstrap.sh` 자체는 유지한다. 다만 runner bootstrap의 이전 세대 state·ownership 파일 삭제 블록과 n8n bootstrap의 구 단일 `workflow-import.json` 상태 처리 블록은 제거되었다. HAPI는 내장 30초 webhook 기본값을 사용하며 `HAPI_RUNNER_WEBHOOK_TIMEOUT_MS`는 없다.
 
@@ -351,7 +351,7 @@ HAPI `v0.30.7`은 agent 메시지 내부의 65,536자 초과 문자열을 저장
 - 전환 전 미처리 작업을 확인하고, 단일 GitHub App webhook을 새 endpoint와 secret으로 변경한 뒤 실제 전달을 검증한다. 과거 Archon 대화의 HAPI 이전이나 legacy 댓글 전달 기능은 구현하지 않는다.
 - 전환 검증 후 Archon 전용 리소스와 PVC 데이터를 삭제한다. 삭제 뒤 과거 Archon 세션을 재개할 수 없다는 결과를 사용자에게 고지했다. GitHub App과 SSM 인증 원본은 새 시스템의 공유 의존성이므로 유지하며, 삭제 전 새 namespace에서 독립적인 토큰 발급을 확인한다.
 - 최소 운영 주의사항: 이번 n8n 업그레이드는 5개 forward migration(261→266)을 실행했으므로 downgrade 전 검증된 pre-upgrade SQLite backup restore가 선행돼야 한다.
-- Runner 기준 버전은 Docker 29.9.3, Codex 0.167.0, Node 26.13.0, Go 1.27.3, GitHub CLI 2.103.3이며 HAPI `v0.34.3` 패치를 사용한다. Codex spawn에는 `serviceTier: "fast"`를 보낸다. 삭제된 `_ensure_service_tier` 경로와 비활성 세션 service-tier 보정 호출은 없다. n8n은 2.46.6이고 bridge·publisher는 GitHub REST API `2026-03-10`을 쓴다.
+- Runner 기준 버전은 Docker 29.9.3, Codex 0.167.0, Node 26.13.0, Go 1.27.3, GitHub CLI 2.103.3이며 HAPI `v0.34.4` 패치를 사용한다. Codex spawn에는 `serviceTier: "fast"`를 보낸다. 삭제된 `_ensure_service_tier` 경로와 비활성 세션 service-tier 보정 호출은 없다. n8n은 2.46.7이고 bridge·publisher는 GitHub REST API `2026-03-10`을 쓴다.
 - bridge rollback은 검증된 이전 artifact로만 수행한다. bridge DB/WAL, event 행, `delivery_id`·attempt key·`localId`·session ID, stage와 publication marker, unresolved/attention 상태를 삭제·초기화·재생성하지 않는다. rollback 뒤에는 dispatch를 멈춘 상태에서 같은 수동 관측 절차를 다시 실행하고, 안전이 확인된 미수집 event만 Hub가 허용한 명시적 Retry 또는 Cancel로 처리한다. 전체 event 대량 `retry_event`, 원문 재전송, stale head 승인과 결과 재게시를 rollback 절차에 포함하지 않는다.
 
 ### Runner namespace 전환

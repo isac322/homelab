@@ -1135,7 +1135,7 @@ class SubjectAndCacheCleanupTest(EndpointCase):
         os.utime(os.path.dirname(bun_old), (old_ts, old_ts))
 
         hapi_old_rt = os.path.join(self.hapi_home, "runtime", "0.30.7", "cli.js")
-        hapi_cur_rt = os.path.join(self.hapi_home, "runtime", "0.34.3", "cli.js")
+        hapi_cur_rt = os.path.join(self.hapi_home, "runtime", "0.34.4", "cli.js")
         write(hapi_old_rt, "old")
         write(hapi_cur_rt, "cur")
         os.utime(os.path.dirname(hapi_old_rt), (old_ts, old_ts))
