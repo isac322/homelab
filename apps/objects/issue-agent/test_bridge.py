@@ -5015,6 +5015,16 @@ class TurnTests(BridgeTestCase):
         self.fake.claude_assistant(self.sid, line)
         self.assertEqual(self.op("session_turn")["state"], "done")
 
+    def test_valid_result_with_foreign_nonce_fails_closed(self) -> None:
+        self.send()
+        self.fake.invoke(self.sid, self.lid)
+        self.say(self.result_line().replace(self.lid, "issue-agent-foreign-review"))
+        result = self.op("session_turn")
+        self.assertEqual((result["state"], result["detail"]),
+                         ("attention", "agent result nonce does not match this turn"))
+        self.assertNotIn("park_class", result)
+        self.assertIsNone(self.store.turn("d1", "implement")["consumed_id"])
+
     def test_result_must_be_the_final_assistant_text(self) -> None:
         self.send()
         self.fake.invoke(self.sid, self.lid)

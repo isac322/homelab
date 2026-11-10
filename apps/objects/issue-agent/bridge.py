@@ -2235,20 +2235,22 @@ def provider_failure(message: Mapping[str, Any]) -> str | None:
 
 
 def find_result(texts: list[str], nonce: str) -> tuple[str, Any]:
-    """Return (state, last successfully decoded JSON value): absent, malformed, or decoded."""
-    needle = f"{RESULT_TAG} {nonce}"
+    """Return (state, last valid result): absent, malformed, mismatched, or decoded."""
+    marker = re.compile(rf"{re.escape(RESULT_TAG)} (?P<nonce>\S+)")
     decoder = json.JSONDecoder()
     state, found = "absent", None
     for text in texts:
-        start = 0
-        while (idx := text.find(needle, start)) >= 0:
-            start = idx + len(needle)
+        for match in marker.finditer(text):
             if state == "absent":
                 state = "malformed"
-            rest = text[start:].lstrip(" \t")
+            rest = text[match.end():].lstrip(" \t")
             try:
                 value, _ = decoder.raw_decode(rest)
             except json.JSONDecodeError:
+                continue
+            if match.group("nonce") != nonce:
+                if state != "decoded":
+                    state = "mismatched"
                 continue
             state, found = "decoded", value
     return state, found
@@ -4382,6 +4384,9 @@ class Bridge:
                 texts = assistant_texts(m)
                 if texts:
                     last_text, last_message = texts, m
+            result_state, raw = find_result(last_text, local_id)
+            if result_state == "mismatched":
+                return self._attention("agent result nonce does not match this turn")
             requests = (session.get("agentState") or {}).get("requests") or {}
             # HAPI clears `active` once the agent process is gone; `thinking` may then be stale.
             alive = session.get("active") is not False
@@ -4395,7 +4400,6 @@ class Bridge:
                             "detail": f"agent turn still running at the bridge deadline {_utc(deadline_at)}"}
                 self.store.put_turn(ev["delivery_id"], mode, local_id, turn["session_id"], "sent", 0)
                 return {"state": "running", "session_id": sid, "pending_requests": len(requests)}
-            result_state, raw = find_result(last_text, local_id)
             if result_state == "decoded":
                 result = validate_result(mode, raw, int(ev["issue_number"]))
                 if isinstance(result, str):
