@@ -7,6 +7,7 @@ Run: python3 -m unittest apps/objects/issue-agent/runner/test_publisher.py
 from __future__ import annotations
 
 import http.client
+import glob
 import hashlib
 import json
 import os
@@ -16,7 +17,10 @@ import subprocess
 import sys
 import tempfile
 import threading
+import sqlite3
+import time
 import unittest
+from contextlib import closing
 from http import HTTPStatus
 from http.server import ThreadingHTTPServer
 from unittest.mock import patch
@@ -964,6 +968,204 @@ class WorktreeRestoreTest(EndpointCase):
                 status, payload = self.restore(body)
                 self.assertEqual((status, payload["error"]), (HTTPStatus.BAD_REQUEST, "invalid_request"))
         self.assertFalse(os.path.lexists(self.path))
+
+
+class SubjectAndCacheCleanupTest(EndpointCase):
+    PARENT_7 = "01a0f9f1-e7fa-7483-99bf-1e7490c317a7"
+    CHILD_7 = "01a0f9f2-efe2-7503-baef-e766952411c9"
+    CWD_ONLY_7 = "01a0f9f3-f71d-7040-a10c-bd353dc74c5b"
+    KEEP_70 = "01a0f9f4-1111-7222-8333-444455556666"
+    ORPHAN_OLD = "01a0f9f5-aaaa-7bbb-8ccc-ddddeeeeffff"
+
+    def setUp(self) -> None:
+        super().setUp()
+        self.runner_home = os.path.join(self.root, "home")
+        self.codex_home = os.path.join(self.runner_home, ".codex")
+        self.hapi_home = os.path.join(self.runner_home, ".hapi")
+        self.runner_tmp = os.path.join(self.root, "tmp")
+        for d in (self.runner_home, self.codex_home, self.hapi_home, self.runner_tmp):
+            os.makedirs(d, exist_ok=True)
+        for name, val in (
+            ("RUNNER_HOME", self.runner_home),
+            ("CODEX_HOME", self.codex_home),
+            ("HAPI_HOME", self.hapi_home),
+            ("RUNNER_TMP", self.runner_tmp),
+        ):
+            p = patch.object(publisher, name, val)
+            p.start()
+            self.addCleanup(p.stop)
+
+    def init_codex_dbs(self, wt7: str, wt70: str, dead_wt: str) -> None:
+        with closing(sqlite3.connect(os.path.join(self.codex_home, "state_5.sqlite"))) as conn, conn:
+            conn.execute("CREATE TABLE threads (id TEXT PRIMARY KEY, cwd TEXT NOT NULL, rollout_path TEXT NOT NULL,"
+                         " created_at INTEGER NOT NULL, attached_thread_parent_id TEXT)")
+            conn.execute("CREATE TABLE thread_spawn_edges (parent_thread_id TEXT NOT NULL,"
+                         " child_thread_id TEXT NOT NULL PRIMARY KEY, status TEXT NOT NULL)")
+            conn.execute("CREATE TABLE thread_read_receipts (thread_id TEXT PRIMARY KEY NOT NULL)")
+            conn.executemany(
+                "INSERT INTO threads VALUES (?, ?, ?, ?, ?)",
+                [
+                    (self.PARENT_7, wt7, os.path.join(self.codex_home, "archived_sessions", f"rollout-1-{self.PARENT_7}.jsonl"), 1, None),
+                    (self.CHILD_7, wt7, os.path.join(self.codex_home, "archived_sessions", f"rollout-2-{self.CHILD_7}.jsonl"), 2, self.PARENT_7),
+                    (self.CWD_ONLY_7, os.path.join(wt7, "sub"), os.path.join(self.codex_home, "archived_sessions", f"rollout-3-{self.CWD_ONLY_7}.jsonl"), 3, None),
+                    (self.KEEP_70, wt70, os.path.join(self.codex_home, "archived_sessions", f"rollout-4-{self.KEEP_70}.jsonl"), 4, None),
+                    (self.ORPHAN_OLD, dead_wt, os.path.join(self.codex_home, "archived_sessions", f"rollout-5-{self.ORPHAN_OLD}.jsonl"), 5, None),
+                ],
+            )
+            conn.execute("INSERT INTO thread_spawn_edges VALUES (?, ?, 'open')", (self.PARENT_7, self.CHILD_7))
+            for tid in (self.PARENT_7, self.CHILD_7, self.CWD_ONLY_7, self.KEEP_70, self.ORPHAN_OLD):
+                conn.execute("INSERT INTO thread_read_receipts VALUES (?)", (tid,))
+
+        with closing(sqlite3.connect(os.path.join(self.codex_home, "thread_history_1.sqlite"))) as conn, conn:
+            conn.execute("CREATE TABLE thread_turns (thread_id TEXT NOT NULL, turn_id TEXT NOT NULL)")
+            conn.execute("CREATE TABLE thread_items (thread_id TEXT NOT NULL, item_id TEXT NOT NULL)")
+            conn.execute("CREATE TABLE thread_history_projection_state (thread_id TEXT PRIMARY KEY)")
+            for tid in (self.PARENT_7, self.CHILD_7, self.CWD_ONLY_7, self.KEEP_70, self.ORPHAN_OLD):
+                conn.execute("INSERT INTO thread_turns VALUES (?, 't1')", (tid,))
+                conn.execute("INSERT INTO thread_items VALUES (?, 'i1')", (tid,))
+                conn.execute("INSERT INTO thread_history_projection_state VALUES (?)", (tid,))
+
+        with closing(sqlite3.connect(os.path.join(self.codex_home, "logs_2.sqlite"))) as conn, conn:
+            conn.execute("CREATE TABLE logs (id INTEGER PRIMARY KEY AUTOINCREMENT, thread_id TEXT)")
+            for tid in (self.PARENT_7, self.CHILD_7, self.KEEP_70):
+                conn.execute("INSERT INTO logs (thread_id) VALUES (?)", (tid,))
+
+    def test_cleanup_removes_subagents_sqlite_config_runtime_and_tmp_for_subject_only(self) -> None:
+        wt7, _ = self.linked_worktree("issue-7")
+        wt70, _ = self.linked_worktree("issue-70")
+        dead_wt = os.path.join(self.worktrees, "issue-999")
+        write(os.path.join(self.base, ".git", "refs", "heads", "hapi-issue-7"), "a" * 40 + "\n")
+        self.init_codex_dbs(wt7, wt70, dead_wt)
+
+        for idx, tid in enumerate((self.PARENT_7, self.CHILD_7, self.CWD_ONLY_7, self.KEEP_70, self.ORPHAN_OLD), 1):
+            write(os.path.join(self.codex_home, "archived_sessions", f"rollout-{idx}-{tid}.jsonl"), "{}\n")
+
+        # config.toml with base checkout, issue-7, and issue-70
+        cfg_text = (
+            'model = "gpt-5"\n'
+            f'\n[projects.{json.dumps(self.base)}]\ntrust_level = "untrusted"\n'
+            f'\n[projects.{json.dumps(wt7)}]\ntrust_level = "untrusted"\n'
+            f'\n[projects.{json.dumps(wt70)}]\ntrust_level = "untrusted"\n'
+        )
+        write(os.path.join(self.codex_home, "config.toml"), cfg_text)
+
+        # HAPI runtime & queue files
+        rt7 = os.path.join(self.codex_home, "hapi-runtime-owners", "rt-7.json")
+        rt70 = os.path.join(self.codex_home, "hapi-runtime-owners", "rt-70.json")
+        write(rt7, json.dumps({"id": "rt-7", "sessions": {"s-7": {"threadId": self.PARENT_7, "active": False}}}))
+        write(rt70, json.dumps({"id": "rt-70", "sessions": {"s-70": {"threadId": self.KEEP_70, "active": True}}}))
+        q7 = os.path.join(self.hapi_home, "codex-runtimes", "queues", "s-7.queue.json")
+        q70 = os.path.join(self.hapi_home, "codex-runtimes", "queues", "s-70.queue.json")
+        write(q7, "{}")
+        write(q70, "{}")
+
+        # /tmp scratch for issue-7 and issue-70
+        tmp7 = os.path.join(self.runner_tmp, "issue-agent-worktree", "issue-7", "note.txt")
+        tmp70 = os.path.join(self.runner_tmp, "issue-agent-worktree", "issue-70", "note.txt")
+        for p in (tmp7, tmp70):
+            write(p, "scratch")
+        deleted_cli: list[str] = []
+        with patch.object(publisher, "run_codex_delete", side_effect=lambda tid: (deleted_cli.append(tid), True)[1]):
+            status, payload = self.call(
+                "POST",
+                "/cleanup",
+                json.dumps({
+                    "repo": REPO,
+                    "worktree": "issue-7",
+                    "branch": "hapi-issue-7",
+                    "codex_session_ids": [self.PARENT_7],
+                }).encode(),
+            )
+        self.assertEqual(status, HTTPStatus.OK, payload)
+        self.assertIn(self.PARENT_7, deleted_cli)
+        self.assertIn(self.CWD_ONLY_7, deleted_cli)
+        self.assertNotIn(self.KEEP_70, deleted_cli)
+
+        # Worktree 7 and its rollouts, SQLite rows, config.toml, runtime, and tmp are gone; 70 stays
+        self.assertFalse(os.path.exists(wt7))
+        self.assertTrue(os.path.exists(wt70))
+        for tid in (self.PARENT_7, self.CHILD_7, self.CWD_ONLY_7):
+            self.assertEqual(glob.glob(os.path.join(self.codex_home, "archived_sessions", f"*{tid}*.jsonl")), [])
+        self.assertEqual(len(glob.glob(os.path.join(self.codex_home, "archived_sessions", f"*{self.KEEP_70}*.jsonl"))), 1)
+
+        with closing(sqlite3.connect(os.path.join(self.codex_home, "state_5.sqlite"))) as conn:
+            remaining = {r[0] for r in conn.execute("SELECT id FROM threads")}
+        self.assertEqual(remaining, {self.KEEP_70, self.ORPHAN_OLD})
+
+        with closing(sqlite3.connect(os.path.join(self.codex_home, "thread_history_1.sqlite"))) as conn:
+            remaining_th = {r[0] for r in conn.execute("SELECT thread_id FROM thread_turns")}
+        self.assertEqual(remaining_th, {self.KEEP_70, self.ORPHAN_OLD})
+
+        import tomllib as _toml
+        with open(os.path.join(self.codex_home, "config.toml"), encoding="utf-8") as handle:
+            after_cfg = _toml.loads(handle.read())
+        self.assertEqual(set(after_cfg["projects"].keys()), {self.base, wt70})
+
+        self.assertFalse(os.path.exists(rt7))
+        self.assertFalse(os.path.exists(q7))
+        self.assertTrue(os.path.exists(rt70))
+        self.assertTrue(os.path.exists(q70))
+        self.assertFalse(os.path.exists(os.path.dirname(tmp7)))
+        self.assertTrue(os.path.exists(tmp70))
+
+    def test_cleanup_caches_sweeps_orphan_worktrees_and_stale_global_caches(self) -> None:
+        wt70, _ = self.linked_worktree("issue-70")
+        dead_wt = os.path.join(self.worktrees, "issue-999")
+        self.init_codex_dbs(dead_wt, wt70, dead_wt)
+        write(os.path.join(self.codex_home, "archived_sessions", f"rollout-5-{self.ORPHAN_OLD}.jsonl"), "{}\n")
+        write(os.path.join(self.codex_home, "archived_sessions", f"rollout-4-{self.KEEP_70}.jsonl"), "{}\n")
+
+        # Reference rust 1.99.1 and go 1.27.3 in base checkout
+        write(os.path.join(self.base, "rust-toolchain.toml"), '[toolchain]\nchannel = "1.99.1"\n')
+        write(os.path.join(self.base, "go.mod"), "module example.com/m\n\ngo 1.27.3\n")
+
+        old_ts = time.time() - 20 * 86400
+        tc_old = os.path.join(self.runner_home, ".rustup", "toolchains", "1.98.1-aarch64-unknown-linux-gnu")
+        tc_keep = os.path.join(self.runner_home, ".rustup", "toolchains", "1.99.1-aarch64-unknown-linux-gnu")
+        write(os.path.join(tc_old, "bin", "rustc"), "old")
+        write(os.path.join(tc_keep, "bin", "rustc"), "keep")
+        os.utime(tc_old, (old_ts, old_ts))
+        os.utime(os.path.join(tc_old, "bin", "rustc"), (old_ts, old_ts))
+
+        bun_old = os.path.join(self.runner_home, ".bun", "install", "cache", "pkg-old@1.0.0", "index.js")
+        bun_new = os.path.join(self.runner_home, ".bun", "install", "cache", "pkg-new@1.0.0", "index.js")
+        write(bun_old, "old")
+        write(bun_new, "new")
+        os.utime(bun_old, (old_ts, old_ts))
+        os.utime(os.path.dirname(bun_old), (old_ts, old_ts))
+
+        hapi_old_rt = os.path.join(self.hapi_home, "runtime", "0.30.7", "cli.js")
+        hapi_cur_rt = os.path.join(self.hapi_home, "runtime", "0.34.3", "cli.js")
+        write(hapi_old_rt, "old")
+        write(hapi_cur_rt, "cur")
+        os.utime(os.path.dirname(hapi_old_rt), (old_ts, old_ts))
+        old_log = os.path.join(self.hapi_home, "logs", "2026-10-01-pid-999.log")
+        live_log = os.path.join(self.hapi_home, "logs", "2026-10-01-pid-42-runner.log")
+        write(os.path.join(self.hapi_home, "runner.state.json"), json.dumps({"pid": 42}))
+        write(old_log, "old")
+        write(live_log, "live")
+        os.utime(old_log, (old_ts, old_ts))
+        os.utime(live_log, (old_ts, old_ts))
+
+        with patch.object(publisher, "run_codex_delete", return_value=False):
+            status, dry = self.call("POST", "/cleanup/caches", json.dumps({"max_age_days": 14, "dry_run": True}).encode())
+            self.assertEqual(status, HTTPStatus.OK, dry)
+            self.assertTrue(os.path.exists(tc_old))
+            self.assertTrue(os.path.exists(bun_old))
+
+            status, real = self.call("POST", "/cleanup/caches", json.dumps({"max_age_days": 14, "dry_run": False}).encode())
+            self.assertEqual(status, HTTPStatus.OK, real)
+
+        self.assertFalse(os.path.exists(tc_old))
+        self.assertTrue(os.path.exists(tc_keep))
+        self.assertFalse(os.path.exists(os.path.dirname(bun_old)))
+        self.assertTrue(os.path.exists(bun_new))
+        self.assertFalse(os.path.exists(os.path.dirname(hapi_old_rt)))
+        self.assertTrue(os.path.exists(hapi_cur_rt))
+        self.assertFalse(os.path.exists(old_log))
+        self.assertTrue(os.path.exists(live_log))
+        with closing(sqlite3.connect(os.path.join(self.codex_home, "state_5.sqlite"))) as conn:
+            self.assertEqual({r[0] for r in conn.execute("SELECT id FROM threads")}, {self.KEEP_70})
 
 
 if __name__ == "__main__":

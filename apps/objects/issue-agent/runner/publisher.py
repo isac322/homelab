@@ -9,7 +9,8 @@ called only by the bridge (bearer token the agent container cannot read).
   POST /checkout {repo}                        -> {path, created, default_branch}
   POST /resolve  {repo, branch}                -> {sha}
   POST /push     {repo, branch, expected_sha, stale_sha?} -> {sha}
-  POST /cleanup  {repo, worktree, branch, codex_session_ids} -> {removed}
+  POST /cleanup  {repo, worktree, branch, codex_session_ids, hapi_session_ids?} -> {removed}
+  POST /cleanup/caches {max_age_days?, dry_run?} -> {orphan_worktrees, global_caches}
   POST /worktree/restore {repo, worktree, branch} -> {restored, path, already} | {restored: false, reason}
   POST /visual-evidence {repo, worktree, pr_number, head_sha, base_sha, manifest_path, marker, body,
                          reuse_existing} -> {created, already_published, ref_url, commit_url, assets, asset_urls}
@@ -44,24 +45,28 @@ last prune and the lease it served). Every route but /healthz needs the token.
 from __future__ import annotations
 
 import base64
-import hmac
+import fcntl
 import glob
 import hashlib
+import hmac
 import json
 import logging
 import os
 import re
 import shutil
 import signal
+import sqlite3
 import stat
 import subprocess
 import sys
 import tempfile
 import threading
 import time
+import tomllib
 import urllib.error
-import urllib.request
 import urllib.parse
+import urllib.request
+from contextlib import closing
 from http import HTTPStatus
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 
@@ -71,8 +76,11 @@ PUSH_TOKEN_FILE = os.environ.get("GITHUB_PUSH_TOKEN_FILE", "/run/issue-agent/pus
 MAX_VISUAL_ARTIFACTS = 20
 MAX_VISUAL_ARTIFACT_BYTES = 10 * 1024 * 1024
 MAX_VISUAL_MANIFEST_BYTES = 256 * 1024
+RUNNER_HOME = os.environ.get("RUNNER_HOME", "/home/agent")
 CHECKOUTS = os.environ.get("ISSUE_AGENT_CHECKOUTS", "/home/agent/checkouts")
 CODEX_HOME = os.environ.get("CODEX_HOME", "/home/agent/.codex")
+HAPI_HOME = os.environ.get("HAPI_HOME", "/home/agent/.hapi")
+RUNNER_TMP = os.environ.get("ISSUE_AGENT_RUNNER_TMP", "/tmp")
 STATE_DIR = os.environ.get("PUBLISHER_STATE_DIR", "/var/lib/issue-agent-publisher")
 GITHUB_API = "https://api.github.com"
 MAX_BODY = 16 * 1024
@@ -81,7 +89,15 @@ GIT_TIMEOUT = 600
 PUSH_RETRY_DELAYS = (1.0, 2.0)
 UNTRUST = "/opt/issue-agent/bin/codex-untrust"
 UNTRUST_TIMEOUT = 60
-
+CODEX_BIN = os.environ.get("CODEX_BIN", "codex")
+CODEX_DELETE_TIMEOUT = 60
+RUSTUP_BIN = os.environ.get("RUSTUP_BIN", "rustup")
+NPM_BIN = os.environ.get("NPM_BIN", "npm")
+GO_BIN = os.environ.get("GO_BIN", "/usr/local/go/bin/go")
+HAPI_BIN = os.environ.get("HAPI_BIN", "/usr/local/bin/hapi")
+CACHE_CMD_TIMEOUT = 120
+DEFAULT_CACHE_MAX_AGE_DAYS = 14
+HAPI_LOG_MAX_AGE_DAYS = 7
 REPO_RE = re.compile(r"^[A-Za-z0-9_.-]+/[A-Za-z0-9_.-]+$")
 BRANCH_RE = re.compile(r"^hapi-issue-[0-9]+$")
 SHA_RE = re.compile(r"^[0-9a-f]{40}$")
@@ -101,8 +117,12 @@ VISUAL_ARTIFACT_LINE_RE = re.compile(
 VISUAL_ARTIFACT_ERROR_FIELDS = frozenset({"sha256", "bytes", "media_type", "source_sha"})
 VISUAL_MANIFEST_PATH_RE = re.compile(r"^[^/\x00][^\x00]{0,1023}$")
 CODEX_ID_RE = re.compile(r"^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$")
+HAPI_ID_RE = re.compile(r"^[A-Za-z0-9][A-Za-z0-9_-]{0,63}$")
 MAX_CODEX_IDS = 50
 PACKED_REF_RE = re.compile(r"^[0-9a-f]{40,64} (refs/\S+)$")
+CONFIG_PROJECT_HEADER_RE = re.compile(r'^\s*\[\s*projects\s*\.\s*("(?:[^"\\]|\\.)*"|\'[^\']*\')\s*\]\s*(?:#.*)?$')
+CONFIG_TABLE_RE = re.compile(r"^\s*\[")
+ROLLOUT_FILE_RE = re.compile(r"^rollout-.*-([0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12})\.jsonl$")
 # Shared with the dockerd sidecar, which mounts the same checkouts directory at
 # the same path (runner/dockerd-janitor.sh reads the request and writes the
 # status there, through runner/chown-sweep).
@@ -1110,13 +1130,273 @@ def remove_branch(repo: str, branch: str) -> list[str]:
     return removed
 
 
-def remove_codex_records(codex_ids: list[str]) -> list[str]:
-    """Rollout files (live and archived) of the given Codex sessions, only as regular files under CODEX_HOME."""
-    if not codex_ids or not os.path.isdir(CODEX_HOME):
+def worktree_target_paths(repo: str, worktree: str | None) -> list[str]:
+    """Lexical and canonical (realpath) spellings of ``<repo>-worktrees/<worktree>``."""
+    if worktree is None:
+        return []
+    base = checkout_path(repo)
+    worktrees_dir = base + "-worktrees"
+    lexical = os.path.join(worktrees_dir, worktree)
+    paths = [lexical]
+    if os.path.lexists(worktrees_dir) and not os.path.islink(worktrees_dir) and os.path.isdir(worktrees_dir):
+        real_dir = confined_root(worktrees_dir)
+        canonical = os.path.join(real_dir, worktree)
+        if canonical not in paths:
+            paths.insert(0, canonical)
+        target = os.path.join(worktrees_dir, worktree)
+        if os.path.lexists(target) and not os.path.islink(target) and os.path.isdir(target):
+            real_target = os.path.realpath(target)
+            if inside(real_target, real_dir) and real_target not in paths:
+                paths.insert(0, real_target)
+    return paths
+
+
+def _safe_sqlite_path(root_dir: str, name: str) -> str | None:
+    if not os.path.isdir(root_dir) or os.path.islink(root_dir):
+        return None
+    root = os.path.realpath(root_dir)
+    path = os.path.join(root_dir, name)
+    if not os.path.lexists(path) or os.path.islink(path):
+        return None
+    real = os.path.realpath(path)
+    if not os.path.isfile(real) or not inside(real, root):
+        return None
+    return real
+
+
+def _table_exists(conn: sqlite3.Connection, table: str) -> bool:
+    row = conn.execute("SELECT 1 FROM sqlite_master WHERE type = 'table' AND name = ?", (table,)).fetchone()
+    return row is not None
+
+
+def _runtime_directories() -> list[str]:
+    dirs = []
+    for candidate in (
+        os.path.join(CODEX_HOME, "hapi-runtime-owners"),
+        os.path.join(HAPI_HOME, "codex-runtimes"),
+    ):
+        if os.path.isdir(candidate) and not os.path.islink(candidate):
+            dirs.append(os.path.realpath(candidate))
+    return list(dict.fromkeys(dirs))
+
+
+def discover_codex_threads(
+    codex_ids: list[str],
+    worktree_paths: list[str] = (),
+    hapi_ids: list[str] = (),
+) -> tuple[list[str], list[str]]:
+    """Return ``(root_ids, all_ids)`` for the subject's Codex sessions and spawned subagents."""
+    seeds: list[str] = []
+    seen_seeds: set[str] = set()
+
+    def add_seed(value: Any) -> None:
+        if isinstance(value, str):
+            lower = value.lower()
+            if CODEX_ID_RE.fullmatch(lower) and lower not in seen_seeds:
+                seen_seeds.add(lower)
+                seeds.append(lower)
+
+    for cid in codex_ids:
+        add_seed(cid)
+
+    hapi_set = {hid for hid in hapi_ids if isinstance(hid, str) and HAPI_ID_RE.fullmatch(hid)}
+    if hapi_set:
+        for rdir in _runtime_directories():
+            for entry in sorted(os.listdir(rdir)):
+                if not entry.endswith(".json"):
+                    continue
+                fpath = os.path.join(rdir, entry)
+                if os.path.islink(fpath) or not os.path.isfile(fpath):
+                    continue
+                try:
+                    with open(fpath, encoding="utf-8") as handle:
+                        data = json.load(handle)
+                except (OSError, ValueError):
+                    continue
+                sessions = data.get("sessions") if isinstance(data, dict) else None
+                if not isinstance(sessions, dict):
+                    continue
+                for sid, meta in sessions.items():
+                    if sid in hapi_set and isinstance(meta, dict):
+                        add_seed(meta.get("threadId"))
+
+    state_db = _safe_sqlite_path(CODEX_HOME, "state_5.sqlite")
+    if state_db is None:
+        return list(seeds), list(seeds)
+
+    children_of: dict[str, list[str]] = {}
+    parents_of: dict[str, set[str]] = {}
+    try:
+        with closing(sqlite3.connect(state_db, timeout=30.0)) as conn:
+            if _table_exists(conn, "threads"):
+                for wt in worktree_paths:
+                    prefix = wt.rstrip("/") + "/"
+                    for (tid,) in conn.execute(
+                        "SELECT id FROM threads WHERE cwd = ? OR substr(cwd, 1, ?) = ? ORDER BY created_at, id",
+                        (wt, len(prefix), prefix),
+                    ):
+                        add_seed(tid)
+                for parent_id, child_id in conn.execute(
+                    "SELECT attached_thread_parent_id, id FROM threads WHERE attached_thread_parent_id IS NOT NULL"
+                ):
+                    if isinstance(parent_id, str) and isinstance(child_id, str):
+                        p, c = parent_id.lower(), child_id.lower()
+                        if CODEX_ID_RE.fullmatch(p) and CODEX_ID_RE.fullmatch(c):
+                            children_of.setdefault(p, []).append(c)
+                            parents_of.setdefault(c, set()).add(p)
+            if _table_exists(conn, "thread_spawn_edges"):
+                for parent_id, child_id in conn.execute(
+                    "SELECT parent_thread_id, child_thread_id FROM thread_spawn_edges"
+                ):
+                    if isinstance(parent_id, str) and isinstance(child_id, str):
+                        p, c = parent_id.lower(), child_id.lower()
+                        if CODEX_ID_RE.fullmatch(p) and CODEX_ID_RE.fullmatch(c):
+                            children_of.setdefault(p, []).append(c)
+                            parents_of.setdefault(c, set()).add(p)
+    except sqlite3.Error as exc:
+        log.warning("codex state_5.sqlite thread discovery failed: %s", exc)
+        return list(seeds), list(seeds)
+
+    all_ids: list[str] = []
+    visited: set[str] = set()
+    queue = list(seeds)
+    while queue:
+        current = queue.pop(0)
+        if current in visited:
+            continue
+        visited.add(current)
+        all_ids.append(current)
+        for parent in sorted(parents_of.get(current, ())):
+            if parent not in visited:
+                queue.append(parent)
+        for child in children_of.get(current, ()):
+            if child not in visited:
+                queue.append(child)
+
+    all_set = set(all_ids)
+    root_ids = [tid for tid in all_ids if not (parents_of.get(tid, set()) & all_set)]
+    for tid in all_ids:
+        if tid not in root_ids:
+            root_ids.append(tid)
+    return root_ids, all_ids
+
+
+def run_codex_delete(thread_id: str) -> bool:
+    """Invoke ``codex delete --force <thread_id>`` when the CLI and state DB exist."""
+    if _safe_sqlite_path(CODEX_HOME, "state_5.sqlite") is None:
+        return False
+    binary = CODEX_BIN if os.path.isabs(CODEX_BIN) else shutil.which(CODEX_BIN)
+    if not binary or not os.path.exists(binary):
+        return False
+    env = {**os.environ, "CODEX_HOME": os.path.realpath(CODEX_HOME)}
+    try:
+        res = subprocess.run(
+            [binary, "delete", "--force", thread_id],
+            env=env,
+            capture_output=True,
+            text=True,
+            timeout=CODEX_DELETE_TIMEOUT,
+            check=False,
+        )
+    except (OSError, subprocess.SubprocessError) as exc:
+        log.warning("codex delete %s failed: %s", thread_id, exc)
+        return False
+    return res.returncode == 0
+
+
+def _delete_codex_sqlite_rows(thread_ids: list[str], *, vacuum: bool = False) -> list[str]:
+    """Remove any remaining SQLite records for ``thread_ids`` across CODEX_HOME databases."""
+    if not thread_ids and not vacuum:
+        return []
+    removed: list[str] = []
+    db_tables: tuple[tuple[str, tuple[tuple[str, str], ...]], ...] = (
+        ("state_5.sqlite", (
+            ("thread_spawn_edges", "parent_thread_id"),
+            ("thread_spawn_edges", "child_thread_id"),
+            ("thread_read_receipts", "thread_id"),
+            ("thread_dynamic_tools", "thread_id"),
+            ("thread_attachments", "thread_id"),
+            ("guardian_review_feedback", "thread_id"),
+            ("threads", "id"),
+        )),
+        ("thread_history_1.sqlite", (
+            ("thread_items", "thread_id"),
+            ("thread_turns", "thread_id"),
+            ("thread_history_projection_state", "thread_id"),
+            ("thread_realtime_items", "thread_id"),
+        )),
+        ("logs_2.sqlite", (("logs", "thread_id"),)),
+        ("queue_1.sqlite", (
+            ("queued_items", "thread_id"),
+            ("queued_thread_revisions", "thread_id"),
+        )),
+        ("goals_1.sqlite", (
+            ("thread_goal_continuation_deferrals", "thread_id"),
+            ("thread_goals", "thread_id"),
+        )),
+        ("memories_1.sqlite", (("stage1_outputs", "thread_id"),)),
+    )
+    for db_name, specs in db_tables:
+        db_path = _safe_sqlite_path(CODEX_HOME, db_name)
+        if db_path is None:
+            continue
+        deleted = 0
+        try:
+            with closing(sqlite3.connect(db_path, timeout=30.0)) as conn:
+                for start in range(0, len(thread_ids), 100):
+                    chunk = thread_ids[start:start + 100]
+                    marks = ", ".join("?" for _ in chunk)
+                    with conn:
+                        for table, col in specs:
+                            if _table_exists(conn, table):
+                                cur = conn.execute(f'DELETE FROM "{table}" WHERE "{col}" IN ({marks})', tuple(chunk))
+                                if cur.rowcount and cur.rowcount > 0:
+                                    deleted += cur.rowcount
+                if vacuum:
+                    conn.execute("PRAGMA wal_checkpoint(TRUNCATE)")
+                    conn.execute("VACUUM")
+                elif deleted > 0:
+                    conn.execute("PRAGMA wal_checkpoint(PASSIVE)")
+        except sqlite3.Error as exc:
+            log.warning("cleanup sqlite %s failed: %s", db_name, exc)
+            continue
+        if deleted > 0:
+            removed.append(f"{db_path}:rows={deleted}")
+    return removed
+
+
+def remove_codex_records(
+    codex_ids: list[str],
+    worktree_paths: list[str] = (),
+    hapi_ids: list[str] = (),
+    *,
+    vacuum: bool = False,
+) -> list[str]:
+    """Delete Codex sessions (parent + subagents, SQLite history and rollout files) under CODEX_HOME."""
+    if not os.path.isdir(CODEX_HOME) or os.path.islink(CODEX_HOME):
+        return []
+    root_ids, all_ids = discover_codex_threads(codex_ids, list(worktree_paths), list(hapi_ids))
+    if not all_ids and not vacuum:
         return []
     root = os.path.realpath(CODEX_HOME)
-    removed = []
-    for codex_id in codex_ids:
+    removed: list[str] = []
+
+    # 1. Native Codex CLI deletion (cascades parent -> subagents in state_5/thread_history_1 + rollout files).
+    state_db = _safe_sqlite_path(CODEX_HOME, "state_5.sqlite")
+    if state_db is not None and all_ids:
+        for tid in root_ids:
+            try:
+                with closing(sqlite3.connect(state_db, timeout=30.0)) as conn:
+                    exists = _table_exists(conn, "threads") and conn.execute(
+                        "SELECT 1 FROM threads WHERE id = ?", (tid,)
+                    ).fetchone() is not None
+            except sqlite3.Error:
+                exists = True
+            if exists and run_codex_delete(tid):
+                removed.append(f"codex:{tid}")
+
+    # 2. Remove any rollout files still present on disk (e.g. when codex CLI is absent in tests or skipped a file).
+    for codex_id in all_ids:
         patterns = (
             os.path.join(CODEX_HOME, "sessions", "*", "*", "*", f"rollout-*-{codex_id}.jsonl"),
             os.path.join(CODEX_HOME, "archived_sessions", f"rollout-*-{codex_id}.jsonl"),
@@ -1129,17 +1409,255 @@ def remove_codex_records(codex_ids: list[str]) -> list[str]:
                     continue
                 os.remove(real)
                 removed.append(real)
+
+    # 3. Clean any remaining SQLite rows across all Codex DBs.
+    removed += _delete_codex_sqlite_rows(all_ids, vacuum=vacuum)
     return removed
 
 
-def do_cleanup(repo: str, worktree: str | None, branch: str | None, codex_ids: list[str]) -> dict:
-    removed = []
+
+def _config_header_key(line: str) -> str | None:
+    match = CONFIG_PROJECT_HEADER_RE.match(line)
+    if not match:
+        return None
     try:
+        return tomllib.loads(f"k = {match.group(1)}")["k"]
+    except tomllib.TOMLDecodeError:
+        return None
+
+
+def remove_codex_project_trust(worktree_paths: list[str]) -> list[str]:
+    """Remove ``[projects."<worktree_path>"]`` tables from ``$CODEX_HOME/config.toml`` under ``config.toml.lock``."""
+    drop = {
+        p for p in worktree_paths
+        if isinstance(p, str) and "-worktrees/" in p.replace("\\", "/")
+    }
+    if not drop or not os.path.isdir(CODEX_HOME) or os.path.islink(CODEX_HOME):
+        return []
+    nofollow = getattr(os, "O_NOFOLLOW", 0)
+    try:
+        dir_fd = os.open(CODEX_HOME, os.O_RDONLY | os.O_DIRECTORY | nofollow | os.O_CLOEXEC)
+    except OSError:
+        return []
+    try:
+        lock_fd = os.open("config.toml.lock", os.O_RDWR | os.O_CREAT | nofollow | os.O_CLOEXEC, 0o600, dir_fd=dir_fd)
+    except OSError:
+        os.close(dir_fd)
+        return []
+    try:
+        if not stat.S_ISREG(os.fstat(lock_fd).st_mode):
+            return []
+        fcntl.flock(lock_fd, fcntl.LOCK_EX)
+        try:
+            cfg_fd = os.open("config.toml", os.O_RDONLY | os.O_NONBLOCK | nofollow | os.O_CLOEXEC, dir_fd=dir_fd)
+        except FileNotFoundError:
+            return []
+        try:
+            if not stat.S_ISREG(os.fstat(cfg_fd).st_mode):
+                return []
+            chunks = []
+            while chunk := os.read(cfg_fd, 1 << 16):
+                chunks.append(chunk)
+            text = b"".join(chunks).decode("utf-8")
+        finally:
+            os.close(cfg_fd)
+        try:
+            before = tomllib.loads(text)
+        except tomllib.TOMLDecodeError:
+            return []
+        projects = before.get("projects", {})
+        if not isinstance(projects, dict):
+            return []
+        present = [k for k in sorted(drop) if k in projects]
+        if not present:
+            return []
+        lines: list[str] = []
+        skipping = False
+        for line in text.splitlines(keepends=True):
+            if CONFIG_TABLE_RE.match(line):
+                skipping = _config_header_key(line) in drop
+            if not skipping:
+                lines.append(line)
+        new_text = "".join(lines)
+        try:
+            after = tomllib.loads(new_text)
+        except tomllib.TOMLDecodeError:
+            return []
+        if {k: v for k, v in after.items() if k != "projects"} != {k: v for k, v in before.items() if k != "projects"}:
+            return []
+        after_projects = after.get("projects", {})
+        expected_projects = {k: v for k, v in projects.items() if k not in drop}
+        if after_projects != expected_projects:
+            return []
+        tmp = f".config.toml.cleanup.{os.getpid()}.{threading.get_ident()}"
+        try:
+            os.unlink(tmp, dir_fd=dir_fd)
+        except FileNotFoundError:
+            pass
+        out_fd = os.open(tmp, os.O_WRONLY | os.O_CREAT | os.O_EXCL | nofollow | os.O_CLOEXEC, 0o600, dir_fd=dir_fd)
+        try:
+            with os.fdopen(out_fd, "wb") as handle:
+                handle.write(new_text.encode("utf-8"))
+                handle.flush()
+                os.fsync(handle.fileno())
+            os.replace(tmp, "config.toml", src_dir_fd=dir_fd, dst_dir_fd=dir_fd)
+        except BaseException:
+            try:
+                os.unlink(tmp, dir_fd=dir_fd)
+            except FileNotFoundError:
+                pass
+            raise
+        os.fsync(dir_fd)
+        return [f"config.toml:{k}" for k in present]
+    finally:
+        os.close(lock_fd)
+        os.close(dir_fd)
+
+
+def remove_hapi_runtime_records(
+    codex_ids: list[str],
+    hapi_ids: list[str] = (),
+    *,
+    idle_sweep: bool = False,
+    live_tids: set[str] | None = None,
+) -> list[str]:
+    """Remove HAPI queue files and dead runtime ownership files for the cleaned sessions."""
+    target_tids = {cid.lower() for cid in codex_ids if CODEX_ID_RE.fullmatch(cid.lower())}
+    target_sids = {sid for sid in hapi_ids if isinstance(sid, str) and HAPI_ID_RE.fullmatch(sid)}
+    keep_tids = (live_tids or set()) - target_tids
+    removed: list[str] = []
+
+    for rdir in _runtime_directories():
+        for entry in sorted(os.listdir(rdir)):
+            if not entry.endswith(".json"):
+                continue
+            fpath = os.path.join(rdir, entry)
+            if os.path.islink(fpath) or not os.path.isfile(fpath):
+                continue
+            real = os.path.realpath(fpath)
+            if not inside(real, rdir):
+                continue
+            try:
+                with open(real, encoding="utf-8") as handle:
+                    data = json.load(handle)
+            except (OSError, ValueError):
+                continue
+            if not isinstance(data, dict):
+                continue
+            sessions = data.get("sessions")
+            if not isinstance(sessions, dict):
+                continue
+            matched_sids = [
+                sid for sid, meta in sessions.items()
+                if sid in target_sids or (isinstance(meta, dict) and str(meta.get("threadId") or "").lower() in target_tids)
+            ]
+            for sid in matched_sids:
+                if HAPI_ID_RE.fullmatch(sid):
+                    target_sids.add(sid)
+            has_live_thread = any(
+                isinstance(meta, dict) and str(meta.get("threadId") or "").lower() in keep_tids
+                for meta in sessions.values()
+            )
+            try:
+                stale_record = (time.time() - os.lstat(real).st_mtime) > 6 * 3600
+            except OSError:
+                stale_record = False
+            all_inactive = (
+                all(isinstance(meta, dict) and meta.get("active") is False for meta in sessions.values())
+                and not data.get("pendingCreations")
+            ) or stale_record
+            if all_inactive and not has_live_thread and (idle_sweep or (sessions and len(matched_sids) == len(sessions))):
+                try:
+                    os.remove(real)
+                    removed.append(real)
+                except FileNotFoundError:
+                    pass
+    queues_dir = os.path.join(HAPI_HOME, "codex-runtimes", "queues")
+    if os.path.isdir(queues_dir) and not os.path.islink(queues_dir):
+        qroot = os.path.realpath(queues_dir)
+        for sid in sorted(target_sids):
+            qpath = os.path.join(queues_dir, f"{sid}.queue.json")
+            if os.path.lexists(qpath) and not os.path.islink(qpath):
+                real = os.path.realpath(qpath)
+                if os.path.isfile(real) and inside(real, qroot):
+                    os.remove(real)
+                    removed.append(real)
+        if idle_sweep:
+            active_sids: set[str] = set()
+            for rdir in _runtime_directories():
+                for entry in os.listdir(rdir):
+                    if not entry.endswith(".json"):
+                        continue
+                    fpath = os.path.join(rdir, entry)
+                    if os.path.islink(fpath) or not os.path.isfile(fpath):
+                        continue
+                    try:
+                        with open(fpath, encoding="utf-8") as handle:
+                            data = json.load(handle)
+                    except (OSError, ValueError):
+                        continue
+                    if isinstance(data, dict) and isinstance(data.get("sessions"), dict):
+                        active_sids.update(data["sessions"].keys())
+            for entry in sorted(os.listdir(queues_dir)):
+                if not entry.endswith(".queue.json"):
+                    continue
+                sid = entry.removesuffix(".queue.json")
+                if sid in active_sids:
+                    continue
+                qpath = os.path.join(queues_dir, entry)
+                if not os.path.islink(qpath):
+                    real = os.path.realpath(qpath)
+                    if os.path.isfile(real) and inside(real, qroot):
+                        os.remove(real)
+                        removed.append(real)
+    return removed
+
+
+def remove_tmp_records(worktree: str | None) -> list[str]:
+    """Remove ``/tmp/issue-agent-worktree/<worktree>`` and ``/tmp/issue-agent/<worktree>``."""
+    if not os.path.isdir(RUNNER_TMP) or os.path.islink(RUNNER_TMP):
+        return []
+    tmp_root = os.path.realpath(RUNNER_TMP)
+    removed: list[str] = []
+    if worktree is not None and WORKTREE_RE.fullmatch(worktree):
+        for subdir in ("issue-agent-worktree", "issue-agent"):
+            parent = os.path.join(RUNNER_TMP, subdir)
+            if not os.path.isdir(parent) or os.path.islink(parent):
+                continue
+            parent_root = os.path.realpath(parent)
+            if not inside(parent_root, tmp_root):
+                continue
+            target = os.path.join(parent_root, worktree)
+            if not os.path.lexists(target):
+                continue
+            if os.path.islink(target):
+                os.unlink(target)
+                removed.append(target)
+            elif os.path.isdir(target) and inside(os.path.realpath(target), parent_root):
+                real = os.path.realpath(target)
+                rmtree_agent(real)
+                removed.append(real)
+    return removed
+
+def do_cleanup(
+    repo: str,
+    worktree: str | None,
+    branch: str | None,
+    codex_ids: list[str],
+    hapi_ids: list[str] = (),
+) -> dict:
+    removed: list[str] = []
+    try:
+        wt_paths = worktree_target_paths(repo, worktree)
+        _, all_codex_ids = discover_codex_threads(codex_ids, wt_paths, list(hapi_ids))
         if worktree is not None:
             removed += remove_worktree(repo, worktree)
         if branch is not None:
             removed += remove_branch(repo, branch)
-        removed += remove_codex_records(codex_ids)
+        removed += remove_codex_records(all_codex_ids, wt_paths, list(hapi_ids))
+        removed += remove_codex_project_trust(wt_paths)
+        removed += remove_hapi_runtime_records(all_codex_ids, list(hapi_ids))
+        removed += remove_tmp_records(worktree)
     except OSError as exc:
         raise PublisherError(HTTPStatus.INTERNAL_SERVER_ERROR, "cleanup_failed",
                              f"{exc.filename or ''}: {exc.strerror or exc}") from None
@@ -1147,6 +1665,570 @@ def do_cleanup(repo: str, worktree: str | None, branch: str | None, codex_ids: l
              repo, worktree, branch, len(codex_ids), len(removed))
     return {"removed": removed}
 
+
+def _live_worktree_paths() -> set[str]:
+    """All existing ``<owner>/<repo>-worktrees/<worktree>`` directories (lexical and realpath)."""
+    if not os.path.isdir(CHECKOUTS) or os.path.islink(CHECKOUTS):
+        return set()
+    root = os.path.realpath(CHECKOUTS)
+    live: set[str] = set()
+    for owner in sorted(os.listdir(root)):
+        owner_dir = os.path.join(root, owner)
+        if os.path.islink(owner_dir) or not os.path.isdir(owner_dir):
+            continue
+        for repo_wt in sorted(os.listdir(owner_dir)):
+            if not repo_wt.endswith("-worktrees"):
+                continue
+            wt_root = os.path.join(owner_dir, repo_wt)
+            if os.path.islink(wt_root) or not os.path.isdir(wt_root):
+                continue
+            for wt in sorted(os.listdir(wt_root)):
+                if not WORKTREE_RE.fullmatch(wt):
+                    continue
+                p_real = os.path.join(wt_root, wt)
+                if os.path.islink(p_real) or not os.path.isdir(p_real):
+                    continue
+                p_lex = os.path.join(CHECKOUTS, owner, repo_wt, wt)
+                live.add(os.path.realpath(p_real))
+                live.add(p_lex)
+    return live
+
+
+def _active_runtime_thread_ids() -> set[str]:
+    now = time.time()
+    active: set[str] = set()
+    for rdir in _runtime_directories():
+        for entry in sorted(os.listdir(rdir)):
+            if not entry.endswith(".json"):
+                continue
+            fpath = os.path.join(rdir, entry)
+            if os.path.islink(fpath) or not os.path.isfile(fpath):
+                continue
+            try:
+                if (now - os.lstat(fpath).st_mtime) > 6 * 3600:
+                    continue
+                with open(fpath, encoding="utf-8") as handle:
+                    data = json.load(handle)
+            except (OSError, ValueError):
+                continue
+            if not isinstance(data, dict):
+                continue
+            sessions = data.get("sessions")
+            if not isinstance(sessions, dict):
+                continue
+            for meta in sessions.values():
+                if isinstance(meta, dict) and meta.get("active") is not False:
+                    tid = str(meta.get("threadId") or "").lower()
+                    if CODEX_ID_RE.fullmatch(tid):
+                        active.add(tid)
+    return active
+
+
+def _is_worktree_cwd(cwd: str) -> bool:
+    norm = cwd.replace("\\", "/")
+    return "-worktrees/" in norm
+
+
+def _cwd_matches_live(cwd: str, live_worktrees: set[str]) -> bool:
+    if cwd in live_worktrees:
+        return True
+    for wt in live_worktrees:
+        if cwd.startswith(wt.rstrip("/") + "/"):
+            return True
+    return False
+
+
+def sweep_orphan_worktree_state(*, dry_run: bool = False) -> list[str]:
+    """Remove Codex sessions, SQLite rows, config.toml keys and HAPI runtime files for deleted worktrees."""
+    live_worktrees = _live_worktree_paths()
+    active_tids = _active_runtime_thread_ids()
+    removed: list[str] = []
+
+    orphan_seed_tids: list[str] = []
+    live_tids: set[str] = set(active_tids)
+    state_db = _safe_sqlite_path(CODEX_HOME, "state_5.sqlite")
+    if state_db is not None:
+        try:
+            with closing(sqlite3.connect(f"file:{state_db}?mode=ro", uri=True, timeout=30.0)) as conn:
+                if _table_exists(conn, "threads"):
+                    for tid, cwd in conn.execute("SELECT id, cwd FROM threads"):
+                        if not isinstance(tid, str) or not CODEX_ID_RE.fullmatch(tid.lower()):
+                            continue
+                        tid_l = tid.lower()
+                        if tid_l in active_tids:
+                            live_tids.add(tid_l)
+                            continue
+                        if isinstance(cwd, str) and _is_worktree_cwd(cwd):
+                            if _cwd_matches_live(cwd, live_worktrees):
+                                live_tids.add(tid_l)
+                            else:
+                                orphan_seed_tids.append(tid_l)
+                        elif isinstance(cwd, str) and os.path.isdir(cwd):
+                            live_tids.add(tid_l)
+                        else:
+                            orphan_seed_tids.append(tid_l)
+        except sqlite3.Error as exc:
+            log.warning("orphan sweep state_5.sqlite read failed: %s", exc)
+
+    _, orphan_all_tids = discover_codex_threads(orphan_seed_tids)
+    orphan_tids = [tid for tid in orphan_all_tids if tid not in live_tids]
+    orphan_tid_set = set(orphan_tids)
+
+    # Also catch rollout files on disk whose thread is either in orphan_tids or absent from state_5.sqlite.
+    if os.path.isdir(CODEX_HOME) and not os.path.islink(CODEX_HOME):
+        for pattern in (
+            os.path.join(CODEX_HOME, "sessions", "*", "*", "*", "rollout-*.jsonl"),
+            os.path.join(CODEX_HOME, "archived_sessions", "rollout-*.jsonl"),
+        ):
+            for path in sorted(glob.glob(pattern)):
+                m = ROLLOUT_FILE_RE.match(os.path.basename(path))
+                if m is None:
+                    continue
+                uid = m.group(1).lower()
+                if uid not in live_tids and uid not in orphan_tid_set:
+                    orphan_tids.append(uid)
+                    orphan_tid_set.add(uid)
+
+    if orphan_tids:
+        if dry_run:
+            removed.extend(f"codex:{tid}" for tid in orphan_tids)
+        else:
+            removed.extend(remove_codex_records(orphan_tids, vacuum=True))
+
+    # Orphan config.toml worktree keys
+    cfg_path = _safe_sqlite_path(CODEX_HOME, "config.toml")
+    if cfg_path is not None:
+        try:
+            with open(cfg_path, encoding="utf-8") as handle:
+                cfg_data = tomllib.loads(handle.read())
+            projects = cfg_data.get("projects", {})
+            if isinstance(projects, dict):
+                dead_cfg_keys = [
+                    k for k in projects
+                    if isinstance(k, str) and _is_worktree_cwd(k) and k not in live_worktrees and not os.path.isdir(k)
+                ]
+                if dead_cfg_keys:
+                    if dry_run:
+                        removed.extend(f"config.toml:{k}" for k in dead_cfg_keys)
+                    else:
+                        removed.extend(remove_codex_project_trust(dead_cfg_keys))
+        except (OSError, tomllib.TOMLDecodeError):
+            pass
+
+    # Orphan HAPI runtime and queue files
+    if not dry_run:
+        removed.extend(remove_hapi_runtime_records(orphan_tids, idle_sweep=True, live_tids=live_tids))
+    return removed
+
+
+def _tree_newest_timestamp(path: str) -> float:
+    """Newest ``max(atime, mtime)`` across regular files under ``path`` (ignoring directory atime bumps from walks)."""
+    try:
+        st = os.lstat(path)
+    except OSError:
+        return time.time()
+    if not stat.S_ISDIR(st.st_mode) or stat.S_ISLNK(st.st_mode):
+        return max(st.st_atime, st.st_mtime)
+    newest = st.st_mtime
+    for dirpath, _, filenames in os.walk(path, onerror=lambda _e: None):
+        for fname in filenames:
+            fpath = os.path.join(dirpath, fname)
+            try:
+                fst = os.lstat(fpath)
+            except OSError:
+                continue
+            if stat.S_ISREG(fst.st_mode) and not stat.S_ISLNK(fst.st_mode):
+                ts = max(fst.st_atime, fst.st_mtime)
+                if ts > newest:
+                    newest = ts
+    return newest
+
+
+def _referenced_rust_toolchains() -> set[str]:
+    channels: set[str] = {"stable"}
+    if not os.path.isdir(CHECKOUTS) or os.path.islink(CHECKOUTS):
+        return channels
+    root = os.path.realpath(CHECKOUTS)
+    for owner in sorted(os.listdir(root)):
+        owner_dir = os.path.join(root, owner)
+        if os.path.islink(owner_dir) or not os.path.isdir(owner_dir):
+            continue
+        for repo in sorted(os.listdir(owner_dir)):
+            if repo.endswith("-worktrees"):
+                continue
+            repo_dir = os.path.join(owner_dir, repo)
+            if os.path.islink(repo_dir) or not os.path.isdir(repo_dir):
+                continue
+            for fname in ("rust-toolchain.toml", "rust-toolchain"):
+                fpath = os.path.join(repo_dir, fname)
+                if os.path.islink(fpath) or not os.path.isfile(fpath):
+                    continue
+                try:
+                    with open(fpath, encoding="utf-8") as handle:
+                        text = handle.read(8192).strip()
+                except OSError:
+                    continue
+                if fname.endswith(".toml") or text.startswith("["):
+                    try:
+                        parsed = tomllib.loads(text)
+                        ch = (parsed.get("toolchain") or {}).get("channel")
+                        if isinstance(ch, str) and ch.strip():
+                            channels.add(ch.strip())
+                    except tomllib.TOMLDecodeError:
+                        pass
+                elif text:
+                    channels.add(text.splitlines()[0].strip())
+    return channels
+
+
+def _referenced_go_versions() -> set[str]:
+    versions: set[str] = set()
+    if not os.path.isdir(CHECKOUTS) or os.path.islink(CHECKOUTS):
+        return versions
+    root = os.path.realpath(CHECKOUTS)
+    go_re = re.compile(r"^\s*(?:go|toolchain)\s+(?:go)?([0-9]+\.[0-9]+(?:\.[0-9]+)?)\s*$", re.MULTILINE)
+    for owner in sorted(os.listdir(root)):
+        owner_dir = os.path.join(root, owner)
+        if os.path.islink(owner_dir) or not os.path.isdir(owner_dir):
+            continue
+        for repo in sorted(os.listdir(owner_dir)):
+            if repo.endswith("-worktrees"):
+                continue
+            gomod = os.path.join(owner_dir, repo, "go.mod")
+            if os.path.islink(gomod) or not os.path.isfile(gomod):
+                continue
+            try:
+                with open(gomod, encoding="utf-8") as handle:
+                    text = handle.read(16384)
+            except OSError:
+                continue
+            for m in go_re.finditer(text):
+                versions.add(m.group(1))
+    return versions
+
+
+def sweep_global_caches(max_age_days: int = DEFAULT_CACHE_MAX_AGE_DAYS, *, dry_run: bool = False) -> list[str]:
+    """Clean unreferenced toolchains and stale entries in global caches older than ``max_age_days``."""
+    now = time.time()
+    cutoff = now - max_age_days * 86400
+    log_cutoff = now - min(max_age_days, HAPI_LOG_MAX_AGE_DAYS) * 86400
+    removed: list[str] = []
+
+    # 1. Rustup unreferenced toolchains (~/.rustup/toolchains)
+    tc_dir = os.path.join(RUNNER_HOME, ".rustup", "toolchains")
+    if os.path.isdir(tc_dir) and not os.path.islink(tc_dir):
+        tc_root = os.path.realpath(tc_dir)
+        kept_channels = _referenced_rust_toolchains()
+        rustup_bin = RUSTUP_BIN if os.path.isabs(RUSTUP_BIN) else shutil.which(RUSTUP_BIN)
+        for entry in sorted(os.listdir(tc_root)):
+            path = os.path.join(tc_root, entry)
+            if os.path.islink(path) or not os.path.isdir(path):
+                continue
+            if any(entry == ch or entry.startswith(ch + "-") for ch in kept_channels):
+                continue
+            try:
+                if now - os.lstat(path).st_mtime < 86400:
+                    continue
+            except OSError:
+                continue
+            if not dry_run:
+                if rustup_bin and os.path.exists(rustup_bin):
+                    try:
+                        subprocess.run(
+                            [rustup_bin, "toolchain", "uninstall", entry],
+                            env={**os.environ, "RUSTUP_HOME": os.path.join(RUNNER_HOME, ".rustup")},
+                            capture_output=True,
+                            text=True,
+                            timeout=CACHE_CMD_TIMEOUT,
+                            check=False,
+                        )
+                    except (OSError, subprocess.SubprocessError):
+                        pass
+                if os.path.lexists(path) and not os.path.islink(path) and inside(os.path.realpath(path), tc_root):
+                    rmtree_agent(os.path.realpath(path))
+            removed.append(path)
+
+    # 2. Go downloaded toolchains & stale module cache (~/go/pkg/mod)
+    gomod_dir = os.path.join(RUNNER_HOME, "go", "pkg", "mod")
+    if os.path.isdir(gomod_dir) and not os.path.islink(gomod_dir):
+        gomod_root = os.path.realpath(gomod_dir)
+        ref_go = _referenced_go_versions()
+        golang_org = os.path.join(gomod_root, "golang.org")
+        if os.path.isdir(golang_org) and not os.path.islink(golang_org):
+            for entry in sorted(os.listdir(golang_org)):
+                if not entry.startswith("toolchain@"):
+                    continue
+                tpath = os.path.join(golang_org, entry)
+                if os.path.islink(tpath) or not os.path.isdir(tpath):
+                    continue
+                if any(f"-go{v}." in entry for v in ref_go):
+                    continue
+                if now - os.lstat(tpath).st_mtime < 86400:
+                    continue
+                if not dry_run:
+                    rmtree_agent(os.path.realpath(tpath))
+                removed.append(tpath)
+
+        dl_dir = os.path.join(gomod_root, "cache", "download")
+        if os.path.isdir(dl_dir) and not os.path.islink(dl_dir):
+            for dirpath, _, filenames in os.walk(dl_dir, onerror=lambda _e: None):
+                for fname in filenames:
+                    fpath = os.path.join(dirpath, fname)
+                    try:
+                        st = os.lstat(fpath)
+                    except OSError:
+                        continue
+                    if stat.S_ISREG(st.st_mode) and not stat.S_ISLNK(st.st_mode) and max(st.st_atime, st.st_mtime) < cutoff:
+                        real = os.path.realpath(fpath)
+                        if inside(real, gomod_root):
+                            if not dry_run:
+                                unblock_dir(os.path.dirname(real))
+                                os.remove(real)
+                            removed.append(real)
+
+        for dirpath, dirnames, _ in os.walk(gomod_root, topdown=True, onerror=lambda _e: None):
+            if dirpath == gomod_root:
+                dirnames[:] = [d for d in dirnames if d != "cache"]
+            keep_walk: list[str] = []
+            for dname in sorted(dirnames):
+                dpath = os.path.join(dirpath, dname)
+                if os.path.islink(dpath):
+                    continue
+                if "@" in dname and not dname.startswith("toolchain@"):
+                    if _tree_newest_timestamp(dpath) < cutoff:
+                        real = os.path.realpath(dpath)
+                        if inside(real, gomod_root):
+                            if not dry_run:
+                                unblock_dir(os.path.dirname(real))
+                                rmtree_agent(real)
+                            removed.append(real)
+                    continue
+                keep_walk.append(dname)
+            dirnames[:] = keep_walk
+
+    # 3. Cargo global cache (~/.cargo/.global-cache SQLite tracker)
+    cargo_dir = os.path.join(RUNNER_HOME, ".cargo")
+    cargo_db = _safe_sqlite_path(cargo_dir, ".global-cache")
+    if cargo_db is not None:
+        cargo_root = os.path.realpath(cargo_dir)
+        try:
+            with closing(sqlite3.connect(cargo_db, timeout=30.0)) as conn:
+                indices = (
+                    {int(r[0]): str(r[1]) for r in conn.execute("SELECT id, name FROM registry_index")}
+                    if _table_exists(conn, "registry_index")
+                    else {}
+                )
+                if _table_exists(conn, "registry_crate"):
+                    stale_crates = conn.execute(
+                        "SELECT registry_id, name FROM registry_crate WHERE timestamp < ?", (int(cutoff),)
+                    ).fetchall()
+                    for reg_id, crate_name in stale_crates:
+                        idx_name = indices.get(int(reg_id), "")
+                        if idx_name and isinstance(crate_name, str) and "/" not in crate_name and ".." not in crate_name:
+                            cpath = os.path.join(cargo_root, "registry", "cache", idx_name, crate_name)
+                            if os.path.lexists(cpath) and not os.path.islink(cpath):
+                                real = os.path.realpath(cpath)
+                                if os.path.isfile(real) and inside(real, cargo_root):
+                                    if not dry_run:
+                                        os.remove(real)
+                                    removed.append(real)
+                        if not dry_run:
+                            with conn:
+                                conn.execute(
+                                    "DELETE FROM registry_crate WHERE registry_id = ? AND name = ?",
+                                    (reg_id, crate_name),
+                                )
+                if _table_exists(conn, "registry_src"):
+                    stale_srcs = conn.execute(
+                        "SELECT registry_id, name FROM registry_src WHERE timestamp < ?", (int(cutoff),)
+                    ).fetchall()
+                    for reg_id, src_name in stale_srcs:
+                        idx_name = indices.get(int(reg_id), "")
+                        if idx_name and isinstance(src_name, str) and "/" not in src_name and ".." not in src_name:
+                            spath = os.path.join(cargo_root, "registry", "src", idx_name, src_name)
+                            if os.path.lexists(spath) and not os.path.islink(spath):
+                                real = os.path.realpath(spath)
+                                if os.path.isdir(real) and inside(real, cargo_root):
+                                    if not dry_run:
+                                        rmtree_agent(real)
+                                    removed.append(real)
+                        if not dry_run:
+                            with conn:
+                                conn.execute(
+                                    "DELETE FROM registry_src WHERE registry_id = ? AND name = ?",
+                                    (reg_id, src_name),
+                                )
+        except sqlite3.Error as exc:
+            log.warning("cargo .global-cache cleanup failed: %s", exc)
+
+    # 4. Bun install cache, golangci-lint, ms-playwright
+    for rel_cache in (
+        os.path.join(".bun", "install", "cache"),
+        os.path.join(".cache", "golangci-lint"),
+        os.path.join(".cache", "ms-playwright"),
+    ):
+        cdir = os.path.join(RUNNER_HOME, rel_cache)
+        if not os.path.isdir(cdir) or os.path.islink(cdir):
+            continue
+        croot = os.path.realpath(cdir)
+        for entry in sorted(os.listdir(croot)):
+            epath = os.path.join(croot, entry)
+            if os.path.islink(epath):
+                continue
+            if _tree_newest_timestamp(epath) >= cutoff:
+                continue
+            real = os.path.realpath(epath)
+            if not inside(real, croot):
+                continue
+            if not dry_run:
+                if os.path.isdir(real):
+                    rmtree_agent(real)
+                elif os.path.isfile(real):
+                    os.remove(real)
+            removed.append(real)
+
+    # 5. npm _cacache + npm cache verify
+    npm_cache = os.path.join(RUNNER_HOME, ".npm", "_cacache")
+    if os.path.isdir(npm_cache) and not os.path.islink(npm_cache):
+        npm_root = os.path.realpath(npm_cache)
+        npm_removed = 0
+        for sub in ("content-v2", "index-v5"):
+            sdir = os.path.join(npm_root, sub)
+            if not os.path.isdir(sdir) or os.path.islink(sdir):
+                continue
+            for dirpath, _, filenames in os.walk(sdir, onerror=lambda _e: None):
+                for fname in filenames:
+                    fpath = os.path.join(dirpath, fname)
+                    try:
+                        st = os.lstat(fpath)
+                    except OSError:
+                        continue
+                    if stat.S_ISREG(st.st_mode) and not stat.S_ISLNK(st.st_mode) and max(st.st_atime, st.st_mtime) < cutoff:
+                        real = os.path.realpath(fpath)
+                        if inside(real, npm_root):
+                            if not dry_run:
+                                os.remove(real)
+                            removed.append(real)
+                            npm_removed += 1
+        if npm_removed > 0 and not dry_run:
+            npm_bin = NPM_BIN if os.path.isabs(NPM_BIN) else shutil.which(NPM_BIN)
+            if npm_bin and os.path.exists(npm_bin):
+                try:
+                    subprocess.run(
+                        [npm_bin, "cache", "verify"],
+                        env={**os.environ, "HOME": RUNNER_HOME},
+                        capture_output=True,
+                        text=True,
+                        timeout=CACHE_CMD_TIMEOUT,
+                        check=False,
+                    )
+                except (OSError, subprocess.SubprocessError):
+                    pass
+
+    # 6. HAPI old runtime bundles & old logs
+    if os.path.isdir(HAPI_HOME) and not os.path.islink(HAPI_HOME):
+        hapi_root = os.path.realpath(HAPI_HOME)
+        rt_dir = os.path.join(hapi_root, "runtime")
+        if os.path.isdir(rt_dir) and not os.path.islink(rt_dir):
+            active_ver: str | None = None
+            if os.path.exists(HAPI_BIN):
+                try:
+                    res = subprocess.run([HAPI_BIN, "--version"], capture_output=True, text=True, timeout=10, check=False)
+                    m = re.search(r"([0-9]+\.[0-9]+\.[0-9]+)", res.stdout or "")
+                    if m:
+                        active_ver = m.group(1)
+                except (OSError, subprocess.SubprocessError):
+                    pass
+            entries = [
+                e for e in sorted(os.listdir(rt_dir))
+                if not os.path.islink(os.path.join(rt_dir, e)) and os.path.isdir(os.path.join(rt_dir, e))
+            ]
+            if active_ver is None and entries:
+                active_ver = max(entries, key=lambda e: os.lstat(os.path.join(rt_dir, e)).st_mtime)
+            for entry in entries:
+                if entry == active_ver:
+                    continue
+                epath = os.path.join(rt_dir, entry)
+                if now - os.lstat(epath).st_mtime < 86400:
+                    continue
+                real = os.path.realpath(epath)
+                if inside(real, hapi_root):
+                    if not dry_run:
+                        rmtree_agent(real)
+                    removed.append(real)
+
+        logs_dir = os.path.join(hapi_root, "logs")
+        if os.path.isdir(logs_dir) and not os.path.islink(logs_dir):
+            live_pid: int | None = None
+            state_file = os.path.join(hapi_root, "runner.state.json")
+            if os.path.isfile(state_file) and not os.path.islink(state_file):
+                try:
+                    with open(state_file, encoding="utf-8") as handle:
+                        sdata = json.load(handle)
+                    if isinstance(sdata, dict) and isinstance(sdata.get("pid"), int):
+                        live_pid = sdata["pid"]
+                except (OSError, ValueError):
+                    pass
+            for entry in sorted(os.listdir(logs_dir)):
+                if not entry.endswith(".log"):
+                    continue
+                if live_pid is not None and f"-pid-{live_pid}-" in entry:
+                    continue
+                lpath = os.path.join(logs_dir, entry)
+                try:
+                    st = os.lstat(lpath)
+                except OSError:
+                    continue
+                if stat.S_ISREG(st.st_mode) and not stat.S_ISLNK(st.st_mode) and st.st_mtime < log_cutoff:
+                    real = os.path.realpath(lpath)
+                    if inside(real, hapi_root):
+                        if not dry_run:
+                            os.remove(real)
+                        removed.append(real)
+
+    # 7. Stale go-build temp dirs (>24h) left inside <worktree>/bin/.go-tmp
+    for wt_path in sorted(_live_worktree_paths()):
+        go_tmp = os.path.join(wt_path, "bin", ".go-tmp")
+        if not os.path.isdir(go_tmp) or os.path.islink(go_tmp):
+            continue
+        gt_root = os.path.realpath(go_tmp)
+        if not inside(gt_root, os.path.realpath(CHECKOUTS)):
+            continue
+        for entry in sorted(os.listdir(gt_root)):
+            if not entry.startswith("go-build"):
+                continue
+            epath = os.path.join(gt_root, entry)
+            try:
+                st = os.lstat(epath)
+            except OSError:
+                continue
+            if stat.S_ISLNK(st.st_mode) or now - st.st_mtime < 86400:
+                continue
+            real = os.path.realpath(epath)
+            if inside(real, gt_root):
+                if not dry_run:
+                    if os.path.isdir(real):
+                        rmtree_agent(real)
+                    elif os.path.isfile(real):
+                        os.remove(real)
+                removed.append(real)
+    return removed
+
+
+def do_cleanup_caches(max_age_days: int = DEFAULT_CACHE_MAX_AGE_DAYS, *, dry_run: bool = False) -> dict:
+    if not _is_int(max_age_days, low=1, high=365):
+        raise PublisherError(HTTPStatus.BAD_REQUEST, "invalid_request", "invalid max_age_days")
+    if not isinstance(dry_run, bool):
+        raise PublisherError(HTTPStatus.BAD_REQUEST, "invalid_request", "invalid dry_run")
+    try:
+        orphans = sweep_orphan_worktree_state(dry_run=dry_run)
+        caches = sweep_global_caches(max_age_days, dry_run=dry_run)
+    except OSError as exc:
+        raise PublisherError(HTTPStatus.INTERNAL_SERVER_ERROR, "cleanup_failed",
+                             f"{exc.filename or ''}: {exc.strerror or exc}") from None
+    log.info("cleaned caches max_age_days=%d dry_run=%s: orphans=%d caches=%d",
+             max_age_days, dry_run, len(orphans), len(caches))
+    return {"orphan_worktrees": orphans, "global_caches": caches}
 
 def read_admin_file(admin: str, name: str) -> str | None:
     """Stripped contents of a regular file in a worktree admin dir; None when missing or not a regular file."""
@@ -1537,11 +2619,21 @@ class Handler(BaseHTTPRequestHandler):
                         base_sha=args["base_sha"], reuse_existing=args["reuse_existing"],
                     ))
             elif self.path == "/cleanup":
-                args = self.body({"repo": REPO_RE, "worktree": WORKTREE_RE, "branch": CLEANUP_BRANCH_RE},
-                                 nullable=("worktree", "branch"), lists={"codex_session_ids": CODEX_ID_RE})
+                args = self.body(
+                    {"repo": REPO_RE, "worktree": WORKTREE_RE, "branch": CLEANUP_BRANCH_RE},
+                    nullable=("worktree", "branch"),
+                    lists={"codex_session_ids": CODEX_ID_RE, "hapi_session_ids": HAPI_ID_RE},
+                )
                 with repo_lock(args["repo"]):
-                    self.reply(HTTPStatus.OK, do_cleanup(args["repo"], args["worktree"], args["branch"],
-                                                         args["codex_session_ids"]))
+                    self.reply(HTTPStatus.OK, do_cleanup(
+                        args["repo"], args["worktree"], args["branch"],
+                        args["codex_session_ids"], args.get("hapi_session_ids", []),
+                    ))
+            elif self.path == "/cleanup/caches":
+                args = self.body({}, ints=("max_age_days",), booleans=("dry_run",))
+                self.reply(HTTPStatus.OK, do_cleanup_caches(
+                    args["max_age_days"], dry_run=args.get("dry_run", False),
+                ))
             elif self.path == "/worktree/restore":
                 args = self.body({"repo": REPO_RE, "worktree": WORKTREE_RE, "branch": CLEANUP_BRANCH_RE})
                 with repo_lock(args["repo"]):

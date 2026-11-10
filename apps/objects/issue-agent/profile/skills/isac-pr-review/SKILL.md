@@ -80,7 +80,7 @@ bridge는 에이전트 자신의 `event`가 `COMMENT`이고, `head_sha`가 PR의
 ## 2. 대상 고정과 읽기
 
 - **PRR-05** [U] 리뷰 대상은 PR 설명·작성자 보고·요약이 아니라 현재 head의 실제 diff와 코드다. 변경된 코드(생성물·lock·벤더 파일 제외)를 한 줄씩 읽고, 연결 이슈가 있으면 PR이 주장하는 내용을 이슈 원문과 대조한다.
-- **PRR-39** diff 전체와 변경된 파일 전체는 원문 그대로, 끝까지 읽는다(plain shell이나 `read`로 페이지를 나눠 모두). `ctx_*` 도구의 검색 조각, 요약, 색인 결과로 대신하지 않는다. 따르는 스킬 파일과 저장소 지침 파일(PRR-40)도 같다. `ctx_*` 도구는 로그, 테스트 출력, 목록처럼 리뷰 대상이 아닌 큰 출력에만 쓴다. 변경 파일 목록과 diff의 기준은 새로 fetch한 `origin/<base>`로 계산한 merge-base에 대한 shell `git diff --name-only <merge-base>...HEAD`(와 같은 범위의 `git diff`)다. `ctx_*`로 가져온 PR 메타데이터(files, reviews)의 색인 결과로 어떤 파일을 읽을지 정하지 않는다.
+- **PRR-39** diff 전체와 변경된 파일 전체는 원문 그대로, 끝까지 읽는다(plain shell로 페이지를 나눠 모두). 검색 조각, 요약, 색인 결과로 대신하지 않는다. 따르는 스킬 파일과 저장소 지침 파일(PRR-40)도 같다. 변경 파일 목록과 diff의 기준은 새로 fetch한 `origin/<base>`로 계산한 merge-base에 대한 shell `git diff --name-only <merge-base>...HEAD`(와 같은 범위의 `git diff`)다.
 - **PRR-06** 시작 시 head SHA, base 브랜치, merge-base, 연결 이슈, 충돌 상태를 기록한다. head는 `git fetch origin pull/<N>/head`로 받아 그 커밋을 checkout하고, 이 SHA를 `ReviewResult.head_sha`에 적는다. 판정과 리뷰 이벤트는 이 head에만 유효하다.
 - **PRR-41** 중단됐다가 이어지는 턴(bridge가 잃어버린 턴을 다시 보낸다는 안내를 붙인 경우 포함)은 처음부터 다시 확인한다. PR의 현재 head SHA, checkout된 커밋, 실행 환경(컨테이너, 이미지, 도구)을 다시 확인하고, 필요한 증거는 다시 만든다. 죽은 실행에서 나온 출력, 끝나지 않은 명령, 이전 턴의 서브 리뷰어 결과를 증거로 재사용하지 않는다.
 - **PRR-07** 작성자·수정자·이전 리뷰의 보고는 claim이다. "복원했다", "고쳤다"는 현재 트리와 1차 소스(모듈 캐시의 SDK 타입, upstream 소스, 공식 API, 저장소 Makefile)로 다시 확인한다.

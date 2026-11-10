@@ -80,26 +80,18 @@ RUN curl -fsSLo /tmp/gh.tar.gz "https://github.com/cli/cli/releases/download/v${
     && tar -xzf /tmp/gh.tar.gz --strip-components=2 -C /usr/local/bin "gh_${GH_VERSION}_linux_arm64/bin/gh" \
     && rm /tmp/gh.tar.gz
 
-# Codex MCP servers/hook commands: context-mode and CodeGraph, pinned with
-# integrity by runner/tools/package-lock.json. Install scripts are skipped;
-# better-sqlite3 is compiled against the image's own Node headers (no prebuilt
-# download). context-mode's hooks look for it under their own package
-# directory and otherwise run `npm install` on every session start, so it is
-# linked there, and its per-ABI copy is seeded so nothing tries to rebuild it
-# inside the read-only /opt tree at runtime.
+# Codex MCP server/hook command: CodeGraph, pinned with integrity by
+# runner/tools/package-lock.json. Disable TINY_REPO_FILE_THRESHOLD in tools.js
+# so repositories with <500 files (krema, kwin-mcp, flareway) also expose
+# callers/callees/impact alongside search/node/explore.
 COPY runner/tools/package.json runner/tools/package-lock.json /opt/issue-agent/tools/
 RUN cd /opt/issue-agent/tools \
     && npm ci --omit=dev --ignore-scripts --no-audit --no-fund \
-    && npm_config_nodedir=/usr/local npm rebuild better-sqlite3 --ignore-scripts=false --build-from-source \
-    && release=node_modules/better-sqlite3/build/Release \
-    && cp "$release/better_sqlite3.node" "$release/better_sqlite3.abi$(node -p process.versions.modules).node" \
-    && rm -rf "$release"/obj* node_modules/better-sqlite3/deps /root/.npm \
-    && install -d node_modules/context-mode/node_modules \
-    && ln -s ../../better-sqlite3 node_modules/context-mode/node_modules/better-sqlite3 \
-    && ln -s /opt/issue-agent/tools/node_modules/context-mode/cli.bundle.mjs /usr/local/bin/context-mode \
+    && rm -rf /root/.npm \
+    && sed -i 's/const TINY_REPO_FILE_THRESHOLD = 500;/const TINY_REPO_FILE_THRESHOLD = 0;/' \
+         /opt/issue-agent/tools/node_modules/@colbymchenry/codegraph-linux-arm64/lib/dist/mcp/tools.js \
     && ln -s /opt/issue-agent/tools/node_modules/@colbymchenry/codegraph/npm-shim.js /usr/local/bin/codegraph \
     && codegraph --version
-
 # Only the rustup proxies live in the image; RUSTUP_HOME/CARGO_HOME are
 # redirected to the PVC at runtime so rust-toolchain.toml installs persist.
 RUN curl -fsSLo /tmp/rustup-init "https://static.rust-lang.org/rustup/archive/${RUSTUP_VERSION}/aarch64-unknown-linux-gnu/rustup-init" \

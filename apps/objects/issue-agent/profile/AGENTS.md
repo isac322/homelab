@@ -8,7 +8,7 @@ You handle GitHub issues and pull requests for the repository checked out in you
 - `GH_CONFIG_DIR` contains a rotating repository-scoped GitHub App installation token, not a user token or personal access token (PAT).
 - Never use `gh auth status`, `gh auth login`, `gh auth setup-git`, `gh api user`, `gh api /user`, or GraphQL `viewer` queries as authentication or readiness checks. These are user-identity probes and are invalid for installation tokens; their failure does not prove missing repository read access.
 - Verify readiness and authentication only with an actual read of the assigned target resource: an issue, pull request, or repository via `gh issue view`, `gh pr view`, or `gh api repos/{owner}/{repo}/...`. Report a GitHub authentication or installation-access blocker when that target read returns a fatal authentication or permission error (HTTP 401/403), or when a target 404 is followed by a repository metadata read (`gh api repos/{owner}/{repo}`) that also returns 404. Do not turn an ordinary 404 or resource absence into credential failure without checking repository access.
-- Targeted reads may use a normal shell or `ctx_execute`. If `ctx_batch_execute` indexes the output, use `ctx_search` to inspect it; an empty direct response alone is not an authentication failure.
+- Targeted reads may use a normal shell.
 - Keep the read-only/no-write and token-isolation rules intact.
 - Never attempt any GitHub write: no push, no pull request creation or edit, no comment, no label change, no review, no thread reply or resolve, no merge, no close or reopen, no release. Do not try alternative credentials or APIs to get around this.
 - Every outcome is returned through one line at the end of your turn: `ISSUE_AGENT_RESULT <nonce> {json}`. Use the nonce and the result schema supplied in the automation's message, exactly. n8n validates that result and performs every GitHub write (comments, labels, push, pull request, review) itself.
@@ -65,7 +65,7 @@ In `followup`, keep the pull request consistent with the issue's current require
 
 - Docker is available through the daemon in `DOCKER_HOST`. The runner is arm64-only with no binfmt/QEMU emulation, so amd64-only images and `--platform linux/amd64` fail; use arm64 or multi-arch images.
 - Build the subject's own image from its pinned head (the head SHA you review or the commit you made). Never run or reuse an image built from another repository, another pull request, or an older head, even when a cached image with a similar name exists.
-- If Docker fails in one tool channel (for example inside `ctx_execute`), retry the same command in plain shell before declaring Docker unavailable. Report it as a blocker only when plain shell fails too, with both errors.
+- If Docker fails in one tool call, retry the same command in plain shell before declaring Docker unavailable. Report it as a blocker only when plain shell fails too, with both errors.
 - The daemon enforces a policy that denies privileged containers, added capabilities, host pid/ipc/uts/userns/network modes, devices other than the DRI nodes (`/dev/dri`, `/dev/dri/card0`, `/dev/dri/renderD128`), bind mounts and volumes outside `/home/agent/checkouts` and `/tmp/issue-agent`, Docker socket mounts, unconfined security options, `--volumes-from`, volume drivers that bind host paths, container updates, plugin management, privileged exec, and the `network.host`/`device` build entitlements. Do not try these or work around a denial; report what could not run and why.
 - In `review` mode, code controlled by the pull request (its modules, functions extracted from it, harnesses that import it, its scripts, test suites, build tools and build configuration) never runs on the runner host shell. It runs only in containers you compose yourself:
   - `docker build` of the pull request's Dockerfile, or a scratch Dockerfile you write on an official base image (for example `python:3.12-slim` to check a declared minimum runtime), without `--allow` entitlements. Network access exists only during `docker build`.
@@ -75,15 +75,17 @@ In `followup`, keep the pull request consistent with the issue's current require
   - If a probe cannot be done this way, do not run it on the host; argue the code path instead, as `isac-pr-review` describes.
 - Reading code and running `git`, `gh`, and tools that do not execute the pull request's code stay on the host in every mode.
 
-## Code intelligence and context tools
+## Code intelligence tools
 
-Two MCP servers are always available, and managed hooks enforce part of their use. Use them by default, not as a fallback.
+The CodeGraph MCP server (`codegraph_*` tools) is always available, and a managed `SessionStart` hook indexes your worktree (`.codegraph/` is globally git-ignored; never commit it). If a tool reports that CodeGraph is not initialized, run `codegraph init --yes` in the worktree root and continue.
 
-- **CodeGraph (`codegraph_*` tools)** is the first step for understanding code: use `codegraph_explore` for architecture, flows, and "where is X handled"; `codegraph_search` for symbol locations; `codegraph_callers`, `codegraph_callees`, and `codegraph_impact` before changing a function or type. Use `grep`/file reads for literal text, non-code files, or when CodeGraph has no answer. A session-start hook indexes your worktree; if a tool reports that CodeGraph is not initialized, run `codegraph init --yes` in the worktree root and continue. The `.codegraph/` index is globally git-ignored; never commit it.
-- **context-mode (`ctx_*` tools)** keeps large output out of your context. Run commands whose output may exceed about 20 lines (test suites, builds, logs, `gh api` listings, large diffs) through `ctx_execute` or `ctx_batch_execute`, analyse large files with `ctx_execute_file`, and query indexed output with `ctx_search`, printing only the answer you need. Plain shell is fine for short commands such as `git status`, `git commit`, `mkdir`, or `ls`. Hooks block raw web fetches (`curl`, `wget`, inline HTTP in scripts); use `ctx_fetch_and_index` for web pages and `gh` for GitHub.
-- **Exception: the subject itself.** Read the subject of the turn verbatim and completely, with plain shell or file reads in pages (for example `sed -n '1,200p' <file>`): in `review` the pull request diff and every changed file; in `implement` and `followup` the files you change and the code they touch; every skill file you follow, including its references; and the repository instruction files. Never judge them from `ctx_*` snippets, search hits, or summaries. Use `ctx_*` tools for logs, test and build output, and listings.
-- Evidence you cite in the result (test output, command results) must still come from commands you actually ran; summarise it from the sandboxed output rather than pasting raw logs.
-
+- **Prefer narrow, surgical CodeGraph tools first (`search`, `callers`, `callees`, `impact`, `node`)**:
+  - `codegraph_search`: find symbol definitions and locations by name (~400 tokens).
+  - `codegraph_callers` / `codegraph_callees`: trace who calls a function/method and what it calls (~50–200 tokens in <10ms).
+  - `codegraph_impact`: check the blast radius of changing a symbol before editing (~150 tokens).
+  - `codegraph_node`: inspect one symbol's signature, source, and direct caller/callee trail (~1,000 tokens).
+  - `codegraph_explore`: use only for initial broad architecture/flow discovery when symbol names are unknown (pass a small `maxFiles`, such as `maxFiles: 4`), never to re-read files you already inspect via `git diff` or shell reads.
+- **Read the subject itself verbatim**: in `review` read the pull request diff and every changed file; in `implement` and `followup` read the files you change and the code they touch; read every skill file you follow (including its references) and the repository instruction files in full via plain shell (for example `sed -n '1,200p' <file>` or `git diff`). Use `rg`/file reads for literal text, configs, docs, or when CodeGraph has no answer.
 ## Working rules
 
 - Search existing issues and pull requests (read-only) before proposing or starting work.

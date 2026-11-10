@@ -176,7 +176,7 @@ spec:
                       - rock5bp
       containers:
         - name: runner
-          image: ghcr.io/isac322/issue-agent-runner:0.34.3-codex0.167.0-20261110-pr-head-nudge@sha256:2fefa485871a0a7b1b57d1c3694ea28e38257e125f376bf224b0f7fa780b23b9
+          image: ghcr.io/isac322/issue-agent-runner:0.34.3-codex0.167.0-20261110-codegraph-only@sha256:a60dc502512f232501bf0036f235f77735508db79925c13de9554a43052d8df3
           env:
             - name: HOME
               value: /home/agent
@@ -239,10 +239,10 @@ spec:
               memory: 4Gi
             # Blast wall sized to MAX_ACTIVE_EVENTS=10 (MAX_ACTIVE_REVIEWS=6) on
             # rock5bp (28.95Gi allocatable): one Codex session (~751Mi RSS) plus
-            # max_threads=2 sub-agents (~275Mi each with CodeGraph/context-mode/
-            # hapi MCP) and an 872k context window is ~1.5Gi working set; 10
-            # active sessions ~15Gi working set, 1.2 x 15Gi -> 18Gi. Builds run
-            # in dockerd's cgroup, not here.
+            # max_threads=2 sub-agents (~275Mi each with CodeGraph and hapi MCP)
+            # and an 872k context window is ~1.5Gi working set; 10 active
+            # sessions ~15Gi working set, 1.2 x 15Gi -> 18Gi. Builds run in
+            # dockerd's cgroup, not here.
             limits:
               memory: 18Gi
           securityContext:
@@ -281,7 +281,7 @@ spec:
         # Same image as the runner; /checkout also marks the checkout and its
         # worktrees untrusted in CODEX_HOME (codex-untrust).
         - name: publisher
-          image: ghcr.io/isac322/issue-agent-runner:0.34.3-codex0.167.0-20261110-pr-head-nudge@sha256:2fefa485871a0a7b1b57d1c3694ea28e38257e125f376bf224b0f7fa780b23b9
+          image: ghcr.io/isac322/issue-agent-runner:0.34.3-codex0.167.0-20261110-codegraph-only@sha256:a60dc502512f232501bf0036f235f77735508db79925c13de9554a43052d8df3
           command:
             - /usr/bin/tini
             - --
@@ -297,10 +297,16 @@ spec:
               value: /run/issue-agent/push/token
             - name: PUBLISHER_STATE_DIR
               value: /var/lib/issue-agent-publisher
+            - name: RUNNER_HOME
+              value: /home/agent
             - name: ISSUE_AGENT_CHECKOUTS
               value: /home/agent/checkouts
             - name: CODEX_HOME
               value: /home/agent/.codex
+            - name: HAPI_HOME
+              value: /home/agent/.hapi
+            - name: ISSUE_AGENT_RUNNER_TMP
+              value: /run/issue-agent/runner-tmp
           ports:
             - name: publisher
               containerPort: 8090
@@ -340,6 +346,8 @@ spec:
               readOnly: true
             - name: publisher-state
               mountPath: /var/lib/issue-agent-publisher
+            - name: tmp
+              mountPath: /run/issue-agent/runner-tmp
       volumes:
         - name: home
           persistentVolumeClaim:
