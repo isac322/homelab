@@ -4662,59 +4662,6 @@ class TurnTests(BridgeTestCase):
                 "visual_evidence_manifest": None, **fields}
         return f"done.\n{bridge.RESULT_TAG} {nonce or self.lid} {json.dumps(data)}"
 
-    def test_session_rotates_on_finish_when_turn_input_tokens_exceed_budget(self) -> None:
-        self.assertEqual(self.send()["delivery"], "sent")
-        self.fake.invoke(self.sid, self.lid)
-        self.fake.codex(self.sid, "token_count",
-                        info={"last": {"inputTokens": 250000}})
-        self.say(self.result_line())
-        done = self.op("session_turn")
-        self.assertEqual(done["state"], "done")
-        self.assertIn("rotate_session", json.loads(self.store.event("d1")["stages"]))
-        self.assertEqual(self.store.turn("d1", "implement")["consumed_id"], self.lid)
-
-        self.assertTrue(self.op("finish", "d1", outcome="triaged")["ok"])
-        issue = self.store.issue(REPO, 7)
-        self.assertEqual((issue["session_state"], issue["session_id"]), ("none", None))
-        self.assertIn(self.sid, json.loads(issue["superseded"]))
-        self.assertFalse(self.fake.sessions[self.sid]["active"])
-
-        self.assertEqual(self.deliver(comment_payload(), event="issue_comment", delivery="c1").outcome,
-                         "queued")
-        self.assertEqual(self.dispatcher.tick(), "dispatched")
-        self.assertEqual(self.op("begin", "c1", attempt=1)["status"], "started")
-        fresh = self.op("ensure_session", "c1")
-        self.assertTrue(fresh["ok"], fresh)
-        self.assertFalse(fresh["resumed"])
-        self.assertNotEqual(fresh["session_id"], self.sid)
-        self.assertEqual(len(self.fake.spawns), 2)
-        self.assertTrue(self.fake.spawns[-1]["directory"].endswith("/issue-7"))
-
-        # An idle turn without a result line in an over-budget session rotates immediately as 'lost' (retryable).
-        sid2 = fresh["session_id"]
-        sent2 = self.op("session_send", "c1", mode="followup", instructions="Follow up.")
-        lid2 = sent2["local_id"]
-        self.fake.invoke(sid2, lid2)
-        self.fake.codex(sid2, "token_count", info={"last": {"inputTokens": 260000}})
-        self.fake.codex(sid2, "message", message="ISSUE_AGENT_RESULT wrong-nonce {}")
-        for _ in range(bridge.IDLE_WITHOUT_RESULT_LIMIT - 1):
-            self.assertEqual(self.op("session_turn", "c1")["state"], "running")
-        rotated = self.op("session_turn", "c1")
-        self.assertEqual((rotated["state"], rotated["retryable"]), ("lost", True))
-        issue = self.store.issue(REPO, 7)
-        self.assertEqual((issue["session_state"], issue["session_id"]), ("none", None))
-        self.assertIn(sid2, json.loads(issue["superseded"]))
-        self.assertEqual(self.store.turn("c1", "followup")["state"], "lost")
-        # A pre-existing over-budget session is also rotated up front by ensure_session.
-        fresh2 = self.op("ensure_session", "c1")
-        sid3 = fresh2["session_id"]
-        self.assertNotIn(sid3, (self.sid, sid2))
-        self.store.drop_turn("c1", "followup")
-        self.fake.codex(sid3, "token_count", info={"last": {"inputTokens": 270000}})
-        fresh3 = self.op("ensure_session", "c1")
-        self.assertNotIn(fresh3["session_id"], (self.sid, sid2, sid3))
-        self.assertIn(sid3, json.loads(self.store.issue(REPO, 7)["superseded"]))
-
     def say(self, text: str) -> None:
         self.fake.codex(self.sid, "message", message=text)
 

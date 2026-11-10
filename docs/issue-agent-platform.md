@@ -204,8 +204,6 @@ pillar-csi#155에서 PR 열기 → 31초 뒤 force-push → 3초 뒤 `@haechibot
 
 이벤트가 `finish`로 끝나면 bridge는 먼저 `completed`를 기록한 뒤 HAPI 세션 archive를 시도한다. archive는 `POST /api/sessions/:id/archive`를 95초 동기 배리어로 호출하며, 실패해도 완료 상태는 유지하고 `stages.archive_pending = {"next_at": ...}`를 남긴다. Dispatcher가 같은 주제에 활성 슬롯이 없을 때 이 항목을 회수한다. 취소된 리뷰도 같은 `archive_pending` 경로를 쓴다. 다음 이벤트는 `ensure_session`에서 archive 배리어가 성공한 뒤 65초 timeout의 resume 경로로 같은 대화를 다시 띄운다. 활성 세션이나 같은 주제의 형제 활성 이벤트가 있으면 archive를 호출하지 않는다. `200`과 코드 없는 `409`는 성공이며, `archive-cleanup-unconfirmed`는 대체 spawn 없이 operator park다. 시간 예산 유예가 끝나도 archive가 확정되기 전에는 `time_budget_expired`로 바꾸지 않는다. HAPI는 archive로 Codex 프로세스와 MCP 서버를 멈춘다.
 
-완료한 턴의 HAPI `inputTokens`가 `SESSION_MAX_INPUT_TOKENS = 240_000` 이상이면 `op_finish` 전에 `rotate_session`을 기록하고, `finish`는 세션을 archive한 뒤 다음 이벤트가 같은 worktree에 새 세션을 만든다.
-
 
 HAPI `v0.34.3` Runner 패치는 Linux `/proc/1/stat` starttime과 `boot_id`로 `namespaceGeneration`을 만들고, `/proc/<pid>/stat` starttime marker로 `acquireRunnerLock`과 `CodexRuntimeRecord` 세대를 판별한다. `stopSession`은 형제 활성 세션이 없을 때만 dead-wrapper의 `serverPid` 트리를 정리하고 마지막 root 정상 종료를 기다린다. 비활성 Codex 세션도 Hub의 `POST /sessions/:id/service-tier`를 허용한다.
 

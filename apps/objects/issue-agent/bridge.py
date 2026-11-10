@@ -255,22 +255,6 @@ STALE_SECONDS = 30 * 60.0
 # session_turn reports a turn still running past it as 'expired' and the workflow parks it (`time_budget`).
 TURN_BUDGET_SECONDS = {"triage": 3600.0, "review": 7200.0, "implement": 21600.0, "followup": 21600.0,
                        "reopen_check": 3600.0}
-SESSION_MAX_INPUT_TOKENS = 240_000
-
-def turn_input_tokens(messages: Iterable[Mapping[str, Any]]) -> int:
-    """Latest positive per-step inputTokens reported by Codex token_count events in ``messages``, else 0."""
-    last_input = 0
-    for m in messages:
-        content = m.get("content") if isinstance(m, Mapping) else None
-        inner = content.get("content") if isinstance(content, Mapping) else None
-        data = inner.get("data") if isinstance(inner, Mapping) else None
-        if isinstance(data, Mapping) and data.get("type") == "token_count":
-            info = data.get("info") if isinstance(data.get("info"), Mapping) else {}
-            last = info.get("last") if isinstance(info.get("last"), Mapping) else {}
-            inp = last.get("inputTokens")
-            if isinstance(inp, int) and not isinstance(inp, bool) and inp > 0:
-                last_input = inp
-    return last_input
 # A `time_budget` park whose turn still has no result this long after its deadline gets its session archived;
 # until then the dispatcher looks for a late result every TIME_BUDGET_CHECK_SECONDS.
 TURN_GRACE_SECONDS = 3600.0
@@ -3098,8 +3082,6 @@ class Bridge:
                 sid = self.store.issue(repo, number)["session_id"]
                 if sid:
                     self._archive_barrier(repo, number, sid)
-                    if json.loads(fresh["stages"] or "{}").get("rotate_session"):
-                        self._drop_session(repo, number, sid, "context budget reached")
                 self._set_archive_pending(delivery_id, None)
                 return True
         except (OpError, TransportError) as exc:
@@ -3437,16 +3419,11 @@ class Bridge:
                         or self._turn_failed_on_provider(ev, turn) is not None or \
                         self._session_gone(ev, turn)
                 if resend:
-                    over_budget = self._turn_exceeded_context_budget(ev, turn)
                     # Re-running the step needs a new message: under the old localId session_send reports
                     # 'already' and session_turn re-reads the same turn.
                     self.store.put_turn(ev["delivery_id"], turn["mode"],
                                         resend_local_id(ev["delivery_id"], turn["mode"], turn["local_id"]),
                                         turn["session_id"], "lost")
-                    if over_budget:
-                        sid = self.store.issue(ev["repo"], ev["issue_number"])["session_id"] or turn["session_id"]
-                        self._archive_sid(ev["repo"], int(ev["issue_number"]), sid)
-                        self._drop_session(ev["repo"], int(ev["issue_number"]), sid, "context budget reached")
             # Drop the parked run's heartbeat and execution: the dispatcher keeps an existing heartbeat, so an
             # old one would make the stale sweep park the retried event again before n8n can begin it.
             self.store.update_event(ev["delivery_id"], state="accepted", stages=json.dumps(stages), attempts=0,
@@ -3473,14 +3450,6 @@ class Bridge:
             if assistant_texts(m):
                 last_message = m
         return provider_failure(last_message)
-
-    def _turn_exceeded_context_budget(self, ev: sqlite3.Row, turn: sqlite3.Row) -> bool:
-        try:
-            session = self._follow(ev["repo"], ev["issue_number"], turn["session_id"])
-            history = self._history_from(session["id"], turn["local_id"])
-        except OpError:
-            return False
-        return bool(history and turn_input_tokens(history[1:]) >= SESSION_MAX_INPUT_TOKENS)
 
     def _session_gone(self, ev: sqlite3.Row, turn: sqlite3.Row) -> bool:
         """Whether the turn's session is out of reach or the agent process is gone."""
@@ -3948,49 +3917,38 @@ class Bridge:
                 resumed = False
                 # Unresumable (removed runner machine, or the hub refuses resume for good): give it up and spawn a
                 # replacement below instead of parking the event.
-                if not self._other_active_event(repo, number, ev["delivery_id"]) \
-                        and self._session_exceeded_context_budget(session["id"]):
-                    try:
-                        hold_budget = self._holds_result(ev) or self._subject_holds_unresolved(repo, number)
-                    except Exception as exc:
-                        LOG.warning("%s#%s session drop lookup failed; retaining identity: %s", repo, number, exc)
-                        hold_budget = True
-                    if not hold_budget and self._drop_session(repo, number, session["id"], "context budget reached"):
-                        self._archive_sid(repo, number, session["id"])
-                        session = None
-                if session is not None and session.get("active"):
+                if session.get("active"):
                     issue = self.store.issue(repo, number)
                     return {"session_id": issue["session_id"], "worktree_path": issue["worktree_path"],
                             "branch": issue["branch"], "resumed": False}
-                if session is not None:
-                    try:
-                        hold = self._holds_result(ev) or self._subject_holds_unresolved(repo, number)
-                    except Exception as exc:
-                        LOG.warning("%s#%s session drop lookup failed; retaining identity: %s", repo, number, exc)
-                        hold = True
-                    if self._orphaned(cfg, session):
-                        dropped = "is bound to a removed runner machine"
+                try:
+                    hold = self._holds_result(ev) or self._subject_holds_unresolved(repo, number)
+                except Exception as exc:
+                    LOG.warning("%s#%s session drop lookup failed; retaining identity: %s", repo, number, exc)
+                    hold = True
+                if self._orphaned(cfg, session):
+                    dropped = "is bound to a removed runner machine"
+                else:
+                    if not hold and not self._other_active_event(repo, number, ev["delivery_id"]):
+                        self._archive_barrier(repo, number, session["id"])
+                    current = self._resume(repo, number, session)
+                    if current is None:
+                        dropped = "cannot be resumed (resume_unavailable)"
                     else:
-                        if not hold and not self._other_active_event(repo, number, ev["delivery_id"]):
-                            self._archive_barrier(repo, number, session["id"])
-                        current = self._resume(repo, number, session)
-                        if current is None:
-                            dropped = "cannot be resumed (resume_unavailable)"
-                        else:
-                            session, dropped, resumed = current, None, True
-                    if dropped is not None:
-                        if hold:
-                            LOG.warning("%s#%s session %s %s but an unresolved turn is retained",
-                                        repo, number, session["id"], dropped)
-                            dropped = None
-                    if dropped is None:
-                        issue = self.store.issue(repo, number)
-                        return {"session_id": issue["session_id"], "worktree_path": issue["worktree_path"],
-                                "branch": issue["branch"], "resumed": resumed}
-                    if not self._drop_session(repo, number, session["id"], dropped):
-                        issue = self.store.issue(repo, number)
-                        return {"session_id": issue["session_id"], "worktree_path": issue["worktree_path"],
-                                "branch": issue["branch"], "resumed": resumed}
+                        session, dropped, resumed = current, None, True
+                if dropped is not None:
+                    if hold:
+                        LOG.warning("%s#%s session %s %s but an unresolved turn is retained",
+                                    repo, number, session["id"], dropped)
+                        dropped = None
+                if dropped is None:
+                    issue = self.store.issue(repo, number)
+                    return {"session_id": issue["session_id"], "worktree_path": issue["worktree_path"],
+                            "branch": issue["branch"], "resumed": resumed}
+                if not self._drop_session(repo, number, session["id"], dropped):
+                    issue = self.store.issue(repo, number)
+                    return {"session_id": issue["session_id"], "worktree_path": issue["worktree_path"],
+                            "branch": issue["branch"], "resumed": resumed}
 
             name = self._worktree_name(ev)
             issue = self.store.issue(repo, number)
@@ -4373,16 +4331,6 @@ class Bridge:
         else:
             self.store.put_turn(delivery, mode, local_id, session_id, "lost")
 
-    def _session_exceeded_context_budget(self, session_id: str) -> bool:
-        try:
-            status, data = self.hapi.request(
-                "GET", f"/api/sessions/{urllib.parse.quote(session_id, safe='')}/messages",
-                query={"limit": HISTORY_PAGE_LIMIT})
-        except Exception:
-            return False
-        messages = data.get("messages") if status == 200 and isinstance(data, dict) else None
-        return isinstance(messages, list) and turn_input_tokens(messages) >= SESSION_MAX_INPUT_TOKENS
-
     def op_session_turn(self, req: dict[str, Any]) -> dict[str, Any]:
         ev = self._event(req)
         mode = req.get("mode")
@@ -4459,21 +4407,14 @@ class Bridge:
                     return self._request_correction(ev, mode, sid, local_id, result)
                 # The workflow takes a valid result now; a retry must re-run the step rather than harvest it again.
                 already_consumed = self._consumed(ev, turn)
-                input_tokens = turn_input_tokens(later)
                 self.store.consume_turn(ev["delivery_id"], mode, local_id)
                 if mode == "triage" and self.store.issue(ev["repo"], ev["issue_number"])["phase"] != "implementing":
                     self.store.update_issue(ev["repo"], ev["issue_number"], phase="triaged")
-                if not already_consumed or input_tokens >= SESSION_MAX_INPUT_TOKENS:
+                if not already_consumed:
                     with self.store.tx() as conn:
                         stages = json.loads(conn.execute("SELECT stages FROM events WHERE seq = ?", (ev["seq"],)).fetchone()[0])
-                        changed = False
                         if "step_retries" in stages:
                             stages.pop("step_retries", None)
-                            changed = True
-                        if input_tokens >= SESSION_MAX_INPUT_TOKENS:
-                            stages["rotate_session"] = input_tokens
-                            changed = True
-                        if changed:
                             conn.execute("UPDATE events SET stages = ?, updated_at = ? WHERE seq = ?",
                                          (json.dumps(stages), time.time(), ev["seq"]))
                 return {"state": "done", "session_id": sid, "mode": mode, "result": result}
@@ -4498,13 +4439,6 @@ class Bridge:
             idle = turn["idle_polls"] + 1
             self.store.put_turn(ev["delivery_id"], mode, local_id, turn["session_id"], "sent", idle)
             if idle >= IDLE_WITHOUT_RESULT_LIMIT:
-                if turn_input_tokens(later) >= SESSION_MAX_INPUT_TOKENS:
-                    self.store.put_turn(ev["delivery_id"], mode, resend_local_id(ev["delivery_id"], mode, local_id),
-                                        sid, "lost")
-                    self._archive_sid(ev["repo"], int(ev["issue_number"]), sid)
-                    self._drop_session(ev["repo"], int(ev["issue_number"]), sid, "context budget reached")
-                    return {"state": "lost", "session_id": sid, "retryable": True,
-                            "detail": "agent session exceeded context budget without a result line"}
                 return self._attention("agent is idle but produced no result line for this step")
             return {"state": "running", "session_id": sid, "pending_requests": 0}
 
