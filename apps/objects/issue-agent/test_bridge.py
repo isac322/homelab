@@ -4705,6 +4705,15 @@ class TurnTests(BridgeTestCase):
         self.assertEqual((issue["session_state"], issue["session_id"]), ("none", None))
         self.assertIn(sid2, json.loads(issue["superseded"]))
         self.assertEqual(self.store.turn("c1", "followup")["state"], "lost")
+        # A pre-existing over-budget session is also rotated up front by ensure_session.
+        fresh2 = self.op("ensure_session", "c1")
+        sid3 = fresh2["session_id"]
+        self.assertNotIn(sid3, (self.sid, sid2))
+        self.store.drop_turn("c1", "followup")
+        self.fake.codex(sid3, "token_count", info={"last": {"inputTokens": 270000}})
+        fresh3 = self.op("ensure_session", "c1")
+        self.assertNotIn(fresh3["session_id"], (self.sid, sid2, sid3))
+        self.assertIn(sid3, json.loads(self.store.issue(REPO, 7)["superseded"]))
 
     def say(self, text: str) -> None:
         self.fake.codex(self.sid, "message", message=text)

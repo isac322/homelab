@@ -3948,38 +3948,49 @@ class Bridge:
                 resumed = False
                 # Unresumable (removed runner machine, or the hub refuses resume for good): give it up and spawn a
                 # replacement below instead of parking the event.
-                if session.get("active"):
+                if not self._other_active_event(repo, number, ev["delivery_id"]) \
+                        and self._session_exceeded_context_budget(session["id"]):
+                    try:
+                        hold_budget = self._holds_result(ev) or self._subject_holds_unresolved(repo, number)
+                    except Exception as exc:
+                        LOG.warning("%s#%s session drop lookup failed; retaining identity: %s", repo, number, exc)
+                        hold_budget = True
+                    if not hold_budget and self._drop_session(repo, number, session["id"], "context budget reached"):
+                        self._archive_sid(repo, number, session["id"])
+                        session = None
+                if session is not None and session.get("active"):
                     issue = self.store.issue(repo, number)
                     return {"session_id": issue["session_id"], "worktree_path": issue["worktree_path"],
                             "branch": issue["branch"], "resumed": False}
-                try:
-                    hold = self._holds_result(ev) or self._subject_holds_unresolved(repo, number)
-                except Exception as exc:
-                    LOG.warning("%s#%s session drop lookup failed; retaining identity: %s", repo, number, exc)
-                    hold = True
-                if self._orphaned(cfg, session):
-                    dropped = "is bound to a removed runner machine"
-                else:
-                    if not hold and not self._other_active_event(repo, number, ev["delivery_id"]):
-                        self._archive_barrier(repo, number, session["id"])
-                    current = self._resume(repo, number, session)
-                    if current is None:
-                        dropped = "cannot be resumed (resume_unavailable)"
+                if session is not None:
+                    try:
+                        hold = self._holds_result(ev) or self._subject_holds_unresolved(repo, number)
+                    except Exception as exc:
+                        LOG.warning("%s#%s session drop lookup failed; retaining identity: %s", repo, number, exc)
+                        hold = True
+                    if self._orphaned(cfg, session):
+                        dropped = "is bound to a removed runner machine"
                     else:
-                        session, dropped, resumed = current, None, True
-                if dropped is not None:
-                    if hold:
-                        LOG.warning("%s#%s session %s %s but an unresolved turn is retained",
-                                    repo, number, session["id"], dropped)
-                        dropped = None
-                if dropped is None:
-                    issue = self.store.issue(repo, number)
-                    return {"session_id": issue["session_id"], "worktree_path": issue["worktree_path"],
-                            "branch": issue["branch"], "resumed": resumed}
-                if not self._drop_session(repo, number, session["id"], dropped):
-                    issue = self.store.issue(repo, number)
-                    return {"session_id": issue["session_id"], "worktree_path": issue["worktree_path"],
-                            "branch": issue["branch"], "resumed": resumed}
+                        if not hold and not self._other_active_event(repo, number, ev["delivery_id"]):
+                            self._archive_barrier(repo, number, session["id"])
+                        current = self._resume(repo, number, session)
+                        if current is None:
+                            dropped = "cannot be resumed (resume_unavailable)"
+                        else:
+                            session, dropped, resumed = current, None, True
+                    if dropped is not None:
+                        if hold:
+                            LOG.warning("%s#%s session %s %s but an unresolved turn is retained",
+                                        repo, number, session["id"], dropped)
+                            dropped = None
+                    if dropped is None:
+                        issue = self.store.issue(repo, number)
+                        return {"session_id": issue["session_id"], "worktree_path": issue["worktree_path"],
+                                "branch": issue["branch"], "resumed": resumed}
+                    if not self._drop_session(repo, number, session["id"], dropped):
+                        issue = self.store.issue(repo, number)
+                        return {"session_id": issue["session_id"], "worktree_path": issue["worktree_path"],
+                                "branch": issue["branch"], "resumed": resumed}
 
             name = self._worktree_name(ev)
             issue = self.store.issue(repo, number)
@@ -4361,6 +4372,16 @@ class Bridge:
             self.store.drop_turn(delivery, mode)
         else:
             self.store.put_turn(delivery, mode, local_id, session_id, "lost")
+
+    def _session_exceeded_context_budget(self, session_id: str) -> bool:
+        try:
+            status, data = self.hapi.request(
+                "GET", f"/api/sessions/{urllib.parse.quote(session_id, safe='')}/messages",
+                query={"limit": HISTORY_PAGE_LIMIT})
+        except Exception:
+            return False
+        messages = data.get("messages") if status == 200 and isinstance(data, dict) else None
+        return isinstance(messages, list) and turn_input_tokens(messages) >= SESSION_MAX_INPUT_TOKENS
 
     def op_session_turn(self, req: dict[str, Any]) -> dict[str, Any]:
         ev = self._event(req)
