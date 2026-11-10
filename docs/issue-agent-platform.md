@@ -89,6 +89,8 @@ Codex의 공통 지침은 전용 `CODEX_HOME/AGENTS.md`에서 읽는다. 저장�
 
 워크플로는 PR 생성·갱신과 리뷰 제출까지 수행하고 **merge는 사람이 한다**. bridge는 GitHub가 현재 head를 merge-ready로 판정할 때만 설정된 project owner를 assign하고 멘션한다. 에이전트는 읽기 전용 GitHub 토큰으로 작업하며, bridge가 결과를 받아 GitHub 쓰기를 수행한다. push는 publisher가 checkout의 `hapi-issue-[0-9]+` branch를 자기 private bare mirror로 가져온 뒤 그 mirror에서 non-force 방식으로 실행한다. 에이전트 checkout을 git의 cwd나 git dir로 쓰지 않는다. push 토큰은 publisher 사이드카에만 마운트한다.
 
+Publisher 토큰은 `contents: write`와 `workflows: write`를 요청한다. bulgasaribot GitHub App 설정과 설치 승인에도 Workflows 쓰기 권한이 있어야 발급된다. 구현·수정 에이전트는 요청 범위의 `.github/workflows/` 변경을 로컬 커밋에 포함하며, publisher가 게시한다. 읽기 전용 에이전트 토큰과 reviewer 토큰에는 이 권한을 추가하지 않는다. workflow 변경이 포함됐다는 이유로 미푸시 커밋을 삭제하지 않는다.
+
 다만 publisher와 에이전트는 Runner home PVC를 공유하므로 에이전트는 push될 커밋 내용을 정한다. push 대상은 턴이 끝난 뒤의 worktree branch head다. 에이전트가 worktree의 유일한 writer이므로 결과에 SHA를 따로 받지 않는다(flareway#138에서 손으로 옮긴 SHA가 실제 head와 앞 7자만 맞아 push가 `sha_mismatch`로 멈췄다). 공유 Runner는 악성 코드에 대한 주제별 보안 샌드박스가 아니다.
 
 Runner Pod의 `dockerd`는 privileged 컨테이너다. daemon에는 Secret과 home root를 마운트하지 않고 socket도 UID 1000 그룹으로 제한한다. 2026-10-11 전에는 socket으로 privileged 컨테이너나 host 마운트를 요청할 수 있어 runner 프로세스가 사실상 node root였다. 이제 dockerd의 authorization plugin이 그런 요청을 거절하지만(`## Runner Docker와 DRM 장치`의 Docker 권한 정책) dockerd 자체는 여전히 privileged이고 plugin은 정책 계층이지 커널 경계가 아니다. 에이전트 컨테이너에 쓰기 토큰을 마운트하지 않는 분리는 정상 동작의 경계이며 Secret 격리를 보장하지 않는다. privileged 예외는 `issue-agent-runner` namespace에만 두고, hub·n8n·bridge가 있는 `issue-agent`는 `restricted`를 유지한다.
