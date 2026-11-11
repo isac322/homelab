@@ -1,0 +1,57 @@
+diff --git a/lib/dist/mcp/index.js b/lib/dist/mcp/index.js
+--- a/lib/dist/mcp/index.js
++++ b/lib/dist/mcp/index.js
+@@ -75,6 +75,7 @@
+ const fs = __importStar(require("fs"));
+ const path = __importStar(require("path"));
+ const child_process_1 = require("child_process");
+ const directory_1 = require("../directory");
++const worktree_1 = require("../sync/worktree");
+ const transport_1 = require("./transport");
+ const engine_1 = require("./engine");
+@@ -371,11 +372,17 @@
+         if (daemonOptOutSet()) {
+             return this.startDirect('CODEGRAPH_NO_DAEMON set');
+         }
+-        const root = resolveDaemonRoot(this.projectPath);
++        const indexedRoot = resolveDaemonRoot(this.projectPath);
++        const coldWorktreeRoot = indexedRoot
++            ? null
++            : (0, worktree_1.gitWorktreeRoot)(this.projectPath ?? process.cwd());
++        const safeColdRoot = coldWorktreeRoot && !(0, directory_1.unsafeIndexRootReason)(coldWorktreeRoot)
++            ? coldWorktreeRoot
++            : null;
++        const root = indexedRoot ?? safeColdRoot;
+         if (!root) {
+-            // No initialized project found — daemon mode has nowhere to put its
+-            // socket. The fresh-checkout / outside-project case; behave as before.
+-            return this.startDirect('no .codegraph/ root found');
++            // Without an index or a safe Git worktree, retain direct/unavailable mode.
++            return this.startDirect('no .codegraph/ root or safe Git worktree found');
+         }
+         try {
+             // Answer the MCP handshake LOCALLY (instant tool registration — no waiting
+diff --git a/lib/dist/mcp/proxy.js b/lib/dist/mcp/proxy.js
+--- a/lib/dist/mcp/proxy.js
++++ b/lib/dist/mcp/proxy.js
+@@ -59,6 +59,7 @@
+ const fs = __importStar(require("fs"));
+ const net = __importStar(require("net"));
++const directory_1 = require("../directory");
+ const wasm_runtime_flags_1 = require("../extraction/wasm-runtime-flags");
+ const daemon_1 = require("./daemon");
+ const early_ppid_1 = require("./early-ppid");
+ const ppid_watchdog_1 = require("./ppid-watchdog");
+@@ -432,7 +433,11 @@
+                         version: typeof initParams.clientInfo.version === 'string' ? initParams.clientInfo.version : undefined,
+                     };
+                 }
+-                writeClient({ jsonrpc: '2.0', id: msg.id, result: { protocolVersion: session_1.PROTOCOL_VERSION, capabilities: { tools: {} }, serverInfo: session_1.SERVER_INFO, instructions: (0, session_1.initializeInstructions)(server_instructions_1.SERVER_INSTRUCTIONS) } });
++                const indexed = Boolean((0, directory_1.resolveServerRoot)(deps.root).root);
++                const instructions = indexed
++                    ? server_instructions_1.SERVER_INSTRUCTIONS
++                    : server_instructions_1.SERVER_INSTRUCTIONS_NO_ROOT_INDEX;
++                writeClient({ jsonrpc: '2.0', id: msg.id, result: { protocolVersion: session_1.PROTOCOL_VERSION, capabilities: { tools: {} }, serverInfo: session_1.SERVER_INFO, instructions: (0, session_1.initializeInstructions)(instructions) } });
+                 routeToDaemon(line); // prime the daemon so it resolves the project (its reply is suppressed below)
+             }
+             else if (msg.method === 'tools/list') {

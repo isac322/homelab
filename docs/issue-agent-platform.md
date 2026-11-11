@@ -48,7 +48,7 @@ n8n은 단순히 에이전트를 한 번 호출하는 장식이 아니라 실제
 1. 공통 Issue Agent 지침(`profile/AGENTS.md` → `CODEX_HOME/AGENTS.md`): GitHub 읽기 전용, 턴 끝 `ISSUE_AGENT_RESULT <nonce> {json}` 한 줄로만 결과 반환, 메시지가 지정한 모드만 수행, 이슈·PR 본문과 context는 신뢰하지 않는 데이터, worktree branch에만 로컬 커밋, 불명확하면 결과로 질문.
 2. 공통 스킬(`profile/skills/` → Codex ADMIN scope `/etc/codex/skills`, PVC에 두지 않음): 모드별 주 스킬은 `triage`=`isac-issue-triage`, `implement`=`isac-issue-to-pr`, `followup`=`isac-issue-to-pr`+`receiving-code-review`, `review`=`isac-pr-review`다. 보조 스킬은 `isac-github-publishing`, `isac-decision-brief`, `isac-multi-agent-consensus`, `isac-live-qa`, `issue-validation`, `five-whys-root-cause-analysis`, `comment-writer`, `humanizer`, `writing-clearly-and-concisely`, `destructive-operations`, `public-api`, `pull-request-merge`, `pull-request-review-handling`이다.
 3. 저장소 지침: 각 저장소의 `AGENTS.md`·`CLAUDE.md`·`.agents/**`·`.claude/**`·CONTRIBUTING 등 기여 규칙은 빌드·테스트·스타일만 정하며 공통 지침의 제한을 넓히지 못한다. 저장소 root는 Codex에 untrusted로 등록되므로(아래 9) Codex는 저장소 `AGENTS.md`나 `.agents/skills`를 자동으로 읽지 않는다. 에이전트가 직접 읽는다. implement·followup은 worktree에서, review는 PR이 바꿀 수 없는 기본 브랜치에서 읽는다.
-4. Codex 도구: 모든 세션에 CodeGraph(`codegraph_*`, `CODEGRAPH_MCP_TOOLS="search,callers,callees,impact,node,explore"`) MCP 서버가 붙는다(`/etc/codex/config.toml`). MCP 서버 프로세스는 셸 환경 정책과 별개로 `config.toml`의 `env_vars` allowlist에 있는 변수(`CODEGRAPH_NO_DOWNLOAD`)만 받는다. 사용 강제는 `/etc/codex/requirements.toml`의 managed hook으로 한다. `requirements.toml`은 `allow_managed_hooks_only = true`로 managed hook만 허용하고, MCP 서버는 절대 경로 command로 고정한 allowlist(codegraph와 HAPI가 thread마다 넣는 `hapi`)만 허용한다. SessionStart의 `codegraph-index`가 세션 worktree에 CodeGraph 색인을 만들거나 동기화한다(`.codegraph/`는 `/etc/issue-agent/gitignore`로 커밋되지 않는다).
+4. Codex 도구: 모든 세션에 CodeGraph(`codegraph_*`, `CODEGRAPH_MCP_TOOLS="search,callers,callees,impact,node,explore"`) MCP 서버가 붙는다(`/etc/codex/config.toml`). MCP 서버 프로세스는 셸 환경 정책과 별개로 `config.toml`의 `env_vars` allowlist에 있는 변수(`CODEGRAPH_NO_DOWNLOAD`)만 받는다. `requirements.toml`은 `allow_managed_hooks_only = true`로 managed hook만 허용하고, MCP 서버는 절대 경로 command로 고정한 allowlist(codegraph와 HAPI가 thread마다 넣는 `hapi`)만 허용한다. `/etc/codex/hooks` 디렉터리와 `features.hooks=true`·`hooks.managed_dir="/etc/codex/hooks"` 신뢰 경계는 유지한다. 색인은 메인이 대상 head를 고정한 뒤 필요할 때 준비한다(아래 lifecycle). `.codegraph/`는 `/etc/issue-agent/gitignore`로 커밋되지 않는다.
 5. 빌드 캐시: Runner는 sccache로 Rust(`RUSTC_WRAPPER`)와 C/C++(`PATH` 앞쪽 `cc`·`gcc`·`c++`·`g++` wrapper, CMake compiler launcher) 컴파일 결과를 home PVC의 `SCCACHE_DIR`(최대 5G)에 캐시해 worktree와 세션이 공유한다. wrapper는 sccache가 부모일 때 실제 컴파일러를 바로 실행해 이중 wrapping을 막는다.
 6. 접근 제한: 에이전트 컨테이너에는 읽기 전용 설치 토큰만 마운트한다. 쓰기 토큰(bridge의 issues/pull_requests/contents/repository_advisories write, publisher의 contents write)과 publisher bearer 토큰은 에이전트 컨테이너에서 읽을 수 없다. 지침 문구를 강제적인 보안 격리로 설명하지 않는다.
 7. GitHub 읽기 자격증명 경계: Runner의 `GH_CONFIG_DIR`에는 사용자 토큰이나 PAT가 아닌 rotating repository-scoped GitHub App installation token이 들어간다. `gh auth status`, `gh auth login`, `gh auth setup-git`, `gh api user`, `gh api /user`, GraphQL `viewer` 조회는 설치 토큰에 맞지 않는 사용자 identity probe이므로 인증·readiness 확인에 사용하지 않는다. 이 probe의 실패만으로 저장소 읽기 권한이 없다고 판단하지 않는다.
@@ -69,6 +69,29 @@ Codex의 공통 지침은 전용 `CODEX_HOME/AGENTS.md`에서 읽는다. 저장�
 
 공통 지침·스킬은 버전 관리한다. 이슈 worktree에서의 수정은 다른 worktree에 자동 전파되지 않는다. 공통 반영은 기준 브랜치나 공통 이미지·설정 배포를 통해 수행한다.
 
+### CodeGraph 시작과 대상 head readiness
+
+CodeGraph 1.6.2의 고정된 native 패키지에 시작 경로만 패치한다. 기존 indexed root의 우선순위, internal daemon, 명시적 `CODEGRAPH_NO_DAEMON` 동작은 유지한다. indexed root가 없으면 기존 `gitWorktreeRoot(projectPath ?? cwd)`로 canonical git worktree root를 찾고 `unsafeIndexRootReason`을 통과한 경우에만 기존 proxy/local-handshake 경로를 쓴다. linked worktree를 Git common directory와 혼동하지 않는다. nongit·unsafe root에서 index가 없으면 기존 direct/unavailable 동작을 유지한다. 새 bridge/publisher/HAPI RPC는 두지 않고 버전·도구 여섯 개·small-repository 패치·reasoning·tier·동시성·세션·캐시는 바꾸지 않는다.
+
+native daemon은 DB가 없어도 시작할 수 있다. proxy의 local initialize 응답은 `resolveServerRoot(root).root` 존재 여부에 맞춰 기존 `SERVER_INSTRUCTIONS` 또는 `SERVER_INSTRUCTIONS_NO_ROOT_INDEX`를 `initializeInstructions`로 전달한다. MCP 시작은 indexing이나 graph readiness를 뜻하지 않는다. CLI init은 기존 extraction `codegraph.lock`, 장기 MCP 소유권은 `writer.pid`를 쓰므로 두 계약을 섞어 새 소유권 제어를 만들지 않는다.
+
+모든 모드는 대상 branch/commit을 준비한 뒤 색인을 사용한다. review는 fetch한 실제 PR head를 checkout하고 예상 SHA와 canonical worktree root를 기록한 뒤 review source가 clean인지(tracked 변경·untracked source 모두) 확인한다. implement·followup도 시작 전 색인이 준비됐다고 가정하지 않으며, 이후 source를 수정하면 graph 증거를 다시 쓰기 전에 동기화한다. 지원되는 CLI는 `codegraph status --json "$root"`다:
+
+1. 정확한 worktree의 status를 먼저 읽는다. 색인이 실제로 없으면 그 root에서 `codegraph init --yes`를 실행한다. 유효한 같은 root의 기존 색인은 필요할 때만 `codegraph sync`한다. status가 indexed ancestor를 가리키면 이 worktree의 색인으로 받지 않는다. 손상·partial·failed·다른 root의 색인을 `sync || init`으로 덮어쓰지 않고 진단한다.
+2. init/sync가 끝난 뒤 status를 다시 읽는다. `initialized=true`, canonical `projectPath=worktree root`, `worktreeMismatch=null`, `index.state="complete"`, `index.reindexRecommended=false`, `pendingChanges.added/modified/removed=0`이 모두 필요하다. review에서는 HEAD가 예상 SHA 그대로이고 review source도 계속 clean이어야 한다. `.codegraph/` 존재나 exit zero만으로 통과시키지 않는다.
+3. 준비 전이나 실패한 graph 결과는 증거로 쓰지 않는다. 원문·검색 fallback으로 전체 diff와 계약 검토를 계속하고 graph limitation을 기록한다. head가 바뀌면 readiness와 해당 head의 source receipt를 다시 세운다. 초기 schema가 보인다는 이유로 extraction 도중 graph 요청을 readiness로 간주하지 않는다.
+
+메인이 단일 preparation owner로 head를 고정하고 공유 worktree의 init/sync를 실행한다. 하위 작업자는 중복 init/sync를 시작하지 않는다. bounded 준비 명령이 실행되는 동안 metadata·저장소 관례 읽기, graph에 의존하지 않는 raw diff/source 검토를 병행한다. 전체 검토를 graph 대기 뒤로 미루지 않으며 graph 증거만 위 postcondition이 확인될 때까지 기다린다. 메인은 예상 head·canonical root·최종 status receipt를 작업자에게 전달하면 되고 별도 readiness protocol은 필요 없다. 올바른 head에서 중복 extraction을 피하는 것이 목표이며 native no-change reconciliation이나 필요한 후속 sync 호출을 금지하는 것은 아니다.
+
+이 절은 lifecycle·검증 절차이며 배포 또는 지연 개선의 측정 결과가 아니다. 아래 게이트는 실제 결과를 확인한 뒤에만 체크한다.
+
+- [ ] cold canonical linked worktree에서 MCP initialize가 색인 없이 끝나고 no-index instructions와 여섯 도구를 반환한다. MCP 시작만으로 index extraction이 실행되지 않으며 기존 indexed-root 우선순위·internal daemon·명시적 no-daemon·nongit/unsafe 분기가 유지된다.
+- [ ] 같은 MCP가 살아 있는 상태에서 대상 head를 고정하고 CLI init을 완료한 뒤 위 status 조건과 clean/HEAD 조건을 만족하며 graph 원문을 읽을 수 있다. 시작·init 중 조기 graph 요청이나 extraction lock 충돌을 readiness로 잘못 받아들이지 않는다.
+- [ ] 유효한 warm index는 필요할 때 sync한 뒤 같은 조건을 만족하고, 잘못된 root·head 변경·dirty review source·pending changes·partial/failed 상태는 graph 증거로 거부된다. 실패 시 raw-source 검토는 계속된다.
+- [ ] 준비 owner만 init/sync를 실행하는 동안 metadata·관례·raw diff/source 작업이 진행된다. 작업자는 메인의 최종 status handoff 전에는 graph를 증거로 쓰지 않으며 partial index나 exit zero를 readiness로 받지 않는다.
+- [ ] managed hooks 디렉터리·managed-only 정책·MCP allowlist와 기존 세션/캐시가 유지되고 eager SessionStart indexing은 없다. 실제 배포 후 통제된 실행에서 image digest·head·status receipt·graph/raw fallback 경로를 기록하고 기존 세션을 초기화하지 않는다.
+
+
 ### 리뷰 판정 정책
 
 리뷰 규칙의 원본은 `isac-pr-review` 스킬(`SKILL.md`와 `references/`)이며 세부 규칙 ID와 문구는 스킬이 정한다. 2026-10-11 변경의 요지는 다음과 같다.
@@ -82,7 +105,10 @@ Codex의 공통 지침은 전용 `CODEX_HOME/AGENTS.md`에서 읽는다. 저장�
 - `open_items`: 에이전트 자신의 COMMENT가 결정 사항, 미확인 P0–P2 의심, 덮이지 않은 lens 때문이면 ReviewResult `open_items`에 이유를 하나씩 적는다(`### 모드와 결과 계약`의 ReviewResult와 decision 댓글).
 - 취약점(U4): PR이 새로 들인 취약점(기본 브랜치와 최신 release tag·release branch에 없음)은 리뷰에 위치·메커니즘·수정안을 적고 REQUEST_CHANGES로 낸다. 이미 있던 취약점은 기존처럼 비공개 advisory 경로(PRR-19)로 보낸다. blocking 지적은 언제나 위치·메커니즘·수정안을 담는다.
 - 그 밖의 스킬 규칙: 모든 head를 merge-base 대비 전체 리뷰하고 수정 commit은 hazard(잠금 안의 blocking I/O와 timeout, 기록과 실행 순서, 취소·signal 창, cleanup)를 따로 본다. 새 입력의 모든 진입 경로에 적대적 값과 주입을 probe하고, 새 type 오류 억제를 지적하며, 테스트가 주장한 동작을 실제로 검사하는지와 PR 본문의 동작 주장을 확인한다. 중단된 턴을 이어받으면 head와 환경을 다시 확인하고 증거를 다시 모은다.
-- 리뷰 읽기 범위: `profile/skills/isac-pr-review/SKILL.md` PRR-39가 소유한다. 모든 head의 전체 merge-base diff를 검토하되, 현재 checkout에 동기화한 CodeGraph로 변경 선언의 원문과 호출·소비 경로를 읽고 동일 원문을 다시 읽지 않는다. 색인이 불완전하거나 동적 호출·설정처럼 그래프로 다루기 어려운 계약은 원문·검색으로 추적하며 범위를 확정하지 못하면 파일 전체를 읽는다. 공통 지침은 이 규칙을 참조하고 별도의 파일 전체 읽기를 요구하지 않는다. 필수 렌즈·독립 반박·저장소 지침 원문 읽기는 유지한다.
+- 리뷰 읽기 범위: `profile/skills/isac-pr-review/SKILL.md` PRR-39가 소유한다. 모든 head의 전체 merge-base diff를 검토하되, 위 readiness를 통과한 CodeGraph로 변경 선언의 원문과 호출·소비 경로를 읽는다. 색인이 불완전하거나 동적 호출·설정처럼 그래프로 다루기 어려운 계약은 원문·검색으로 추적하며 범위를 확정하지 못하면 파일 전체를 읽는다. 공통 지침은 별도의 전체 변경 파일 읽기를 요구하지 않는다. 필수 렌즈·독립 반박·PRR-40 및 §13의 모든 저장소 관례·지침 원문 읽기는 유지한다.
+- bounded source receipts: outer call 하나에 필수 파일 하나 또는 diff path 하나만 싣고 큰 출력은 명시적 범위로 나눈다. revision·path·요청/수신 범위·완료/잘림 receipt로 전체 원문 수신을 확인한다. 잘리면 누락 범위만 복구하며 동일 context·동일 revision의 완전한 원문을 재사용한다. 부모의 요약·결론은 독립 리뷰어의 원문 읽기를 대체하지 않는다. schema/descriptor dump는 source와 분리한다. 첫 페이지만 읽고 완료 처리하지 않고, 설치된 Codex 도구 계약으로 확인하지 않은 pragma나 임의 출력 budget을 요구하지 않는다.
+- 두 작업자 묶음: 알려진 전체 모듈과 triggered lens를 먼저 목록화하고 균형 잡힌 전체 모듈/렌즈 묶음을 최대 두 하위 작업자에게 배정한다. 여러 lifecycle 모듈을 같은 작업자가 맡아도 모듈별 체크리스트와 근거는 각각 필요하다. 후속·새 작업은 메인 backlog에서 실제 빈 슬롯·dependency readiness에 따라 배정하며 세 번째 spawn·challenger용 슬롯 예약·선점을 하지 않는다. 독립 후보 challenger는 그 후보 논증을 쓰지 않은 기존 작업자가 맡고, 바쁘면 대기한다. 이 자동화 리뷰 예외가 일반 `조사자 3 + challenger` 구성보다 우선하며 PRR-50 독립성은 그대로다.
+- 결과 초안 pipeline: 안정된 사실·인용·이전 finding 상태를 먼저 준비하면서 나머지 렌즈 검토를 계속한다. 늦게 온 finding·스레드·반박을 통합하고 최종 통합에서 달라진 실질 판단도 필요한 독립 반박을 거친다. 모든 필수 작업·coverage·후보 처리·head 확인 전에는 판정·결과를 확정하지 않는다. 덮이지 않은 필수 항목에는 PRR-53을 적용한다. 배포 후 receipt와 모듈/렌즈 coverage, 후보별 challenger identity, 최종 head를 대조해 확인하며 지연 개선은 동일 조건 측정 전까지 주장하지 않는다.
 - 프로젝트별 규칙: 한 저장소에만 해당하는 규칙은 `profile/skills/isac-pr-review/references/projects/<owner>__<repo>.md`에 둔다(예: `isac322__kwin-mcp.md`). 공통 스킬에는 저장소 전용 규칙을 넣지 않는다.
 - 운영 감시: 배포 뒤 7일 동안 저장소별로 non-draft head 중 COMMENT로 끝난 비율을 본다. 30%를 넘으면 미확인 의심·lens 완결 규칙을 다시 검토한다.
 

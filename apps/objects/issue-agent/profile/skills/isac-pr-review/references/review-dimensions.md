@@ -108,7 +108,7 @@ PR이 들여온 취약점(기본 브랜치에도, 최신 공개 릴리스와 릴
 
 트리거가 diff에 있으면 렌즈는 필수다(PRR-43). 본문 `Lenses`에 `- <lens> — <trigger file:line and what> — covered | uncovered: <items>`로 적는다. 렌즈는 서브 리뷰어로 돌리고, 각자 §14 채널에서 PRR-57 범위의 probe를 실행할 수 있다. 렌즈 결과가 오지 않았거나 항목이 덮이지 않았으면 같은 턴에서 한 번 다시 돌리고, 그래도 남으면 `OPEN`이다(PRR-53). 도구가 실패했어도 §12 논증으로 항목을 덮었으면 그 렌즈는 덮인 것이다. 체크리스트 항목마다 근거(`file:line`과 probe 또는 §12 논증)를 둔다. "소스로 확인했다" 같은 일괄 주장은 그 항목을 덮지 못한다. `Lenses` 줄에는 덮은 범위만 적는다. 이상 동작을 관찰했으면 그것은 finding이거나 `Considered` 후보이고, coverage 텍스트에 남겨 두지 않는다. 메인 에이전트는 항목별 근거가 없는 렌즈 답을 받아들이지 않고 그 렌즈를 한 번 다시 돌린다(PRR-53). 그래도 근거가 없으면 그 항목은 덮이지 않은 것이고, 이벤트는 `COMMENT`이며 그 렌즈를 `open_items`에 적는다.
 
-- **concurrency/lifecycle** (락, 스레드, async, 시그널, 서브프로세스, 정리). 락을 잡거나, 프로세스·스레드를 만들거나 거두거나, 시그널을 다루거나, close/shutdown 상태를 가진 변경 모듈(파일·패키지)이 둘 이상이면 이 렌즈는 반드시 그런 모듈마다 서브 에이전트 하나로 나눈다(동시 최대 2개, 나머지 순차, PRR-43). 각 서브 에이전트는 자기 모듈에서 아래 항목마다, 특히 락 틈과 close/shutdown 후 사용 항목에 `file:line` 근거를 낸다:
+- **concurrency/lifecycle** (락, 스레드, async, 시그널, 서브프로세스, 정리). 락을 잡거나, 프로세스·스레드를 만들거나 거두거나, 시그널을 다루거나, close/shutdown 상태를 가진 변경 모듈(파일·패키지)마다 별도 검토 작업을 둔다. PRR-43의 전체 모듈/렌즈 묶음으로 최대 두 작업자에게 배분하며 한 작업자가 여러 모듈을 맡아도 모듈별 검토와 근거를 합쳐 생략하지 않는다. 후속 작업은 메인 backlog에서 슬롯·의존성이 준비될 때 배정한다. 각 모듈 owner는 아래 항목마다, 특히 락 틈과 close/shutdown 후 사용 항목에 `file:line` 근거를 낸다:
   - 블로킹 I/O(D-Bus, HTTP, 서브프로세스 대기, 파일 잠금)를 감싸고 잡은 락·임계 구역. 그 안의 모든 호출에 타임아웃이 있는가, 연결·인증·이름 조회·introspection 같은 setup 단계의 기본 타임아웃까지 포함해 얼마인가.
   - 기록과 실행의 순서: 되돌려야 할 상태를 기록하기 전에 바꾸지 않는가. 실행 후 응답이 사라지거나 중간에 취소되면 무엇이 남는가.
   - 자원을 얻은 순간과 정리 대상으로 등록한 순간 사이의 창. 그 사이의 시그널, 예외, 취소에서 자원이 새는가.
@@ -145,6 +145,7 @@ PR이 들여온 취약점(기본 브랜치에도, 최신 공개 릴리스와 릴
   - **argument+challenger**: 그 near-miss·인터리빙·경계·setup 타임아웃을 처리하는 정확한 줄을 인용한 코드 경로 논증. 독립 challenger 서브 에이전트에게 논증과 코드 위치만 주고 반례를 만들라고 지시한다(추론만, 실행 없음). challenger가 반례를 만들면 반박이 아니다.
 - 논증은 후보와 같은 인터리빙을 다룬다. 두 임계 구역 사이(예: escalation 단계 사이의 대기, 락을 놓은 상태의 sleep·wait)에서 락이 풀리면, 그 틈에 다른 스레드나 프로세스가 같은 락으로 할 수 있는 일(reap, 등록, 삭제)을 하나씩 적는다. "검사와 실행은 원자적이다"는 단계 사이의 틈을 반박하지 못한다.
 - challenger는 논증을 쓴 서브 에이전트가 아니어야 하고, 버리려는 바로 그 후보를 받아야 한다. `Considered` 항목에는 `argument+challenger(<agent name>)`로 그 challenger를 밝힌다. `<agent name>`은 spawn 도구가 돌려준 서브 에이전트 자신의 이름/id다. "independent reviewer", "challenger" 같은 일반 이름은 세지 않고, 그러면 그 항목은 반박이 아니다. challenger 자신의 답이 후보의 `file:line`을 인용할 때만 반박으로 센다. 그런 challenger의 답이 없으면 `argument+challenger`로 적지 않는다.
+- challenger 일정은 PRR-43과 `isac-multi-agent-consensus`의 자동화 리뷰 예외를 따른다. 두 작업자 중 그 후보 논증을 쓰지 않은 작업자가 맡고, 바쁘면 기다린다. 후보 반박을 위해 세 번째 작업자를 spawn하거나 독립 반박을 생략하지 않는다.
 - 반박이 아닌 것: (a) 도구 문제로 probe가 실패했다, (b) "이를 일으키는 실제 입력이 알려지지 않았다"(하나 만들어 본다), (c) 사용자에게 보이는 출력이 거짓일 수 있는데 "그 자체로 계약 위반은 아니다", (d) near-miss probe나 challenger를 통과한 near-miss 논증 없이 불변조건을 단언한다. 유일성(정확히 하나만 일치), fail-closed 계약은 near-miss 사례(둘째 후보가 있지만 읽기 실패, 부분 열거)가 필요하다. (e) 코드 주석·docstring·이전 PR이 그 한계를 인정했다. 그것은 claim이다(PRR-07). PR이 더하거나 바꾼 경로에서 닿으면 finding이고, 아니면 기존 한계로 기록한다. (f) 명세가 없다·의도일 수 있다: 새·변경 파라미터·플래그·설정 키가 받아들인 값이 조용히 무시되거나 다른 값으로 바뀌면 명세가 없어도 결함이다. 기본은 P3이고, 사용자에게 보이는 출력이나 동작이 요청과 달라지면 P2다.
 - 반박하지 못한 후보는 §8대로 등급을 매기고 PRR-49대로 처리한다.
 - 버린 후보는 본문 끝의 접힌 섹션에 고정 형식으로 남긴다. 다음 head의 리뷰가 이 섹션을 파싱해 다시 본다:
@@ -163,7 +164,7 @@ PR이 들여온 취약점(기본 브랜치에도, 최신 공개 릴리스와 릴
 
 PRR-40의 방법이다. 저장소 지침은 자동으로 로드되지 않으므로 base 브랜치에서 직접 읽는다.
 
-1. base 브랜치의 지침 파일 목록을 만든다: `git ls-tree -r --name-only origin/<base>`에서 AGENTS.md, CLAUDE.md, `.claude/**`, `.agents/**`, CONTRIBUTING*, `.github/pull_request_template*`, `.github/PULL_REQUEST_TEMPLATE/**`, `docs/`의 설계 문서, `.github/workflows/*`. `git show origin/<base>:<path>`로 원문 전체를 읽는다(PRR-39).
+1. base 브랜치의 지침 파일 목록을 만든다: `git ls-tree -r --name-only origin/<base>`에서 AGENTS.md, CLAUDE.md, `.claude/**`, `.agents/**`, CONTRIBUTING*, `.github/pull_request_template*`, `.github/PULL_REQUEST_TEMPLATE/**`, `docs/`의 설계 문서, `.github/workflows/*`. `git show origin/<base>:<path>`로 원문 전체를 읽는다(PRR-39). 목록과 필수 관례 범위는 줄이지 않는다. outer 응답은 파일 하나씩, 큰 파일은 명시적 범위로 나누고 base SHA·path·수신 범위·완료/잘림 receipt를 남긴다. 잘리면 누락 범위만 복구하고 이미 같은 context에서 완전히 받은 동일 revision의 원문은 재사용한다. 첫 페이지·검색 조각·부모의 요약은 원문 전체를 대체하지 않는다.
 2. 워크플로는 실제로 실행하는 명령(lint, type check, 테스트 범위, PR 제목 검사)만 관례로 배운다. 그 실행 결과는 근거가 아니다(PRR-38). 저장소 merge 설정(`gh api repos/<owner>/<repo>`의 `allow_squash_merge`, `allow_merge_commit`, `allow_rebase_merge`, `squash_merge_commit_title`, `squash_merge_commit_message`)에서 어떤 텍스트가 기본 브랜치 커밋이 되는지(squash 제목의 출처가 PR 제목인지, 커밋 하나일 때 그 커밋 제목인지) 배우고, 그 텍스트가 관례를 따르는지 확인한다.
 3. 동기화 트리거 체크리스트: 지침의 "X를 바꾸면 Y도" 규칙을 diff에 하나씩 적용한다(테스트 파일 목록, 도구 수, README 표, 문서 사이트, 변경 기록).
 4. 낡은 산문 grep: 바뀐 심볼, 플래그, 기본값, 숫자, 동작 설명을 저장소 전체에서 grep해 이제 틀린 주석·문서·docstring을 찾는다.

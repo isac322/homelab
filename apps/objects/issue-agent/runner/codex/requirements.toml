@@ -1,7 +1,6 @@
 # Codex system requirements (/etc/codex/requirements.toml). Hooks declared here
 # are managed: trusted by policy without the interactive /hooks review that an
 # unattended runner cannot give, and not removable from user config layers.
-# The codegraph hook indexes the session worktree on start.
 #
 # Only these managed hooks run; hooks from user or project layers (a
 # repository's .codex/) are ignored.
@@ -12,13 +11,6 @@ hooks = true
 
 [hooks]
 managed_dir = "/etc/codex/hooks"
-
-[[hooks.SessionStart]]
-[[hooks.SessionStart.hooks]]
-type = "command"
-command = "/etc/codex/hooks/codegraph-index"
-timeout = 600
-statusMessage = "Indexing the worktree with CodeGraph"
 
 # MCP server allowlist, matched by server name and absolute command path. A
 # server missing here, or whose command or arguments differ, is not started,

@@ -4,3 +4,4 @@
 !operations/issue-agent-docker-smoke
 !patches/
 !patches/hapi-0.34.0-lifecycle.patch
+!patches/codegraph-1.6.2-cold-proxy.patch
