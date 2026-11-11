@@ -82,6 +82,7 @@ Codex의 공통 지침은 전용 `CODEX_HOME/AGENTS.md`에서 읽는다. 저장�
 - `open_items`: 에이전트 자신의 COMMENT가 결정 사항, 미확인 P0–P2 의심, 덮이지 않은 lens 때문이면 ReviewResult `open_items`에 이유를 하나씩 적는다(`### 모드와 결과 계약`의 ReviewResult와 decision 댓글).
 - 취약점(U4): PR이 새로 들인 취약점(기본 브랜치와 최신 release tag·release branch에 없음)은 리뷰에 위치·메커니즘·수정안을 적고 REQUEST_CHANGES로 낸다. 이미 있던 취약점은 기존처럼 비공개 advisory 경로(PRR-19)로 보낸다. blocking 지적은 언제나 위치·메커니즘·수정안을 담는다.
 - 그 밖의 스킬 규칙: 모든 head를 merge-base 대비 전체 리뷰하고 수정 commit은 hazard(잠금 안의 blocking I/O와 timeout, 기록과 실행 순서, 취소·signal 창, cleanup)를 따로 본다. 새 입력의 모든 진입 경로에 적대적 값과 주입을 probe하고, 새 type 오류 억제를 지적하며, 테스트가 주장한 동작을 실제로 검사하는지와 PR 본문의 동작 주장을 확인한다. 중단된 턴을 이어받으면 head와 환경을 다시 확인하고 증거를 다시 모은다.
+- 리뷰 읽기 범위: `profile/skills/isac-pr-review/SKILL.md` PRR-39가 소유한다. 모든 head의 전체 merge-base diff를 검토하되, 현재 checkout에 동기화한 CodeGraph로 변경 선언의 원문과 호출·소비 경로를 읽고 동일 원문을 다시 읽지 않는다. 색인이 불완전하거나 동적 호출·설정처럼 그래프로 다루기 어려운 계약은 원문·검색으로 추적하며 범위를 확정하지 못하면 파일 전체를 읽는다. 공통 지침은 이 규칙을 참조하고 별도의 파일 전체 읽기를 요구하지 않는다. 필수 렌즈·독립 반박·저장소 지침 원문 읽기는 유지한다.
 - 프로젝트별 규칙: 한 저장소에만 해당하는 규칙은 `profile/skills/isac-pr-review/references/projects/<owner>__<repo>.md`에 둔다(예: `isac322__kwin-mcp.md`). 공통 스킬에는 저장소 전용 규칙을 넣지 않는다.
 - 운영 감시: 배포 뒤 7일 동안 저장소별로 non-draft head 중 COMMENT로 끝난 비율을 본다. 30%를 넘으면 미확인 의심·lens 완결 규칙을 다시 검토한다.
 

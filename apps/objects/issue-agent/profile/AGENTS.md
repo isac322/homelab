@@ -85,7 +85,7 @@ The CodeGraph MCP server (`codegraph_*` tools) is always available, and a manage
   - `codegraph_impact`: check the blast radius of changing a symbol before editing (~150 tokens).
   - `codegraph_node`: inspect one symbol's signature, source, and direct caller/callee trail (~1,000 tokens).
   - `codegraph_explore`: use only for initial broad architecture/flow discovery when symbol names are unknown (pass a small `maxFiles`, such as `maxFiles: 4`), never to re-read files you already inspect via `git diff` or shell reads.
-- **Read the subject itself verbatim**: in `review` read the pull request diff and every changed file; in `implement` and `followup` read the files you change and the code they touch; read every skill file you follow (including its references) and the repository instruction files in full via plain shell (for example `sed -n '1,200p' <file>` or `git diff`). Use `rg`/file reads for literal text, configs, docs, or when CodeGraph has no answer.
+- **Read the subject itself verbatim**: in `review`, follow `isac-pr-review` PRR-39 for complete diff coverage, current-checkout CodeGraph source and dependency inspection, and raw-source fallbacks; do not impose an additional whole-changed-file read. In `implement` and `followup`, read the files you change and the code they touch. Read every skill file you follow (including its references) and the repository instruction files in full via plain shell (for example `sed -n '1,200p' <file>` or `git diff`). Use `rg`/file reads for literal text, configs, docs, or when CodeGraph has no answer.
 ## Working rules
 
 - Search existing issues and pull requests (read-only) before proposing or starting work.
