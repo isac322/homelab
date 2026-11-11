@@ -2825,6 +2825,86 @@ class PrRepairTests(BridgeTestCase):
 
 
 class DispatchTests(BridgeTestCase):
+    def test_active_event_cap_configuration_accepts_defaults_and_bounds(self) -> None:
+        self.assertEqual(bridge.Config.from_env(self.env).max_active_events, 10)
+        for raw, expected in (("", 10), (" \t\n", 10), ("1", 1), ("10", 10), (" 1 ", 1), ("01", 1)):
+            with self.subTest(raw=raw):
+                config = bridge.Config.from_env({**self.env, "MAX_ACTIVE_EVENTS": raw})
+                self.assertEqual(config.max_active_events, expected)
+
+    def test_active_event_cap_configuration_rejects_invalid_values(self) -> None:
+        for raw in ("0", "-1", "１", "١", "²", "1.0", "true", "false", "+1", "11", "100", "one"):
+            with self.subTest(raw=raw):
+                with self.assertRaisesRegex(
+                        bridge.ConfigError, "MAX_ACTIVE_EVENTS must be an ASCII decimal integer from 1 to 10"):
+                    bridge.Config.from_env({**self.env, "MAX_ACTIVE_EVENTS": raw})
+
+    def test_single_event_admission_queues_the_next_event_until_completion(self) -> None:
+        config = bridge.Config.from_env({**self.env, "MAX_ACTIVE_EVENTS": "1"})
+        self.dispatcher = bridge.Dispatcher(config, self.store, self.bridge)
+        self.deliver(issue_payload(1), delivery="d1")
+        self.deliver(issue_payload(2), delivery="d2")
+        stop = threading.Event()
+        # Run one real dispatch round without waiting for the next polling interval.
+        with patch.object(stop, "wait", side_effect=lambda _: stop.set()):
+            self.dispatcher.run(stop)
+        self.assertEqual(self.events(), [("d1", "dispatched"), ("d2", "accepted")])
+        self.assertEqual([p["delivery_id"] for _, p in self.fake.dispatched], ["d1"])
+        self.assertEqual(self.dispatcher.tick(), "busy")
+        self.assertEqual(self.op("begin", "d1", attempt=1)["status"], "started")
+        self.assertTrue(self.op("finish", "d1", outcome="triaged")["ok"])
+        self.assertEqual(self.dispatcher.tick(), "dispatched")
+        self.assertEqual(self.events(), [("d1", "completed"), ("d2", "dispatched")])
+
+    def test_lowering_admission_preserves_existing_jobs_sessions_and_markers(self) -> None:
+        for number in (1, 2):
+            delivery = f"d{number}"
+            self.started(number, delivery)
+            self.assertTrue(self.op("ensure_session", delivery)["ok"])
+            self.assertTrue(self.op("session_send", delivery, mode="triage", instructions="Triage the issue.")["ok"])
+            self.assertTrue(self.op("stage", delivery, stage="publication",
+                                    value={"comment_id": number})["ok"])
+        self.deliver(issue_payload(3), delivery="d3")
+        insert_review_row(self.store, "review-done", 99, SHA_C, published=SHA_C)
+        before = {
+            table: [dict(row) for row in self.store.query(f"SELECT * FROM {table} ORDER BY rowid")]
+            for table in ("events", "issues", "turns")
+        }
+        sessions = json.loads(json.dumps(self.fake.sessions))
+        config = dataclasses.replace(self.config, max_active_events=1)
+        self.dispatcher = bridge.Dispatcher(config, self.store, self.bridge)
+        self.assertEqual(self.dispatcher.tick(), "busy")
+        for table, rows in before.items():
+            self.assertEqual([dict(row) for row in self.store.query(f"SELECT * FROM {table} ORDER BY rowid")],
+                             rows, table)
+        self.assertEqual(self.fake.sessions, sessions)
+        self.assertEqual([p["delivery_id"] for _, p in self.fake.dispatched], ["d1", "d2"])
+        self.assertTrue(self.op("finish", "d1", outcome="triaged")["ok"])
+        self.assertEqual(self.dispatcher.tick(), "busy")
+        self.assertTrue(self.op("finish", "d2", outcome="triaged")["ok"])
+        self.assertEqual(self.dispatcher.tick(), "dispatched")
+        self.assertEqual(self.fake.dispatched[-1][1]["delivery_id"], "d3")
+
+    def test_dispatching_retry_continues_above_the_lowered_admission_cap(self) -> None:
+        self.started(1, "d1")
+        self.deliver(issue_payload(2), delivery="d2")
+        self.deliver(issue_payload(3), delivery="d3")
+        now = time.time()
+        self.fake.n8n_status = 500
+        self.assertEqual(self.dispatcher.tick(now), "retry")
+        self.assertEqual(self.events(), [("d1", "dispatched"), ("d2", "dispatching"), ("d3", "accepted")])
+        active = dict(self.store.event("d1"))
+        config = dataclasses.replace(self.config, max_active_events=1)
+        self.dispatcher = bridge.Dispatcher(config, self.store, self.bridge)
+        self.fake.n8n_status = 200
+        self.assertEqual(self.dispatcher.tick(now + 1), "busy")
+        self.assertEqual(self.dispatcher.tick(now + bridge.DISPATCH_BACKOFF + 1), "dispatched")
+        self.assertEqual(self.events(), [("d1", "dispatched"), ("d2", "dispatched"), ("d3", "accepted")])
+        self.assertEqual(dict(self.store.event("d1")), active)
+        self.assertEqual([p["delivery_id"] for _, p in self.fake.dispatched], ["d1", "d2", "d2"])
+        self.assertEqual(self.op("begin", "d2", attempt=1)["status"], "started")
+        self.assertEqual(self.op("begin", "d2", attempt=2, execution_id="ex-late")["status"], "duplicate")
+
     def test_events_run_concurrently_up_to_the_cap_with_bearer_token(self) -> None:
         for n in range(1, bridge.MAX_ACTIVE_EVENTS + 2):
             self.deliver(issue_payload(n), delivery=f"d{n}")
@@ -3788,7 +3868,8 @@ class LifecycleOpsTests(BridgeTestCase):
 
     def test_begin_is_single_owner_and_stages_are_write_once(self) -> None:
         self.started()
-        self.assertEqual(self.op("begin", attempt=2)["status"], "duplicate")
+        self.assertEqual(self.op("begin", attempt=2)["status"], "started")
+        self.assertEqual(self.op("begin", attempt=2, execution_id="ex-other")["status"], "duplicate")
         first = self.op("stage", stage="decision", value={"decision": "implement"})
         second = self.op("stage", stage="decision", value={"decision": "question"})
         self.assertEqual(second["value"], {"decision": "implement"})
@@ -4719,8 +4800,6 @@ class TurnTests(BridgeTestCase):
         self.assertEqual(self.op("session_turn", mode="implement")["state"], "queued")
         self.fake.invoke(self.sid, self.lid)
         self.fake.sessions[self.sid]["thinking"] = True
-        self.say(f"{bridge.RESULT_TAG} other-nonce " + json.dumps({"status": "no_change", "summary": "x"}))
-        self.assertEqual(self.op("session_turn", mode="implement")["state"], "running")
         self.say(self.result_line())
         self.assertEqual(self.op("session_turn", mode="implement")["state"], "running")  # still thinking
         self.fake.sessions[self.sid]["thinking"] = False
@@ -4816,20 +4895,36 @@ class TurnTests(BridgeTestCase):
         self.assertEqual(self.store.turn("d1", "implement")["consumed_id"], self.lid)
         self.assertEqual([p["localId"] for p in self.fake.message_posts], [self.lid])
 
-    def test_wrong_nonce_and_missing_tag_remain_idle_without_correction(self) -> None:
+    def test_malformed_result_with_foreign_nonce_gets_only_one_correction(self) -> None:
         self.send()
         self.fake.invoke(self.sid, self.lid)
-        for idle_polls, text in enumerate((
-                f"{bridge.RESULT_TAG} other-nonce " + '{"status":',
-                'I finished but the result is {"status":'), 1):
-            with self.subTest(text=text):
-                self.say(text)
-                self.assertEqual(self.op("session_turn")["state"], "running")
-                turn = self.store.turn("d1", "implement")
-                self.assertEqual((turn["local_id"], turn["idle_polls"], turn["consumed_id"]),
-                                 (self.lid, idle_polls, None))
-                self.assertEqual([p["localId"] for p in self.fake.message_posts], [self.lid])
+        self.say(f"{bridge.RESULT_TAG} other-nonce " + '{"status":')
+        self.assertEqual(self.op("session_turn")["state"], "running")
+        fix_lid = self.lid + bridge.CORRECTION_SUFFIX
+        turn = self.store.turn("d1", "implement")
+        self.assertEqual((turn["local_id"], turn["idle_polls"], turn["consumed_id"]), (fix_lid, 0, None))
+        for _ in range(2):
+            self.assertEqual(self.op("session_turn")["state"], "queued")
+        self.assertEqual([p["localId"] for p in self.fake.message_posts], [self.lid, fix_lid])
+        self.fake.invoke(self.sid, fix_lid)
+        self.say(f"{bridge.RESULT_TAG} other-nonce " + '{"status":')
         self.assertEqual(self.op("session_turn")["state"], "attention")
+        self.assertEqual(self.store.turn("d1", "implement")["consumed_id"], fix_lid)
+        self.assertEqual([p["localId"] for p in self.fake.message_posts], [self.lid, fix_lid])
+
+    def test_missing_tag_remains_idle_without_correction(self) -> None:
+        self.send()
+        self.fake.invoke(self.sid, self.lid)
+        self.say('I finished but the result is {"status":')
+        for idle_polls in (1, 2):
+            self.assertEqual(self.op("session_turn")["state"], "running")
+            turn = self.store.turn("d1", "implement")
+            self.assertEqual((turn["local_id"], turn["idle_polls"], turn["consumed_id"]),
+                             (self.lid, idle_polls, None))
+            self.assertEqual([p["localId"] for p in self.fake.message_posts], [self.lid])
+        self.assertEqual(self.op("session_turn")["state"], "attention")
+        self.assertEqual(self.store.turn("d1", "implement")["local_id"], self.lid)
+        self.assertIsNone(self.store.turn("d1", "implement")["consumed_id"])
         self.assertEqual([p["localId"] for p in self.fake.message_posts], [self.lid])
 
     def test_busy_malformed_result_waits_without_correction(self) -> None:
@@ -5012,15 +5107,18 @@ class TurnTests(BridgeTestCase):
         self.fake.claude_assistant(self.sid, line)
         self.assertEqual(self.op("session_turn")["state"], "done")
 
-    def test_valid_result_with_foreign_nonce_fails_closed(self) -> None:
+    def test_valid_result_with_foreign_nonce_fails_closed_even_while_thinking(self) -> None:
         self.send()
         self.fake.invoke(self.sid, self.lid)
+        self.fake.sessions[self.sid]["thinking"] = True
         self.say(self.result_line().replace(self.lid, "issue-agent-foreign-review"))
         result = self.op("session_turn")
         self.assertEqual((result["state"], result["detail"]),
                          ("attention", "agent result nonce does not match this turn"))
         self.assertNotIn("park_class", result)
         self.assertIsNone(self.store.turn("d1", "implement")["consumed_id"])
+        self.assertEqual(self.store.turn("d1", "implement")["local_id"], self.lid)
+        self.assertEqual([p["localId"] for p in self.fake.message_posts], [self.lid])
 
     def test_result_must_be_the_final_assistant_text(self) -> None:
         self.send()
@@ -8264,6 +8362,16 @@ class PublisherVisualEvidenceTests(unittest.TestCase):
 
 
 class ConfigTests(unittest.TestCase):
+    def test_existing_constructor_arguments_keep_the_default_admission_cap(self) -> None:
+        config = bridge.Config(
+            "/state", "/github", "/registry", "http://n8n", "/n8n", "/ops",
+            "http://hapi", "/hapi", "http://publisher", "/publisher",
+            8081, "https://api.github.com", None, None, None,
+            bridge.DEFAULT_REVIEW_STATUS_CONTEXT, None, None, None, 1.0, 2.0,
+        )
+        self.assertEqual(config.max_active_events, 10)
+        self.assertEqual((config.port, config.http_timeout, config.poll_interval), (8081, 1.0, 2.0))
+
 
     def test_missing_required_env_fails_closed(self) -> None:
         with self.assertRaises(bridge.ConfigError) as ctx:

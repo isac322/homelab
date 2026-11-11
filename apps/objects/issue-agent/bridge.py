@@ -383,6 +383,7 @@ class Config:
     workflow_id: str | None = None
     http_timeout: float = 30.0
     poll_interval: float = 5.0
+    max_active_events: int = MAX_ACTIVE_EVENTS
 
     @classmethod
     def from_env(cls, env: Mapping[str, str]) -> "Config":
@@ -392,6 +393,10 @@ class Config:
         port_raw = env.get("PORT", "8080").strip() or "8080"
         if not port_raw.isdigit() or not 0 < int(port_raw) < 65536:
             raise ConfigError("PORT must be a TCP port number")
+        max_active_raw = env.get("MAX_ACTIVE_EVENTS", "").strip() or str(MAX_ACTIVE_EVENTS)
+        if (not max_active_raw.isascii() or not max_active_raw.isdecimal()
+                or not 1 <= int(max_active_raw) <= MAX_ACTIVE_EVENTS):
+            raise ConfigError(f"MAX_ACTIVE_EVENTS must be an ASCII decimal integer from 1 to {MAX_ACTIVE_EVENTS}")
         bot = env.get("GITHUB_BOT_LOGIN", "").strip() or None
         review_dir = env.get("GITHUB_REVIEW_TOKEN_DIR", "").strip() or None
         review_bot = env.get("GITHUB_REVIEW_BOT_LOGIN", "").strip() or None
@@ -426,6 +431,7 @@ class Config:
             n8n_public_url=_url(n8n_public, "N8N_PUBLIC_URL") if n8n_public else None,
             hapi_public_url=_url(hapi_public, "HAPI_PUBLIC_URL") if hapi_public else None,
             workflow_id=workflow_id,
+            max_active_events=int(max_active_raw),
         )
 
 
@@ -6466,7 +6472,7 @@ class Dispatcher:
             try:
                 # A tick hands over at most one event; keep going while slots fill. A failed POST
                 # ("retry") ends the round so an unreachable n8n is not hit once per queued event.
-                for _ in range(MAX_ACTIVE_EVENTS + 1):
+                for _ in range(self.config.max_active_events + 1):
                     if self.tick() != "dispatched":
                         break
             except Exception:  # keep the dispatcher alive; state stays in SQLite
@@ -6477,10 +6483,10 @@ class Dispatcher:
         """Hand at most one event to n8n. Its slot is reserved durably before the POST.
 
         States holding a slot: ``dispatching`` (POST sent or pending, outcome unknown until
-        ``begin``) and ``dispatched`` (an execution called ``begin``). At most ``MAX_ACTIVE_EVENTS``
-        slots are held, and never two for the same subject, since events on one issue or pull request
-        share its session and worktree. An unconfirmed POST keeps its slot and is retried for the
-        same event only; ``begin`` makes duplicates exit.
+        ``begin``) and ``dispatched`` (an execution called ``begin``). New slots are admitted up to
+        ``config.max_active_events``; lowering the cap leaves existing slots intact. Never two for the
+        same subject, since events on one issue or pull request share its session and worktree. An
+        unconfirmed POST keeps its slot and is retried for the same event only; ``begin`` makes duplicates exit.
 
         While the Docker maintenance lease is held (``Bridge.request_maintenance``) nothing is handed over
         ("maintenance"); reconciliation, attention notices, time-budget harvests and the stale sweep still run.
@@ -6550,7 +6556,7 @@ class Dispatcher:
                 (now,),
             ).fetchone()
             if ev is None:
-                if active >= MAX_ACTIVE_EVENTS:
+                if active >= self.config.max_active_events:
                     return "busy"
                 ev = conn.execute(
                     "SELECT e.* FROM events e JOIN issues i ON i.repo = e.repo AND i.issue_number = e.issue_number"

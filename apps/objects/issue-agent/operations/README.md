@@ -179,6 +179,36 @@ Bridge front-door `step_retries` performs at most 10 quiet retries with 120 seco
 between attempts. n8n has no duplicate session/send retry nodes; HTTP nodes retain
 their 5×5-second engine retry.
 
+## Temporary single-job benchmark admission
+
+For the approved measurement window, `deployment-bridge.yaml` sets
+`MAX_ACTIVE_EVENTS: "1"` on the bridge container only. This trusted environment
+setting controls new dispatcher slots across issue, review, and repair jobs.
+Unset or blank means the normal default of 10; an explicit value must be an ASCII
+decimal integer from 1 through 10. Invalid values prevent startup. The separate
+`MAX_ACTIVE_REVIEWS = 6` ceiling stays unchanged. The queue selects the oldest
+eligible event, subject to existing per-subject and review limits, rather than
+unconditional FIFO.
+
+Lowering admission preserves active jobs and their slots, including retries of
+an existing `dispatching` event, even when the active count exceeds the new cap.
+It does not cancel model turns or sessions. Admission of one ordinary new job at
+a time does not guarantee a quiet runner: late results, time-budget recovery,
+and manual turns can overlap. Continue checking actual model-turn overlap
+throughout measurement; do not infer isolation from the cap alone. Per-review
+`max_threads = 2`, high reasoning, fast service tier, container resources, and all
+images remain unchanged. Keep the existing runner image for control measurements;
+this override does not roll out a candidate optimization image.
+
+After measurement, remove the bridge container's `MAX_ACTIVE_EVENTS` override
+from `deployment-bridge.yaml` through GitOps to restore the default cap of 10.
+Both applying and removing the override use the bridge Deployment's existing
+`Recreate` strategy, so control API requests can briefly fail and retry while the
+bridge restarts. This is not an atomic drain. Preserve the databases and WAL,
+event and delivery records, attempt keys, `localId` and session identities, and
+stage/publication markers. Do not reset state, cancel sessions, or replay
+deliveries as part of applying or restoring this admission policy.
+
 ## Docker smoke test (`issue-agent-docker-smoke`)
 
 The runner image installs this script as `/opt/issue-agent/bin/docker-smoke`. Run it in
