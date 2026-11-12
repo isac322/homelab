@@ -77,7 +77,11 @@ bridge는 Hub `/health`의 `capabilities.worktreeStartCommit=true`와 선택한 
 
 pull ref가 이동해 예상 SHA와 다르거나, commit이 없거나, Hub·Runner 중 하나라도 기능을 지원하지 않으면 새 리뷰 시작을 거부한다. 기본 branch나 다른 commit으로 fallback하지 않는다. 이 계약은 새 리뷰 spawn에만 적용하며 기존 세션·resume·캐시, 이슈·repair 경로와 기존 worktree 이름 충돌 suffix 규칙은 바꾸지 않는다. 아래 항목은 수용 기준이며 아직 배포·검증 결과가 아니다.
 
+초기 배포에서는 publisher mirror의 emptyDir와 checkout PVC가 다른 파일시스템이라 object 게시가 `EXDEV`로 실패했고, bridge의 새 호출 경로를 임시 롤백했다. object 전달은 신뢰하는 mirror에서 pack을 만든 뒤 checkout 쪽 임시 파일로 stream 복사하고 pack·idx·ref를 원자적으로 게시한다. 파일시스템을 가로지르는 rename에 의존하지 않는다. 수정 후 실제 배포 경로 검증은 아래 별도 게이트로 남긴다.
+
 - [ ] 일반 PR·fork PR에서 신뢰하는 pull ref를 fetch하고 반환 SHA·Runner commit object·새 worktree의 HEAD가 예상 SHA와 일치한다. 기본 checkout은 바뀌지 않는다.
+- [ ] Linux에서 mirror와 checkout을 서로 다른 파일시스템에 두고 기존 `EXDEV` 재현과 수정 후 성공을 확인한다. checkout-local 임시 파일을 거쳐 pack·idx가 게시된 뒤 ref가 게시되고 예상 commit object를 읽을 수 있어야 한다.
+- [ ] 수정 publisher image digest와 실제 bridge → publisher `/review-ref` → HAPI fresh spawn 경로를 확인한다. 반환 SHA·Runner object·초기 worktree HEAD를 대조하며 직접 endpoint 호출 성공만으로 임시 롤백 복구나 전체 live 경로 통과를 주장하지 않는다.
 - [ ] 모델 시작 hook·MCP보다 먼저 정확한 commit이 준비된다. 잘못된 SHA 형식·worktree 이외 유형·없는 commit은 모델 시작 전에 거부된다.
 - [ ] 이동한 pull ref, fetch 실패, 기능이 없는 Hub 또는 Runner는 새 리뷰를 시작하지 않으며 기본 branch fallback이 없다.
 - [ ] 기존 세션 재사용·resume·캐시와 이슈·repair 동작은 유지되고, 같은 worktree 이름이 있으면 기존 suffix 규칙으로 새 worktree를 만든다.
