@@ -1,0 +1,772 @@
+diff --git a/cli/src/api/apiMachine.ts b/cli/src/api/apiMachine.ts
+--- a/cli/src/api/apiMachine.ts
++++ b/cli/src/api/apiMachine.ts
+@@ -463,7 +463,7 @@
+             return forkArchivedCodex(request, () => this.pathPolicy.allowsSpawn(request.directory))
+         })
+         this.rpcHandlerManager.registerHandler(RPC_METHODS.SpawnHappySession, async (params: any) => {
+-            const { directory, sessionId, existingSessionId, reservedSessionId, resumeSessionId, machineId, approvedNewDirectoryCreation, agent, model, effort, modelReasoningEffort, yolo, permissionMode, serviceTier, collaborationMode, copilotAgentMode, token, sessionType, worktreeName, startingMode, forkSession } = params || {}
++            const { directory, sessionId, existingSessionId, reservedSessionId, resumeSessionId, machineId, approvedNewDirectoryCreation, agent, model, effort, modelReasoningEffort, yolo, permissionMode, serviceTier, collaborationMode, copilotAgentMode, token, sessionType, worktreeName, worktreeStartCommit, startingMode, forkSession } = params || {}
+ 
+             if (!directory) {
+                 throw new Error('Directory is required')
+@@ -500,6 +500,7 @@
+                 token,
+                 sessionType,
+                 worktreeName,
++                worktreeStartCommit,
+                 startingMode,
+                 forkSession: forkSession === true,
+                 validateDirectory: async (path) => await this.pathPolicy.allowsSpawn(path),
+@@ -516,6 +517,7 @@
+                         errorMessage: result.errorMessage,
+                         code: result.code,
+                         agent: result.agent,
++                        childStarted: result.childStarted,
+                     }
+             }
+         })
+diff --git a/cli/src/modules/common/rpcTypes.ts b/cli/src/modules/common/rpcTypes.ts
+--- a/cli/src/modules/common/rpcTypes.ts
++++ b/cli/src/modules/common/rpcTypes.ts
+@@ -24,6 +24,7 @@
+     token?: string
+     sessionType?: 'simple' | 'worktree'
+     worktreeName?: string
++    worktreeStartCommit?: string
+     startingMode?: 'remote' | 'pty'
+     /** Claude: spawn with --fork-session after --resume. */
+     forkSession?: boolean
+diff --git a/cli/src/runner/controlServer.ts b/cli/src/runner/controlServer.ts
+--- a/cli/src/runner/controlServer.ts
++++ b/cli/src/runner/controlServer.ts
+@@ -6,6 +6,7 @@
+ import fastify, { FastifyInstance } from 'fastify';
+ import { z } from 'zod';
+ import { serializerCompiler, validatorCompiler, ZodTypeProvider } from 'fastify-type-provider-zod';
++import { WorktreeStartCommitSchema } from '@hapi/protocol';
+ import { logger } from '@/ui/logger';
+ import { Metadata } from '@/api/types';
+ import { TrackedSession } from './types';
+@@ -110,8 +111,12 @@
+           directory: z.string(),
+           sessionId: z.string().optional(),
+           sessionType: z.enum(['simple', 'worktree']).optional(),
+-          worktreeName: z.string().optional()
+-        }),
++          worktreeName: z.string().optional(),
++          worktreeStartCommit: WorktreeStartCommitSchema.optional()
++        }).refine(
++          body => body.worktreeStartCommit === undefined || body.sessionType === 'worktree',
++          { message: 'worktreeStartCommit requires sessionType worktree', path: ['worktreeStartCommit'] }
++        ),
+         response: {
+           200: z.object({
+             success: z.boolean(),
+@@ -131,10 +136,10 @@
+         }
+       }
+     }, async (request, reply) => {
+-      const { directory, sessionId, sessionType, worktreeName } = request.body;
++      const { directory, sessionId, sessionType, worktreeName, worktreeStartCommit } = request.body;
+ 
+       logger.debug(`[CONTROL SERVER] Spawn session request: dir=${directory}, sessionId=${sessionId || 'new'}`);
+-      const result = await spawnSession({ directory, sessionId, sessionType, worktreeName });
++      const result = await spawnSession({ directory, sessionId, sessionType, worktreeName, worktreeStartCommit });
+ 
+       switch (result.type) {
+         case 'success':
+diff --git a/cli/src/runner/run.ts b/cli/src/runner/run.ts
+--- a/cli/src/runner/run.ts
++++ b/cli/src/runner/run.ts
+@@ -656,6 +656,13 @@
+       }
+       const yolo = options.yolo === true;
+       const sessionType = options.sessionType ?? 'simple';
++      if (options.worktreeStartCommit !== undefined && options.sessionType !== 'worktree') {
++        return {
++          type: 'error',
++          errorMessage: 'worktreeStartCommit requires sessionType worktree',
++          childStarted: false,
++        };
++      }
+       const worktreeName = options.worktreeName;
+       let directoryCreated = false;
+       let spawnDirectory = directory;
+@@ -730,11 +737,10 @@
+       }
+ 
+       if (sessionType === 'worktree') {
+-        // Cursor Agent has native `--worktree` under ~/.cursor/worktrees/. Prefer that
+-        // over HAPI's sibling-directory worktree so Cursor sandbox/skills see the same layout.
+-        // Exception: if `directory` is already a linked git worktree (e.g. HAPI feature
+-        // worktree or driver/), nesting `--cursor-worktree` hangs ACP initialize (#1085).
+-        if (agent === 'cursor') {
++        // Cursor normally owns its native worktree layout. An explicit commit
++        // instead requires HAPI's validated worktree, with no native re-checkout.
++        // Linked worktrees also avoid nesting Cursor --worktree (#1085).
++        if (agent === 'cursor' && options.worktreeStartCommit === undefined) {
+           spawnDirectory = directory;
+           if (isLinkedGitWorktree(directory)) {
+             logger.debug(
+@@ -746,7 +752,8 @@
+         } else {
+           const worktreeResult = await createWorktree({
+             basePath: directory,
+-            nameHint: worktreeName
++            nameHint: worktreeName,
++            startCommit: options.worktreeStartCommit
+           });
+           if (!worktreeResult.ok) {
+             logger.debug(`[RUNNER RUN] Worktree creation failed: ${worktreeResult.error}`);
+@@ -2233,7 +2240,7 @@
+       args.push('--yolo');
+     }
+   }
+-  if (agent === 'cursor' && options.sessionType === 'worktree') {
++  if (agent === 'cursor' && options.sessionType === 'worktree' && options.worktreeStartCommit === undefined) {
+     // Nested Cursor --worktree inside an existing linked git worktree hangs ACP
+     // initialize (banner ignored, but never reaches protocolVersion / cursorSessionId).
+     if (!isLinkedGitWorktree(options.directory)) {
+diff --git a/cli/src/runner/run.worktreeStartCommit.test.ts b/cli/src/runner/run.worktreeStartCommit.test.ts
+new file mode 100644
+--- /dev/null
++++ b/cli/src/runner/run.worktreeStartCommit.test.ts
+@@ -0,0 +1,234 @@
++import { execFileSync } from 'node:child_process'
++import { EventEmitter } from 'node:events'
++import { mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from 'node:fs'
++import { tmpdir } from 'node:os'
++import { join } from 'node:path'
++import { afterAll, afterEach, beforeAll, beforeEach, describe, expect, it, vi } from 'vitest'
++import type { startRunnerControlServer } from './controlServer'
++import type { Machine } from '@/api/types'
++import type * as PersistenceModule from '@/persistence'
++import type * as ControlServerModule from './controlServer'
++import type { RpcHandlerManager } from '@/api/rpc/RpcHandlerManager'
++import type * as ProcessModule from '@/utils/process'
++
++const mocks = vi.hoisted(() => ({ controlServer: vi.fn(), spawn: vi.fn() }))
++vi.mock('./controlServer', () => ({ startRunnerControlServer: mocks.controlServer }))
++vi.mock('./controlClient', () => ({
++    isRunnerRunningCurrentlyInstalledHappyVersion: async () => false,
++    stopRunner: async () => {},
++}))
++vi.mock('@/persistence', async importOriginal => ({
++    ...await importOriginal<typeof PersistenceModule>(),
++    acquireRunnerLock: async () => ({}),
++}))
++vi.mock('@/ui/auth', () => ({ authAndSetupMachineIfNeeded: async () => ({ machineId: 'machine' }) }))
++vi.mock('@/ui/logger', () => ({ logger: { debug: vi.fn(), debugLargeJson: vi.fn(), warn: vi.fn() } }))
++vi.mock('@/ui/doctor', () => ({ getEnvironmentInfo: () => ({}) }))
++vi.mock('@/agent/agentAvailability', () => ({ getAgentAvailability: () => ({ available: true }) }))
++vi.mock('@/utils/spawnHappyCLI', () => ({ spawnHappyCLI: mocks.spawn }))
++vi.mock('@/utils/process', async importOriginal => ({
++    ...await importOriginal<typeof ProcessModule>(),
++    isWindows: () => false,
++    isProcessAlive: () => true,
++    getProcessStartMarker: () => 'test-generation',
++    getProcessThreadGroupId: (pid: number) => pid,
++}))
++
++import { configuration } from '@/configuration'
++import { ApiMachineClient } from '@/api/apiMachine'
++import { startRunner } from './run'
++
++type Handlers = Parameters<typeof startRunnerControlServer>[0]
++
++describe('runner exact worktree start commit', () => {
++    let handlers: Handlers
++    let stateHome: string
++    let root: string
++    let repo: string
++    let originalCommit: string
++    let originalStateFile: string
++    let movedCommit: string
++    let nextPid = 800_000
++    let childHeads: string[]
++    let childDirectories: string[]
++
++    function git(...args: string[]): string {
++        return execFileSync('git', args, { cwd: repo, encoding: 'utf8' }).trim()
++    }
++
++    beforeAll(async () => {
++        stateHome = mkdtempSync(join(tmpdir(), 'hapi-exact-runner-state-'))
++        originalStateFile = configuration.runnerStateFile
++        const captured = new Error('control handlers captured before runner networking')
++        mocks.controlServer.mockImplementation(async value => { handlers = value; throw captured })
++        vi.spyOn(process, 'on').mockReturnValue(process)
++        vi.spyOn(process, 'exit').mockImplementation(() => { throw captured })
++        vi.stubEnv('HAPI_RUNNER_HANDOFF_FROM_PID', '')
++        Object.defineProperty(configuration, 'runnerStateFile', { value: join(stateHome, 'runner.json'), configurable: true })
++        try {
++            await expect(startRunner()).rejects.toBe(captured)
++        } finally {
++            vi.restoreAllMocks()
++            vi.unstubAllEnvs()
++        }
++    })
++
++    beforeEach(() => {
++        root = mkdtempSync(join(tmpdir(), 'hapi-exact-worktree-'))
++        repo = join(root, 'repo')
++        mkdirSync(repo)
++        git('init', '-q')
++        git('config', 'user.name', 'Test')
++        git('config', 'user.email', 'test@example.com')
++        writeFileSync(join(repo, 'file'), 'original\n')
++        git('add', 'file')
++        git('commit', '-qm', 'original')
++        originalCommit = git('rev-parse', 'HEAD')
++        writeFileSync(join(repo, 'file'), 'moved\n')
++        git('commit', '-qam', 'moved base')
++        movedCommit = git('rev-parse', 'HEAD')
++        childHeads = []
++        childDirectories = []
++        mocks.spawn.mockReset()
++        mocks.spawn.mockImplementation((_args, options) => {
++            childDirectories.push(options.cwd)
++            childHeads.push(execFileSync('git', ['rev-parse', 'HEAD'], { cwd: options.cwd, encoding: 'utf8' }).trim())
++            const pid = nextPid++
++            const child = Object.assign(new EventEmitter(), { pid, stderr: null, stdout: null, unref() {} })
++            setImmediate(() => handlers.onHappySessionWebhook(`session-${pid}`, {
++                hostPid: pid, path: options.cwd, startedBy: 'runner',
++            } as never))
++            return child
++        })
++    })
++
++    afterEach(() => rmSync(root, { recursive: true, force: true }))
++    afterAll(() => {
++        Object.defineProperty(configuration, 'runnerStateFile', { value: originalStateFile, configurable: true })
++        rmSync(stateHome, { recursive: true, force: true })
++    })
++
++    it('uses the exact commit before child execution despite a moved, dirty base and keeps suffix collisions', async () => {
++        git('branch', 'hapi-review', movedCommit)
++        writeFileSync(join(repo, 'file'), 'local dirty changes\n')
++        writeFileSync(join(repo, 'untracked'), 'keep me\n')
++        const baseStatus = git('status', '--porcelain=v1')
++        const result = await handlers.spawnSession({
++            directory: repo, agent: 'codex', sessionType: 'worktree',
++            worktreeName: 'review', worktreeStartCommit: originalCommit,
++        })
++        expect(result.type).toBe('success')
++        expect(childHeads).toEqual([originalCommit])
++        expect(childDirectories[0]).toMatch(/review-[0-9a-f]{4}$/)
++        expect(readFileSync(join(childDirectories[0]!, 'file'), 'utf8')).toBe('original\n')
++        expect(git('rev-parse', 'HEAD')).toBe(movedCommit)
++        expect(git('status', '--porcelain=v1')).toBe(baseStatus)
++        expect(readFileSync(join(repo, 'file'), 'utf8')).toBe('local dirty changes\n')
++        expect(readFileSync(join(repo, 'untracked'), 'utf8')).toBe('keep me\n')
++    })
++
++    it('rejects missing and noncommit objects before launching any child', async () => {
++        for (const startCommit of ['0'.repeat(40), git('rev-parse', 'HEAD^{tree}'), git('rev-parse', 'HEAD:file')]) {
++            const result = await handlers.spawnSession({
++                directory: repo, sessionType: 'worktree', worktreeStartCommit: startCommit,
++            })
++            expect(result).toMatchObject({ type: 'error', childStarted: false })
++        }
++        expect(mocks.spawn).not.toHaveBeenCalled()
++        expect(git('worktree', 'list', '--porcelain').match(/^worktree /gm)).toHaveLength(1)
++        expect(git('rev-parse', 'HEAD')).toBe(movedCommit)
++    })
++
++    it('rejects commit selection with omitted/simple mode and malformed hashes before child execution', async () => {
++        for (const sessionType of [undefined, 'simple'] as const) {
++            expect(await handlers.spawnSession({
++                directory: repo, sessionType, worktreeStartCommit: originalCommit,
++            })).toMatchObject({ type: 'error', childStarted: false })
++        }
++        for (const startCommit of ['HEAD', originalCommit.toUpperCase()]) {
++            expect(await handlers.spawnSession({
++                directory: repo, sessionType: 'worktree', worktreeStartCommit: startCommit,
++            })).toMatchObject({ type: 'error', childStarted: false })
++        }
++        expect(mocks.spawn).not.toHaveBeenCalled()
++    })
++
++    it('keeps omitted worktree and simple sessions on the current base commit', async () => {
++        expect((await handlers.spawnSession({ directory: repo, sessionType: 'worktree' })).type).toBe('success')
++        expect((await handlers.spawnSession({ directory: repo })).type).toBe('success')
++        expect(childHeads).toEqual([movedCommit, movedCommit])
++        expect(childDirectories[0]).not.toBe(repo)
++        expect(childDirectories[1]).toBe(repo)
++    })
++
++    it('uses a HAPI-managed exact worktree for Cursor without a second native worktree', async () => {
++        expect((await handlers.spawnSession({
++            directory: repo, agent: 'cursor', sessionType: 'worktree', worktreeStartCommit: originalCommit,
++        })).type).toBe('success')
++        expect(childHeads).toEqual([originalCommit])
++        expect(mocks.spawn.mock.calls[0]?.[0]).not.toContain('--cursor-worktree')
++    })
++
++    it('carries the commit through the real machine RPC handler into runner creation', async () => {
++        const machine: Machine = {
++            id: 'machine', namespace: 'default', seq: 1, createdAt: 0, updatedAt: 0,
++            active: true, activeAt: 0, metadata: null, metadataVersion: 0,
++            runnerState: null, runnerStateVersion: 0,
++        }
++        const client = new ApiMachineClient('test-token', machine)
++        client.setRPCHandlers({ spawnSession: handlers.spawnSession, stopSession: handlers.stopSession, requestShutdown() {} })
++        // Test seam: dispatch through the same private manager the socket uses.
++        const clientWithManager = client as unknown as { rpcHandlerManager: RpcHandlerManager }
++        const manager = clientWithManager.rpcHandlerManager
++        try {
++            const result = JSON.parse(await manager.handleRequest({
++                method: 'machine:spawn-happy-session',
++                params: JSON.stringify({ directory: repo, sessionType: 'worktree', worktreeStartCommit: originalCommit }),
++            }))
++            expect(result.type).toBe('success')
++            expect(childHeads).toEqual([originalCommit])
++            const rejected = JSON.parse(await manager.handleRequest({
++                method: 'machine:spawn-happy-session',
++                params: JSON.stringify({ directory: repo, sessionType: 'worktree', worktreeStartCommit: '0'.repeat(40) }),
++            }))
++            expect(rejected).toMatchObject({ type: 'error', childStarted: false })
++            expect(mocks.spawn).toHaveBeenCalledTimes(1)
++        } finally {
++            client.shutdown()
++        }
++    })
++
++    it('carries the commit through the real control HTTP schema and handler', async () => {
++        const { startRunnerControlServer: startControlServer } = await vi.importActual<typeof ControlServerModule>('./controlServer')
++        const server = await startControlServer(handlers)
++        try {
++            const response = await fetch(`http://127.0.0.1:${server.port}/spawn-session`, {
++                method: 'POST', headers: { 'content-type': 'application/json' },
++                body: JSON.stringify({ directory: repo, sessionType: 'worktree', worktreeStartCommit: originalCommit }),
++            })
++            expect(response.status).toBe(200)
++            expect(await response.json()).toMatchObject({ success: true })
++            expect(childHeads).toEqual([originalCommit])
++            const invalid = await fetch(`http://127.0.0.1:${server.port}/spawn-session`, {
++                method: 'POST', headers: { 'content-type': 'application/json' },
++                body: JSON.stringify({ directory: repo, sessionType: 'simple', worktreeStartCommit: originalCommit }),
++            })
++            expect(invalid.status).toBe(400)
++            expect(mocks.spawn).toHaveBeenCalledTimes(1)
++        } finally {
++            await server.stop()
++        }
++    })
++
++    it('rejects and removes a worktree whose post-checkout hook changed HEAD before child execution', async () => {
++        writeFileSync(join(repo, '.git', 'hooks', 'post-checkout'),
++            `#!/bin/sh\ngit reset --hard ${movedCommit} >/dev/null\n`, { mode: 0o755 })
++        const result = await handlers.spawnSession({
++            directory: repo, sessionType: 'worktree', worktreeStartCommit: originalCommit,
++        })
++        expect(result).toMatchObject({ type: 'error', childStarted: false })
++        expect(mocks.spawn).not.toHaveBeenCalled()
++        expect(git('worktree', 'list', '--porcelain').match(/^worktree /gm)).toHaveLength(1)
++        expect(git('rev-parse', 'HEAD')).toBe(movedCommit)
++    })
++})
+diff --git a/cli/src/runner/worktree.ts b/cli/src/runner/worktree.ts
+--- a/cli/src/runner/worktree.ts
++++ b/cli/src/runner/worktree.ts
+@@ -3,6 +3,7 @@
+ import { access, mkdir } from 'node:fs/promises';
+ import { basename, dirname, join } from 'node:path';
+ import { promisify } from 'node:util';
++import { WorktreeStartCommitSchema } from '@hapi/protocol';
+ 
+ const execFileAsync = promisify(execFile);
+ 
+@@ -101,8 +102,12 @@
+ export async function createWorktree(options: {
+   basePath: string;
+   nameHint?: string;
++  startCommit?: string;
+ }): Promise<WorktreeResult> {
+-  const { basePath, nameHint } = options;
++  const { basePath, nameHint, startCommit } = options;
++  if (startCommit !== undefined && !WorktreeStartCommitSchema.safeParse(startCommit).success) {
++    return { ok: false, error: 'Worktree start commit must be a lowercase 40-character commit SHA.' };
++  }
+   let repoRoot: string;
+ 
+   try {
+@@ -114,6 +119,20 @@
+       error: `Path is not a Git repository: ${message}`
+     };
+   }
++  if (startCommit !== undefined) {
++    try {
++      const type = await runGit(['cat-file', '-t', startCommit], repoRoot);
++      const resolved = await runGit(['rev-parse', '--verify', `${startCommit}^{commit}`], repoRoot);
++      if (type.stdout.trim() !== 'commit' || resolved.stdout.trim() !== startCommit) {
++        throw new Error('Object is not the exact requested commit.');
++      }
++    } catch (error) {
++      return {
++        ok: false,
++        error: `Invalid worktree start commit: ${error instanceof Error ? error.message : String(error)}`
++      };
++    }
++  }
+ 
+   const repoParent = dirname(repoRoot);
+   const repoName = basename(repoRoot);
+@@ -136,7 +155,21 @@
+     }
+ 
+     try {
+-      await runGit(['worktree', 'add', '-b', branch, worktreePath], repoRoot);
++      const args = ['worktree', 'add', '-b', branch, worktreePath];
++      if (startCommit !== undefined) args.push(startCommit);
++      await runGit(args, repoRoot);
++      if (startCommit !== undefined) {
++        try {
++          const head = await runGit(['rev-parse', '--verify', 'HEAD'], worktreePath);
++          if (head.stdout.trim() !== startCommit) {
++            throw new Error('Created worktree HEAD does not match the requested commit.');
++          }
++        } catch (error) {
++          const cleanup = await removeWorktree({ repoRoot, worktreePath });
++          const message = error instanceof Error ? error.message : String(error);
++          throw new Error(cleanup.ok ? message : `${message} Worktree cleanup failed: ${cleanup.error}`);
++        }
++      }
+       return {
+         ok: true,
+         info: {
+diff --git a/hub/src/sync/rpcGateway.ts b/hub/src/sync/rpcGateway.ts
+--- a/hub/src/sync/rpcGateway.ts
++++ b/hub/src/sync/rpcGateway.ts
+@@ -269,13 +269,14 @@
+         // latter is adopt-stub (create/getOrCreate with id), not reopen.
+         forkSession?: boolean,
+         /** Fresh machine-spawn stub — distinct from reopen existingSessionId. */
+-        reservedSessionId?: string
++        reservedSessionId?: string,
++        worktreeStartCommit?: string
+     ): Promise<
+         | { type: 'success'; sessionId: string }
+         | {
+             type: 'error'
+             message: string
+-            code?: 'agent_unavailable' | 'outside_workspace_roots'
++            code?: 'agent_unavailable' | 'outside_workspace_roots' | 'runner_upgrade_required'
+             agent?: AgentFlavor
+             /** Explicit false = no OS child; stub safe to delete (#1911 B3). */
+             childStarted?: boolean
+@@ -294,6 +295,7 @@
+                     yolo,
+                     sessionType,
+                     worktreeName,
++                    worktreeStartCommit,
+                     resumeSessionId,
+                     effort,
+                     permissionMode,
+diff --git a/hub/src/sync/syncEngine.ts b/hub/src/sync/syncEngine.ts
+--- a/hub/src/sync/syncEngine.ts
++++ b/hub/src/sync/syncEngine.ts
+@@ -2641,8 +2641,22 @@
+         startingMode?: 'remote' | 'pty',
+         // Required for fresh machine spawns so the runner stamps the HAPI id on
+         // argv before the first webhook (#1911 Major: unreapable window).
+-        namespace?: string
++        namespace?: string,
++        worktreeStartCommit?: string
+     ): ReturnType<RpcGateway['spawnSession']> {
++        if (worktreeStartCommit !== undefined) {
++            const machine = namespace
++                ? this.getMachineByNamespace(machineId, namespace)
++                : this.getMachine(machineId)
++            if (!machine?.metadata?.capabilities?.includes(MACHINE_CAPABILITIES.WorktreeStartCommit)) {
++                return {
++                    type: 'error',
++                    message: 'This runner must be upgraded before selecting a worktree start commit',
++                    code: 'runner_upgrade_required',
++                    childStarted: false,
++                }
++            }
++        }
+         // Fresh machine spawns historically omitted existingSessionId, so
+         // buildCliArgs could not stamp --hapi-session-id / --existing-session-id.
+         // A runner restart before the first webhook then left no persisted PID
+@@ -2696,7 +2710,8 @@
+                 copilotAgentMode,
+                 startingMode,
+                 undefined,
+-                preallocated ? allocatedSessionId : undefined
++                preallocated ? allocatedSessionId : undefined,
++                worktreeStartCommit
+             )
+         } catch (error) {
+             // Ambiguous post-dispatch failure — keep the stub (child may exist).
+diff --git a/hub/src/sync/syncEngineSpawnPrealloc.test.ts b/hub/src/sync/syncEngineSpawnPrealloc.test.ts
+--- a/hub/src/sync/syncEngineSpawnPrealloc.test.ts
++++ b/hub/src/sync/syncEngineSpawnPrealloc.test.ts
+@@ -8,6 +8,31 @@
+  * to the runner so buildCliArgs can stamp argv before the first webhook.
+  */
+ describe('SyncEngine.spawnSession preallocates HAPI id for fresh machine spawns', () => {
++    it('rejects exact commit selection before preallocation when the runner lacks its capability', async () => {
++        const engine = new SyncEngine(new Store(':memory:'), {} as never, new RpcRegistry(), { broadcast() {} } as never)
++        engine.getOrCreateMachine('old-runner', {
++            host: 'localhost', platform: 'linux', happyCliVersion: 'old', capabilities: [],
++        }, null, 'default')
++        engine.handleMachineAlive({ machineId: 'old-runner', time: Date.now() })
++        try {
++            const result = await engine.spawnSession(
++                'old-runner', '/repo', 'claude',
++                undefined, undefined, undefined, 'worktree', undefined,
++                undefined, undefined, undefined, undefined, undefined,
++                undefined, undefined, undefined, 'default', 'a'.repeat(40),
++            )
++            expect(result).toEqual({
++                type: 'error',
++                message: 'This runner must be upgraded before selecting a worktree start commit',
++                code: 'runner_upgrade_required',
++                childStarted: false,
++            })
++            expect(engine.getSessions()).toHaveLength(0)
++        } finally {
++            engine.stop()
++        }
++    })
++
+     it('creates a hub row and forwards that id as reservedSessionId', async () => {
+         const store = new Store(':memory:')
+         const engine = new SyncEngine(
+diff --git a/hub/src/web/routes/machines.test.ts b/hub/src/web/routes/machines.test.ts
+--- a/hub/src/web/routes/machines.test.ts
++++ b/hub/src/web/routes/machines.test.ts
+@@ -1,10 +1,13 @@
+ import { describe, expect, it, mock } from 'bun:test'
+ import { Hono } from 'hono'
+-import type { Machine, SyncEngine } from '../../sync/syncEngine'
++import { type Machine, SyncEngine } from '../../sync/syncEngine'
+ import type { WebAppEnv } from '../middleware/auth'
+ import { createMachinesRoutes } from './machines'
+ import { RpcTargetMissingError } from '../../sync/rpcGateway'
+ import { MACHINE_CAPABILITIES, RPC_TARGET_MISSING_ERROR_CODE } from '@hapi/protocol'
++import { Store } from '../../store'
++import { RpcRegistry } from '../../socket/rpcRegistry'
++import type { Server } from 'socket.io'
+ 
+ function createMachine(overrides?: Partial<Machine>): Machine {
+     return {
+@@ -29,6 +32,79 @@
+ }
+ 
+ describe('machines routes', () => {
++    it('routes an exact worktree commit through the real engine and machine RPC without shifting existing arguments', async () => {
++        const calls: Record<string, unknown>[] = []
++        const socket = {
++            timeout: () => ({
++                emitWithAck: async (_event: string, payload: { params: string }) => {
++                    const params = JSON.parse(payload.params) as Record<string, unknown>
++                    calls.push(params)
++                    return JSON.stringify({ type: 'success', sessionId: params.reservedSessionId })
++                }
++            })
++        }
++        const io = { of: () => ({ sockets: { get: () => socket } }) } as unknown as Server
++        const registry = new RpcRegistry()
++        registry.getSocketIdForMethod = () => 'socket-1'
++        const engine = new SyncEngine(new Store(':memory:'), io, registry, { broadcast() {} } as never)
++        engine.getOrCreateMachine('machine-1', {
++            host: 'localhost', platform: 'linux', happyCliVersion: 'test',
++            capabilities: [MACHINE_CAPABILITIES.AgentAvailability, MACHINE_CAPABILITIES.WorktreeStartCommit],
++        }, null, 'default')
++        engine.handleMachineAlive({ machineId: 'machine-1', time: Date.now() })
++        const app = new Hono<WebAppEnv>()
++        app.use('*', async (c, next) => { c.set('namespace', 'default'); await next() })
++        app.route('/api', createMachinesRoutes(() => engine))
++        try {
++            const worktreeStartCommit = 'a'.repeat(40)
++            const response = await app.request('/api/machines/machine-1/spawn', {
++                method: 'POST',
++                headers: { 'content-type': 'application/json' },
++                body: JSON.stringify({
++                    directory: '/repo', agent: 'claude', sessionType: 'worktree',
++                    worktreeName: 'review', worktreeStartCommit, startingMode: 'remote',
++                })
++            })
++            const result = await response.json() as { type: string; sessionId: string }
++            expect(response.status).toBe(200)
++            expect(result.type).toBe('success')
++            expect(calls).toHaveLength(1)
++            expect(calls[0]).toMatchObject({
++                directory: '/repo', agent: 'claude', sessionType: 'worktree',
++                worktreeName: 'review', worktreeStartCommit, startingMode: 'remote',
++                reservedSessionId: result.sessionId, sessionId: result.sessionId,
++            })
++            expect(calls[0]?.existingSessionId).toBeUndefined()
++            expect(calls[0]?.resumeSessionId).toBeUndefined()
++            expect(engine.getSession(result.sessionId)).toBeDefined()
++        } finally {
++            engine.stop()
++        }
++    })
++
++    it('rejects exact commit selection on an old runner before engine spawn, but keeps omitted requests compatible', async () => {
++        const machine = createMachine()
++        const spawnSession = mock(async () => ({ type: 'success' as const, sessionId: 'ordinary' }))
++        const engine = {
++            getMachine: () => machine,
++            getMachineByNamespace: () => machine,
++            spawnSession,
++        } as unknown as SyncEngine
++        const app = new Hono<WebAppEnv>()
++        app.use('*', async (c, next) => { c.set('namespace', 'default'); await next() })
++        app.route('/api', createMachinesRoutes(() => engine))
++        const request = (body: unknown) => app.request('/api/machines/machine-1/spawn', {
++            method: 'POST', headers: { 'content-type': 'application/json' }, body: JSON.stringify(body),
++        })
++        const rejected = await request({
++            directory: '/repo', sessionType: 'worktree', worktreeStartCommit: 'a'.repeat(40),
++        })
++        expect(await rejected.json()).toMatchObject({ type: 'error', code: 'runner_upgrade_required' })
++        expect(spawnSession).not.toHaveBeenCalled()
++        expect((await request({ directory: '/repo', sessionType: 'worktree' })).status).toBe(200)
++        expect(spawnSession).toHaveBeenCalledTimes(1)
++    })
++
+     it('blocks spawn and availability inspection when the runner needs an upgrade', async () => {
+         const machine = createMachine({
+             metadata: {
+diff --git a/hub/src/web/routes/machines.ts b/hub/src/web/routes/machines.ts
+--- a/hub/src/web/routes/machines.ts
++++ b/hub/src/web/routes/machines.ts
+@@ -140,6 +140,16 @@
+         if (!parsed.success) {
+             return c.json({ error: 'Invalid body' }, 400)
+         }
++        if (
++            parsed.data.worktreeStartCommit !== undefined
++            && !machine.metadata?.capabilities?.includes(MACHINE_CAPABILITIES.WorktreeStartCommit)
++        ) {
++            return c.json({
++                type: 'error' as const,
++                message: 'This runner must be upgraded before selecting a worktree start commit',
++                code: 'runner_upgrade_required' as const,
++            })
++        }
+         const startingMode = parsed.data.startingMode
+         const namespace = c.get('namespace')
+ 
+@@ -224,7 +234,8 @@
+             parsed.data.collaborationMode,
+             parsed.data.copilotAgentMode,
+             startingMode,
+-            namespace
++            namespace,
++            parsed.data.worktreeStartCommit
+         )
+         return c.json(result)
+     })
+diff --git a/hub/src/web/server.ts b/hub/src/web/server.ts
+--- a/hub/src/web/server.ts
++++ b/hub/src/web/server.ts
+@@ -256,6 +256,7 @@
+         protocolVersion: PROTOCOL_VERSION,
+         capabilities: {
+             workGraph: true,
++            worktreeStartCommit: true,
+             titleSuggestion: readTitleProviderConfig() !== null
+         }
+     }))
+diff --git a/shared/src/apiTypes.test.ts b/shared/src/apiTypes.test.ts
+--- a/shared/src/apiTypes.test.ts
++++ b/shared/src/apiTypes.test.ts
+@@ -5,8 +5,30 @@
+     ListCodexSessionsRpcResponseSchema,
+     ListPiSessionsRpcResponseSchema,
+     MessagesQuerySchema,
+-    SendMessageRequestSchema
++    SendMessageRequestSchema,
++    SpawnSessionRequestSchema
+ } from './apiTypes'
++
++describe('SpawnSessionRequestSchema worktree commit', () => {
++    const worktreeStartCommit = 'a'.repeat(40)
++
++    it('preserves an exact commit only with explicit worktree mode', () => {
++        const request = { directory: '/repo', sessionType: 'worktree', worktreeStartCommit }
++        expect(SpawnSessionRequestSchema.parse(request)).toEqual(request)
++        expect(SpawnSessionRequestSchema.safeParse({ ...request, sessionType: 'simple' }).success).toBe(false)
++        expect(SpawnSessionRequestSchema.safeParse({ directory: '/repo', worktreeStartCommit }).success).toBe(false)
++    })
++
++    it('rejects abbreviations, refs, uppercase, and nonstrings without changing omitted behavior', () => {
++        for (const value of ['HEAD', 'a'.repeat(39), 'A'.repeat(40), '', null, 1]) {
++            expect(SpawnSessionRequestSchema.safeParse({
++                directory: '/repo', sessionType: 'worktree', worktreeStartCommit: value,
++            }).success).toBe(false)
++        }
++        expect(SpawnSessionRequestSchema.parse({ directory: '/repo' })).toEqual({ directory: '/repo' })
++        expect(SpawnSessionRequestSchema.safeParse({ directory: '/repo', sessionType: 'simple' }).success).toBe(true)
++    })
++})
+ 
+ describe('ListCodexSessionsRpcResponseSchema', () => {
+     it('preserves Codex session messages when parsing runner RPC responses', () => {
+diff --git a/shared/src/apiTypes.ts b/shared/src/apiTypes.ts
+--- a/shared/src/apiTypes.ts
++++ b/shared/src/apiTypes.ts
+@@ -754,6 +754,8 @@
+     }>
+ }
+ 
++export const WorktreeStartCommitSchema = z.string().regex(/^[0-9a-f]{40}$/)
++
+ export const SpawnSessionRequestSchema = z.object({
+     directory: z.string().min(1),
+     agent: AgentFlavorSchema.optional(),
+@@ -764,11 +766,15 @@
+     permissionMode: PermissionModeSchema.optional(),
+     sessionType: z.enum(['simple', 'worktree']).optional(),
+     worktreeName: z.string().optional(),
++    worktreeStartCommit: WorktreeStartCommitSchema.optional(),
+     serviceTier: z.enum(['fast', 'standard']).optional(),
+     collaborationMode: CodexCollaborationModeSchema.optional(),
+     copilotAgentMode: CopilotAgentModeSchema.optional(),
+     startingMode: z.enum(['remote', 'pty']).optional()
+-})
++}).refine(
++    (request) => request.worktreeStartCommit === undefined || request.sessionType === 'worktree',
++    { message: 'worktreeStartCommit requires sessionType worktree', path: ['worktreeStartCommit'] }
++)
+ 
+ export type SpawnSessionRequest = z.infer<typeof SpawnSessionRequestSchema>
+ 
+diff --git a/shared/src/runnerCapabilities.test.ts b/shared/src/runnerCapabilities.test.ts
+--- a/shared/src/runnerCapabilities.test.ts
++++ b/shared/src/runnerCapabilities.test.ts
+@@ -15,6 +15,7 @@
+         expect(CURRENT_MACHINE_CAPABILITIES).toEqual(expect.arrayContaining([
+             ...REQUIRED_MACHINE_CAPABILITIES,
+             MACHINE_CAPABILITIES.WorkspaceFileAccess,
++            MACHINE_CAPABILITIES.WorktreeStartCommit,
+         ]))
+     })
+ 
+diff --git a/shared/src/runnerCapabilities.ts b/shared/src/runnerCapabilities.ts
+--- a/shared/src/runnerCapabilities.ts
++++ b/shared/src/runnerCapabilities.ts
+@@ -35,6 +35,8 @@
+     StopRunner: RPC_METHODS.StopRunner,
+     /** Read-only file/Git/search RPCs available on the long-lived runner. */
+     WorkspaceFileAccess: 'workspace-file-access',
++    /** Exact local commit selection for fresh HAPI-managed worktrees. */
++    WorktreeStartCommit: 'worktree-start-commit',
+ } as const
+ 
+ export type MachineCapability =
+@@ -47,6 +49,7 @@
+     MACHINE_CAPABILITIES.CursorChatStoreStatus,
+     MACHINE_CAPABILITIES.StopRunner,
+     MACHINE_CAPABILITIES.WorkspaceFileAccess,
++    MACHINE_CAPABILITIES.WorktreeStartCommit,
+ ]
+ 
+ /**

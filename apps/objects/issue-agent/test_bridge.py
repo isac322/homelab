@@ -67,7 +67,9 @@ class Fake:
         # hub
         self.jwts: set[str] = set()
         self.auth_calls = 0
-        self.machines = [{"id": "m1", "active": True}]
+        self.machines = [{"id": "m1", "active": True,
+                          "metadata": {"capabilities": ["worktree-start-commit"]}}]
+        self.hub_capabilities = {"worktreeStartCommit": True}
         self.sessions: dict[str, dict[str, Any]] = {}
         self.messages: dict[str, list[dict[str, Any]]] = {}
         self.indeterminate: set[str] = set()
@@ -158,6 +160,8 @@ class Fake:
         self.advisory_status = 201
         # publisher
         self.checkouts: list[dict[str, Any]] = []
+        self.review_refs: list[dict[str, Any]] = []
+        self.review_ref_sha: str | None = None  # override a successful preparation response
         self.pushes: list[dict[str, Any]] = []
         self.push_error: str | None = None
         # worktree_heads: the agent's local branch heads in the checkout; branch_heads: the remote refs
@@ -322,7 +326,7 @@ class Fake:
             return self.n8n_status, {"message": "Workflow was started"}
         if path.startswith("/publisher/"):
             return self.publisher(method, path.removeprefix("/publisher"), body, auth)
-        if path.startswith("/api/"):
+        if path.startswith("/api/") or path == "/health":
             return self.hub(method, path, query, body, auth)
         if auth == f"Bearer {self.gh_token}":
             self.gh_actor = BOT
@@ -340,6 +344,12 @@ class Fake:
         if path == "/checkout":
             self.checkouts.append(body)
             return 200, {"path": f"/home/agent/checkouts/{body['repo']}", "created": True, "default_branch": "master"}
+        if path == "/review-ref":
+            self.review_refs.append(body)
+            head = self.prs[body["pr_number"]]["head"]["sha"]
+            if head != body["expected_sha"]:
+                return 409, {"error": "sha_mismatch"}
+            return 200, {"sha": self.review_ref_sha or head}
         if path == "/resolve":
             sha = self.worktree_heads.get(body["branch"])
             return (200, {"sha": sha}) if sha else (404, {"error": "branch_missing"})
@@ -392,6 +402,8 @@ class Fake:
         if auth.removeprefix("Bearer ") not in self.jwts:
             return 401, {"error": "Invalid token"}
         self.hub_calls.append((method, path))
+        if path == "/health":
+            return 200, {"capabilities": self.hub_capabilities}
         parts = path.split("/")[2:]
         if parts == ["machines"]:
             return 200, {"machines": self.machines}
@@ -404,6 +416,9 @@ class Fake:
                 sid = self._session(None, {"path": body["directory"]})  # no worktree metadata
             else:
                 sid = self.make_session(body["directory"], body["worktreeName"])
+                if "worktreeStartCommit" in body:
+                    branch = self.sessions[sid]["metadata"]["worktree"]["branch"]
+                    self.worktree_heads[branch] = body["worktreeStartCommit"]
             self.sessions[sid]["serviceTier"] = body.get("serviceTier")
             if self.spawn_mode == "hang":
                 return -1, 1.5
@@ -4300,7 +4315,164 @@ class SessionTests(BridgeTestCase):
         self.assertTrue(result["ok"], result)
         self.assertEqual(self.fake.spawns[0]["worktreeName"], "review-pr-12")
         self.assertEqual(self.fake.checkouts, [{"repo": REPO}])
-        self.assertEqual(self.fake.calls, ["publisher/checkout", "spawn"])
+        self.assertEqual(self.fake.calls, ["publisher/checkout", "publisher/review-ref", "spawn"])
+        self.assertEqual(self.fake.review_refs, [{"repo": REPO, "pr_number": 12, "expected_sha": SHA_A}])
+        self.assertEqual(self.fake.worktree_heads[result["branch"]], SHA_A)
+        self.assertNotEqual(self.fake.default_sha, SHA_A)
+        issue = self.store.issue(REPO, 12)
+        self.assertEqual((issue["session_state"], issue["session_id"]), ("ready", result["session_id"]))
+        self.assertEqual(self.store.event("p1")["head_sha"], SHA_A)
+
+    def test_fresh_review_uses_the_head_begin_retargeted_before_spawn(self) -> None:
+        pr = self.fake.add_pr(12, ref="feature")
+        self.assertEqual(self.deliver(pr_payload(12), event="pull_request", delivery="p1").outcome, "queued")
+        pr["head"]["sha"] = SHA_B
+        self.assertEqual(self.dispatcher.tick(), "dispatched")
+        begun = self.op("begin", "p1", attempt=1)
+        self.assertEqual(begun["status"], "started")
+        self.assertEqual(self.store.event("p1")["head_sha"], SHA_B)
+        with patch.object(self.bridge, "_begin_review_head", side_effect=AssertionError("head resolved twice")):
+            result = self.op("ensure_session", "p1")
+        self.assertTrue(result["ok"], result)
+        self.assertEqual(self.fake.worktree_heads[result["branch"]], SHA_B)
+        self.assertEqual(self.fake.review_refs[0]["expected_sha"], SHA_B)
+        self.assertEqual(self.store.event("p1")["state"], "dispatched")
+
+    def test_fresh_review_moved_after_begin_does_not_retarget_or_spawn(self) -> None:
+        self.started_review()
+        self.fake.prs[12]["head"]["sha"] = SHA_B
+        failed = self.op("ensure_session", "p1")
+        self.assertFalse(failed["ok"], failed)
+        self.assertIn("sha_mismatch", failed["error"])
+        self.assertEqual((self.store.event("p1")["state"], self.store.event("p1")["head_sha"]),
+                         ("dispatched", SHA_A))
+        self.assertEqual(self.store.issue(REPO, 12)["session_state"], "none")
+        self.assertEqual((self.fake.spawns, self.fake.sessions), ([], {}))
+
+    def test_fresh_review_requires_both_hub_and_selected_machine_capabilities(self) -> None:
+        for number, missing in ((12, "hub"), (13, "machine")):
+            with self.subTest(missing=missing):
+                delivery = f"p{number}"
+                self.started_review(number, delivery)
+                if missing == "hub":
+                    self.fake.hub_capabilities = {}
+                else:
+                    self.fake.hub_capabilities = {"worktreeStartCommit": True}
+                    self.fake.machines[0]["metadata"] = {}
+                failed = self.op("ensure_session", delivery)
+                self.assertFalse(failed["ok"], failed)
+                self.assertTrue(failed["needs_operator"], failed)
+                self.assertIn("capability", failed["error"])
+                self.assertEqual(self.store.issue(REPO, number)["session_state"], "none")
+                self.assertEqual(self.fake.spawns, [])
+                self.assertEqual(self.fake.review_refs, [])
+                finished = self.op("finish", delivery, outcome="no_change")
+                self.assertTrue(finished["ok"], finished)
+
+    def test_fresh_review_rejects_a_mismatched_prepared_object_before_pending(self) -> None:
+        self.started_review()
+        self.fake.review_ref_sha = SHA_B
+        failed = self.op("ensure_session", "p1")
+        self.assertFalse(failed["ok"], failed)
+        self.assertTrue(failed["needs_operator"], failed)
+        self.assertIn("expected " + SHA_A, failed["error"])
+        issue = self.store.issue(REPO, 12)
+        self.assertEqual((issue["session_state"], issue["session_id"], issue["pending_at"]), ("none", None, None))
+        self.assertEqual(self.store.event("p1")["head_sha"], SHA_A)
+        self.assertEqual(self.fake.spawns, [])
+
+    def test_review_spawn_timeout_adopts_without_preparing_again_or_retargeting(self) -> None:
+        self.started_review()
+        self.fake.spawn_mode = "hang"
+        with patch.object(bridge, "SPAWN_TIMEOUT", 0.3):
+            failed = self.op("ensure_session", "p1")
+        self.assertFalse(failed["ok"], failed)
+        self.assertTrue(failed["retryable"], failed)
+        self.assertEqual(self.store.issue(REPO, 12)["session_state"], "pending")
+        sid = next(iter(self.fake.sessions))
+        self.fake.prs[12]["head"]["sha"] = SHA_B
+        self.fake.hub_capabilities = {}
+        self.fake.machines[0]["metadata"] = {}
+        recovered = self.op("ensure_session", "p1")
+        self.assertTrue(recovered["ok"], recovered)
+        self.assertTrue(recovered["recovered"])
+        self.assertEqual(recovered["session_id"], sid)
+        self.assertEqual((len(self.fake.spawns), len(self.fake.review_refs)), (1, 1))
+        self.assertEqual(self.fake.worktree_heads[recovered["branch"]], SHA_A)
+        self.assertEqual(self.store.issue(REPO, 12)["session_state"], "ready")
+
+    def test_review_pending_spawn_without_visible_session_waits_before_preparation(self) -> None:
+        self.started_review()
+        self.store.update_issue(REPO, 12, session_state="pending", pending_at=time.time())
+        self.fake.hub_capabilities = {}
+        failed = self.op("ensure_session", "p1")
+        self.assertFalse(failed["ok"], failed)
+        self.assertTrue(failed["retryable"], failed)
+        self.assertIn("settling", failed["error"])
+        self.assertEqual((self.fake.review_refs, self.fake.spawns), ([], []))
+        self.assertEqual(self.store.issue(REPO, 12)["session_state"], "pending")
+
+    def test_retained_review_session_and_resume_do_not_require_or_prepare_a_head(self) -> None:
+        self.started_review()
+        original = self.op("ensure_session", "p1")
+        self.assertTrue(original["ok"], original)
+        self.fake.prs[12]["head"]["sha"] = SHA_B
+        self.fake.worktree_heads[original["branch"]] = SHA_C
+        self.fake.hub_capabilities = {}
+        self.fake.machines[0]["metadata"] = {}
+        retained = self.op("ensure_session", "p1")
+        self.assertEqual(retained["session_id"], original["session_id"])
+        self.fake.sessions[original["session_id"]]["active"] = False
+        resumed = self.op("ensure_session", "p1")
+        self.assertTrue(resumed["ok"], resumed)
+        self.assertTrue(resumed["resumed"])
+        self.assertNotEqual(resumed["session_id"], original["session_id"])
+        self.assertEqual(resumed["worktree_path"], original["worktree_path"])
+        self.assertEqual(self.fake.worktree_heads[original["branch"]], SHA_C)
+        self.assertEqual((len(self.fake.spawns), len(self.fake.review_refs)), (1, 1))
+
+    def test_review_replacement_restores_retained_branch_without_exact_start(self) -> None:
+        self.started_review()
+        original = self.op("ensure_session", "p1")
+        self.assertTrue(original["ok"], original)
+        sid = original["session_id"]
+        self.fake.sessions[sid]["active"] = False
+        self.fake.unresumable.add(sid)
+        self.fake.worktrees.clear()
+        self.fake.worktree_heads[original["branch"]] = SHA_C
+        self.fake.prs[12]["head"]["sha"] = SHA_B
+        self.fake.hub_capabilities = {}
+        self.fake.machines[0]["metadata"] = {}
+        replaced = self.op("ensure_session", "p1")
+        self.assertTrue(replaced["ok"], replaced)
+        self.assertNotEqual(replaced["session_id"], sid)
+        self.assertEqual((replaced["branch"], replaced["worktree_path"]),
+                         (original["branch"], original["worktree_path"]))
+        self.assertEqual(self.fake.spawns[-1]["sessionType"], "simple")
+        self.assertNotIn("worktreeStartCommit", self.fake.spawns[-1])
+        self.assertEqual(len(self.fake.review_refs), 1)
+        self.assertEqual(self.fake.worktree_heads[original["branch"]], SHA_C)
+        self.assertEqual(self.fake.restores, [{"repo": REPO, "worktree": "review-pr-12",
+                                             "branch": original["branch"]}])
+
+    def test_fresh_review_suffix_collision_still_starts_at_the_expected_head(self) -> None:
+        self.started_review()
+        self.fake.branches.add("hapi-review-pr-12")
+        result = self.op("ensure_session", "p1")
+        self.assertTrue(result["ok"], result)
+        self.assertEqual(result["branch"], "hapi-review-pr-12-0001")
+        self.assertEqual(self.fake.worktree_heads[result["branch"]], SHA_A)
+        self.assertIn("hapi-review-pr-12", self.fake.branches)
+
+    def test_fresh_issue_session_does_not_require_review_start_capabilities(self) -> None:
+        self.started()
+        self.fake.hub_capabilities = {}
+        self.fake.machines[0]["metadata"] = {}
+        result = self.op("ensure_session")
+        self.assertTrue(result["ok"], result)
+        self.assertNotIn("worktreeStartCommit", self.fake.spawns[0])
+        self.assertEqual(self.fake.review_refs, [])
+        self.assertNotIn(("GET", "/health"), self.fake.hub_calls)
 
     def test_spawn_error_envelope_is_not_success(self) -> None:
         self.fake.spawn_mode = "error"
@@ -7518,6 +7690,8 @@ class ReviewGateTests(BridgeTestCase):
         self.assertEqual(self.op("begin", "p1", attempt=1)["status"], "terminal")
         ev = self.store.event("p1")
         self.assertEqual((ev["state"], ev["outcome"], ev["head_sha"]), ("completed", "head_moved", SHA_A))
+        self.assertEqual(self.op("ensure_session", "p1")["error"], "event_terminal")
+        self.assertEqual((self.fake.review_refs, self.fake.spawns), ([], []))
 
     def test_fail_execution_classifies_n8n_transport_errors_only(self) -> None:
         cases = [

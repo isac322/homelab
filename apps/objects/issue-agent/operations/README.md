@@ -179,6 +179,43 @@ Bridge front-door `step_retries` performs at most 10 quiet retries with 120 seco
 between attempts. n8n has no duplicate session/send retry nodes; HTTP nodes retain
 their 5×5-second engine retry.
 
+## Exact-start initialization for fresh reviews
+
+A fresh `pr_review` session must start at the event's expected PR head before
+model startup hooks or MCP run. The bridge asks the publisher to
+`POST /review-ref {repo, pr_number, expected_sha}`. The publisher fetches
+`refs/pull/<pr_number>/head` from the trusted GitHub base repository, including
+for fork PRs, and returns `{"sha": "<exact SHA>"}` only when that commit matches
+`expected_sha` and its object is available in the runner clone. It does not
+change the default checkout's HEAD, branch, or working files.
+
+Before spawning, the bridge requires both Hub `/health`
+`capabilities.worktreeStartCommit: true` and `worktree-start-commit` in the
+selected machine's `metadata.capabilities`. It passes `worktreeStartCommit`
+as a lowercase 40-character hex SHA for a `worktree` session. HAPI validates
+the commit and creates the worktree at that commit before starting the model.
+A moved pull ref, missing commit, fetch failure, or unsupported hub or runner
+blocks the fresh review; none may fall back to the default branch.
+
+This applies only to fresh review spawns. Retained sessions, resume, caches,
+issue and repair paths, and normal worktree name-collision suffixes stay
+unchanged. Do not reset them to verify or deploy this contract.
+
+Verification checklist (pending; this section records no deployment or test pass):
+
+- [ ] Capture the deployed hub, runner, publisher, and bridge image digests and
+  both capability advertisements before a controlled fresh review.
+- [ ] For ordinary and fork PRs, compare the event's expected SHA, publisher
+  response, runner commit object, and initial worktree HEAD. Confirm that the
+  default checkout stays unchanged.
+- [ ] Confirm that the exact HEAD is established before model startup hooks and
+  MCP. Confirm that invalid SHA syntax, a non-worktree request, and a missing
+  commit are rejected before the model starts.
+- [ ] Exercise a moved pull ref, a fetch failure, and each missing capability
+  independently. Confirm that no fresh model starts on another commit.
+- [ ] Check retained-session reuse and resume, issue and repair paths, existing
+  caches, and normal suffix behavior when the requested worktree name exists.
+
 ## Temporary single-job benchmark admission
 
 For the approved measurement window, `deployment-bridge.yaml` sets
@@ -199,6 +236,13 @@ throughout measurement; do not infer isolation from the cap alone. Per-review
 `max_threads = 2`, high reasoning, fast service tier, container resources, and all
 images remain unchanged. Keep the existing runner image for control measurements;
 this override does not roll out a candidate optimization image.
+
+Exact-start behavior is a shared correctness prerequisite for both benchmark
+arms, not a candidate optimization. Apply it to control and candidate, then
+start a new measurement cohort with expected SHA, initial HEAD, and image
+digests recorded for each run. Keep earlier wrong-base runs out of that cohort;
+do not attribute their source-reading or indexing overhead to the candidate's
+performance improvement.
 
 After measurement, remove the bridge container's `MAX_ACTIVE_EVENTS` override
 from `deployment-bridge.yaml` through GitOps to restore the default cap of 10.

@@ -21,6 +21,7 @@ import sqlite3
 import time
 import unittest
 from contextlib import closing
+from concurrent.futures import ThreadPoolExecutor
 from http import HTTPStatus
 from http.server import ThreadingHTTPServer
 from unittest.mock import patch
@@ -761,6 +762,227 @@ def git(*args: str, cwd: str) -> str:
     if result.returncode != 0:
         raise AssertionError(f"git {' '.join(args)} failed: {result.stderr}")
     return result.stdout.strip()
+
+
+class ReviewRefTest(EndpointCase):
+    """Fetch the trusted base-repository pull ref, never the checkout's origin."""
+
+    def setUp(self) -> None:
+        super().setUp()
+        self.state = os.path.join(self.root, "state")
+        os.makedirs(self.state)
+        push_token = os.path.join(self.root, "push-token")
+        write(push_token, TOKEN)
+        for name, value in (("STATE_DIR", self.state), ("PUSH_TOKEN_FILE", push_token)):
+            patcher = patch.object(publisher, name, value)
+            patcher.start()
+            self.addCleanup(patcher.stop)
+        shutil.rmtree(self.base)
+        os.makedirs(self.base)
+        git("init", "--quiet", "--initial-branch=main", cwd=self.base)
+        write(os.path.join(self.base, "README.md"), "base\n")
+        git("add", ".", cwd=self.base)
+        git("commit", "--quiet", "-m", "base", cwd=self.base)
+        self.base_sha = git("rev-parse", "HEAD", cwd=self.base)
+        self.remote = os.path.join(self.root, "base-remote.git")
+        git("clone", "--quiet", "--bare", self.base, self.remote, cwd=self.root)
+        fork = os.path.join(self.root, "fork")
+        git("clone", "--quiet", self.base, fork, cwd=self.root)
+        write(os.path.join(fork, "README.md"), "fork review head\n")
+        git("add", ".", cwd=fork)
+        git("commit", "--quiet", "-m", "fork change", cwd=fork)
+        self.review_sha = git("rev-parse", "HEAD", cwd=fork)
+        git("push", "--quiet", self.remote, "HEAD:refs/pull/7/head", cwd=fork)
+        git("remote", "add", "origin", "https://example.invalid/attacker/repo.git", cwd=self.base)
+        self.commands: list[tuple[list[str], dict]] = []
+        real_run_git = publisher.run_git
+
+        def trusted_remote(args: list[str], **kwargs) -> subprocess.CompletedProcess:
+            self.commands.append((list(args), dict(kwargs)))
+            url = f"https://github.com/{REPO}.git"
+            if url in args:
+                self.assertEqual(kwargs.get("token"), TOKEN)
+                self.assertEqual(args[-1], "+refs/pull/7/head:refs/issue-agent/review-fetch/7")
+                args = [self.remote if arg == url else arg for arg in args]
+            else:
+                self.assertNotIn("token", kwargs)
+            return real_run_git(args, **kwargs)
+
+        patcher = patch.object(publisher, "run_git", side_effect=trusted_remote)
+        patcher.start()
+        self.addCleanup(patcher.stop)
+
+    def request(self, **changes) -> dict:
+        return {"repo": REPO, "pr_number": 7, "expected_sha": self.review_sha} | changes
+
+    def prepare(self, **changes) -> tuple[int, dict]:
+        return self.call("POST", "/review-ref", json.dumps(self.request(**changes)).encode())
+
+    def assert_no_checkout_object(self) -> None:
+        result = subprocess.run(["git", "cat-file", "-e", self.review_sha], cwd=self.base,
+                                env=GIT_ENV, capture_output=True, check=False)
+        self.assertNotEqual(result.returncode, 0)
+        self.assertFalse(any("pack-objects" in args for args, _ in self.commands))
+        self.assertFalse(os.path.exists(os.path.join(self.base, ".git", "refs", "issue-agent")))
+
+    def test_prepares_fork_head_and_preserves_checkout_and_branches(self) -> None:
+        write(os.path.join(self.base, "README.md"), "local dirty change\n")
+        branches = git("for-each-ref", "--format=%(refname) %(objectname)", "refs/heads", cwd=self.base)
+        worktrees = git("worktree", "list", "--porcelain", cwd=self.base)
+        self.assertEqual(self.prepare(), (HTTPStatus.OK, {"sha": self.review_sha}))
+        self.assertEqual(git("show", f"{self.review_sha}:README.md", cwd=self.base), "fork review head")
+        self.assertEqual(git("rev-parse", "HEAD", cwd=self.base), self.base_sha)
+        self.assertEqual(git("symbolic-ref", "HEAD", cwd=self.base), "refs/heads/main")
+        self.assertEqual(git("for-each-ref", "--format=%(refname) %(objectname)", "refs/heads", cwd=self.base),
+                         branches)
+        self.assertEqual(git("worktree", "list", "--porcelain", cwd=self.base), worktrees)
+        with open(os.path.join(self.base, "README.md"), encoding="utf-8") as handle:
+            self.assertEqual(handle.read(), "local dirty change\n")
+        self.assertEqual(git("rev-parse", f"refs/issue-agent/review-heads/{self.review_sha}", cwd=self.base),
+                         self.review_sha)
+        self.assertFalse(os.path.exists(os.path.join(self.base, ".git", "FETCH_HEAD")))
+        self.assertFalse(os.listdir(self.worktrees))
+        # Ordinary Git GC sees the non-branch pin and retains the prepared tree.
+        git("gc", "--prune=now", cwd=self.base)
+        self.assertEqual(git("show", f"{self.review_sha}:README.md", cwd=self.base), "fork review head")
+        for args, _ in self.commands:
+            if "--git-dir" in args:
+                self.assertEqual(args[args.index("--git-dir") + 1], publisher.mirror_path(REPO))
+
+    def test_mismatch_does_not_transfer_even_when_requested_commit_exists(self) -> None:
+        status, payload = self.prepare(expected_sha=self.base_sha)
+        self.assertEqual((status, payload["error"]), (HTTPStatus.CONFLICT, "review_ref_mismatch"))
+        self.assert_no_checkout_object()
+
+    def test_missing_pull_ref_does_not_prepare_or_use_cached_mirror_ref(self) -> None:
+        mirror = publisher.ensure_mirror(REPO)
+        git("--git-dir", mirror, "fetch", "--quiet", self.remote,
+            "+refs/pull/7/head:refs/issue-agent/review-fetch/7", cwd=self.root)
+        git("--git-dir", self.remote, "update-ref", "-d", "refs/pull/7/head", cwd=self.root)
+        status, payload = self.prepare()
+        self.assertEqual((status, payload["error"]), (HTTPStatus.NOT_FOUND, "review_ref_missing"))
+        self.assert_no_checkout_object()
+
+    def test_noncommit_pull_ref_is_not_prepared(self) -> None:
+        tree = git("--git-dir", self.remote, "rev-parse", "refs/pull/7/head^{tree}", cwd=self.root)
+        git("--git-dir", self.remote, "update-ref", "refs/pull/7/head", tree, cwd=self.root)
+        status, payload = self.prepare(expected_sha=tree)
+        self.assertEqual((status, payload["error"]), (HTTPStatus.BAD_GATEWAY, "review_ref_fetch_failed"))
+        self.assert_no_checkout_object()
+
+    def test_transfer_failure_does_not_publish_a_preparation_pin(self) -> None:
+        trusted_remote = publisher.run_git.side_effect
+
+        def failed_pack(args: list[str], **kwargs) -> subprocess.CompletedProcess:
+            if "pack-objects" in args:
+                return subprocess.CompletedProcess(args, 1, stdout="", stderr="pack failed")
+            return trusted_remote(args, **kwargs)
+
+        with patch.object(publisher, "run_git", side_effect=failed_pack):
+            status, payload = self.prepare()
+        self.assertEqual((status, payload["error"]), (HTTPStatus.INTERNAL_SERVER_ERROR, "review_ref_prepare_failed"))
+        self.assertEqual(os.listdir(os.path.join(self.base, ".git", "refs", "issue-agent", "review-heads")), [])
+
+    def test_remote_fetch_uses_existing_bounded_transport(self) -> None:
+        publisher.ensure_mirror(REPO)
+        with patch.object(publisher.subprocess, "run",
+                          side_effect=subprocess.TimeoutExpired("git", publisher.GIT_TIMEOUT)) as run:
+            status, payload = self.prepare()
+        self.assertEqual((status, payload["error"]), (HTTPStatus.GATEWAY_TIMEOUT, "git_timeout"))
+        self.assertEqual(run.call_args.kwargs["timeout"], publisher.GIT_TIMEOUT)
+        self.assert_no_checkout_object()
+
+    def test_concurrent_preparations_are_serialized_and_idempotent(self) -> None:
+        active, peak = 0, 0
+        guard = threading.Lock()
+        real_prepare = publisher.do_review_ref
+
+        def observed(*args) -> dict:
+            nonlocal active, peak
+            with guard:
+                active += 1
+                peak = max(peak, active)
+            try:
+                time.sleep(0.02)
+                return real_prepare(*args)
+            finally:
+                with guard:
+                    active -= 1
+
+        def request() -> tuple[int, dict]:
+            conn = http.client.HTTPConnection("127.0.0.1", self.server.server_address[1], timeout=30)
+            try:
+                conn.request("POST", "/review-ref", json.dumps(self.request()).encode(),
+                             {"Authorization": f"Bearer {TOKEN}", "Content-Type": "application/json"})
+                response = conn.getresponse()
+                return response.status, json.loads(response.read())
+            finally:
+                conn.close()
+
+        with patch.object(publisher, "do_review_ref", side_effect=observed):
+            with ThreadPoolExecutor(max_workers=2) as pool:
+                results = list(pool.map(lambda _: request(), range(2)))
+        self.assertEqual(results, [(HTTPStatus.OK, {"sha": self.review_sha})] * 2)
+        self.assertEqual(peak, 1)
+        self.assertEqual(git("rev-parse", "HEAD", cwd=self.base), self.base_sha)
+        self.assertEqual(git("show", f"{self.review_sha}:README.md", cwd=self.base), "fork review head")
+        self.assertEqual(os.listdir(os.path.join(self.base, ".git", "refs", "issue-agent", "review-heads")),
+                         [self.review_sha])
+
+    def test_checkout_hooks_and_config_are_never_loaded(self) -> None:
+        marker = os.path.join(self.root, "hook-ran")
+        hooks = os.path.join(self.root, "hostile-hooks")
+        for name in ("reference-transaction", "post-checkout", "post-merge", "pre-auto-gc", "fsmonitor"):
+            hook = os.path.join(hooks, name)
+            write(hook, f"#!/bin/sh\nprintf ran >> '{marker}'\nexit 1\n")
+            os.chmod(hook, 0o755)
+        git("config", "core.hooksPath", hooks, cwd=self.base)
+        git("config", "core.fsmonitor", os.path.join(hooks, "fsmonitor"), cwd=self.base)
+        # Any Git invocation using this checkout as its git-dir would fail.
+        invalid_config = os.path.join(self.root, "invalid-gitconfig")
+        write(invalid_config, "this is not valid git config\n")
+        git("config", "include.path", invalid_config, cwd=self.base)
+        self.assertEqual(self.prepare(), (HTTPStatus.OK, {"sha": self.review_sha}))
+        self.assertFalse(os.path.exists(marker))
+
+    def test_symlinked_object_or_ref_directories_are_refused(self) -> None:
+        for relative in ("objects/pack", "refs/issue-agent"):
+            with self.subTest(relative=relative):
+                path = os.path.join(self.base, ".git", relative)
+                if os.path.isdir(path):
+                    os.rmdir(path)
+                os.symlink(self.outside, path)
+                try:
+                    status, payload = self.prepare()
+                    self.assertEqual((status, payload["error"]), (HTTPStatus.CONFLICT, "unsafe_path"))
+                    self.assertEqual(os.listdir(self.outside), ["keep"])
+                    self.assertFalse(any("pack-objects" in args for args, _ in self.commands))
+                finally:
+                    os.unlink(path)
+
+    def test_invalid_inputs_are_rejected_before_preparation(self) -> None:
+        invalid = [
+            {"repo": "../krema"}, {"repo": "isac322/.."}, {"repo": "isac322/krema.git"},
+            {"repo": "/tmp/repo"}, {"repo": "isac322/krema\n"},
+            {"pr_number": 0}, {"pr_number": -1}, {"pr_number": True}, {"pr_number": "7"},
+            {"pr_number": 1.5}, {"pr_number": None}, {"expected_sha": self.review_sha.upper()},
+            {"expected_sha": "a" * 39}, {"expected_sha": "a" * 41}, {"expected_sha": "HEAD"},
+            {"expected_sha": self.review_sha + "\n"}, {"expected_sha": None},
+            {"path": self.outside}, {"head_repo": "attacker/fork"},
+        ]
+        with patch.object(publisher, "do_review_ref") as prepare:
+            for changes in invalid:
+                with self.subTest(changes=changes):
+                    status, payload = self.prepare(**changes)
+                    self.assertEqual((status, payload["error"]), (HTTPStatus.BAD_REQUEST, "invalid_request"))
+            prepare.assert_not_called()
+        self.assertEqual(self.commands, [])
+
+    def test_authentication_is_required(self) -> None:
+        with patch.object(publisher, "do_review_ref") as prepare:
+            status, payload = self.call("POST", "/review-ref", json.dumps(self.request()).encode(), token="wrong")
+        self.assertEqual((status, payload["error"]), (HTTPStatus.UNAUTHORIZED, "unauthorized"))
+        prepare.assert_not_called()
 
 
 class PushEndpointTest(EndpointCase):

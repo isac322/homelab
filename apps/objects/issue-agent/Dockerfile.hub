@@ -15,7 +15,9 @@ RUN curl -fsSLo /tmp/hapi.tar.gz "https://github.com/tiann/hapi/archive/2161a9ff
     && tar -xzf /tmp/hapi.tar.gz --strip-components=1 -C /src \
     && rm /tmp/hapi.tar.gz
 COPY patches/hapi-0.34.0-lifecycle.patch /tmp/hapi-0.34.0-lifecycle.patch
+COPY patches/hapi-0.34.4-worktree-start-commit.patch /tmp/hapi-0.34.4-worktree-start-commit.patch
 RUN patch -p1 < /tmp/hapi-0.34.0-lifecycle.patch \
+    && patch -p1 < /tmp/hapi-0.34.4-worktree-start-commit.patch \
     && bun install --frozen-lockfile \
     && mkdir -p shared/tools/tunwg \
     && curl -fsSLo shared/tools/tunwg/tunwg-arm64-linux "https://github.com/tiann/tunwg/releases/download/v26.08.03%2B122a6d0/tunwg-arm64" \

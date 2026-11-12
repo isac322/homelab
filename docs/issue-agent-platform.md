@@ -34,7 +34,7 @@ v2는 코딩 에이전트의 GitHub 쓰기를 모두 없앴다. 에이전트는 
 |---|---|
 | n8n | GitHub webhook 수신과 서명 검증(수신 워크플로 `IssueAgentIntake01`, 커뮤니티 노드 `n8n-nodes-webhook-signature`), GitHub 이벤트 처리 흐름, 모드별 단계(triage → implement, followup, review), 결과에 따른 분기, 모든 GitHub 반영(라벨·댓글·push·PR·리뷰)의 호출과 실패 처리. 에이전트에 보내는 메시지에는 대상 번호와 트리거 정보만 넣으며 GitHub 내용 조회는 담당하지 않는다 |
 | 연결 계층(bridge) | 서명 검증을 마친 delivery의 내부 수신(ops bearer 인증), collaborator 권한 판정(캐시)과 비신뢰 이슈 rate limit, 이벤트 영속화·중복 방지, 이슈/PR과 세션 매핑, HAPI API 인증·상태 확인, 모드별 결과 스키마 검증, GitHub 쓰기 op(issues/pull_requests/contents/repository_advisories write 토큰. contents write는 리뷰 스레드 resolve용이며 push에 쓰지 않고, repository_advisories write는 draft security advisory 생성용), publisher 호출, attention 알림. 에이전트용 GitHub 읽기 op는 두지 않는다 |
-| publisher(Runner Pod 사이드카) | push 토큰(`issue-agent-github-push`)의 유일한 보유자. bridge 요청으로 저장소 checkout clone, `hapi-issue-<n>` branch head 조회(`/resolve`), 그 branch의 non-force push만 수행. `POST /worktree/restore {repo, worktree, branch}`는 사라진 worktree를 남은 branch(push 안 된 commit 포함) 위에 다시 만든다. 에이전트 checkout에서 git을 돌리지 않고 private mirror에서 꺼낸 tree와 linked-worktree 메타데이터 파일로 만들며, branch가 없으면 `{"restored": false, "reason": "no_branch"}`, 경로를 다른 디렉터리가 차지하면 409 `worktree_conflict`다 |
+| publisher(Runner Pod 사이드카) | push 토큰(`issue-agent-github-push`)의 유일한 보유자. bridge 요청으로 저장소 checkout clone, `hapi-issue-<n>` branch head 조회(`/resolve`), 그 branch의 non-force push를 수행한다. 새 리뷰는 `POST /review-ref {repo, pr_number, expected_sha}`로 신뢰하는 GitHub pull ref를 fetch하고 예상 SHA와 일치하는 commit object를 Runner clone에 준비한다(아래 "새 리뷰의 정확한 시작 commit"). `POST /worktree/restore {repo, worktree, branch}`는 사라진 worktree를 남은 branch(push 안 된 commit 포함) 위에 다시 만든다. 에이전트 checkout에서 git을 돌리지 않고 private mirror에서 꺼낸 tree와 linked-worktree 메타데이터 파일로 만들며, branch가 없으면 `{"restored": false, "reason": "no_branch"}`, 경로를 다른 디렉터리가 차지하면 409 `worktree_conflict`다 |
 | dockerd(Runner Pod native sidecar) | runner·publisher와 같은 Pod의 Docker daemon. Unix socket만 열고 checkout·`/tmp`·Docker 데이터·native DRM 장치 두 개만 마운트한다. startup probe가 daemon 응답과 native DRM 장치 쌍을 확인해야 runner·publisher가 시작한다 |
 | HAPI Hub | 세션 목록·메시지·승인 API, 웹 UI, 다중 구독, Hub 데이터 저장 |
 | HAPI Runner | 실제 Codex 실행, 저장소별 worktree, 하네스 설정·기록 보존. `issue-agent-runner` namespace에서 publisher·dockerd와 한 Pod로 실행한다. GitHub 토큰은 읽기 전용이며 에이전트가 `gh`(REST·`gh api graphql`)로 GitHub를 직접 읽는다 |
@@ -69,9 +69,22 @@ Codex의 공통 지침은 전용 `CODEX_HOME/AGENTS.md`에서 읽는다. 저장�
 
 공통 지침·스킬은 버전 관리한다. 이슈 worktree에서의 수정은 다른 worktree에 자동 전파되지 않는다. 공통 반영은 기준 브랜치나 공통 이미지·설정 배포를 통해 수행한다.
 
+### 새 리뷰의 정확한 시작 commit
+
+새 `pr_review` 세션은 모델을 시작하기 전에 이벤트의 예상 PR head에서 worktree를 만든다. bridge는 publisher의 `POST /review-ref {repo, pr_number, expected_sha}`를 호출한다. publisher는 신뢰하는 GitHub 저장소의 `refs/pull/<pr_number>/head`를 fetch하고, 실제 commit이 `expected_sha`와 일치할 때만 `{"sha": "<exact SHA>"}`를 반환한다. commit object는 Runner clone에서 읽을 수 있어야 하며 기본 checkout의 HEAD·branch·작업 파일은 바꾸지 않는다. fork PR도 base 저장소의 pull ref로 가져오며 PR이 지정한 임의 URL을 쓰지 않는다.
+
+bridge는 Hub `/health`의 `capabilities.worktreeStartCommit=true`와 선택한 machine의 `metadata.capabilities`에 `worktree-start-commit`이 있는지 모두 확인한 뒤 spawn에 `worktreeStartCommit`을 보낸다. 이 필드는 `worktree` 유형에서만 허용하는 소문자 40자리 hex commit SHA다. HAPI는 해당 commit object를 검증하고 그 commit에서 새 worktree를 만든 뒤에만 모델·모델 시작 hook·MCP를 실행한다. 기본 branch에서 모델을 먼저 띄운 뒤 모델에게 checkout을 맡기지 않는다.
+
+pull ref가 이동해 예상 SHA와 다르거나, commit이 없거나, Hub·Runner 중 하나라도 기능을 지원하지 않으면 새 리뷰 시작을 거부한다. 기본 branch나 다른 commit으로 fallback하지 않는다. 이 계약은 새 리뷰 spawn에만 적용하며 기존 세션·resume·캐시, 이슈·repair 경로와 기존 worktree 이름 충돌 suffix 규칙은 바꾸지 않는다. 아래 항목은 수용 기준이며 아직 배포·검증 결과가 아니다.
+
+- [ ] 일반 PR·fork PR에서 신뢰하는 pull ref를 fetch하고 반환 SHA·Runner commit object·새 worktree의 HEAD가 예상 SHA와 일치한다. 기본 checkout은 바뀌지 않는다.
+- [ ] 모델 시작 hook·MCP보다 먼저 정확한 commit이 준비된다. 잘못된 SHA 형식·worktree 이외 유형·없는 commit은 모델 시작 전에 거부된다.
+- [ ] 이동한 pull ref, fetch 실패, 기능이 없는 Hub 또는 Runner는 새 리뷰를 시작하지 않으며 기본 branch fallback이 없다.
+- [ ] 기존 세션 재사용·resume·캐시와 이슈·repair 동작은 유지되고, 같은 worktree 이름이 있으면 기존 suffix 규칙으로 새 worktree를 만든다.
+
 ### CodeGraph 시작과 대상 head readiness
 
-CodeGraph 1.6.2의 고정된 native 패키지에 시작 경로만 패치한다. 기존 indexed root의 우선순위, internal daemon, 명시적 `CODEGRAPH_NO_DAEMON` 동작은 유지한다. indexed root가 없으면 기존 `gitWorktreeRoot(projectPath ?? cwd)`로 canonical git worktree root를 찾고 `unsafeIndexRootReason`을 통과한 경우에만 기존 proxy/local-handshake 경로를 쓴다. linked worktree를 Git common directory와 혼동하지 않는다. nongit·unsafe root에서 index가 없으면 기존 direct/unavailable 동작을 유지한다. 새 bridge/publisher/HAPI RPC는 두지 않고 버전·도구 여섯 개·small-repository 패치·reasoning·tier·동시성·세션·캐시는 바꾸지 않는다.
+CodeGraph 1.6.2의 고정된 native 패키지에 시작 경로만 패치한다. 기존 indexed root의 우선순위, internal daemon, 명시적 `CODEGRAPH_NO_DAEMON` 동작은 유지한다. indexed root가 없으면 기존 `gitWorktreeRoot(projectPath ?? cwd)`로 canonical git worktree root를 찾고 `unsafeIndexRootReason`을 통과한 경우에만 기존 proxy/local-handshake 경로를 쓴다. linked worktree를 Git common directory와 혼동하지 않는다. nongit·unsafe root에서 index가 없으면 기존 direct/unavailable 동작을 유지한다. CodeGraph 전용 bridge/publisher/HAPI RPC는 두지 않고 버전·도구 여섯 개·small-repository 패치·reasoning·tier·동시성·세션·캐시는 바꾸지 않는다.
 
 native daemon은 DB가 없어도 시작할 수 있다. proxy의 local initialize 응답은 `resolveServerRoot(root).root` 존재 여부에 맞춰 기존 `SERVER_INSTRUCTIONS` 또는 `SERVER_INSTRUCTIONS_NO_ROOT_INDEX`를 `initializeInstructions`로 전달한다. MCP 시작은 indexing이나 graph readiness를 뜻하지 않는다. CLI init은 기존 extraction `codegraph.lock`, 장기 MCP 소유권은 `writer.pid`를 쓰므로 두 계약을 섞어 새 소유권 제어를 만들지 않는다.
 
@@ -234,6 +247,8 @@ pillar-csi#155에서 PR 열기 → 31초 뒤 force-push → 3초 뒤 `@haechibot
 리뷰는 lens별 하위 에이전트를 띄우며, 한 세션이 동시에 여는 하위 에이전트 thread는 Codex `[agents] max_threads = 2`로 제한한다(CodeGraph 1.6.2에서 하위 에이전트마다 뜨는 MCP 서버가 runner 5Gi 제한을 넘겨 2026-10-13에 3에서 낮췄고, 2026-11-03에 Runner를 `rock5bp` 단독 배치·메모리 요청 4Gi·제한 18Gi로 증설해 기본 동시 실행을 10/6으로 올렸다). 같은 주제(이슈·PR 번호)의 이벤트는 세션·worktree를 공유하므로 앞선 이벤트가 끝날 때까지 기다린다. 응답이 불확실한 n8n POST는 그 이벤트의 슬롯만 유지한 채 같은 이벤트로만 재시도하고, 다른 주제는 전체 슬롯 상한 안에서 진행한다. `begin`은 슬롯을 가진 이벤트만 시작시킨다. 세션 생성·재개는 bridge의 `_session_lock(repo, issue_number)`으로 주제별 직렬화하며, 같은 저장소 checkout clone과 push는 publisher의 저장소별 잠금으로 직렬화된다. 모든 세션은 Runner Pod 하나의 메모리 한도를 함께 쓴다.
 
 승인된 임시 benchmark 측정 창에는 `deployment-bridge.yaml`의 bridge 컨테이너에만 `MAX_ACTIVE_EVENTS: "1"`을 둔다. 새 일반 작업은 한 번에 하나씩 받지만 기존 모델 턴·세션은 취소하지 않는다. 늦은 결과 수거·시간 예산 복구·수동 턴은 겹칠 수 있어 runner가 조용하다는 보장은 없으며, 측정 중 실제 모델 턴 겹침 관측은 계속한다. 리뷰별 thread 2개·high reasoning·fast tier, 자원과 모든 이미지는 그대로 유지하며, 대조 측정에는 기존 Runner 이미지를 쓴다. 후보 최적화 Runner 이미지는 이 변경으로 배포하지 않는다.
+
+정확한 시작 commit 보장은 성능 후보가 아니라 두 benchmark arm의 공통 전제다. 대조군과 후보군 모두 위 fresh-review 계약을 적용한 새 cohort로 측정을 시작하고 각 실행의 예상 SHA·시작 HEAD·image digest를 기록한다. 이전에 기본 branch에서 시작해 잘못된 source를 읽거나 색인한 실행은 새 cohort와 합치지 않으며, 그 overhead 제거를 후보 최적화의 성능 향상으로 계산하지 않는다.
 
 측정 후 GitOps로 bridge 컨테이너의 `MAX_ACTIVE_EVENTS` override를 제거해 기본 10으로 복원한다. 적용·복원 모두 기존 `Recreate` 배포이므로 bridge 재시작 동안 control API 요청이 잠시 실패해 재시도될 수 있다. 원자적 drain은 아니다. DB/WAL, event·delivery 기록, attempt key·`localId`·session ID와 stage·publication marker를 보존하며, 상한 변경을 위해 상태를 초기화하거나 세션 취소·delivery 재전송을 하지 않는다. 운영 절차는 `apps/objects/issue-agent/operations/README.md`의 임시 benchmark admission 절을 따른다.
 

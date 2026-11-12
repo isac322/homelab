@@ -3896,7 +3896,7 @@ class Bridge:
                 found.append(s["id"])
         return found
 
-    def _machine(self, cfg: RepoConfig) -> str:
+    def _machine(self, cfg: RepoConfig, *, worktree_start_commit: bool = False) -> str:
         status, data = self.hapi.request("GET", "/api/machines")
         machines = data.get("machines") if isinstance(data, dict) else None
         if status != 200 or not isinstance(machines, list):
@@ -3907,12 +3907,20 @@ class Bridge:
             if cfg.machine_id not in ids:
                 # A runner restart: transient, retried automatically for review parks.
                 raise OpError("configured runner machine is offline", retryable=True, park_class="hub_unreachable")
-            return cfg.machine_id
-        if len(ids) != 1:
-            # None online is a runner restart (transient); several online is a misconfiguration (operator).
-            raise OpError(f"expected exactly one online runner, found {len(ids)}", retryable=not ids,
-                          needs_operator=bool(ids), park_class=None if ids else "hub_unreachable")
-        return ids[0]
+            selected = cfg.machine_id
+        else:
+            if len(ids) != 1:
+                # None online is a runner restart (transient); several online is a misconfiguration (operator).
+                raise OpError(f"expected exactly one online runner, found {len(ids)}", retryable=not ids,
+                              needs_operator=bool(ids), park_class=None if ids else "hub_unreachable")
+            selected = ids[0]
+        if worktree_start_commit:
+            machine = next(m for m in machines if isinstance(m, dict) and m.get("id") == selected)
+            metadata = machine.get("metadata")
+            capabilities = metadata.get("capabilities") if isinstance(metadata, dict) else None
+            if not isinstance(capabilities, list) or "worktree-start-commit" not in capabilities:
+                raise OpError("runner lacks worktree-start-commit capability", needs_operator=True)
+        return selected
 
     def op_ensure_session(self, req: dict[str, Any]) -> dict[str, Any]:
         ev = self._event(req)
@@ -3971,7 +3979,15 @@ class Bridge:
                         "branch": issue["branch"], "resumed": False, "recovered": True}
             if issue["session_state"] == "pending" and time.time() - (issue["pending_at"] or 0) < SPAWN_SETTLE_SECONDS:
                 raise OpError("previous spawn outcome still settling", retryable=True)
-            return self._spawn(cfg, repo, number, name, self._existing_worktree(cfg, issue))
+            directory = self._existing_worktree(cfg, issue)
+            # Begin already selected the review head with its stale-request and automatic-retry rules.
+            # Never resolve it again here: a push during preparation must reject, not retarget this spawn.
+            start_commit = None
+            if ev["kind"] == "pr_review" and directory is None:
+                start_commit = ev["head_sha"]
+                if not isinstance(start_commit, str) or not _SHA_RE.fullmatch(start_commit):
+                    raise OpError("fresh review has no valid expected head", needs_operator=True)
+            return self._spawn(cfg, repo, number, name, directory, start_commit=start_commit)
 
 
     def _resume(self, repo: str, number: int, session: Mapping[str, Any]) -> dict[str, Any] | None:
@@ -4012,11 +4028,26 @@ class Bridge:
                           needs_operator=True)
 
     def _spawn(self, cfg: RepoConfig, repo: str, number: int, worktree_name: str,
-               directory: str | None) -> dict[str, Any]:
+               directory: str | None, *, start_commit: str | None = None) -> dict[str, Any]:
         """Start the subject's session: a new HAPI worktree, or with ``directory`` (the subject's existing
         worktree, see ``_existing_worktree``) a replacement session in it that keeps the recorded branch."""
-        machine = self._machine(cfg)
+        machine = self._machine(cfg, worktree_start_commit=start_commit is not None)
+        if start_commit is not None:
+            status, health = self.hapi.request("GET", "/health")
+            if status != 200:
+                raise OpError(f"hapi health HTTP {status}", retryable=status >= 500,
+                              needs_operator=status < 500, park_class=hub_park_class(status))
+            capabilities = health.get("capabilities") if isinstance(health, dict) else None
+            if not isinstance(capabilities, dict) or capabilities.get("worktreeStartCommit") is not True:
+                raise OpError("hub lacks worktreeStartCommit capability", needs_operator=True)
         self._checkout(cfg)
+        if start_commit is not None:
+            prepared = self.publisher.request("/review-ref", {
+                "repo": repo, "pr_number": number, "expected_sha": start_commit,
+            }, timeout=PUBLISHER_CHECKOUT_TIMEOUT)
+            if prepared.get("sha") != start_commit:
+                raise OpError(f"publisher prepared {prepared.get('sha')!r}, expected {start_commit}",
+                              needs_operator=True)
         body: dict[str, Any] = {
             "directory": cfg.runner_path,
             "agent": cfg.agent,
@@ -4029,6 +4060,8 @@ class Bridge:
             "sessionType": "simple",
             "startingMode": "remote",
         }
+        if start_commit is not None:
+            body["worktreeStartCommit"] = start_commit
         if cfg.model:
             body["model"] = cfg.model
         if cfg.permission_mode:

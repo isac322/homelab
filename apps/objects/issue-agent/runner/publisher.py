@@ -8,6 +8,7 @@ called only by the bridge (bearer token the agent container cannot read).
   GET  /healthz
   POST /checkout {repo}                        -> {path, created, default_branch}
   POST /resolve  {repo, branch}                -> {sha}
+  POST /review-ref {repo, pr_number, expected_sha} -> {sha}
   POST /push     {repo, branch, expected_sha, stale_sha?} -> {sha}
   POST /cleanup  {repo, worktree, branch, codex_session_ids, hapi_session_ids?} -> {removed}
   POST /cleanup/caches {max_age_days?, dry_run?} -> {orphan_worktrees, global_caches}
@@ -22,7 +23,10 @@ branch only while it still points at expected_sha.
 
 Git never runs with an agent-controlled checkout as its working directory or
 git dir: commits are fetched *from* the checkout by path into a private bare
-mirror, and pushed from that mirror. The GitHub token is passed only through
+mirror, and pushed from that mirror. /review-ref fetches the base repository's
+pull head into that mirror, verifies the exact SHA, then writes a self-contained
+object pack and a non-branch GC pin into the checkout without loading its config
+or changing HEAD, branches, or worktrees. The GitHub token is passed only through
 `git -c http.extraHeader=...` on the command line; it is never written to any
 config file and never logged. /cleanup runs no git at all: it removes a
 worktree, its branch ref and Codex rollouts with plain file operations. Entries
@@ -363,6 +367,79 @@ def fetch_branch(repo: str, branch: str) -> str:
 
 def do_resolve(repo: str, branch: str) -> dict:
     return {"sha": fetch_branch(repo, branch)}
+
+
+def do_review_ref(repo: str, pr_number: int, expected_sha: str) -> dict:
+    """Prepare an exact trusted PR head for HAPI, without selecting its worktree or branch."""
+    if (not isinstance(repo, str) or not REPO_RE.fullmatch(repo)
+            or any(part in (".", "..") or part.endswith(".git") for part in repo.split("/"))
+            or not _is_int(pr_number)
+            or not isinstance(expected_sha, str) or not SHA_RE.fullmatch(expected_sha)):
+        raise PublisherError(HTTPStatus.BAD_REQUEST, "invalid_request", "invalid review ref")
+    base = checkout_path(repo)
+    git_root = os.path.join(base, ".git")
+    if not os.path.isdir(git_root):
+        raise PublisherError(HTTPStatus.NOT_FOUND, "checkout_missing", f"no checkout for {repo}")
+    base_root = confined_root(base)
+    if os.path.islink(base) or os.path.islink(git_root) or not inside(confined_root(git_root), base_root):
+        raise PublisherError(HTTPStatus.CONFLICT, "unsafe_path", "invalid checkout git directory")
+    token = read_secret(PUSH_TOKEN_FILE, "push token")
+    mirror = ensure_mirror(repo)
+    fetched_ref = f"refs/issue-agent/review-fetch/{pr_number}"
+    result = run_git(
+        ["--git-dir", mirror, "fetch", "--quiet", "--no-tags", "--no-write-fetch-head", "--",
+         f"https://github.com/{repo}.git", f"+refs/pull/{pr_number}/head:{fetched_ref}"],
+        token=token,
+    )
+    if result.returncode != 0:
+        if "couldn't find remote ref" in result.stderr:
+            raise PublisherError(HTTPStatus.NOT_FOUND, "review_ref_missing", f"PR {pr_number} has no pull head")
+        raise PublisherError(HTTPStatus.BAD_GATEWAY, "review_ref_fetch_failed", result.stderr)
+    result = run_git(["--git-dir", mirror, "rev-parse", "--verify", fetched_ref])
+    sha = result.stdout.strip()
+    if result.returncode != 0 or not SHA_RE.fullmatch(sha):
+        raise PublisherError(HTTPStatus.BAD_GATEWAY, "review_ref_fetch_failed", "cannot resolve fetched pull head")
+    if sha != expected_sha:
+        raise PublisherError(HTTPStatus.CONFLICT, "review_ref_mismatch",
+                             f"expected {expected_sha}, fetched {sha}")
+    result = run_git(["--git-dir", mirror, "cat-file", "-t", sha])
+    if result.returncode != 0 or result.stdout.strip() != "commit":
+        raise PublisherError(HTTPStatus.BAD_GATEWAY, "review_ref_fetch_failed", "pull head is not a commit")
+
+    # Only the publisher-owned mirror is a Git directory. In particular, neither
+    # checkout config/includes, object alternates, nor its reference hooks run.
+    # Ref directories and the pack destination must not redirect writes.
+    try:
+        for relative in ("objects", "objects/pack", "refs", "refs/issue-agent",
+                         "refs/issue-agent/review-heads"):
+            directory = os.path.join(git_root, relative)
+            if not os.path.lexists(directory):
+                os.mkdir(directory, 0o700)
+            if (os.path.islink(directory) or not os.path.isdir(directory)
+                    or not inside(confined_root(directory), os.path.realpath(git_root))):
+                raise PublisherError(HTTPStatus.CONFLICT, "unsafe_path", "invalid review object/ref directory")
+        # pack-objects writes a complete reachable closure (no thin pack), so
+        # the runner never needs access to the publisher's mirror or credentials.
+        result = run_git(
+            ["--git-dir", mirror, "pack-objects", os.path.join(git_root, "objects", "pack", "pack"), "--revs"],
+            stdin_text=sha + "\n",
+        )
+        if result.returncode != 0:
+            raise PublisherError(HTTPStatus.INTERNAL_SERVER_ERROR, "review_ref_prepare_failed", result.stderr)
+        pin = os.path.join(git_root, "refs", "issue-agent", "review-heads", sha)
+        lock = pin + ".lock"
+        fd = os.open(lock, os.O_WRONLY | os.O_CREAT | os.O_EXCL | os.O_NOFOLLOW, 0o600)
+        try:
+            with os.fdopen(fd, "w", encoding="ascii") as handle:
+                handle.write(sha + "\n")
+            os.replace(lock, pin)
+        finally:
+            if os.path.lexists(lock):
+                os.unlink(lock)
+    except OSError as exc:
+        raise PublisherError(HTTPStatus.INTERNAL_SERVER_ERROR, "review_ref_prepare_failed",
+                             f"{exc.filename or ''}: {exc.strerror or exc}") from None
+    return {"sha": sha}
 
 
 def do_push(repo: str, branch: str, expected_sha: str, stale_sha: str | None = None) -> dict:
@@ -2595,6 +2672,10 @@ class Handler(BaseHTTPRequestHandler):
                 args = self.body({"repo": REPO_RE, "branch": BRANCH_RE})
                 with repo_lock(args["repo"]):
                     self.reply(HTTPStatus.OK, do_resolve(args["repo"], args["branch"]))
+            elif self.path == "/review-ref":
+                args = self.body({"repo": REPO_RE, "expected_sha": SHA_RE}, ints=("pr_number",))
+                with repo_lock(args["repo"]):
+                    self.reply(HTTPStatus.OK, do_review_ref(args["repo"], args["pr_number"], args["expected_sha"]))
             elif self.path == "/push":
                 args = self.body(
                     {"repo": REPO_RE, "branch": BRANCH_RE, "expected_sha": SHA_RE},
