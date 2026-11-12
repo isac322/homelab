@@ -42,8 +42,6 @@ spec:
               value: "8080"
             - name: BRIDGE_STATE_PATH
               value: /var/lib/issue-agent-bridge/state.sqlite3
-            - name: MAX_ACTIVE_EVENTS
-              value: "1"
             - name: GITHUB_TOKEN_DIR
               value: /run/issue-agent/github
             - name: GITHUB_BOT_LOGIN
