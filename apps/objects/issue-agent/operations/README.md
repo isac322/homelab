@@ -204,25 +204,28 @@ unchanged. Do not reset them to verify or deploy this contract.
 The initial rollout failed with `EXDEV` when publishing objects from the mirror's
 emptyDir to the checkout PVC, so the bridge invocation was temporarily rolled
 back. The corrected transfer creates a pack in the trusted mirror, streams it
-to checkout-local temporary files, and atomically publishes the pack, index,
-and then ref. It must not rename files across filesystems. Live verification of
-that correction remains a separate gate below.
+to checkout-local temporary files, atomically publishes the pack and index,
+and then publishes the ref. It does not rename files across filesystems.
+The bridge invocation was restored in `22b140a`, and its rollout completed.
+Full end-to-end fresh-review verification remains pending.
 
-Verification checklist (pending; this section records no deployment or test pass):
+Verification checklist (unchecked items remain unverified):
 
 - [ ] Capture the deployed hub, runner, publisher, and bridge image digests and
   both capability advertisements before a controlled fresh review.
 - [ ] For ordinary and fork PRs, compare the event's expected SHA, publisher
   response, runner commit object, and initial worktree HEAD. Confirm that the
   default checkout stays unchanged.
-- [ ] Reproduce the original `EXDEV` on Linux with mirror and checkout on
-  different filesystems, then confirm the corrected transfer succeeds. Check
-  that the pack and index are published before the ref and the expected commit
-  object is readable from the runner clone.
-- [ ] Verify the corrected publisher image digest and the live bridge →
-  publisher `/review-ref` → HAPI fresh-spawn route. Compare the returned SHA,
-  runner object, and initial worktree HEAD. A direct endpoint check alone does
-  not establish rollback recovery or a passing live route.
+- [x] On Linux with mirror and checkout on different filesystems, the original
+  transfer failed with `EXDEV` and the corrected transfer passed.
+- [x] The deployed `/review-ref` endpoint returned HTTP 200 and the expected SHA
+  (prefix `82aa`) for QA 1259, with the shared checkout HEAD unchanged. Receipt:
+  `cross-filesystem-live-receipt.json`. This verifies the live endpoint, not a
+  complete fresh review.
+- [ ] Verify the image digests and live bridge → publisher `/review-ref` →
+  HAPI fresh-spawn route. Compare the returned SHA, runner object, initial
+  worktree HEAD, and model startup order. New exact-start control samples are
+  running; their complete end-to-end result is still pending.
 - [ ] Confirm that the exact HEAD is established before model startup hooks and
   MCP. Confirm that invalid SHA syntax, a non-worktree request, and a missing
   commit are rejected before the model starts.
