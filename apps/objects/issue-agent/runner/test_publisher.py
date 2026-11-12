@@ -826,6 +826,9 @@ class ReviewRefTest(EndpointCase):
         self.assertFalse(os.path.exists(os.path.join(self.base, ".git", "refs", "issue-agent")))
 
     def test_prepares_fork_head_and_preserves_checkout_and_branches(self) -> None:
+        self.assert_prepared_fork_head_preserves_checkout()
+
+    def assert_prepared_fork_head_preserves_checkout(self) -> None:
         write(os.path.join(self.base, "README.md"), "local dirty change\n")
         branches = git("for-each-ref", "--format=%(refname) %(objectname)", "refs/heads", cwd=self.base)
         worktrees = git("worktree", "list", "--porcelain", cwd=self.base)
@@ -848,6 +851,15 @@ class ReviewRefTest(EndpointCase):
         for args, _ in self.commands:
             if "--git-dir" in args:
                 self.assertEqual(args[args.index("--git-dir") + 1], publisher.mirror_path(REPO))
+
+    @unittest.skipUnless(sys.platform.startswith("linux") and os.path.isdir("/dev/shm"),
+                         "requires Linux /dev/shm on a separate filesystem")
+    def test_prepares_across_real_filesystems(self) -> None:
+        with tempfile.TemporaryDirectory(prefix="publisher-review-state-", dir="/dev/shm") as state:
+            self.assertNotEqual(os.stat(state).st_dev, os.stat(self.checkouts).st_dev,
+                                "regression fixture must use two distinct filesystems")
+            with patch.object(publisher, "STATE_DIR", state):
+                self.assert_prepared_fork_head_preserves_checkout()
 
     def test_mismatch_does_not_transfer_even_when_requested_commit_exists(self) -> None:
         status, payload = self.prepare(expected_sha=self.base_sha)
@@ -881,6 +893,55 @@ class ReviewRefTest(EndpointCase):
         with patch.object(publisher, "run_git", side_effect=failed_pack):
             status, payload = self.prepare()
         self.assertEqual((status, payload["error"]), (HTTPStatus.INTERNAL_SERVER_ERROR, "review_ref_prepare_failed"))
+        self.assertEqual(os.listdir(os.path.join(self.base, ".git", "refs", "issue-agent", "review-heads")), [])
+
+    def test_copy_or_replace_failure_cleans_temps_without_publishing_a_pin(self) -> None:
+        real_copy = shutil.copyfileobj
+        real_replace = os.replace
+        for operation in ("copy", "replace"):
+            for fail_at in (1, 2):
+                with self.subTest(operation=operation, fail_at=fail_at):
+                    calls = {"copy": 0, "replace": 0}
+
+                    def copy(source, destination) -> None:
+                        calls["copy"] += 1
+                        if operation == "copy" and calls["copy"] == fail_at:
+                            raise OSError("simulated copy failure")
+                        real_copy(source, destination)
+
+                    def replace(source, destination) -> None:
+                        calls["replace"] += 1
+                        self.assertEqual(os.stat(os.path.dirname(source)).st_dev,
+                                         os.stat(os.path.dirname(destination)).st_dev)
+                        if operation == "replace" and calls["replace"] == fail_at:
+                            raise OSError("simulated replace failure")
+                        real_replace(source, destination)
+
+                    with patch.object(publisher.shutil, "copyfileobj", side_effect=copy), \
+                            patch.object(publisher.os, "replace", side_effect=replace):
+                        status, payload = self.prepare()
+                    self.assertEqual((status, payload["error"]),
+                                     (HTTPStatus.INTERNAL_SERVER_ERROR, "review_ref_prepare_failed"))
+                    pins = os.path.join(self.base, ".git", "refs", "issue-agent", "review-heads")
+                    self.assertEqual(os.listdir(pins), [])
+                    pack_dir = os.path.join(self.base, ".git", "objects", "pack")
+                    self.assertFalse(any(name.startswith(".publisher-review-pack-")
+                                         for name in os.listdir(pack_dir)))
+                    self.assertFalse(any(name.startswith("review-pack-")
+                                         for name in os.listdir(publisher.mirror_path(REPO))))
+
+    def test_invalid_generated_pack_hash_does_not_select_output_paths(self) -> None:
+        trusted_remote = publisher.run_git.side_effect
+
+        def invalid_pack(args: list[str], **kwargs) -> subprocess.CompletedProcess:
+            if "pack-objects" in args:
+                return subprocess.CompletedProcess(args, 0, stdout="../outside\n", stderr="")
+            return trusted_remote(args, **kwargs)
+
+        with patch.object(publisher, "run_git", side_effect=invalid_pack):
+            status, payload = self.prepare()
+        self.assertEqual((status, payload["error"]), (HTTPStatus.INTERNAL_SERVER_ERROR, "review_ref_prepare_failed"))
+        self.assertEqual(os.listdir(os.path.join(self.base, ".git", "objects", "pack")), [])
         self.assertEqual(os.listdir(os.path.join(self.base, ".git", "refs", "issue-agent", "review-heads")), [])
 
     def test_remote_fetch_uses_existing_bounded_transport(self) -> None:

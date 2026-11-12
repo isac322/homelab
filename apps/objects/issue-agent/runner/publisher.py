@@ -418,14 +418,35 @@ def do_review_ref(repo: str, pr_number: int, expected_sha: str) -> dict:
             if (os.path.islink(directory) or not os.path.isdir(directory)
                     or not inside(confined_root(directory), os.path.realpath(git_root))):
                 raise PublisherError(HTTPStatus.CONFLICT, "unsafe_path", "invalid review object/ref directory")
-        # pack-objects writes a complete reachable closure (no thin pack), so
-        # the runner never needs access to the publisher's mirror or credentials.
-        result = run_git(
-            ["--git-dir", mirror, "pack-objects", os.path.join(git_root, "objects", "pack", "pack"), "--revs"],
-            stdin_text=sha + "\n",
-        )
-        if result.returncode != 0:
-            raise PublisherError(HTTPStatus.INTERNAL_SERVER_ERROR, "review_ref_prepare_failed", result.stderr)
+        # Git creates its temporary pack in the mirror's object directory, not
+        # beside the requested output. Finish it on that same filesystem first:
+        # the checkout PVC may be a different mount. Never point Git at the
+        # agent-controlled object directory to relocate those temporary files.
+        pack_dir = os.path.join(git_root, "objects", "pack")
+        with tempfile.TemporaryDirectory(prefix="review-pack-", dir=mirror) as staging:
+            result = run_git(
+                ["--git-dir", mirror, "pack-objects", os.path.join(staging, "pack"), "--revs"],
+                stdin_text=sha + "\n",
+            )
+            pack_hash = result.stdout.strip()
+            if result.returncode != 0 or not SHA_RE.fullmatch(pack_hash):
+                raise PublisherError(HTTPStatus.INTERNAL_SERVER_ERROR, "review_ref_prepare_failed",
+                                     result.stderr or "invalid generated pack hash")
+            # Transfer a complete closure with bounded memory, then publish via
+            # checkout-local renames. Git publishes the pack before its index;
+            # the GC pin becomes visible only after both files are complete.
+            for suffix in ("pack", "idx"):
+                filename = f"pack-{pack_hash}.{suffix}"
+                fd, temporary = tempfile.mkstemp(prefix=".publisher-review-pack-", dir=pack_dir)
+                try:
+                    with os.fdopen(fd, "wb") as destination:
+                        with open(os.path.join(staging, filename), "rb") as source:
+                            shutil.copyfileobj(source, destination)
+                    os.chmod(temporary, 0o444)
+                    os.replace(temporary, os.path.join(pack_dir, filename))
+                finally:
+                    if os.path.lexists(temporary):
+                        os.unlink(temporary)
         pin = os.path.join(git_root, "refs", "issue-agent", "review-heads", sha)
         lock = pin + ".lock"
         fd = os.open(lock, os.O_WRONLY | os.O_CREAT | os.O_EXCL | os.O_NOFOLLOW, 0o600)
