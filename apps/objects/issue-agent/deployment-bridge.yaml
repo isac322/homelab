@@ -3,7 +3,9 @@ kind: Deployment
 metadata:
   name: issue-agent-bridge
 spec:
-  replicas: 1
+  # Paused during the 2026-11 security incident: the open-PR review sweep still lets
+  # public pull requests reach the agents after the webhook route was removed. Restore to 1 to resume.
+  replicas: 0
   strategy:
     type: Recreate
   selector:
