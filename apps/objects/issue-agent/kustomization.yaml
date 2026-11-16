@@ -14,7 +14,7 @@ resources:
   - service.yaml
   - httproute-hub.yaml
   - httproute-n8n.yaml
-  - httproute-webhook.yaml
+  # GitHub webhook intake disabled: re-add httproute-webhook.yaml to re-enable bot triggers.
 configMapGenerator:
   - name: issue-agent-bridge-code
     files:
