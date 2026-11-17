@@ -13,11 +13,10 @@ api:
   env:
     HINDSIGHT_API_TENANT_EXTENSION: "hindsight_api.extensions.builtin.tenant:ApiKeyTenantExtension"
     HINDSIGHT_API_MCP_ENABLED: "false"
-    # LLM: Vertex AI using the existing service-account mount through ADC
-    HINDSIGHT_API_LLM_PROVIDER: "vertexai"
-    HINDSIGHT_API_LLM_MODEL: "gemini-3.5-flash-lite"
-    HINDSIGHT_API_LLM_VERTEXAI_PROJECT_ID: "runbear"
-    HINDSIGHT_API_LLM_VERTEXAI_REGION: "global"
+    # LLM: OpenAI with the key shared with embeddings (HINDSIGHT_API_LLM_API_KEY from hindsight-secrets).
+    # gpt-6-luna ranks #2 on Hindsight 1.2.0's retain and all-operations leaderboards at the lowest cost.
+    HINDSIGHT_API_LLM_PROVIDER: "openai"
+    HINDSIGHT_API_LLM_MODEL: "gpt-6-luna"
     # Vector extension
     HINDSIGHT_API_VECTOR_EXTENSION: "vchord"
     # Retain
@@ -25,28 +24,13 @@ api:
     # Embeddings — OpenAI
     HINDSIGHT_API_EMBEDDINGS_PROVIDER: "openai"
     HINDSIGHT_API_EMBEDDINGS_OPENAI_MODEL: "text-embedding-3-large"
-    # Reranker — Vertex AI Ranking via LiteLLM SDK (auth via GOOGLE_APPLICATION_CREDENTIALS)
-    HINDSIGHT_API_RERANKER_PROVIDER: "litellm-sdk"
-    HINDSIGHT_API_RERANKER_LITELLM_SDK_MODEL: "vertex_ai/semantic-ranker-fast@latest"
-    HINDSIGHT_API_RERANKER_LITELLM_SDK_API_KEY: "gcp-sa"  # placeholder — actual auth via GOOGLE_APPLICATION_CREDENTIALS
+    # Reranker — RRF ordering of the semantic, keyword, graph and temporal candidate lists
+    HINDSIGHT_API_RERANKER_PROVIDER: "rrf"
     # Recall performance — keep everyday searches bounded while preserving high-budget depth
     HINDSIGHT_API_QUERY_ANALYZER_LANGUAGES: "ko,en"
     HINDSIGHT_API_RERANKER_MAX_CANDIDATES_LOW: "75"
     HINDSIGHT_API_RERANKER_MAX_CANDIDATES_MID: "150"
     HINDSIGHT_API_RERANKER_MAX_CANDIDATES_HIGH: "300"
-    # Keep recall available with RRF ordering when the Vertex AI reranker is unavailable
-    HINDSIGHT_API_RERANKER_1_PROVIDER: "rrf"
-    GOOGLE_APPLICATION_CREDENTIALS: "/etc/gcp/sa-key.json"
-    VERTEXAI_PROJECT: "runbear"
-    VERTEXAI_LOCATION: "global"
-  extraVolumes:
-    - name: gcp-sa-key
-      secret:
-        secretName: hindsight-gcp-sa-key
-  extraVolumeMounts:
-    - name: gcp-sa-key
-      mountPath: /etc/gcp
-      readOnly: true
   livenessProbe:
     httpGet:
       path: /health/live
