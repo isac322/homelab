@@ -223,7 +223,7 @@ let
     };
     bhyoo-office = {
       address = "10.222.0.133/32";
-      publicKey = "/ydTJITQdRUFvsZleC2oRWSW2IBxum17TRgAAUqA6Wo=";
+      publicKey = "+V0mVQAiVvbrxyDcmlKt0X1dTMdsyg1Z3i3iXUZ86XY=";
     };
     jay-phone = {
       address = "10.222.0.193/32";
