@@ -6262,6 +6262,9 @@ class Bridge:
                 LOG.warning("review sweep of %s#%s pending: %s", repo, number, exc)
                 continue
             if number is None or not allowed:
+                if number is not None and not allowed:
+                    LOG.info("review sweep skipped %s#%s: author %s is not trusted",
+                             repo, number, author_login or "<missing>")
                 continue
             head = pr["head"].get("sha") if isinstance(pr.get("head"), dict) else None
             if not isinstance(head, str) or not _SHA_RE.fullmatch(head) \
