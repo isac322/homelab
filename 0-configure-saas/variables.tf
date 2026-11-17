@@ -39,11 +39,6 @@ variable "gemini_api_key" {
   sensitive = true
 }
 
-variable "gcp_vertex_ai_sa_key" {
-  type      = string
-  sensitive = true
-}
-
 variable "grafana_telegram_bot_token" {
   type      = string
   sensitive = true

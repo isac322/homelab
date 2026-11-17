@@ -38,17 +38,9 @@ resource "aws_ssm_parameter" "cf_account_id" {
 resource "aws_ssm_parameter" "hindsight_openai_api_key" {
   count       = var.openai_api_key == null ? 0 : 1
   name        = "/homelab/cluster/${var.k8s_cluster_name}/token/openai/hindsight-embeddings"
-  description = "OpenAI API key for Hindsight embeddings (text-embedding-3-large)"
+  description = "OpenAI API key for Hindsight's LLM and embeddings"
   type        = "SecureString"
   value       = var.openai_api_key
-}
-
-resource "aws_ssm_parameter" "hindsight_gcp_sa_key" {
-  count       = var.gcp_vertex_ai_sa_key == null ? 0 : 1
-  name        = "/homelab/cluster/${var.k8s_cluster_name}/hindsight/gcp-vertex-ai-sa-key"
-  description = "GCP Service Account key JSON for Vertex AI access (Hindsight LLM and reranker)"
-  type        = "SecureString"
-  value       = var.gcp_vertex_ai_sa_key
 }
 
 # --- Hermes agents ---
@@ -157,7 +149,6 @@ data "aws_iam_policy_document" "secret_read" {
         "arn:aws:ssm:${data.aws_region.current.name}:${data.aws_caller_identity.current.account_id}:parameter/homelab/cluster/${var.k8s_cluster_name}/argocd/github-oauth-client-secret",
       ],
       var.openai_api_key == null ? [] : [aws_ssm_parameter.hindsight_openai_api_key[0].arn],
-      var.gcp_vertex_ai_sa_key == null ? [] : [aws_ssm_parameter.hindsight_gcp_sa_key[0].arn],
       [aws_ssm_parameter.hindsight_api_key.arn],
       var.openai_proxy == null ? [] : [aws_ssm_parameter.hermes_openai_proxy[0].arn],
       var.gemini_api_key == null ? [] : [aws_ssm_parameter.hermes_gemini_api_key[0].arn],
