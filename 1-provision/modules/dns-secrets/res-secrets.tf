@@ -128,6 +128,9 @@ resource "aws_ssm_parameter" "github_app_private_key_ironeater_reviewer" {
   value       = var.github_app_private_key_ironeater_reviewer
 }
 
+data "aws_region" "current" {}
+data "aws_caller_identity" "current" {}
+
 # --- External Secrets IAM ---
 
 resource "aws_iam_user" "external_secrets" {
@@ -151,6 +154,7 @@ data "aws_iam_policy_document" "secret_read" {
         aws_ssm_parameter.postmark_smtp_token_for_immich.arn,
         aws_ssm_parameter.cf_account_id.arn,
         "${trimsuffix(aws_ssm_parameter.cf_account_id.arn, "cloudflare/account-id")}token/telegram/*",
+        "arn:aws:ssm:${data.aws_region.current.name}:${data.aws_caller_identity.current.account_id}:parameter/homelab/cluster/${var.k8s_cluster_name}/argocd/github-oauth-client-secret",
       ],
       var.openai_api_key == null ? [] : [aws_ssm_parameter.hindsight_openai_api_key[0].arn],
       var.gcp_vertex_ai_sa_key == null ? [] : [aws_ssm_parameter.hindsight_gcp_sa_key[0].arn],
