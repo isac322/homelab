@@ -276,11 +276,6 @@
                     && lib.hasInfix "-s fe80::/10 -p ipv6-icmp --icmpv6-type 130 -j ACCEPT" rules
                   )
                 )
-                && (
-                  linuxHosts.${hostName}.k3sRole == null
-                  || lib.hasInfix "ManageForeignRoutes=no"
-                    cfg.environment.etc."systemd/networkd.conf.d/90-cilium-routes.conf".text
-                )
                 && (if server then
                   audit != null
                   && lib.hasInfix "- level: Metadata" audit.text

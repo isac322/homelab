@@ -1915,6 +1915,22 @@ def check_authorized_keys_verification() -> None:
     if invalid.returncode == 0:
         raise SystemExit("nix/scripts/homelab-host: accepted unmanaged-only AuthorizedKeysFile value")
 
+def check_cilium_lan_route_preservation() -> None:
+    migration = source("nix/scripts/homelab-host")
+    match = re.search(
+        r"<<'REMOTE_NATIVE_RUNTIME'\n(.*?)\nREMOTE_NATIVE_RUNTIME",
+        migration,
+        re.DOTALL,
+    )
+    if match is None:
+        raise SystemExit("nix/scripts/homelab-host: native runtime body missing")
+    native = match.group(1)
+    if "networkctl reload" not in native:
+        raise SystemExit("nix/scripts/homelab-host: networkd configuration reload missing")
+    if 'networkctl reconfigure "$DEFAULT_INTERFACE"' in native or "STATIC_LAN" in native:
+        raise SystemExit("nix/scripts/homelab-host: forced LAN reconfigure invalidates Cilium pod routes")
+
+
 
 def check_ssh_strict_modes_guard() -> None:
     require(
@@ -4514,6 +4530,7 @@ check_rollback_stage_resume()
 check_preserved_rollback_manifest_guard()
 check_authorized_keys_verification()
 check_ssh_strict_modes_guard()
+check_cilium_lan_route_preservation()
 check_wireguard_handshake_probe()
 check_register_system_failure()
 check_time_sync_waits()

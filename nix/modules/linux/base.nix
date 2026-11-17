@@ -171,15 +171,6 @@ in
         '';
         replaceExisting = true;
       };
-      "systemd/networkd.conf.d/90-cilium-routes.conf" = lib.mkIf k8sMember {
-        text = ''
-          [Network]
-          # Cilium owns proto-kernel native pod routes on the LAN interface.
-          # A networkd restart must not delete them as foreign routes.
-          ManageForeignRoutes=no
-        '';
-        replaceExisting = true;
-      };
       "systemd/network/10-homelab-lan.network" = lib.mkIf staticLan {
         text = ''
           [Match]

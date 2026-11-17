@@ -361,10 +361,8 @@ verify_wireguard_runtime() {
 }
 
 apply_native_runtime() {
-  local host=$1 default_interface lan_address zram interfaces interface backend firewall_service ssh_service role manage_rules command
+  local host=$1 zram interfaces interface backend firewall_service ssh_service role manage_rules command
   assert_iptables_nft_backend "$host"
-  default_interface=$(host_field "$host" defaultInterface 2>/dev/null || true)
-  lan_address=$(host_field "$host" lanAddress 2>/dev/null || true)
   zram=$(nix_eval --json "$root#systemConfigs.$host.config.homelab.zram")
   interfaces=$(nix_eval --json "$root#topology.nodes.$host.wireguard" | jq -r 'join(" ")')
   backend=$(host_field "$host" packageBackend)
@@ -378,9 +376,8 @@ apply_native_runtime() {
     ssh_service=ssh.service
   fi
   printf -v command \
-    'sudo -n env HOST_NAME=%q DEFAULT_INTERFACE=%q STATIC_LAN=%q ZRAM=%q WG_INTERFACES=%q FIREWALL_SERVICE=%q SSH_SERVICE=%q ROLE=%q MANAGE_FIREWALL_RULES=%q sh -s' \
-    "$host" "$default_interface" "$([ -n "$lan_address" ] && [ "$lan_address" != null ] && printf true || printf false)" \
-    "$zram" "$interfaces" "$firewall_service" "$ssh_service" "$role" "$manage_rules"
+    'sudo -n env HOST_NAME=%q ZRAM=%q WG_INTERFACES=%q FIREWALL_SERVICE=%q SSH_SERVICE=%q ROLE=%q MANAGE_FIREWALL_RULES=%q sh -s' \
+    "$host" "$zram" "$interfaces" "$firewall_service" "$ssh_service" "$role" "$manage_rules"
   remote "$host" "$command" <<'REMOTE_NATIVE_RUNTIME'
 set -eu
 systemctl daemon-reload
@@ -415,7 +412,9 @@ else
 fi
 systemctl restart systemd-networkd.service
 networkctl reload
-if test "$STATIC_LAN" = true; then networkctl reconfigure "$DEFAULT_INTERFACE"; fi
+# Do not force-reconfigure the LAN: it removes the address temporarily and
+# invalidates Cilium's gateway-dependent pod routes. Restart/reload already
+# applies the desired .network file without dropping matching configuration.
 for interface in $WG_INTERFACES; do
   networkctl reconfigure "$interface"
   ip link show "$interface" >/dev/null
