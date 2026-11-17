@@ -647,6 +647,11 @@ spec:
       value: local_external
     - name: HINDSIGHT_API_URL
       value: http://hindsight-api.hindsight.svc:8888
+    - name: HINDSIGHT_API_KEY
+      valueFrom:
+        secretKeyRef:
+          name: yjyou-credentials
+          key: hindsightApiKey
     - name: HINDSIGHT_BANK_ID
       value: yjyou
   storage:
