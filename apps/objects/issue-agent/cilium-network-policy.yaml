@@ -1,0 +1,17 @@
+apiVersion: cilium.io/v2
+kind: CiliumNetworkPolicy
+metadata:
+  name: issue-agent-gateway-ingress
+spec:
+  endpointSelector: {}
+  ingress:
+    - fromEntities:
+        - ingress
+      toPorts:
+        - ports:
+            - port: "5678"
+              protocol: TCP
+            - port: "3006"
+              protocol: TCP
+            - port: "8080"
+              protocol: TCP

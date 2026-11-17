@@ -13,7 +13,7 @@ resources:
   - deployment-bridge.yaml
   - service.yaml
   - network-policy.yaml
-  - httproute-hub.yaml
+  - cilium-network-policy.yaml
   - httproute-n8n.yaml
   - httproute-webhook.yaml
 configMapGenerator:
