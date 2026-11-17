@@ -87,6 +87,9 @@ assert_preservation_plan_safe() {
   names=$(nix_eval --json "$root#systemConfigs.$config_attribute.config.systemd.services" --apply builtins.attrNames | jq -r '.[]')
   while IFS= read -r name; do
     case "$name" in
+      homelab-zfs-scrub-fast|homelab-zfs-scrub-hot-data|homelab-zfs-scrub-nas|homelab-zfs-scrub-temporal)
+        continue
+        ;;
       *zfs*|smbd|nmbd|samba|nfs-server|nfs-kernel-server|cron|crond)
         echo "$host Nix generation would own preserved NAS service $name" >&2
         return 1

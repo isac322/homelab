@@ -9,7 +9,7 @@ usage() {
 Usage: k3s-handoff <command> <host> [arguments]
   preflight <host> [legacy-unit]
   snapshot-packages <host> <recovery-directory>
-  arm <host> <recovery-directory> <previous-generation> [legacy-unit]
+  arm [--preserve-secrets] <host> <recovery-directory> <previous-generation> [legacy-unit]
   rearm <host>
   disarm <host>
   state <host>
@@ -112,6 +112,11 @@ fi
 REMOTE_PREFLIGHT
     ;;
   arm)
+    preserve_secrets=false
+    if [ "${2:-}" = --preserve-secrets ]; then
+      preserve_secrets=true
+      shift
+    fi
     host=${2:?host required}; recovery=${3:?recovery directory required}; previous=${4:-}; legacy=${5:-}
     case "$previous" in ""|*[!0-9]*) test -z "$previous" || { echo "invalid previous generation: $previous" >&2; exit 2; } ;; esac
     case "$legacy" in ""|k3s.service|k3s-agent.service) ;; *) echo "invalid legacy unit: $legacy" >&2; exit 2 ;; esac
@@ -176,8 +181,8 @@ REMOTE_PREFLIGHT
       fi
     fi
     printf -v command \
-      'sudo -n env PREVIOUS_GENERATION=%q LEGACY_UNIT=%q FIREWALL_SERVICE=%q SSH_SERVICE=%q DEFAULT_INTERFACE=%q WG_INTERFACES=%q ROLE=%q PACKAGE_BACKEND=%q PRESERVE_NAS_STATE=%q MANAGE_FIREWALL_RULES=%q K3S_BINARY_PRESENT=%q sh -s' \
-      "$previous" "$legacy" "$firewall_service" "$ssh_service" "$default_interface" "$interfaces" "$role" "$backend" "$preserve" "$manage_rules" "$k3s_binary_present"
+      'sudo -n env PREVIOUS_GENERATION=%q LEGACY_UNIT=%q FIREWALL_SERVICE=%q SSH_SERVICE=%q DEFAULT_INTERFACE=%q WG_INTERFACES=%q ROLE=%q PACKAGE_BACKEND=%q PRESERVE_NAS_STATE=%q MANAGE_FIREWALL_RULES=%q K3S_BINARY_PRESENT=%q PRESERVE_SECRETS=%q sh -s' \
+      "$previous" "$legacy" "$firewall_service" "$ssh_service" "$default_interface" "$interfaces" "$role" "$backend" "$preserve" "$manage_rules" "$k3s_binary_present" "$preserve_secrets"
     remote "$host" "$command" <<'REMOTE_ARM'
 set -eu
 base=/var/lib/homelab-host-rollback
@@ -194,6 +199,7 @@ case "$PACKAGE_BACKEND" in apt|pacman) ;; *) exit 2 ;; esac
 case "$PRESERVE_NAS_STATE" in true|false) ;; *) exit 2 ;; esac
 case "$MANAGE_FIREWALL_RULES" in true|false) ;; *) exit 2 ;; esac
 case "$K3S_BINARY_PRESENT" in true|false) ;; *) exit 2 ;; esac
+case "$PRESERVE_SECRETS" in true|false) ;; *) exit 2 ;; esac
 if test "$PRESERVE_NAS_STATE" = true; then test "$MANAGE_FIREWALL_RULES" = false; fi
 if test -e /var/lib/rancher/k3s; then K3S_STATE_PRESENT=true; else K3S_STATE_PRESENT=false; fi
 if test "$ROLE" = server || test "$ROLE" = agent; then
@@ -232,6 +238,8 @@ fi
   printf '%s\n' "$K3S_BINARY_PRESENT"
 } > "$dir/config"
 chmod 0600 "$dir/config"
+printf '%s\n' "$PRESERVE_SECRETS" > "$dir/preserve-secrets"
+chmod 0600 "$dir/preserve-secrets"
 cat > "$dir/rollback" <<'ROLLBACK'
 #!/bin/sh
 set -eu
@@ -257,6 +265,11 @@ case "$preserve_nas_state" in true|false) ;; *) exit 2 ;; esac
 case "$manage_firewall_rules" in true|false) ;; *) exit 2 ;; esac
 case "$k3s_state_present" in true|false) ;; *) exit 2 ;; esac
 case "$k3s_binary_present" in true|false) ;; *) exit 2 ;; esac
+preserve_secrets=false
+if test -f "$dir/preserve-secrets"; then
+  preserve_secrets=$(cat "$dir/preserve-secrets")
+fi
+case "$preserve_secrets" in true|false) ;; *) exit 2 ;; esac
 if test "$preserve_nas_state" = true; then test "$manage_firewall_rules" = false; fi
 exec >> "$dir/rollback.log" 2>&1
 printf 'rollback started %s\n' "$(date -u +%FT%TZ)"
@@ -289,7 +302,7 @@ rm -f /run/homelab-k3s-firewall-reconcile.defer
 systemctl stop dev-zram0.swap systemd-zram-setup@zram0.service >/dev/null 2>&1 || true
 base=/var/lib/homelab-secrets
 if ! test -e "$stages/secrets-restored"; then
-  if test -L "$base/previous"; then
+  if test "$preserve_secrets" = false && test -L "$base/previous"; then
     abandoned=$(readlink "$base/active" 2>/dev/null || true)
     restore=$(readlink "$base/previous")
     name=${restore#generations/}

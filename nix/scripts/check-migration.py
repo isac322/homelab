@@ -3596,6 +3596,130 @@ def check_preservation_policy_failure() -> None:
                     f"{relative} {' '.join(arguments)}: remote access was attempted after preservation lookup failed"
                 )
 
+def check_nas_owned_scrub_allowlist() -> None:
+    match = re.search(
+        r"(assert_preservation_plan_safe\(\) \{\n.*?^\})",
+        source("nix/scripts/homelab-host"),
+        re.DOTALL | re.MULTILINE,
+    )
+    if match is None:
+        raise SystemExit("NAS preservation ownership gate missing")
+    stubs = """
+preserve_nas_state() { printf '%s\\n' true; }
+nix_eval() {
+  case "$*" in
+    *homelab.firewall.manageRules*) printf '%s\\n' false ;;
+    *config.environment.etc*) printf '%s\\n' "$TEST_ETC" ;;
+    *config.systemd.services*) printf '%s\\n' "$TEST_SERVICES" ;;
+    *) exit 97 ;;
+  esac
+}
+"""
+    approved = [
+        f"homelab-zfs-scrub-{pool}" for pool in ("fast", "hot-data", "nas", "temporal")
+    ]
+    cases = [(approved, [], True)]
+    cases += [([service], [], False) for service in (
+        "zfs-import-cache", "homelab-zfs-scrub-extra", "homelab-zfs-scrub-fast-extra",
+        "smbd", "nfs-server", "cron",
+    )]
+    cases += [([], [path], False) for path in (
+        "samba/smb.conf", "systemd/system/zfs-import-cache.service",
+    )]
+    for services, paths, expected in cases:
+        result = subprocess.run(
+            ["bash"],
+            input=f"set -eu\n{stubs}\n{match.group(1)}\nassert_preservation_plan_safe rock5bp\n",
+            text=True,
+            capture_output=True,
+            env={
+                **os.environ, "root": str(root),
+                "TEST_SERVICES": json.dumps(services), "TEST_ETC": json.dumps(paths),
+            },
+        )
+        if (result.returncode == 0) != expected:
+            raise SystemExit(
+                f"NAS scrub allowlist verdict wrong for {services!r}/{paths!r}: {result.stderr}"
+            )
+
+
+def check_rollback_secret_modes() -> None:
+    handoff = source("nix/scripts/k3s-handoff")
+    parser = handoff.split("  arm)\n", 1)[1].split(
+        '    test -s "$recovery/etc-state.tar"', 1
+    )[0]
+    for flag, expected in (([], "false"), (["--preserve-secrets"], "true")):
+        result = subprocess.run(
+            ["bash", "-s", "--", "arm", *flag, "test-host", "/test/recovery", "7"],
+            input=f'set -eu\n{parser}\nprintf "%s:%s:%s:%s" "$preserve_secrets" "$host" "$recovery" "$previous"\n',
+            text=True,
+            capture_output=True,
+        )
+        if result.returncode or result.stdout != f"{expected}:test-host:/test/recovery:7":
+            raise SystemExit(f"rollback secret-mode parser failed: {result.stderr}")
+    require(
+        "nix/scripts/k3s-handoff",
+        "PRESERVE_SECRETS=%q",
+        '"$k3s_binary_present" "$preserve_secrets"',
+        'case "$PRESERVE_SECRETS" in true|false)',
+    )
+    delimiter = 'cat > "$dir/rollback" <<\'ROLLBACK\'\n'
+    rollback = handoff.split(delimiter, 1)[1].split("\nROLLBACK\n", 1)[0]
+    mode = "preserve_secrets=false\n" + rollback.split(
+        "preserve_secrets=false\n", 1
+    )[1].split('if test "$preserve_nas_state"', 1)[0]
+    secret_stage = rollback.split("base=/var/lib/homelab-secrets\n", 1)[1].split(
+        "profile=/nix/var/nix/profiles/system-manager-profiles/system-manager", 1
+    )[0]
+    script = (
+        'set -eu\ndir="$TEST_CURRENT"\nstages="$dir/stages"\nmkdir -p "$stages"\n'
+        + mode + '\nbase="$TEST_SECRETS"\n' + secret_stage
+        + '\ntest -f "$stages/secrets-restored"\nprintf "configuration-rollback-continues\\n"\n'
+    )
+    metadata = 'printf \'%s\\n\' "$PRESERVE_SECRETS" > "$dir/preserve-secrets"'
+    require("nix/scripts/k3s-handoff", metadata)
+    with tempfile.TemporaryDirectory() as directory:
+        for label, value in (("default", None), ("restore", "false"),
+                             ("preserve", "true"), ("invalid", "invalid")):
+            current = Path(directory) / label / "current"
+            secrets = Path(directory) / label / "secrets"
+            current.mkdir(parents=True)
+            for generation in ("old", "new"):
+                target = secrets / "generations" / generation
+                target.mkdir(parents=True)
+                (target / "fixture").write_text(generation)
+            (secrets / "active").symlink_to("generations/new")
+            (secrets / "previous").symlink_to("generations/old")
+            environment = {
+                **os.environ, "TEST_CURRENT": str(current), "TEST_SECRETS": str(secrets),
+            }
+            if value is not None:
+                subprocess.run(
+                    ["sh"], input=f'set -eu\ndir="$TEST_CURRENT"\n{metadata}\n',
+                    text=True, check=True,
+                    env={**environment, "PRESERVE_SECRETS": value},
+                )
+            result = subprocess.run(
+                ["sh"], input=script, text=True, capture_output=True, env=environment,
+            )
+            preserve = label in ("preserve", "invalid")
+            if label == "invalid":
+                if result.returncode == 0:
+                    raise SystemExit("invalid rollback preservation mode was accepted")
+            elif result.returncode or "configuration-rollback-continues" not in result.stdout:
+                raise SystemExit(f"rollback secret stage failed for {label}: {result.stderr}")
+            if os.readlink(secrets / "active") != f"generations/{'new' if preserve else 'old'}":
+                raise SystemExit(f"rollback active credential pointer wrong for {label}")
+            if (secrets / "previous").is_symlink() != preserve:
+                raise SystemExit(f"rollback previous credential pointer wrong for {label}")
+            if (secrets / "generations/new").exists() != preserve:
+                raise SystemExit(f"rollback changed credential generations incorrectly for {label}")
+            if (secrets / "generations/old/fixture").read_text() != "old":
+                raise SystemExit(f"rollback old credential bytes changed for {label}")
+            if preserve and (secrets / "generations/new/fixture").read_text() != "new":
+                raise SystemExit(f"rollback preserved credential bytes changed for {label}")
+
+
 
 require(
     "nix/modules/linux/base.nix",
@@ -4547,6 +4671,8 @@ check_static_nix_hosts_render()
 check_static_nix_hosts_expression()
 check_nas_preservation_contracts()
 check_preservation_policy_failure()
+check_nas_owned_scrub_allowlist()
+check_rollback_secret_modes()
 check_edge_secret_bundle()
 check_shell_syntax()
 print("migration-contracts: ok")
