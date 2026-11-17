@@ -71,8 +71,7 @@ configs:
           name: GitHub
           config:
             clientID: Ov23liD5XMPXUJDIp1gc
-            clientSecret: $dex.github.clientSecret
-            useLoginAsID: true
+            useLoginAsID: false
   rbac:
     policy.default: ""
     policy.csv: |
