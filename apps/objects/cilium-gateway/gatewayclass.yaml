@@ -27,11 +27,9 @@ spec:
           client_ip: "%DOWNSTREAM_REMOTE_ADDRESS_WITHOUT_PORT%"
           method: "%REQUEST_HEADER(:METHOD)%"
           authority: "%REQUEST_HEADER(:AUTHORITY):255%"
-          # NQ drops the query string: presigned S3 signatures, api_key and
-          # token parameters travel there. PATH reads :path rather than the
-          # client-settable x-envoy-original-path header; no HTTPRoute rewrites
-          # the path, so this is the path the client sent.
-          path: "%PATH(NQ:PATH):1024%"
+          # URL paths can contain bearer credentials (Immich /share/<key>).
+          # A route name is control-plane metadata, not client-supplied data.
+          route: "%ROUTE_NAME%"
           protocol: "%PROTOCOL%"
           response_code: "%RESPONSE_CODE%"
           response_flags: "%RESPONSE_FLAGS%"

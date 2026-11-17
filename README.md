@@ -217,6 +217,7 @@ K3s version과 순차 rollout은 기존 Rancher `system-upgrade-controller`가 �
 - 한 workload의 GitOps revision을 push한 뒤 실제 목표 chart revision, 실행 중인 container image, readiness와 기능 smoke를 확인하고 다음 workload를 배포한다. `Synced/Healthy`만으로 새 Pod 생성·네트워크·데이터 경로 정상 여부를 판단하지 않는다.
 - Cilium 1.20.2의 socket-LB helper는 kernel BTF를 사용하는 enum CO-RE relocation을 도입했다. 현재 BTF 없는 vendor kernel에서는 KPR/socketLB를 유지한 채 사용할 수 없어 1.20.1로 롤백했다. kernel/BTF 전제 또는 upstream 수정이 해결되기 전 재배포하지 않는다.
 - Loki·Alloy·VersityGW 변경은 기존 PVC UID와 PV 연결을 보존한다. Loki 실제 query, Alloy 재시작 이후 로그 전달, VersityGW 소비자 IAM read 및 별도 QA prefix의 multipart/checksum·정리를 검증한다.
+- 내부 Gateway 두 개는 `cilium-access-log` class로 JSON 요청 로그를 stdout에 쓰며 Alloy가 Loki로 보낸다. URL 경로·query·Authorization·Cookie는 기록하지 않고 정적 route 이름을 남긴다(Immich 공유 키는 경로에도 들어간다). `python3 cluster-setup/verify-gateway-log-privacy.py --context homelab-backbone`으로 합성 path/query/header credential 누락과 두 Gateway의 로그를 확인한다. Versity SSD/HDD는 지원 요약 로거를 쓰며 S3 인증 query 값은 마스킹하지만 그 밖의 query는 남긴다. requester가 필요한 native audit log는 presigned 자격증명을 원문 기록하므로 켜지 않는다.
 - rock5bp 재부팅은 원격 NVMe-oF PVC의 I/O와 Pod 종료·재부착을 막을 수 있다. chart rollout과 NAS 호스트 maintenance를 겹치지 않으며, 경로가 복구되기 전 RWO Pod를 강제 삭제해 새 writer를 만들지 않는다.
 - CNPG operator 업그레이드 전 두 DB의 새 백업 완료를 확인한다. instance manager 갱신으로 단일 DB Pod가 재생성될 수 있으므로 SQL 응답, PVC UID/PV 연결, PostgreSQL system ID가 유지되는지 검증한다.
 - DB cluster chart 변경은 DB Pod를 바꾸지 않고 label이나 alert rule만 바꿀 수 있다. 전체 `Cluster.spec`을 비교하고 PostgreSQL image pin, resources, storage 설정을 보존한다.
