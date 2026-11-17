@@ -46,9 +46,9 @@ for line in logs.splitlines():
 assert len(entries) == 4, f"Expected 4 probe records, found {len(entries)}; retry after xDS convergence."
 for entry in entries:
     assert "path" not in entry, "Raw URL path logging is forbidden."
-    assert entry.get("route"), "Static route identity is missing."
+    assert entry.get("backend_cluster"), "Static backend identity is missing."
     assert entry.get("gateway") and entry.get("client_ip") and entry.get("response_code")
     encoded = json.dumps(entry)
     assert not any(value in encoded for value in credentials), "A synthetic credential leaked into a log field."
 assert {entry["gateway"] for entry in entries} == {"ingress-ctrl/bhyoo-gateway", "ingress-ctrl/nas-gateway"}
-print("PASS: four Gateway request records retain route/status/client metadata without URL, Authorization or Cookie credentials.")
+print("PASS: four Gateway request records retain backend/status/client metadata without URL, Authorization or Cookie credentials.")

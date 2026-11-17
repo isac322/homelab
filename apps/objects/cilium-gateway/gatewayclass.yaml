@@ -28,8 +28,9 @@ spec:
           method: "%REQUEST_HEADER(:METHOD)%"
           authority: "%REQUEST_HEADER(:AUTHORITY):255%"
           # URL paths can contain bearer credentials (Immich /share/<key>).
-          # A route name is control-plane metadata, not client-supplied data.
-          route: "%ROUTE_NAME%"
+          # Cilium does not name its Envoy routes; the upstream cluster is the
+          # static backend service identity, never client-supplied URL data.
+          backend_cluster: "%UPSTREAM_CLUSTER%"
           protocol: "%PROTOCOL%"
           response_code: "%RESPONSE_CODE%"
           response_flags: "%RESPONSE_FLAGS%"
