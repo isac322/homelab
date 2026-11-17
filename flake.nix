@@ -192,6 +192,7 @@
                   # attrNames order.
                   expected = lib.sort lib.lessThan (
                     lib.optional (linuxHosts.${hostName}.k3sRole != null) "homelab-k3s"
+                    ++ [ "homelab-ipv6-firewall" ]
                     ++ lib.optionals (hostName == "rock5bp") [
                       "homelab-irq-affinity"
                       "homelab-pillar-firewall"
@@ -255,12 +256,55 @@
                   lib.hasInfix "\n  - local-storage\n"
                     self.systemConfigs.${hostName}.config.environment.etc."rancher/k3s/config.yaml".text
                 ) k3sServers;
+              hostHardeningConfigured = lib.all (
+                hostName:
+                let
+                  cfg = self.systemConfigs.${hostName}.config;
+                  rules = cfg.environment.etc."homelab/firewall6.rules".text;
+                  audit = cfg.environment.etc."homelab/k3s-audit-policy.yaml" or null;
+                  server = linuxHosts.${hostName}.k3sRole == "server";
+                in
+                lib.hasInfix "-P INPUT DROP" rules
+                && lib.hasInfix "-P FORWARD DROP" rules
+                && lib.hasInfix "--ctstate RELATED,ESTABLISHED -j ACCEPT" rules
+                && lib.hasInfix "--icmpv6-type 2 -j ACCEPT" rules
+                && lib.hasInfix "--icmpv6-type 135 -j ACCEPT" rules
+                && (
+                  linuxHosts.${hostName}.lanAddress == null
+                  || lib.hasInfix "-s ${topology.lanIpv6Network} -j ACCEPT" rules
+                )
+                && (if server then
+                  audit != null
+                  && lib.hasInfix "- level: Metadata" audit.text
+                  && !(lib.hasInfix "RequestResponse" audit.text)
+                  && lib.all (
+                    flag: lib.hasInfix flag cfg.environment.etc."rancher/k3s/config.yaml".text
+                  ) [
+                    "audit-policy-file=/etc/homelab/k3s-audit-policy.yaml"
+                    "audit-log-path=/var/log/k3s/audit.log"
+                    "audit-log-maxage=7"
+                    "audit-log-maxbackup=3"
+                    "audit-log-maxsize=20"
+                  ]
+                else audit == null)
+              ) (builtins.attrNames linuxHosts);
             in
             assert projectServiceOwnershipIsMinimal;
             assert projectEtcOwnershipIsExplicit;
             assert preservationOwnershipIsExplicit;
             assert globalPackageOwnershipIsExclusive;
             assert serversDisableLocalStorage;
+            assert hostHardeningConfigured;
+            assert self.systemConfigs.v1.config.homelab.firewall.sshSources == [
+              topology.vpn0.network "125.186.132.27/32"
+            ];
+            assert lib.hasInfix "-A HOMELAB_TCP -s 10.111.0.0/24 -p tcp --dport 22 -j ACCEPT"
+              self.systemConfigs.v1.config.environment.etc."iptables/rules.v4".text;
+            assert !(lib.hasInfix "-s 0.0.0.0/0 -p tcp --dport 22"
+              self.systemConfigs.v1.config.environment.etc."iptables/rules.v4".text);
+            assert builtins.elem "fail2ban" self.systemConfigs.v1.config.homelab.distroPackages.present;
+            assert lib.hasInfix "enabled = true"
+              self.systemConfigs.v1.config.environment.etc."fail2ban/jail.d/sshd.local".text;
             assert topology.nodes.rock5bp.preserveNasState;
             assert !(topology.nodes.n2p1.preserveNasState);
             assert topology.nodes.macmini.k3sRole == "agent";

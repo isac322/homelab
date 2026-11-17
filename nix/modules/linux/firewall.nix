@@ -45,7 +45,9 @@ let
     -A HOMELAB_INPUT -p udp -j REJECT --reject-with icmp-port-unreachable
     -A HOMELAB_INPUT -p tcp -j REJECT --reject-with tcp-reset
     -A HOMELAB_INPUT -j REJECT --reject-with icmp-proto-unreachable
-    -A HOMELAB_TCP -p tcp --dport 22 -j ACCEPT
+    ${lib.concatMapStringsSep "\n" (
+      source: "-A HOMELAB_TCP -s ${source} -p tcp --dport 22 -j ACCEPT"
+    ) cfg.sshSources}
     ${lib.concatMapStringsSep "\n" (
       port: "-A HOMELAB_UDP -i ${hostConfig.defaultInterface} -p udp --dport ${toString port} -j ACCEPT"
     ) wgPorts}
@@ -105,6 +107,45 @@ let
     COMMIT
   ''
   + natBootRules;
+  # Cilium and K3s are IPv4-only. Keep IPv6 host policy independent of their
+  # IPv4 chains and of rock5bp's externally owned NAS firewall.
+  ipv6Rules = ''
+    *filter
+    :HOMELAB6_INPUT - [0:0]
+    :HOMELAB6_FORWARD - [0:0]
+    -F HOMELAB6_INPUT
+    -F HOMELAB6_FORWARD
+    -A HOMELAB6_INPUT -i lo -j ACCEPT
+    -A HOMELAB6_INPUT -m conntrack --ctstate RELATED,ESTABLISHED -j ACCEPT
+    -A HOMELAB6_INPUT -m conntrack --ctstate INVALID -j DROP
+    ${lib.concatMapStringsSep "\n" (
+      type: "-A HOMELAB6_INPUT -p ipv6-icmp --icmpv6-type ${toString type} -j ACCEPT"
+    ) [ 1 2 3 4 ]}
+    ${lib.concatMapStringsSep "\n" (
+      type: "-A HOMELAB6_INPUT -i ${hostConfig.defaultInterface} -p ipv6-icmp --icmpv6-type ${toString type} -j ACCEPT"
+    ) [ 133 134 135 136 ]}
+    ${lib.optionalString (hostConfig.lanAddress != null) ''
+      -A HOMELAB6_INPUT -i ${hostConfig.defaultInterface} -s ${topology.lanIpv6Network} -j ACCEPT
+      -A HOMELAB6_INPUT -i ${hostConfig.defaultInterface} -s fe80::/10 -p udp --sport 547 --dport 546 -j ACCEPT
+      -A HOMELAB6_INPUT -i ${hostConfig.defaultInterface} -s fe80::/10 -d ff02::fb -p udp --dport 5353 -j ACCEPT
+    ''}
+    -A HOMELAB6_INPUT -j DROP
+    -A HOMELAB6_FORWARD -m conntrack --ctstate RELATED,ESTABLISHED -j ACCEPT
+    -A HOMELAB6_FORWARD -j DROP
+    -P INPUT DROP
+    -P FORWARD DROP
+    -P OUTPUT ACCEPT
+    COMMIT
+  '';
+  ipv6Firewall = pkgs.writeShellScript "homelab-ipv6-firewall" ''
+    set -eu
+    export PATH=${lib.makeBinPath [ pkgs.iptables ]}
+    ip6tables-restore --wait --noflush < /etc/homelab/firewall6.rules
+    ip6tables --wait -C INPUT -j HOMELAB6_INPUT 2>/dev/null \
+      || ip6tables --wait -I INPUT 1 -j HOMELAB6_INPUT
+    ip6tables --wait -C FORWARD -j HOMELAB6_FORWARD 2>/dev/null \
+      || ip6tables --wait -I FORWARD 1 -j HOMELAB6_FORWARD
+  '';
   pillar = cfg.pillar;
   pillarChain = "HOMELAB_PILLAR";
   pillarMarker = "homelab-pillar";
@@ -237,6 +278,11 @@ in
       default = "192.168.219.0/24";
       description = "Host-local trusted LAN CIDR.";
     };
+    sshSources = lib.mkOption {
+      type = lib.types.listOf lib.types.str;
+      default = [ "0.0.0.0/0" ];
+      description = "IPv4 source CIDRs permitted to initiate SSH connections.";
+    };
     sambaClients = lib.mkOption {
       type = lib.types.listOf lib.types.str;
       default = hostConfig.firewall.sambaClients or [ ];
@@ -293,6 +339,24 @@ in
         Before=homelab-k3s.service
       '';
       replaceExisting = true;
+    };
+    environment.etc."homelab/firewall6.rules" = {
+      text = ipv6Rules;
+      mode = "0600";
+      replaceExisting = true;
+    };
+    systemd.services.homelab-ipv6-firewall = {
+      description = "Default-deny IPv6 host firewall";
+      wantedBy = [ "multi-user.target" ];
+      after = [ firewallService ] ++ lib.optional (hostConfig.packageBackend == "pacman") "ip6tables.service";
+      partOf = [ firewallService ] ++ lib.optional (hostConfig.packageBackend == "pacman") "ip6tables.service";
+      before = [ "homelab-k3s.service" ];
+      serviceConfig = {
+        Type = "oneshot";
+        RemainAfterExit = true;
+        ExecStart = ipv6Firewall;
+        ExecReload = ipv6Firewall;
+      };
     };
     assertions = [
       {

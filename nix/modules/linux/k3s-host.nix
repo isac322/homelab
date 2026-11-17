@@ -136,6 +136,16 @@ let
         advertise-address: ${hostConfig.lanAddress}
         node-external-ip: ${strip wg0Address}
         secrets-encryption: true
+        # Metadata never includes Secret/token request or response bodies.
+        # Bound each control plane to 80 MiB of audit files (active + 3 backups).
+        kube-apiserver-arg:
+          - audit-policy-file=/etc/homelab/k3s-audit-policy.yaml
+          - audit-log-path=/var/log/k3s/audit.log
+          - audit-log-maxage=7
+          - audit-log-maxbackup=3
+          - audit-log-maxsize=20
+          - audit-log-compress=true
+          - audit-log-mode=batch
         tls-san:
           - ${strip wg0Address}
           - ${hostConfig.wireguardEndpointHost}
@@ -190,6 +200,25 @@ in
         replaceExisting = true;
         mode = "0600";
       };
+      "homelab/k3s-audit-policy.yaml" = lib.mkIf server {
+        text = ''
+          apiVersion: audit.k8s.io/v1
+          kind: Policy
+          omitStages:
+            - RequestReceived
+          omitManagedFields: true
+          rules:
+            - level: None
+              nonResourceURLs:
+                - /healthz*
+                - /livez*
+                - /readyz*
+                - /metrics
+            - level: Metadata
+        '';
+        replaceExisting = true;
+        mode = "0600";
+      };
       "homelab/kubelet/10-graceful-node-shutdown.conf" = {
         text = ''
           apiVersion: kubelet.config.k8s.io/v1beta1
@@ -225,7 +254,7 @@ in
     systemd.tmpfiles.rules = [
       "d /var/lib/rancher/k3s/agent/etc/kubelet.conf.d 0755 root root -"
       "L+ /var/lib/rancher/k3s/agent/etc/kubelet.conf.d/10-graceful-node-shutdown.conf - - - - /etc/homelab/kubelet/10-graceful-node-shutdown.conf"
-    ];
+    ] ++ lib.optional server "d /var/log/k3s 0700 root root -";
     system-manager.preActivationAssertions.kubeletGracefulShutdownPath = {
       enable = true;
       script = ''

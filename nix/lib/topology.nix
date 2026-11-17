@@ -367,6 +367,8 @@ in
   # K3s default cluster-cidr; server configs do not override it and Cilium
   # runs Kubernetes IPAM with the same ipv4NativeRoutingCIDR.
   k3s.podNetwork = "10.42.0.0/16";
+  # The backbone LAN has only this private IPv6 ULA; no public node IPv6 is used.
+  lanIpv6Network = "fd32:6b34:aa3:1eb3::/64";
   wg0 = {
     interface = "wg0";
     network = "10.222.0.0/24";
