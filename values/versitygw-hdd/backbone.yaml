@@ -5,11 +5,14 @@ strategy:
   type: Recreate
 
 gateway:
-  # versitygw v1.8.0 can only log every request or none; Thanos block reads were
-  # ~700k lines/day. Request errors are kept as StatsD metrics (statsd-exporter
-  # sidecar below) instead: versitygw_failed_count{action,bucket,status}.
-  # [INTERNAL ERROR]/[PANIC] lines still go to stderr.
-  quiet: true
+  # Request log for audit: versitygw's stdout summary (time, status, latency,
+  # peer IP, method, path, error, query) with credential-bearing query values
+  # masked by versitygw itself. ~670k lines/day, mostly Thanos block reads.
+  # Do not enable gateway.accessLog: it writes the raw request URI, including
+  # presigned X-Amz-Signature and X-Amz-Security-Token values.
+  # The summary has no requester; per-action/bucket/status counts stay in the
+  # StatsD metrics below (versitygw_failed_count{action,bucket,status}).
+  quiet: false
   backend:
     type: posix
     args: "/mnt/data"
