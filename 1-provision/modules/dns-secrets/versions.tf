@@ -12,6 +12,10 @@ terraform {
       source  = "jcf/postmark"
       version = "1.2.2"
     }
+    random = {
+      source  = "hashicorp/random"
+      version = "~> 3.9.0"
+    }
     tls = {
       source  = "hashicorp/tls"
       version = "~> 4.4.0"
