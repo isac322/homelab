@@ -9,7 +9,8 @@ metadata:
   name: nas-gateway
   namespace: ingress-ctrl
 spec:
-  gatewayClassName: cilium
+  # Access-logged class; see gatewayclass.yaml.
+  gatewayClassName: cilium-access-log
   infrastructure:
     annotations:
       io.cilium.nodeipam/match-node-labels: "kubernetes.io/hostname=rock5bp"
