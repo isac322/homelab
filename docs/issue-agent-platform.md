@@ -22,8 +22,8 @@ v2는 코딩 에이전트의 GitHub 쓰기를 모두 없앴다. 에이전트는 
 - 지침·스킬은 외부에서 갱신할 수 있으며 새 세션·재시작·재빌드로 반영해도 된다.
 - 커스텀 provider와 모델 설정을 독립적으로 관리한다. 자체 ARM64 이미지 빌드는 허용된다.
 - 선호가 불명확한 경우 추측하지 않고 질문한다.
-- 누구나 이슈를 열 수 있다. 명확한 요청은 triage(재현·원인·중복 판단)를 거친 뒤 자동으로 수정·검증·PR 생성까지 수행한다. 불명확한 요청은 질문하며 자동 머지는 하지 않는다. 저장소 collaborator·owner가 아닌 사용자의 새 이슈는 전체 저장소 합산 1시간(rolling)에 10개까지만 받는다.
-- 기능 요청은 작성자 신뢰에 따라 다룬다. 신뢰 사용자(collaborator 권한 `admin`/`write`)의 명확하고 범위 안의 기능·문서 요청은 직접 지시로 보고 구현까지 간다(구조 변경이면 결정을 묻고 멈춘다). 비신뢰 사용자의 기능 요청은 바로 구현하지 않고 제안 트랙(계약 확인, 실현 가능성 조사, 방향과 기각한 대안을 담은 제안 평가 댓글)을 거쳐 결정을 묻고 멈추며, 신뢰 사용자가 댓글로 방향을 승인해야 구현한다. 비신뢰 사용자의 댓글·수정은 승인이나 요구사항 변경이 아니라 정보다.
+- 누구나 GitHub에 이슈를 열 수 있지만, Issue Agent는 저장소 owner·collaborator가 연 이슈만 자동 처리한다. 외부 이슈·PR·댓글·리뷰 요청은 bridge intake gate에서 저장하지 않고 무시한다. 자동 PR 리뷰가 필요한 dependabot·GitHub Actions·두 Issue Agent bot PR만 명시된 bot allowlist로 통과한다.
+- 신뢰 사용자의 명확한 기능·문서 요청은 직접 지시로 보고 구현까지 간다. 외부 사용자의 기능 요청은 agent work를 시작하지 않는다.
 - 보안 취약점은 공개 위치에 남기지 않는다. 확인되거나 의심되는 취약점은 라벨·이슈 댓글·재현 페이로드 없이 비공개 draft repository security advisory로 보고한다.
 - 설치된 저장소에서 Draft가 아닌 PR을 생성·재개하거나 Ready for review로 바꾸면 이슈와 다른 `review-pr-<n>` 세션에서 리뷰한다. 리뷰 App이 설정되어 있으면 push로 head가 바뀔 때도 head별로 한 번 리뷰하고, 명시적 `@haechibot review` 요청은 같은 head를 다시 리뷰할 수 있다. 자동 요청은 같은 head를 두 번 리뷰하지 않으며, bridge가 내려가 놓친 webhook은 열린 PR 리뷰 스윕이 복구한다. PR마다 대기 리뷰는 하나뿐이고 연달아 온 요청(PR 열기·push·댓글)은 그 하나로 합쳐지며, 새 head가 오면 이전 head를 리뷰하던 실행은 취소된다(아래 "리뷰 요청 합치기와 취소"). ruleset·branch protection이 merge 조건을 소유하며 bridge는 필수 check 목록이나 reviewer 수를 하드코딩하지 않는다.
 - 코딩 에이전트는 GitHub에 쓰지 않는다. 댓글·라벨·push·PR·리뷰는 모두 n8n이 에이전트 결과를 검증된 bridge op로 적용한다.
@@ -231,7 +231,10 @@ pillar-csi#155에서 PR 열기 → 31초 뒤 force-push → 3초 뒤 `@haechibot
 ### 이벤트 분류(bridge `classify_event`)
 
 - 신뢰 사용자는 저장소 collaborator·owner다. bridge가 이슈 App 토큰으로 `GET /repos/{repo}/collaborators/{login}/permission`을 호출해 `permission`이 `admin` 또는 `write`면 신뢰한다(`maintain`은 `write`, `triage`는 `read`로 매핑된다). 404는 비신뢰다. 결과는 신뢰·비신뢰 모두 SQLite `collaborators` 테이블에 600초 캐시한다. 조회는 규칙이 신뢰 여부를 필요로 할 때만 한다. 네트워크 오류·토큰 없음·그 외 HTTP 상태면 캐시하지 않고 HTTP 503 `permission_unavailable`로 응답하며 이벤트를 저장하지 않는다. GitHub가 재전달한다. 예외로 `agent:open-discussion` 이슈의 댓글은 신뢰 여부가 처리 여부를 정하지 않으므로, 조회가 실패해도 경고 로그만 남기고 비신뢰로 기록한다.
-- `issues.opened`: 누구나(sender가 bot이 아닌 `User`이고 이슈 작성자와 같을 때) → `issue_opened`. 신뢰 사용자의 이슈는 항상 받는다. 비신뢰 사용자의 이슈는 전체 저장소 합산 최근 3600초(rolling) 안에 받은 비신뢰 `issue_opened`가 10개 미만일 때만 받고, 넘으면 `rate_limited`(202, 저장 안 함)다. 신뢰 사용자의 이슈는 한도에 세지 않는다.
+- `issues.opened`: sender가 bot이 아닌 `User`이고 작성자와 같아야 하며, owner·collaborator(`admin`/`write`)만 `issue_opened`로 받는다. owner가 연 이슈는 `owner_issue_ignored`다. 외부 작성자는 `actor_not_allowed`이며 rate limit으로 agent work를 시작하지 않는다.
+- `issue_comment.created`(이슈·닫힌 이슈·PR): owner·collaborator만 처리 대상이다. `agent:open-discussion`은 trusted human의 멘션 생략만 허용하며 외부 댓글도, 외부 reopen도 agent work를 시작하지 않는다. PR의 `@haechibot` review와 `@bulgasaribot` repair도 같은 gate를 지난다.
+- `issues.edited`: `changes`에 `body`나 `title`이 있고 sender가 owner·collaborator일 때만 `issue_edited`다. 라벨 여부는 권한 gate를 우회하지 않는다.
+- `pull_request.opened`/`reopened`/`ready_for_review`/`synchronize`: Draft가 아닌 PR은 owner·collaborator가 작성했거나 명시된 자동화 bot(`dependabot[bot]`, `github-actions[bot]`, `bulgasaribot[bot]`, `haechibot[bot]`)일 때만 `pr_review`/reconcile로 분류한다. 외부 작성자 PR은 webhook과 review sweep 모두 `actor_not_allowed`/skip이다.
 - 예외: 저장소 owner(저장소 이름의 `<owner>`와 같은 login, 예: `isac322/*`의 `isac322`)가 연 이슈는 자동 처리하지 않는다(`owner_issue_ignored`, 저장 안 함). owner는 자기 에이전트 작업용 메모로 이슈를 여는 경우가 많기 때문이다. 이런 이슈도 신뢰 사용자가 `@bulgasaribot` 멘션 댓글을 달면 그 댓글이 `issue_comment`로 들어와 triage부터 시작한다. 조직 저장소는 login이 조직 이름과 같을 수 없으므로 해당이 없다.
 - `issue_comment.created`(닫힌 이슈): bot_sender·에이전트 marker 검사 다음, 아래 `agent:open-discussion`·멘션 규칙보다 먼저 본다. 이슈 `state`가 `closed`이고 작성자가 저장소 owner(`project_owner`, 없으면 저장소 이름의 `<owner>`, 대소문자 무시)면 기존 규칙을 그대로 따른다(owner의 일반 댓글은 계속 `issue_comment_ignored`). 그 외에는 신뢰 여부를 조회하며, 조회가 실패하면(`TrustUnavailable`) 기존처럼 HTTP 503 `permission_unavailable`로 응답하고 저장하지 않는다. 신뢰 사용자(`admin`/`write` collaborator)의 댓글도 기존 규칙(멘션이면 `issue_comment`, 아니면 `issue_comment_ignored`)을 따르고 재개 이벤트를 만들지 않는다. 비신뢰 사용자의 댓글은 멘션·라벨과 무관하게 `closed_issue_comment`(`repo#comment:<comment_id>`, `trusted: false`)로 분류해 `reopen_check` 모드로 처리한다. 비신뢰 `closed_issue_comment`는 `issue_opened`와 별도로 세는 같은 한도(전체 저장소 합산 최근 3600초에 10개)를 넘으면 `rate_limited`(202, 저장 안 함)다. 열린 이슈와 PR 댓글은 바뀌지 않는다. `issues.reopened`는 계속 `action_ignored`라 재개가 이벤트를 다시 만들지 않으며, bot이 남긴 재개 안내 댓글도 `bot_sender`로 버려져 루프가 없다. GitHub는 닫힌 이슈의 댓글도 `issue_comment.created`로 보내므로 webhook 구독은 바꾸지 않았다. 계기는 2026-10-12 isac322/krema#90 댓글 6128696806이다. 구현되어 닫힌 이슈에 작성자가 "조정 범위가 부족하고 taskbar가 아니라 화면 가장자리 기준"이라고 남겼지만 `issue_comment_ignored`로 버려졌다.
 - `issue_comment.created`(이슈): 이슈에 `agent:open-discussion` 라벨이 있으면 누구의 댓글이든 멘션 없이 `issue_comment`다(rate limit 없음). 누구나 의견과 자료를 보태 에이전트가 이슈를 더 잘 이해하게 하는 용도다. 이 경로도 캐시된 권한 조회로 작성자의 신뢰 여부를 계산해 기록하지만 처리 여부에는 쓰지 않으며, 조회가 실패하면(`TrustUnavailable`) 경고 로그를 남기고 비신뢰로 둔다. 비신뢰 댓글은 에이전트에게 정보일 뿐 승인·지시가 아니다. 라벨이 없으면 본문에 이슈 bot 멘션(`@bulgasaribot`, 대소문자 무시, `github_bot_login`에서 `[bot]` 제외)이 있어야 한다. 멘션이 없으면 `issue_comment_ignored`, 신뢰 사용자의 멘션은 `issue_comment`, 비신뢰 사용자의 멘션은 `actor_not_allowed`다. 에이전트가 처음 보는 이슈의 댓글도 같은 규칙으로 처리한다.
@@ -242,6 +245,10 @@ pillar-csi#155에서 PR 열기 → 31초 뒤 force-push → 3초 뒤 `@haechibot
 - 이벤트 행에는 신뢰 여부(`trusted`)를 함께 기록한다. `begin` 응답의 `event.trusted`로 n8n에 넘기면 n8n은 triage·followup 지시문과 `context.actor_trusted`에 actor의 신뢰 여부와 신뢰 규칙(신뢰 사용자의 요청만 직접 지시·승인이며 다른 사람은 권한 API로 확인)을 넣는다. `issues.opened`의 actor는 작성자다.
 
 `agent:open-discussion` 라벨은 bridge `LABEL_CATALOG`에 없다. 공개 토론을 허용할 저장소마다 maintainer가 직접 만들고 이슈에 붙인다.
+
+### 외부 트리거 차단(2026-11-17)
+
+외부 사용자가 제출한 이슈·PR·댓글·리뷰 요청은 bridge의 단일 intake gate에서 `actor_not_allowed`로 거절한다. 이 gate는 n8n 서명 검증 뒤 webhook 경로와 bridge의 열린 PR 주기 스윕에 모두 적용되므로, webhook 누락·재시작으로도 우회되지 않는다. 저장소 owner와 collaborator(`admin`/`write`)만 사람 트리거로 허용한다. 현재 필요한 자동 PR 리뷰 작성자는 `dependabot[bot]`, `github-actions[bot]`, `bulgasaribot[bot]`, `haechibot[bot]`으로 제한한다. 봇 댓글·에이전트 marker는 계속 무시한다. 권한 조회가 실패하면 이벤트를 저장하지 않고 `permission_unavailable`로 응답한다.
 
 ### 모드와 결과 계약
 
@@ -362,12 +369,20 @@ print(urllib.request.urlopen(req).read().decode())
 ' '{"op":"dismiss_event","delivery_id":"<delivery-id>","reason":"subject closed; nothing left to do"}'
 ```
 
+### 네트워크 경계(2026-11-17)
+
+두 namespace에 default-deny `NetworkPolicy`를 적용한다. `issue-agent`는 Flareway gateway의 webhook ingress와 namespace 내부 호출, Runner의 Hub·publisher 호출만 허용한다. `issue-agent-runner`는 bridge의 publisher 호출과 Hub 연결만 허용한다. 양쪽 모두 CoreDNS(UDP/TCP 53)와 실제 코드 경로에 필요한 HTTPS(GitHub API, 모델 proxy upstream, GitHub/npm/crates/Go registry)를 허용하며, 사설·link-local·loopback·Docker/클러스터 대역은 인터넷 규칙에서 제외한다. 외부 목적지는 GitHub·provider·registry가 CDN/IP를 바꾸므로 Kubernetes `ipBlock`으로 고정하지 않는다. 배포 후 Cilium/Hubble에서 허용 흐름과 `policy verdict=DENIED`를 확인한다.
+
 ## Runner Docker와 DRM 장치
 
 Runner Pod는 저장소 테스트가 Docker 이미지를 build하고 컨테이너를 실행할 수 있도록 Pod 전용 Docker daemon을 둔다. daemon에 privileged 컨테이너가 필요하므로 runner·publisher·dockerd는 `issue-agent-runner` namespace에서 실행한다. 이 namespace만 Pod Security `privileged`를 enforce하고 audit·warn은 `restricted`로 두어, dockerd 외의 위반도 audit 기록과 경고로 남긴다. hub·n8n·bridge는 `restricted`를 enforce하는 `issue-agent`에 남는다.
 
 - Pod 구성: runner, publisher, native sidecar `dockerd`와 `model-proxy`(Caddy, `### 자동 머지와 실행 격리의 한계`의 E2)가 한 Pod에 있다. Deployment는 replica 1과 `Recreate`를 유지하며 replica를 늘리지 않는다. publisher Service는 `issue-agent-publisher.issue-agent-runner`이고, runner는 `issue-agent`의 Hub에 접속한다.
 - 권한: `dockerd`만 root·privileged(seccomp `Unconfined`)로 실행한다. runner와 publisher는 UID 1000이며 모든 capability를 제거하고 권한 상승을 막는다. daemon은 TCP listener 없이 Unix socket만 열고, socket은 root:1000 0660이다.
+
+#### Runner 격리 평가
+
+rootless DinD는 현재 Krema의 native DRM hostPath와 Docker-in-Docker cgroup/NAT 경로를 유지하지 못하고, sysbox는 이 클러스터의 설치·운영 전제가 없다. dockerd를 별도 Pod로 옮기면 Unix socket, checkout/PVC, DRM 장치, publisher와의 동일 Pod 경계를 다시 설계해야 하므로 이 hardening 창에서 정상 review/implement를 보장할 수 없다. 따라서 이번 변경은 기존 privileged dockerd를 유지하되, runner·publisher의 Secret 분리, Docker authorization plugin, cgroup 경계, device·bind allowlist, namespace egress deny를 적용한 현재 최강의 호환 가능한 경계로 제한한다. privileged dockerd 제거와 HAPI token 분리는 별도 구조 변경 항목으로 남긴다.
 - 마운트: daemon은 home PVC의 `checkouts` subPath(`/home/agent/checkouts`), runner와 공유하는 `/tmp` emptyDir, socket 디렉터리, Docker 데이터 PVC(`/var/lib/docker`), native DRM 장치 두 개만 마운트한다. home root(`CODEX_HOME`, `HAPI_HOME`)와 Secret은 마운트하지 않는다. checkout과 `/tmp`는 runner와 daemon에서 경로가 같으므로, 이 두 경로 아래 파일만 bind mount와 build context로 쓸 수 있다.
 - cgroup: `dockerd-start`는 컨테이너 cgroup을 경계로 둔다. `/proc/self/cgroup`이 `0::/`인 private cgroup namespace면 바로 쓰고, host cgroup namespace를 공유해 scope가 node 경로(`/kubepods…/cri-containerd-…scope`)로 보이면 그 scope의 유한한 `memory.max`를 먼저 확인한 뒤 `unshare --cgroup --mount --propagation private`로 재실행하고 `/sys/fs/cgroup`에 cgroup2를 remount한다. 그래도 격리된 보기를 만들 수 없으면 daemon을 띄우지 않는다. 컨테이너는 cgroupfs driver와 `--cgroup-parent=/issue-agent-docker`로 자기 scope 아래에 생기므로 Pod 메모리 제한을 넘지 못한다. `unshare`는 BusyBox에 없어 이미지에 `util-linux-misc`를 넣는다. dockerd는 `/usr/local/bin/dind docker-init` 경유로 띄워 DinD의 mount 준비와 PID 1 zombie 수거를 쓰고, legacy iptables로 바꿀 수 있는 stock `dockerd-entrypoint`는 거치지 않는다.
 - DRM 장치: Pod는 host의 `/dev/dri/card0`·`/dev/dri/renderD128`만 `CharDevice` hostPath 두 개로 받는다(`macmini`는 `asahi`, `rock5bp`는 `rockchip-drm`). `rock5bp`의 RKNPU `card1`·`renderD129` 같은 다른 DRM node는 Pod에 넣지 않는다. runner는 두 장치를 `/dev/dri` 아래에 read-only로 마운트한다. privileged 컨테이너의 runtime은 volume mount 뒤에 host device 전체로 `/dev`를 채우므로 `/dev/dri`를 직접 가리면 다시 채워진다. 그래서 dockerd는 raw emptyDir `/run/issue-agent-dri`(`/dev` 밖)에 두 장치를 submount로 받고, `dockerd-start`가 cgroup 절차 뒤 `native-dri-prepare`를 실행한다. 이 helper는 raw 디렉터리에 `card0`·`renderD128` character device만 있는지 확인하고, `/dev` propagation을 private으로 바꾼 뒤 자기 mount namespace의 `/dev/dri`에 `--rbind`로 투영한다. host 경로와 device node는 만들거나 지우거나 바꾸지 않으며, 예상과 다른 상태면 daemon을 띄우지 않는다. 렌더링은 지금처럼 Mesa CPU rasterizer(llvmpipe)가 맡으므로 host 커널 module, 배포판 패키지, Nix 변경이 필요 없다.

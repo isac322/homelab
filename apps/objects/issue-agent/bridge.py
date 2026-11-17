@@ -81,9 +81,14 @@ PHASES = ("none", "triaged", "implementing", "reviewing")
 # Intake trust: repository collaborators with write access are trusted (GitHub permission API, cached).
 PERMISSION_TTL = 600.0  # seconds a cached verdict (positive or negative) is reused
 TRUSTED_PERMISSIONS = ("admin", "write")  # GitHub reports maintain as write and triage as read
+# Automation PRs that must continue to receive review after the actor gate. Bot-authored issues and
+# comments remain ignored; these names are only accepted as pull-request authors.
+KNOWN_TRIGGER_BOTS = frozenset({
+    "dependabot[bot]", "github-actions[bot]", "bulgasaribot[bot]", "haechibot[bot]",
+})
 UNTRUSTED_ISSUE_LIMIT = 10  # untrusted issues accepted per rolling window, across every repository
 UNTRUSTED_ISSUE_WINDOW = 3600.0
-OPEN_DISCUSSION_LABEL = "agent:open-discussion"  # any human comment on such an issue queues, no mention needed
+OPEN_DISCUSSION_LABEL = "agent:open-discussion"  # trusted human comments may omit a mention on these issues
 
 NEEDS_ATTENTION = "agent:needs-attention"
 # name -> (description, color, exclusive group); only these labels may be added or removed.
@@ -1447,6 +1452,13 @@ class Collaborators:
             )
         return verdict
 
+def trigger_allowed(repo: str, login: str, trusted: Callable[[str, str], bool], *,
+                    allow_known_bots: bool = False) -> bool:
+    """Allow only repository collaborators/owners, plus explicitly required automation PR authors."""
+    if allow_known_bots and login.casefold() in KNOWN_TRIGGER_BOTS:
+        return True
+    return trusted(repo, login)
+
 
 def mentions(body: str, bot_login: str | None) -> bool:
     """``body`` mentions ``@<app slug>`` for the bot login ``<app slug>[bot]`` (not as part of a longer name)."""
@@ -1719,6 +1731,12 @@ def classify_event(registry: Registry, event: str, delivery: str, payload: Any, 
         pr = payload.get("pull_request")
         if not isinstance(pr, dict):
             return "malformed"
+        pr_author = pr.get("user")
+        pr_author_login = pr_author.get("login") if isinstance(pr_author, dict) else None
+        if not isinstance(pr_author_login, str):
+            return "malformed"
+        if not trigger_allowed(cfg.name, pr_author_login, trusted, allow_known_bots=True):
+            return "actor_not_allowed"
         if action in ("opened", "reopened", "ready_for_review"):
             if pr.get("draft"):
                 return "draft_ignored"
@@ -1745,17 +1763,9 @@ def classify_event(registry: Registry, event: str, delivery: str, payload: Any, 
             if isinstance(rbody, str) and rbody.strip() and review_id is not None \
                     and not is_agent_text(rbody) and sender.get("type") == "User" \
                     and not login.endswith("[bot]") and not is_self and mentions(rbody, bot_login):
-                pr_author = (pr.get("user") or {}).get("login") if isinstance(pr.get("user"), dict) else None
-                is_author = isinstance(pr_author, str) and login.casefold() == pr_author.casefold()
-                is_trusted = not is_author and trusted(cfg.name, login)
-                can_merge = (action in ("created", "submitted")) and (
-                    is_trusted or (
-                        is_author
-                        and (is_merge_requested(rbody, bot_login) or bool(DO_NOT_MERGE_RE.search(rbody)))
-                        and trusted(cfg.name, login)
-                    )
-                )
-                if not is_author and not is_trusted:
+                is_trusted = trigger_allowed(cfg.name, login, trusted)
+                can_merge = (action in ("created", "submitted")) and is_trusted
+                if not is_trusted:
                     return "actor_not_allowed"
                 signal = _pr_signal(cfg, delivery, login, default_branch, pr, kind="pr_signal", body=rbody)
                 if isinstance(signal, str):
@@ -1850,13 +1860,16 @@ def classify_event(registry: Registry, event: str, delivery: str, payload: Any, 
                 return "actor_not_allowed"
             if login.casefold() == cfg.name.split("/", 1)[0].casefold():
                 return "owner_issue_ignored"
+            is_trusted = trigger_allowed(cfg.name, login, trusted)
+            if not is_trusted:
+                return "actor_not_allowed"
             return {**base, "semantic_key": f"{cfg.name}#issue:{number}:opened", "kind": "issue_opened",
-                    "comment_id": None, "body": body or "", "trusted": trusted(cfg.name, login)}
+                    "comment_id": None, "body": body or "", "trusted": is_trusted}
         changes = payload.get("changes")
         if not isinstance(changes, dict) or not ("body" in changes or "title" in changes):
             return "edit_ignored"
-        is_trusted = not open_discussion and trusted(cfg.name, login)
-        if not open_discussion and not is_trusted:
+        is_trusted = trigger_allowed(cfg.name, login, trusted)
+        if not is_trusted:
             return "actor_not_allowed"
         return {**base, "semantic_key": f"{cfg.name}#issue:{number}:edited:{delivery}", "kind": "issue_edited",
                 "comment_id": None, "body": body or "", "trusted": is_trusted}
@@ -1885,16 +1898,9 @@ def classify_event(registry: Registry, event: str, delivery: str, payload: Any, 
                 repair_mention = True
             if not review_mention and not repair_mention:
                 return "pull_request_comment_ignored"
-            is_author = isinstance(issue_author_login, str) and login.casefold() == issue_author_login.casefold()
-            is_trusted = not is_author and trusted(cfg.name, login)
-            can_merge = (action == "created") and (
-                is_trusted or (
-                    is_author
-                    and (is_merge_requested(body, bot_login) or bool(DO_NOT_MERGE_RE.search(body)))
-                    and trusted(cfg.name, login)
-                )
-            )
-            if not is_author and not is_trusted:
+            is_trusted = trigger_allowed(cfg.name, login, trusted)
+            can_merge = (action == "created") and is_trusted
+            if not is_trusted:
                 return "actor_not_allowed"
             if repair_mention:
                 return {**base, "kind": "pr_signal", "pr_number": number, "comment_id": comment_id,
@@ -1902,29 +1908,17 @@ def classify_event(registry: Registry, event: str, delivery: str, payload: Any, 
                                                   allow_merge_control=can_merge, bot_login=bot_login)}
             return {**base, "semantic_key": f"{cfg.name}#comment:{comment_id}", "kind": "pr_review",
                     "pr_number": number, "comment_id": comment_id, "body": body, "trusted": is_trusted}
-        # An outside human's comment on a closed issue asks the agent whether the issue's own request is still
-        # unmet (mode `reopen_check`). The owner and trusted collaborators reopen issues themselves, so their
-        # comments keep the open-issue rules below.
+        # Closed issues follow the same trust gate; no external reopen workflow starts agent work.
         if issue.get("state") == "closed":
             owner = cfg.project_owner or cfg.name.split("/", 1)[0]
             if login.casefold() != owner.casefold() and not trusted(cfg.name, login):
-                return {**base, "semantic_key": f"{cfg.name}#comment:{comment_id}", "kind": "closed_issue_comment",
-                        "comment_id": comment_id, "body": body, "trusted": False}
-        # Open-discussion issues take any human's input; elsewhere a trusted collaborator must mention the bot.
-        if open_discussion:
-            # The verdict only informs the agent (approval vs. information); the comment is queued either way.
-            try:
-                is_trusted = trusted(cfg.name, login)
-            except TrustUnavailable as exc:
-                LOG.warning("delivery %s: open-discussion comment trust unavailable, treating as untrusted: %s",
-                            delivery, exc)
-                is_trusted = False
-        else:
-            if not mentions(body, bot_login):
-                return "issue_comment_ignored"
-            is_trusted = trusted(cfg.name, login)
-            if not is_trusted:
                 return "actor_not_allowed"
+        # Trusted comments may omit a mention on an explicitly open discussion; outsiders never start work.
+        if not open_discussion and not mentions(body, bot_login):
+            return "issue_comment_ignored"
+        is_trusted = trigger_allowed(cfg.name, login, trusted)
+        if not is_trusted:
+            return "actor_not_allowed"
         return {**base, "semantic_key": f"{cfg.name}#comment:{comment_id}", "kind": "issue_comment",
                 "comment_id": comment_id, "body": body, "trusted": is_trusted}
 
@@ -2595,6 +2589,7 @@ class Bridge:
         self.store = store
         self.hapi = hapi
         self.github = github
+        self.collaborators = Collaborators(store, github)
         # Reviews go through a separate App when configured, so the issue App's own PRs get real verdicts.
         self.review_github = review_github
         self.publisher = publisher
@@ -6258,8 +6253,18 @@ class Bridge:
             if queued >= budget:
                 break
             number = _positive_int(pr.get("number"))
+            author = pr.get("user")
+            author_login = author.get("login") if isinstance(author, dict) else None
+            try:
+                allowed = isinstance(author_login, str) and trigger_allowed(
+                    repo, author_login, self.collaborators.trusted, allow_known_bots=True)
+            except TrustUnavailable as exc:
+                LOG.warning("review sweep of %s#%s pending: %s", repo, number, exc)
+                continue
+            if number is None or not allowed:
+                continue
             head = pr["head"].get("sha") if isinstance(pr.get("head"), dict) else None
-            if number is None or not isinstance(head, str) or not _SHA_RE.fullmatch(head) \
+            if not isinstance(head, str) or not _SHA_RE.fullmatch(head) \
                     or pr.get("state") != "open" or pr.get("draft"):
                 continue
             # The head commit cannot be newer than the pull request's last update.
@@ -6269,7 +6274,7 @@ class Bridge:
             try:
                 if self._sweep_queue(cfg, number, head, cutoff):
                     queued += 1
-            except (OpError, TransportError) as exc:
+            except (OpError, TransportError, TrustUnavailable) as exc:
                 LOG.warning("review sweep of %s#%s pending: %s", repo, number, exc)
         return queued
 

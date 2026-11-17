@@ -12,9 +12,10 @@ resources:
   - deployment-n8n.yaml
   - deployment-bridge.yaml
   - service.yaml
+  - network-policy.yaml
   - httproute-hub.yaml
   - httproute-n8n.yaml
-  # GitHub webhook intake disabled: re-add httproute-webhook.yaml to re-enable bot triggers.
+  - httproute-webhook.yaml
 configMapGenerator:
   - name: issue-agent-bridge-code
     files:

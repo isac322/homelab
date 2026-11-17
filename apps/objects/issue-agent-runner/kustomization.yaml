@@ -13,6 +13,7 @@ resources:
   - external-secret-github.yaml
   - deployment-runner.yaml
   - service.yaml
+  - network-policy.yaml
 # Hashed names roll the runner pod whenever either file changes.
 configMapGenerator:
   - name: issue-agent-model-proxy-config

@@ -1067,16 +1067,17 @@ class IntakeTests(BridgeTestCase):
         self.assertEqual((result.status, result.outcome), (401, "unauthorized"))
         self.assertEqual(self.events(), [])
 
-    def test_any_installed_repo_and_any_human_may_open_issues_but_bots_and_agent_comments_do_not_queue(self) -> None:
+    def test_only_trusted_humans_and_required_bots_start_work(self) -> None:
         self.assertEqual(self.deliver(issue_payload(sender_type="Bot")).outcome, "bot_sender")
         self.assertEqual(self.events(), [])
         self.assertEqual(self.deliver(issue_payload(repo="someone/else"), delivery="d0").outcome, "queued")
         self.assertEqual(self.deliver(issue_payload(), delivery="d1").outcome, "queued")
-        self.assertEqual(self.deliver(issue_payload(8, login="stranger"), delivery="d2").outcome, "queued")
+        self.assertEqual(self.deliver(issue_payload(8, login="stranger"), delivery="d2").outcome,
+                         "actor_not_allowed")
         marked = comment_payload(body="<!-- issue-agent:d1:report -->\n@bulgasaribot done")
         self.assertEqual(self.deliver(marked, event="issue_comment", delivery="d3").outcome, "bot_sender")
-        self.assertEqual(self.events(), [("d0", "accepted"), ("d1", "accepted"), ("d2", "accepted")])
-        self.assertEqual([self.store.event(d)["trusted"] for d in ("d1", "d2")], [1, 0])
+        self.assertEqual(self.events(), [("d0", "accepted"), ("d1", "accepted")])
+        self.assertEqual(self.store.event("d1")["trusted"], 1)
 
     def test_repository_overrides_replace_defaults(self) -> None:
         self.write_registry({"defaults": {"agent": "codex", "model": "gpt-5"},
@@ -1128,6 +1129,29 @@ class IntakeTests(BridgeTestCase):
         self.assertEqual(self.dispatcher.tick(), "dispatched")
         begun = self.op("begin", "c2", attempt=1)
         self.assertEqual((begun["status"], begun["mode_hint"]), ("started", "triage"))
+
+    def test_outsider_issue_is_ignored(self) -> None:
+        result = self.deliver(issue_payload(90, login="stranger"), delivery="outsider-issue")
+        self.assertEqual((result.status, result.outcome), (202, "actor_not_allowed"))
+        self.assertEqual(self.events(), [])
+
+    def test_outsider_pr_is_ignored(self) -> None:
+        result = self.deliver(pr_payload(90, author="stranger", sender="stranger"),
+                              event="pull_request", delivery="outsider-pr")
+        self.assertEqual((result.status, result.outcome), (202, "actor_not_allowed"))
+        self.assertEqual(self.events(), [])
+
+    def test_outsider_comment_on_owner_pr_is_ignored(self) -> None:
+        result = self.deliver(comment_payload(12, 901, body="@haechibot review", login="stranger", on_pr=True),
+                              event="issue_comment", delivery="outsider-comment")
+        self.assertEqual((result.status, result.outcome), (202, "pull_request_comment_ignored"))
+        self.assertEqual(self.events(), [])
+
+    def test_collaborator_pr_is_accepted(self) -> None:
+        result = self.deliver(pr_payload(91, author="maintainer", sender="maintainer"),
+                              event="pull_request", delivery="collaborator-pr")
+        self.assertEqual((result.status, result.outcome), (202, "queued"))
+        self.assertEqual(self.store.event("collaborator-pr")["kind"], "pr_review")
 
     def test_issue_comments_need_a_trusted_mention_unless_the_issue_is_open_for_discussion(self) -> None:
         cases = [
@@ -1196,36 +1220,19 @@ class IntakeTests(BridgeTestCase):
         self.fake.permission_fail = False
         self.assertEqual(self.deliver(comment_payload(), event="issue_comment", delivery="x1").outcome, "queued")
 
-    def test_untrusted_issues_are_rate_limited_globally_and_trusted_ones_never_count(self) -> None:
-        limit = bridge.UNTRUSTED_ISSUE_LIMIT
-        for n in range(1, limit):
-            repo = REPO if n % 2 else OTHER
-            self.assertEqual(self.deliver(issue_payload(n, login="stranger", repo=repo), delivery=f"d{n}").outcome,
-                             "queued")
-        self.assertEqual(self.deliver(issue_payload(100), delivery="t1").outcome, "queued")
-        self.assertEqual(self.deliver(issue_payload(limit, login="stranger"), delivery=f"d{limit}").outcome, "queued")
-        limited = self.deliver(issue_payload(50, login="stranger", repo=OTHER), delivery="d50")
-        self.assertEqual((limited.status, limited.outcome), (202, "rate_limited"))
-        self.assertIsNone(self.store.event("d50"))
-        self.assertEqual(self.deliver(issue_payload(101), delivery="t2").outcome, "queued")
-        self.store.update_event("d1", received_at=time.time() - bridge.UNTRUSTED_ISSUE_WINDOW - 1)
-        self.assertEqual(self.deliver(issue_payload(50, login="stranger", repo=OTHER), delivery="d50").outcome,
-                         "queued")
-        self.assertEqual(self.deliver(issue_payload(51, login="stranger"), delivery="d51").outcome, "rate_limited")
+    def test_outsider_issues_are_rejected_before_rate_limiting(self) -> None:
+        for n in range(1, bridge.UNTRUSTED_ISSUE_LIMIT + 2):
+            result = self.deliver(issue_payload(n, login="stranger"), delivery=f"d{n}")
+            self.assertEqual((result.status, result.outcome), (202, "actor_not_allowed"))
+        self.assertEqual(self.events(), [])
 
-    def test_untrusted_comment_on_a_closed_issue_queues_a_reopen_check_with_or_without_mention(self) -> None:
-        cases = [
-            ("r1", comment_payload(7, 501, body="still broken on 0.12", login="stranger", state="closed")),
-            ("r2", comment_payload(7, 502, body="@bulgasaribot still broken", login="stranger", state="closed")),
-            ("r3", comment_payload(7, 503, body="still broken", login="stranger", state="closed",
-                                   labels=(bridge.OPEN_DISCUSSION_LABEL,))),
-        ]
-        for delivery, payload in cases:
-            self.assertEqual(self.deliver(payload, event="issue_comment", delivery=delivery).outcome, "queued")
-        rows = [(r["kind"], r["comment_id"], r["trusted"], r["semantic_key"])
-                for r in self.store.query("SELECT * FROM events ORDER BY seq")]
-        self.assertEqual(rows, [("closed_issue_comment", cid, 0, f"{REPO}#comment:{cid}") for cid in (501, 502, 503)])
-        self.assertEqual(self.store.issue(REPO, 7)["subject"], "issue")
+    def test_outsider_comment_on_a_closed_issue_is_rejected(self) -> None:
+        for n in range(3):
+            result = self.deliver(comment_payload(7, 501 + n, body="still broken", login="stranger",
+                                                  state="closed"),
+                                  event="issue_comment", delivery=f"r{n}")
+            self.assertEqual((result.status, result.outcome), (202, "actor_not_allowed"))
+        self.assertEqual(self.events(), [])
 
     def test_owner_and_collaborator_comments_on_a_closed_issue_keep_the_open_issue_rules(self) -> None:
         cases = [
@@ -1247,8 +1254,9 @@ class IntakeTests(BridgeTestCase):
         plain = comment_payload(7, 1, body="works for me now", login="projlead", state="closed")
         self.assertEqual(self.deliver(plain, event="issue_comment", delivery="c1").outcome, "issue_comment_ignored")
         outsider = comment_payload(7, 2, body="not for me", login="stranger", state="closed")
-        self.assertEqual(self.deliver(outsider, event="issue_comment", delivery="c2").outcome, "queued")
-        self.assertEqual(self.store.event("c2")["kind"], "closed_issue_comment")
+        self.assertEqual(self.deliver(outsider, event="issue_comment", delivery="c2").outcome,
+                         "actor_not_allowed")
+        self.assertIsNone(self.store.event("c2"))
 
     def test_open_issue_and_pull_request_comments_are_unchanged_by_the_closed_issue_rule(self) -> None:
         open_plain = comment_payload(7, 1, body="still broken", login="stranger")
@@ -1268,28 +1276,16 @@ class IntakeTests(BridgeTestCase):
         self.assertEqual((result.status, result.outcome), (503, "permission_unavailable"))
         self.assertEqual(self.events(), [])
         self.fake.permission_fail = False
-        self.assertEqual(self.deliver(payload, event="issue_comment", delivery="c1").outcome, "queued")
+        self.assertEqual(self.deliver(payload, event="issue_comment", delivery="c1").outcome,
+                         "actor_not_allowed")
 
-    def test_untrusted_closed_issue_comments_have_their_own_global_rate_limit(self) -> None:
-        limit = bridge.UNTRUSTED_ISSUE_LIMIT
-        for n in range(1, limit + 1):
-            self.assertEqual(self.deliver(issue_payload(n, login="stranger"), delivery=f"i{n}").outcome, "queued")
-        self.assertEqual(self.deliver(issue_payload(99, login="stranger"), delivery="i99").outcome, "rate_limited")
-
-        def closed(cid: int, repo: str = REPO) -> dict:
-            return comment_payload(7, cid, body="still broken", login="stranger", repo=repo, state="closed")
-
-        for n in range(1, limit + 1):
-            repo = REPO if n % 2 else OTHER
-            self.assertEqual(self.deliver(closed(500 + n, repo), event="issue_comment", delivery=f"c{n}").outcome,
-                             "queued")
-        limited = self.deliver(closed(600), event="issue_comment", delivery="c-over")
-        self.assertEqual((limited.status, limited.outcome), (202, "rate_limited"))
-        self.assertIsNone(self.store.event("c-over"))
-        again = self.deliver(closed(501), event="issue_comment", delivery="c1")
-        self.assertEqual((again.status, again.outcome), (200, "duplicate"))
-        self.store.update_event("c1", received_at=time.time() - bridge.UNTRUSTED_ISSUE_WINDOW - 1)
-        self.assertEqual(self.deliver(closed(600), event="issue_comment", delivery="c-over").outcome, "queued")
+    def test_outsider_closed_issue_comments_do_not_start_reopen_work(self) -> None:
+        for n in range(1, bridge.UNTRUSTED_ISSUE_LIMIT + 2):
+            result = self.deliver(comment_payload(7, 500 + n, body="still broken", login="stranger",
+                                                  state="closed"),
+                                  event="issue_comment", delivery=f"c{n}")
+            self.assertEqual((result.status, result.outcome), (202, "actor_not_allowed"))
+        self.assertEqual(self.events(), [])
 
     def test_issue_edits_queue_only_under_an_implementation(self) -> None:
         self.started()
@@ -1321,13 +1317,14 @@ class IntakeTests(BridgeTestCase):
                                                     (f"{REPO}#pr:13:review:{SHA_A}", "pr_review", SHA_A)])
         self.assertEqual(self.store.issue(REPO, 12)["subject"], "pull_request")
 
-    def test_pull_request_events_queue_review_for_any_author_and_sender(self) -> None:
+    def test_pull_request_events_require_trusted_author_or_required_bot(self) -> None:
         external = pr_payload(12, author="outside-dev", sender="outside-dev")
-        self.assertEqual(self.deliver(external, event="pull_request", delivery="p1").outcome, "queued")
+        self.assertEqual(self.deliver(external, event="pull_request", delivery="p1").outcome,
+                         "actor_not_allowed")
         dependabot = pr_payload(13, author="dependabot[bot]", sender="dependabot[bot]", sender_type="Bot")
         self.assertEqual(self.deliver(dependabot, event="pull_request", delivery="p2").outcome, "queued")
         self.assertEqual([row["kind"] for row in self.store.query("SELECT kind FROM events ORDER BY seq")],
-                         ["pr_review", "pr_review"])
+                         ["pr_review"])
 
     def test_pull_request_events_that_must_not_queue(self) -> None:
         cases = [
@@ -1346,18 +1343,16 @@ class IntakeTests(BridgeTestCase):
         stranger = comment_payload(12, 204, body="@bulgasaribot review", on_pr=True, login="stranger")
         self.assertEqual(self.deliver(stranger, event="issue_comment", delivery="c1").outcome, "actor_not_allowed")
         command = comment_payload(12, 205, body="Fixed the tests.\n\n@BulgasariBot", on_pr=True,
-                                  issue_user="outside-dev")
-        self.assertEqual(self.deliver(command, event="issue_comment", delivery="c2").outcome, "queued")
-        row = self.store.event("c2")
-        self.assertEqual((row["kind"], row["semantic_key"], row["trusted"]), ("pr_review", f"{REPO}#comment:205", 1))
+                                  login="outside-dev", issue_user="outside-dev")
+        self.assertEqual(self.deliver(command, event="issue_comment", delivery="c2").outcome, "actor_not_allowed")
+        self.assertIsNone(self.store.event("c2"))
 
-    def test_pr_author_may_request_a_review_without_being_a_collaborator(self) -> None:
-        # "outside-dev" opened the PR but has only read access: the author may still re-request a review.
+    def test_pr_author_may_not_request_a_review_without_collaborator_access(self) -> None:
         by_author = comment_payload(12, 210, body="@bulgasaribot review", on_pr=True,
                                     login="outside-dev", issue_user="outside-dev")
-        self.assertEqual(self.deliver(by_author, event="issue_comment", delivery="c1").outcome, "queued")
-        self.assertEqual(self.store.event("c1")["kind"], "pr_review")
-        self.assertEqual(self.fake.permission_calls, 0)  # authorship alone decides; no permission lookup
+        self.assertEqual(self.deliver(by_author, event="issue_comment", delivery="c1").outcome,
+                         "actor_not_allowed")
+        self.assertIsNone(self.store.event("c1"))
         # On plain issues a mention needs trust, even when the commenter wrote the issue.
         issue_comment = comment_payload(7, 211, body="@bulgasaribot more info", login="outside-dev",
                                         issue_user="outside-dev")
@@ -1380,7 +1375,8 @@ class IntakeTests(BridgeTestCase):
                          "reconcile_pending")
         by_author = comment_payload(12, 303, body="@haechibot review", on_pr=True,
                                     login="outside-dev", issue_user="outside-dev")
-        self.assertEqual(self.deliver(by_author, event="issue_comment", delivery="c4").outcome, "queued")
+        self.assertEqual(self.deliver(by_author, event="issue_comment", delivery="c4").outcome,
+                         "actor_not_allowed")
         by_reviewer = comment_payload(12, 310, body="@haechibot review", on_pr=True, login=REVIEWER)
         self.assertEqual(self.deliver(by_reviewer, event="issue_comment", delivery="c9").outcome, "bot_sender")
         opened = pr_payload(14, author=REVIEWER, sender=REVIEWER, sender_type="Bot")
@@ -3203,6 +3199,11 @@ class ReviewSweepTests(BridgeTestCase):
     def reviews(self) -> list[tuple[str, int, str, str]]:
         return [(r["repo"], r["issue_number"], r["head_sha"], r["state"])
                 for r in self.store.query("SELECT * FROM events WHERE kind = 'pr_review' ORDER BY seq")]
+
+    def test_outsider_pull_request_is_skipped_by_review_sweep(self) -> None:
+        self.fake.add_pr(90, author="stranger", ref="external")
+        self.assertEqual(self.sweep(), 0)
+        self.assertEqual(self.reviews(), [])
 
     def test_a_missed_head_is_reviewed_once_whatever_the_review_outcome(self) -> None:
         # cc-lb#902: the bridge was down when the pull request was opened, so its head was never reviewed.
