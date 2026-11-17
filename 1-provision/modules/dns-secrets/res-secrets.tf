@@ -158,6 +158,7 @@ data "aws_iam_policy_document" "secret_read" {
       ],
       var.openai_api_key == null ? [] : [aws_ssm_parameter.hindsight_openai_api_key[0].arn],
       var.gcp_vertex_ai_sa_key == null ? [] : [aws_ssm_parameter.hindsight_gcp_sa_key[0].arn],
+      [aws_ssm_parameter.hindsight_api_key.arn],
       var.openai_proxy == null ? [] : [aws_ssm_parameter.hermes_openai_proxy[0].arn],
       var.gemini_api_key == null ? [] : [aws_ssm_parameter.hermes_gemini_api_key[0].arn],
       var.grafana_telegram_chat_id == null ? [] : [aws_ssm_parameter.grafana_telegram_chat_id[0].arn],
