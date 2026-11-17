@@ -1,0 +1,55 @@
+# Request audit log for the internal Gateways. The Cilium chart's default
+# GatewayClass "cilium" cannot carry parametersRef, and Cilium rejects
+# Gateway.spec.infrastructure.parametersRef, so Gateways that must be audited
+# use this class instead. A Gateway left on "cilium" emits no access log.
+#
+# Envoy writes one JSON line per request to the cilium-envoy container stdout
+# (namespace kube-system); Alloy ships it to Loki like any other pod log.
+apiVersion: cilium.io/v2alpha1
+kind: CiliumGatewayClassConfig
+metadata:
+  name: access-log
+  namespace: ingress-ctrl
+spec:
+  description: JSON request audit log without credentials
+  telemetry:
+    accessLogs:
+      - format: JSON
+        targets: [HTTP]
+        # Allowlist only. Never add request headers that can carry credentials
+        # (authorization, cookie, x-api-key, ...) or anything derived from the
+        # query string or body.
+        json:
+          start_time: "%START_TIME%"
+          gateway: "%CILIUM_GATEWAY_NAMESPACE%/%CILIUM_GATEWAY_NAME%"
+          # Connection peer. The Gateways trust no X-Forwarded-For hops, so a
+          # client cannot forge this.
+          client_ip: "%DOWNSTREAM_REMOTE_ADDRESS_WITHOUT_PORT%"
+          method: "%REQUEST_HEADER(:METHOD)%"
+          authority: "%REQUEST_HEADER(:AUTHORITY):255%"
+          # NQ drops the query string: presigned S3 signatures, api_key and
+          # token parameters travel there. PATH reads :path rather than the
+          # client-settable x-envoy-original-path header; no HTTPRoute rewrites
+          # the path, so this is the path the client sent.
+          path: "%PATH(NQ:PATH):1024%"
+          protocol: "%PROTOCOL%"
+          response_code: "%RESPONSE_CODE%"
+          response_flags: "%RESPONSE_FLAGS%"
+          bytes_received: "%BYTES_RECEIVED%"
+          bytes_sent: "%BYTES_SENT%"
+          duration: "%DURATION%"
+          user_agent: "%REQUEST_HEADER(USER-AGENT):256%"
+          upstream_host: "%UPSTREAM_HOST%"
+---
+apiVersion: gateway.networking.k8s.io/v1
+kind: GatewayClass
+metadata:
+  name: cilium-access-log
+spec:
+  controllerName: io.cilium/gateway-controller
+  description: Cilium Gateways with the request audit log
+  parametersRef:
+    group: cilium.io
+    kind: CiliumGatewayClassConfig
+    name: access-log
+    namespace: ingress-ctrl
