@@ -64,6 +64,7 @@ configs:
       hs.message = ""
       return hs
     url: https://argocd.bhyoo.com
+    admin.enabled: "false"
     dex.config: |
       connectors:
         - type: github
