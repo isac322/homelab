@@ -12,27 +12,27 @@ controllers:
           tag: v3.3.6@sha256:e1981983b1c13f6024b57d72e7ecae3342eed1581201ab09fb248932d86c593a
         env:
           REDIS_HOSTNAME: '{{ printf "%s-valkey" .Release.Name }}'
-          # Add the env vars to connect to your database here.
+          # CNPG's dedicated database owner; extension lifecycle is operator-owned.
           DB_HOSTNAME:
             valueFrom:
               secretKeyRef:
                 key: host
-                name: cnpg-immich-superuser
+                name: cnpg-immich-app
           DB_PORT:
             valueFrom:
               secretKeyRef:
                 key: port
-                name: cnpg-immich-superuser
+                name: cnpg-immich-app
           DB_USERNAME:
             valueFrom:
               secretKeyRef:
                 key: username
-                name: cnpg-immich-superuser
+                name: cnpg-immich-app
           DB_PASSWORD:
             valueFrom:
               secretKeyRef:
                 key: password
-                name: cnpg-immich-superuser
+                name: cnpg-immich-app
           DB_DATABASE_NAME: app
           TZ: Asia/Seoul
 

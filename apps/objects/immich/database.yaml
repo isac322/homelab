@@ -1,0 +1,20 @@
+apiVersion: postgresql.cnpg.io/v1
+kind: Database
+metadata:
+  name: immich-app
+spec:
+  name: app
+  owner: app
+  cluster:
+    name: cnpg-immich
+  databaseReclaimPolicy: retain
+  # Non-trusted extensions are installed/upgraded by CNPG as postgres, never by
+  # the application role. Keep these aligned with the pinned Immich release.
+  extensions:
+    - name: cube
+    - name: pg_trgm
+    - name: unaccent
+    - name: uuid-ossp
+    - name: vector
+    - name: vchord
+    - name: earthdistance
