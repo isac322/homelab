@@ -63,7 +63,21 @@ configs:
       hs.status = "Healthy"
       hs.message = ""
       return hs
-
+    url: https://argocd.bhyoo.com
+    dex.config: |
+      connectors:
+        - type: github
+          id: github
+          name: GitHub
+          config:
+            clientID: Ov23liD5XMPXUJDIp1gc
+            clientSecret: $dex.github.clientSecret
+            useLoginAsID: true
+  rbac:
+    policy.default: ""
+    policy.csv: |
+      g, isac322, role:admin
+    scopes: '[groups]'
   params:
     server.insecure: true
     server.enable.gzip: true
@@ -80,9 +94,17 @@ controller:
     enabled: true
     serviceMonitor:
       enabled: true
-
+  
 dex:
-  enabled: false
+  # Tier 1; initial sizing approved for rollout. Re-size after 14 days of Thanos history.
+  enabled: true
+  resources:
+    limits:
+      memory: 128Mi
+    requests:
+      cpu: 10m
+      memory: 32Mi
+
 
 redis:
   image:
