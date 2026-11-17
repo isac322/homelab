@@ -76,7 +76,8 @@ configs:
   rbac:
     policy.default: ""
     policy.csv: |
-      g, isac322, role:admin
+      # Dex maps this verified isac322 GitHub account to its email subject.
+      g, bhyoo@bhyoo.com, role:admin
     scopes: '[groups]'
   params:
     server.insecure: true
