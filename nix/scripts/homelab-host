@@ -413,8 +413,9 @@ if test "$ZRAM" = true; then
 else
   systemctl stop dev-zram0.swap systemd-zram-setup@zram0.service >/dev/null 2>&1 || true
 fi
-systemctl restart systemd-networkd.service
+# Load LAN address-retention policy before restarting the credential loader.
 networkctl reload
+systemctl restart systemd-networkd.service
 # Do not force-reconfigure the LAN: it removes the address temporarily and
 # invalidates Cilium's gateway-dependent pod routes. Restart/reload already
 # applies the desired .network file without dropping matching configuration.

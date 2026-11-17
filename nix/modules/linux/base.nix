@@ -179,6 +179,7 @@ in
           [Network]
           Address=${hostConfig.lanAddress}/24
           Gateway=${hostConfig.gatewayAddress}
+          ${lib.optionalString k8sMember "KeepConfiguration=static"}
           DNS=1.1.1.1#cloudflare-dns.com
           DNS=1.0.0.1#cloudflare-dns.com
           DNSSEC=yes

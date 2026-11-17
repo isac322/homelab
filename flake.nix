@@ -276,6 +276,11 @@
                     && lib.hasInfix "-s fe80::/10 -p ipv6-icmp --icmpv6-type 130 -j ACCEPT" rules
                   )
                 )
+                && (
+                  linuxHosts.${hostName}.k3sRole == null
+                  || lib.hasInfix "KeepConfiguration=static"
+                    cfg.environment.etc."systemd/network/10-homelab-lan.network".text
+                )
                 && (if server then
                   audit != null
                   && lib.hasInfix "- level: Metadata" audit.text

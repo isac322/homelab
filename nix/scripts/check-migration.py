@@ -1927,6 +1927,8 @@ def check_cilium_lan_route_preservation() -> None:
     native = match.group(1)
     if "networkctl reload" not in native:
         raise SystemExit("nix/scripts/homelab-host: networkd configuration reload missing")
+    if native.index("networkctl reload") > native.index("systemctl restart systemd-networkd.service"):
+        raise SystemExit("networkd address-retention policy must load before its restart")
     if 'networkctl reconfigure "$DEFAULT_INTERFACE"' in native or "STATIC_LAN" in native:
         raise SystemExit("nix/scripts/homelab-host: forced LAN reconfigure invalidates Cilium pod routes")
 
