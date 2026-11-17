@@ -78,7 +78,7 @@ configs:
     policy.csv: |
       # Dex maps this verified isac322 GitHub account to its email subject.
       g, bhyoo@bhyoo.com, role:admin
-    scopes: '[groups]'
+    scopes: '[groups, email]'
   params:
     server.insecure: true
     server.enable.gzip: true
