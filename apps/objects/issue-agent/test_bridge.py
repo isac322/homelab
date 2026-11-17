@@ -1153,7 +1153,7 @@ class IntakeTests(BridgeTestCase):
         self.assertEqual((result.status, result.outcome), (202, "queued"))
         self.assertEqual(self.store.event("collaborator-pr")["kind"], "pr_review")
 
-    def test_issue_comments_need_a_trusted_mention_unless_the_issue_is_open_for_discussion(self) -> None:
+    def test_issue_comments_require_trusted_authors_even_on_open_discussion(self) -> None:
         cases = [
             (comment_payload(7, 1, body="also X"), "issue_comment_ignored"),
             (comment_payload(7, 2, body="ping @bulgasaribotx and mail@bulgasaribot"), "issue_comment_ignored"),
@@ -1165,33 +1165,32 @@ class IntakeTests(BridgeTestCase):
         self.assertEqual(self.store.event("c3")["trusted"], 1)
         open_labels = ("bug", bridge.OPEN_DISCUSSION_LABEL)
         plain = comment_payload(8, 5, body="here is my log", login="newcomer", labels=open_labels)
-        self.assertEqual(self.deliver(plain, event="issue_comment", delivery="c5").outcome, "queued")
-        self.assertEqual((self.store.event("c5")["kind"], self.store.event("c5")["trusted"]), ("issue_comment", 0))
+        self.assertEqual(self.deliver(plain, event="issue_comment", delivery="c5").outcome, "actor_not_allowed")
+        self.assertIsNone(self.store.event("c5"))
         approval = comment_payload(8, 7, body="Go with option B", login="maintainer", labels=open_labels)
         self.assertEqual(self.deliver(approval, event="issue_comment", delivery="c7").outcome, "queued")
         self.assertEqual(self.store.event("c7")["trusted"], 1)
         bot = comment_payload(8, 6, login="helper[bot]", sender_type="Bot", labels=open_labels)
         self.assertEqual(self.deliver(bot, event="issue_comment", delivery="c6").outcome, "bot_sender")
 
-    def test_open_discussion_comment_is_queued_untrusted_when_the_permission_lookup_fails(self) -> None:
+    def test_open_discussion_permission_failure_rejects_the_comment(self) -> None:
         self.fake.permission_fail = True
         open_labels = ("bug", bridge.OPEN_DISCUSSION_LABEL)
         approval = comment_payload(8, 5, body="Go with option B", login="maintainer", labels=open_labels)
         result = self.deliver(approval, event="issue_comment", delivery="c5")
-        self.assertEqual((result.status, result.outcome), (202, "queued"))
-        self.assertEqual(self.store.event("c5")["trusted"], 0)
-        self.assertEqual(self.store.query("SELECT * FROM collaborators"), [])  # the failure is not cached
+        self.assertEqual((result.status, result.outcome), (503, "permission_unavailable"))
+        self.assertEqual(self.store.query("SELECT * FROM collaborators"), [])
 
-    def test_begin_exposes_whether_the_actor_is_trusted(self) -> None:
+    def test_begin_only_exposes_trusted_events(self) -> None:
         open_labels = ("bug", bridge.OPEN_DISCUSSION_LABEL)
-        self.deliver(comment_payload(8, 5, login="newcomer", labels=open_labels), event="issue_comment", delivery="c5")
-        self.deliver(comment_payload(9, 6, login="maintainer", labels=open_labels), event="issue_comment",
-                     delivery="c6")
+        rejected = self.deliver(comment_payload(8, 5, login="newcomer", labels=open_labels),
+                                event="issue_comment", delivery="c5")
+        self.assertEqual(rejected.outcome, "actor_not_allowed")
+        self.deliver(comment_payload(9, 6, login="maintainer", labels=open_labels),
+                     event="issue_comment", delivery="c6")
         self.assertEqual(self.dispatcher.tick(), "dispatched")
-        self.assertEqual(self.dispatcher.tick(), "dispatched")
-        self.assertIs(self.op("begin", "c5", attempt=1)["event"]["trusted"], False)
         self.assertIs(self.op("begin", "c6", attempt=1)["event"]["trusted"], True)
-        self.store.update_event("c6", trusted=None)  # recorded before the column existed
+        self.store.update_event("c6", trusted=None)
         self.assertIs(self.op("begin", "c6", attempt=2)["event"]["trusted"], False)
 
     def test_permission_verdicts_are_cached_for_the_ttl_and_unknown_logins_are_untrusted(self) -> None:
@@ -1298,8 +1297,8 @@ class IntakeTests(BridgeTestCase):
         edited = edit_payload(title="Fix it better", changes={"title": {"from": "Fix it"}})
         self.assertEqual(self.deliver(edited, delivery="e3").outcome, "queued")
         by_stranger = edit_payload(login="stranger", labels=(bridge.OPEN_DISCUSSION_LABEL,))
-        self.assertEqual(self.deliver(by_stranger, delivery="e4").outcome, "queued")
-        self.assertEqual(self.dispatcher.tick(), "dispatched")
+        self.assertEqual(self.deliver(by_stranger, delivery="e4").outcome, "actor_not_allowed")
+        self.assertIsNone(self.store.event("e4"))
         begun = self.op("begin", "e3", attempt=1)
         self.assertEqual((begun["mode_hint"], begun["event"]["kind"], begun["event"]["comment_id"]),
                          ("followup", "issue_edited", None))
@@ -6668,154 +6667,6 @@ class GitHubOpsTests(BridgeTestCase):
     def test_search_op_is_removed(self) -> None:
         self.started()
         self.assertEqual(self.op("github.search", terms="x")["error"], "unknown_op")
-
-
-class ReopenOpsTests(BridgeTestCase):
-    def reopen_started(self, number: int = 7, comment_id: int = 500, delivery: str = "r1") -> dict:
-        payload = comment_payload(number, comment_id, body="still broken", login="stranger", state="closed")
-        self.assertEqual(self.deliver(payload, event="issue_comment", delivery=delivery).outcome, "queued")
-        self.assertEqual(self.dispatcher.tick(), "dispatched")
-        begun = self.op("begin", delivery, attempt=1)
-        self.assertEqual(begun["status"], "started")
-        self.fake.issue_states[number] = {"state": "closed", "closed_at": iso_ago(1)}
-        self.fake.issue_comments[comment_id] = {"created_at": iso_ago(0.5), "body": "still broken"}
-        return begun
-
-    def test_begin_hints_reopen_check_for_a_closed_issue_comment(self) -> None:
-        begun = self.reopen_started()
-        self.assertEqual((begun["mode_hint"], begun["subject"], begun["event"]["kind"], begun["event"]["trusted"]),
-                         ("reopen_check", "issue", "closed_issue_comment", False))
-        self.assertEqual(bridge.Bridge._mode_hint({"kind": "closed_issue_comment"}, "implementing"), "reopen_check")
-
-    def test_ineligible_reasons(self) -> None:
-        self.reopen_started()
-        del self.fake.issue_comments[500]
-        self.assertEqual(self.op("github.issue_reopen", "r1", apply=False),
-                         {"ok": True, "eligible": False, "changed": False, "reason": "comment_deleted"})
-        self.fake.issue_comments[500] = {"created_at": iso_ago(0.5)}
-        self.fake.issue_states[7] = {"state": "open", "closed_at": None}
-        self.assertEqual(self.op("github.issue_reopen", "r1", apply=True)["reason"], "already_open")
-        self.fake.issue_states[7] = {"state": "closed", "closed_at": iso_ago(0.1)}
-        self.assertEqual(self.op("github.issue_reopen", "r1", apply=True)["reason"], "closed_after_comment")
-        self.assertEqual(self.fake.issue_patches, [])
-
-    def test_apply_requires_a_recorded_reopen_verdict(self) -> None:
-        self.reopen_started()
-        self.assertEqual(self.op("github.issue_reopen", "r1", apply=False),
-                         {"ok": True, "eligible": True, "changed": False, "reason": "eligible"})
-        self.assertEqual(self.op("github.issue_reopen", "r1", apply=True)["error"], "no reopen verdict")
-        kept = bridge.validate_result("reopen_check", variant(REOPEN_OK, status="keep_closed", comment=None), 7)
-        self.assertTrue(self.op("stage", "r1", stage="reopen_result", value=kept)["ok"])
-        self.assertEqual(self.op("github.issue_reopen", "r1", apply=True)["error"], "no reopen verdict")
-        self.assertEqual(self.op("github.issue_reopen", "r1", apply="yes")["error"], "bad apply")
-        self.assertEqual(self.fake.issue_patches, [])
-
-    def test_apply_reopens_once_and_a_retry_is_answered_from_the_stage(self) -> None:
-        self.reopen_started()
-        self.store.update_issue(REPO, 7, phase="triaged")
-        verdict = bridge.validate_result("reopen_check", REOPEN_OK, 7)
-        self.assertTrue(self.op("stage", "r1", stage="reopen_result", value=verdict)["ok"])
-        self.assertEqual(self.op("github.issue_reopen", "r1", apply=True),
-                         {"ok": True, "eligible": True, "changed": True, "reason": "reopened"})
-        self.assertEqual(self.fake.issue_patches, [(7, {"state": "open"})])
-        self.assertIn("issue_reopened", json.loads(self.store.event("r1")["stages"]))
-        self.assertEqual(self.store.issue(REPO, 7)["phase"], "none")
-        calls = len(self.fake.gh_calls)
-        self.assertEqual(self.op("github.issue_reopen", "r1", apply=True),
-                         {"ok": True, "eligible": True, "changed": True, "reason": "reopened_by_event"})
-        self.assertEqual(len(self.fake.gh_calls), calls)
-        self.assertEqual(len(self.fake.issue_patches), 1)
-
-    def test_a_reopen_whose_answer_was_lost_is_completed_on_retry(self) -> None:
-        self.reopen_started()
-        self.store.update_issue(REPO, 7, phase="triaged")
-        verdict = bridge.validate_result("reopen_check", REOPEN_OK, 7)
-        self.assertTrue(self.op("stage", "r1", stage="reopen_result", value=verdict)["ok"])
-        self.fake.issue_patch_lost = True
-        self.assertIn("HTTP 502", self.op("github.issue_reopen", "r1", apply=True)["error"])
-        self.assertEqual(self.fake.issue_states[7]["state"], "open")
-        stages = json.loads(self.store.event("r1")["stages"])
-        self.assertIn("issue_reopen_intent", stages)
-        self.assertNotIn("issue_reopened", stages)
-        self.fake.issue_patch_lost = False
-        self.assertEqual(self.op("github.issue_reopen", "r1", apply=False),
-                         {"ok": True, "eligible": True, "changed": True, "reason": "reopened_by_event"})
-        self.assertIn("issue_reopened", json.loads(self.store.event("r1")["stages"]))
-        self.assertEqual(self.store.issue(REPO, 7)["phase"], "none")
-        self.assertEqual(len(self.fake.issue_patches), 1)
-
-    def test_an_issue_reopened_by_someone_else_after_the_intent_stays_already_open(self) -> None:
-        self.reopen_started()
-        self.store.update_issue(REPO, 7, phase="triaged")
-        self.assertTrue(self.op("stage", "r1", stage="issue_reopen_intent", value={"at": time.time()})["ok"])
-        self.fake.issue_states[7] = {"state": "open", "closed_at": None}
-        self.fake.issue_events[7] = [
-            {"event": "reopened", "actor": {"login": BOT}, "created_at": iso_ago(1)},  # before the intent
-            {"event": "reopened", "actor": {"login": "maintainer"}, "created_at": iso_ago(0)},
-        ]
-        for apply in (False, True):
-            self.assertEqual(self.op("github.issue_reopen", "r1", apply=apply),
-                             {"ok": True, "eligible": False, "changed": False, "reason": "already_open"})
-        self.assertNotIn("issue_reopened", json.loads(self.store.event("r1")["stages"]))
-        self.assertEqual(self.store.issue(REPO, 7)["phase"], "triaged")
-        self.assertEqual(self.fake.issue_patches, [])
-
-    def test_an_earlier_bot_reopen_closed_and_reopened_by_a_maintainer_stays_already_open(self) -> None:
-        self.reopen_started()
-        self.store.update_issue(REPO, 7, phase="triaged")
-        self.fake.issue_events[7] = [
-            # within REOPEN_CLOCK_SKEW_SECONDS of the intent, but not the latest transition
-            {"event": "reopened", "actor": {"login": BOT}, "created_at": iso_ago(30 / 86400)},
-            {"event": "closed", "actor": {"login": "maintainer"}, "created_at": iso_ago(20 / 86400)},
-        ]
-        self.assertTrue(self.op("stage", "r1", stage="issue_reopen_intent", value={"at": time.time()})["ok"])
-        # the PATCH was never sent; the maintainer reopened the issue
-        self.fake.issue_events[7].append(
-            {"event": "reopened", "actor": {"login": "maintainer"}, "created_at": iso_ago(0)})
-        self.fake.issue_states[7] = {"state": "open", "closed_at": None}
-        for apply in (False, True):
-            self.assertEqual(self.op("github.issue_reopen", "r1", apply=apply),
-                             {"ok": True, "eligible": False, "changed": False, "reason": "already_open"})
-        self.assertNotIn("issue_reopened", json.loads(self.store.event("r1")["stages"]))
-        self.assertEqual(self.store.issue(REPO, 7)["phase"], "triaged")
-        self.assertEqual(self.fake.issue_patches, [])
-
-    def test_a_reopened_stage_is_never_recorded_without_the_phase_change(self) -> None:
-        self.reopen_started()
-        self.store.update_issue(REPO, 7, phase="triaged")
-        verdict = bridge.validate_result("reopen_check", REOPEN_OK, 7)
-        self.assertTrue(self.op("stage", "r1", stage="reopen_result", value=verdict)["ok"])
-        self.fake.issue_patch_lost = True
-        self.assertIn("HTTP 502", self.op("github.issue_reopen", "r1", apply=True)["error"])
-        self.fake.issue_patch_lost = False
-        with self.store.tx() as conn:
-            conn.execute("CREATE TRIGGER fail_phase BEFORE UPDATE OF phase ON issues"
-                         " BEGIN SELECT RAISE(ABORT, 'phase write failed'); END")
-        with self.assertRaises(sqlite3.Error):
-            self.op("github.issue_reopen", "r1", apply=False)
-        self.assertNotIn("issue_reopened", json.loads(self.store.event("r1")["stages"]))
-        self.assertEqual(self.store.issue(REPO, 7)["phase"], "triaged")
-        with self.store.tx() as conn:
-            conn.execute("DROP TRIGGER fail_phase")
-        self.assertEqual(self.op("github.issue_reopen", "r1", apply=False),
-                         {"ok": True, "eligible": True, "changed": True, "reason": "reopened_by_event"})
-        self.assertIn("issue_reopened", json.loads(self.store.event("r1")["stages"]))
-        self.assertEqual(self.store.issue(REPO, 7)["phase"], "none")
-        self.assertEqual(len(self.fake.issue_patches), 1)
-
-    def test_issue_reopen_refuses_other_event_kinds(self) -> None:
-        self.started()
-        self.fake.issue_states[7] = {"state": "closed", "closed_at": iso_ago(1)}
-        self.assertIn("closed_issue_comment", self.op("github.issue_reopen", "d1", apply=False)["error"])
-        self.assertEqual(self.fake.issue_patches, [])
-
-    def test_finish_accepts_reopened_and_kept_closed(self) -> None:
-        self.reopen_started()
-        self.assertTrue(self.op("finish", "r1", outcome="reopened")["ok"])
-        self.assertEqual(self.store.event("r1")["outcome"], "reopened")
-        self.reopen_started(8, 501, "r2")
-        self.assertTrue(self.op("finish", "r2", outcome="kept_closed")["ok"])
-        self.assertEqual(self.store.event("r2")["outcome"], "kept_closed")
 
 
 class SecurityAdvisoryOpsTests(BridgeTestCase):
