@@ -126,6 +126,7 @@ let
     ) [ 133 134 135 136 ]}
     ${lib.optionalString (hostConfig.lanAddress != null) ''
       -A HOMELAB6_INPUT -i ${hostConfig.defaultInterface} -s ${topology.lanIpv6Network} -j ACCEPT
+      -A HOMELAB6_INPUT -i ${hostConfig.defaultInterface} -s fe80::/10 -p ipv6-icmp --icmpv6-type 130 -j ACCEPT
       -A HOMELAB6_INPUT -i ${hostConfig.defaultInterface} -s fe80::/10 -p udp --sport 547 --dport 546 -j ACCEPT
       -A HOMELAB6_INPUT -i ${hostConfig.defaultInterface} -s fe80::/10 -d ff02::fb -p udp --dport 5353 -j ACCEPT
     ''}

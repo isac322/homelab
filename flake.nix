@@ -271,7 +271,10 @@
                 && lib.hasInfix "--icmpv6-type 135 -j ACCEPT" rules
                 && (
                   linuxHosts.${hostName}.lanAddress == null
-                  || lib.hasInfix "-s ${topology.lanIpv6Network} -j ACCEPT" rules
+                  || (
+                    lib.hasInfix "-s ${topology.lanIpv6Network} -j ACCEPT" rules
+                    && lib.hasInfix "-s fe80::/10 -p ipv6-icmp --icmpv6-type 130 -j ACCEPT" rules
+                  )
                 )
                 && (
                   linuxHosts.${hostName}.k3sRole == null
