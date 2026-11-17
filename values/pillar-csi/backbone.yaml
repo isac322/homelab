@@ -5,6 +5,8 @@
 # chart defaults set one, so each is cleared with null.
 
 controller:
+  image:
+    tag: 0.5.4@sha256:f9eea76ec04542ac5398ac1e7722314922303061f1b09d9b37337c038b157743
   resources:
     requests:
       cpu: 100m
@@ -51,6 +53,8 @@ controller:
           memory: 40Mi
 
 node:
+  image:
+    tag: 0.5.4@sha256:835432e4ddf17fda38fc3d8a49e64e6517d00ce6e6cdb1dfc7f12f9440a6afaf
   resources:
     requests:
       cpu: 50m
@@ -85,6 +89,8 @@ node:
           memory: 40Mi
 
 agent:
+  image:
+    tag: 0.5.4@sha256:adb7fecffc4e752e4fe8a7b96657f692f8af6ccb889e7329290d2e7ea5f3325f
   # Must match the PillarStores in apps/objects/pillar-csi/store.yaml.
   # The pools themselves are host-native (preserveNasState); see README.
   backends:
