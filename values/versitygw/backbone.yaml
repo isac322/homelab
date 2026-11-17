@@ -5,6 +5,11 @@ strategy:
   type: Recreate
 
 gateway:
+  # Request log for audit: keep versitygw's stdout summary on (time, status,
+  # latency, peer IP, method, path, error, query with S3 credential values
+  # masked). Do not enable gateway.accessLog: it writes the raw request URI,
+  # including presigned X-Amz-Signature and X-Amz-Security-Token values.
+  quiet: false
   corsAllowOrigin: "https://versitygw.bhyoo.com"
   backend:
     type: posix
