@@ -8,7 +8,8 @@ metadata:
     cert-manager.io/private-key-algorithm: ECDSA
     cert-manager.io/private-key-size: "384"
 spec:
-  gatewayClassName: cilium
+  # Access-logged class; see gatewayclass.yaml.
+  gatewayClassName: cilium-access-log
   infrastructure:
     annotations:
       # rock5bp's :443 belongs to nas-gateway; two LB Services cannot share
