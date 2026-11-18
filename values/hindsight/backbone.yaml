@@ -75,7 +75,7 @@ existingSecret: hindsight-secrets
 
 # Bump in Git after hindsight-secrets changes; API and control plane read envFrom at pod start.
 podAnnotations:
-  kubectl.kubernetes.io/restartedAt: "2026-11-17T10:48:30Z"
+  kubectl.kubernetes.io/restartedAt: "2026-11-18T06:00:00Z"
 
 ingress:
   enabled: false
