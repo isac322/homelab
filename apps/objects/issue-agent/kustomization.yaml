@@ -14,6 +14,7 @@ resources:
   - service.yaml
   - network-policy.yaml
   - cilium-network-policy.yaml
+  - httproute-hub.yaml
   - httproute-n8n.yaml
   - httproute-webhook.yaml
 configMapGenerator:
