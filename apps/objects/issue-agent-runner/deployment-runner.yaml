@@ -99,7 +99,7 @@ spec:
         # the bounding set, even though 8317 needs none.
         - name: model-proxy
           restartPolicy: Always
-          image: docker.io/library/caddy:2.11.9-alpine@sha256:003a97808e781aa9f7e75cc2f43d34d461099031faf5e20faefb9f61126836f
+          image: docker.io/library/caddy:2.11.9-alpine@sha256:003a97808e781aa9f7e75cc2f43d34d461099031faf5e20faefb9f61126836f0
           command:
             - caddy
             - run
