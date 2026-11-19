@@ -7,9 +7,10 @@ api:
   resources:
     requests:
       cpu: 25m
-      memory: 640Mi
-    limits:
       memory: 1Gi
+    limits:
+      cpu: null
+      memory: 1536Mi
   env:
     HINDSIGHT_API_TENANT_EXTENSION: "hindsight_api.extensions.builtin.tenant:ApiKeyTenantExtension"
     HINDSIGHT_API_MCP_ENABLED: "false"
