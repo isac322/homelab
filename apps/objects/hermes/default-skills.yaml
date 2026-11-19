@@ -66,8 +66,8 @@ data:
     {
       "version": 1,
       "skills": [
-        "blader/humanizer@0ef9fe5bc3572734fd3ae6c448fe00a30cd5dcf0",
+        "blader/humanizer@b48c832f0f809c1b5658edbb838c2521b72f2413",
         "softaworks/agent-toolkit@32d7e8aad4f452b9865f5d1b2443d14038fdb2a2/skills/writing-clearly-and-concisely",
-        "Gentleman-Programming/gentle-ai@55a5bfe43594d6409307c4bcdf3a1d22a8c42560/skills/comment-writer"
+        "Gentleman-Programming/gentle-ai@64b0ebc0cffedb143bf738b00136740a5766a8bf/skills/comment-writer"
       ]
     }

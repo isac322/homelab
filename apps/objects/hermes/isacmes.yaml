@@ -10,7 +10,7 @@ spec:
       enabled: false
   image:
     repository: nousresearch/hermes-agent
-    tag: v0.23.0@sha256:adb7890916de63245523492be8f68f9d2095fecbec4e2a6dab7960381f0fc002
+    tag: v0.23.2@sha256:d6746a084e9341baada483e3d6210444d3c1aeb7c130f0915150065fb2851459
   resources:
     requests:
       cpu: 50m
@@ -19,7 +19,7 @@ spec:
       memory: 3Gi
   initContainers:
     - name: install-hermes-lcm
-      image: nousresearch/hermes-agent:v0.23.0@sha256:adb7890916de63245523492be8f68f9d2095fecbec4e2a6dab7960381f0fc002
+      image: nousresearch/hermes-agent:v0.23.2@sha256:d6746a084e9341baada483e3d6210444d3c1aeb7c130f0915150065fb2851459
       command:
         - /bin/sh
         - -ec
@@ -77,13 +77,13 @@ spec:
 
           pkg_dir = Path("/opt/data/.local/python-packages")
           pkg_stamp = pkg_dir / ".version"
-          expected_pkg_ver = "hindsight-client-1.2.0_aiohttp-retry-2.9.1"
+          expected_pkg_ver = "hindsight-client-1.2.1_aiohttp-retry-2.9.1"
           if not pkg_stamp.is_file() or pkg_stamp.read_text().strip() != expected_pkg_ver:
               if pkg_dir.exists():
                   shutil.rmtree(pkg_dir)
               pkg_dir.mkdir(parents=True, exist_ok=True)
               wheels = [
-                  ("https://files.pythonhosted.org/packages/py3/h/hindsight-client/hindsight_client-1.2.0-py3-none-any.whl", "690c728a17207a9e4df0b26c32abd1dfee627d1895615881f30ed709ab4126c3"),
+                  ("https://files.pythonhosted.org/packages/14/26/17820f9235864422b6d058eb17ffc6f339f0241abf13a567057d2730e143/hindsight_client-1.2.1-py3-none-any.whl", "d02a7768a581f65db26a688e3b83677c258cc19fc1b9a3325b60a49dd2f271d9"),
                   ("https://files.pythonhosted.org/packages/py3/a/aiohttp-retry/aiohttp_retry-2.9.1-py3-none-any.whl", "66d2759d1921838256a05a3f80ad7e724936f083e35be5abb5e16eed6be6dc54"),
               ]
               for url, exp_sha in wheels:
@@ -127,7 +127,7 @@ spec:
         - name: hermes-lcm
           mountPath: /lcm
     - name: install-default-skills
-      image: nousresearch/hermes-agent:v0.23.0@sha256:adb7890916de63245523492be8f68f9d2095fecbec4e2a6dab7960381f0fc002
+      image: nousresearch/hermes-agent:v0.23.2@sha256:d6746a084e9341baada483e3d6210444d3c1aeb7c130f0915150065fb2851459
       command:
         - /bin/sh
         - -e
@@ -174,7 +174,7 @@ spec:
         - name: hermes-default-skills
           mountPath: /skills
     - name: patch-openai-native-web-search
-      image: nousresearch/hermes-agent:v0.23.0@sha256:adb7890916de63245523492be8f68f9d2095fecbec4e2a6dab7960381f0fc002
+      image: nousresearch/hermes-agent:v0.23.2@sha256:d6746a084e9341baada483e3d6210444d3c1aeb7c130f0915150065fb2851459
       command:
         - /opt/hermes/.venv/bin/python
         - /patch/patch.py
@@ -201,40 +201,6 @@ spec:
           readOnly: true
         - name: hermes-patched-files
           mountPath: /patched
-    - name: prepare-camofox-home
-      image: ghcr.io/jo-inc/camofox-browser:1.18.1@sha256:cff2c1432b609bde9c9d0b91e5b924dae0799d3c7bc9d468c0bc949325beaf2a
-      command:
-        - /bin/sh
-        - -ec
-      args:
-        - |
-          if [ -d /home/node/.cache/camoufox ]; then
-            chown 0:0 /home/node/.cache
-            chown -R 0:0 /home/node/.cache/camoufox
-            rm -rf /home/node/.cache/camoufox
-          fi
-          mkdir -p /home/node/.cache/camoufox
-          cp -R /root/.cache/camoufox/. /home/node/.cache/camoufox/
-          chown 1000:1000 /home/node /home/node/.cache
-          chown -R 1000:1000 /home/node/.cache/camoufox
-      resources:
-        requests:
-          cpu: 50m
-          memory: 640Mi
-        limits:
-          memory: 1Gi
-      securityContext:
-        allowPrivilegeEscalation: false
-        capabilities:
-          drop:
-            - ALL
-          add:
-            - CHOWN
-        readOnlyRootFilesystem: true
-        runAsUser: 0
-      volumeMounts:
-        - name: camofox-home
-          mountPath: /home/node
   extraVolumes:
     - name: hermes-lcm
       emptyDir: {}
@@ -291,11 +257,11 @@ spec:
       readOnly: true
   sidecars:
     - name: camofox
-      image: ghcr.io/jo-inc/camofox-browser:1.18.1@sha256:cff2c1432b609bde9c9d0b91e5b924dae0799d3c7bc9d468c0bc949325beaf2a
+      image: ghcr.io/jo-inc/camofox-browser:1.19.0@sha256:49f8e02f9fb0e191b406845482745efc72f835db06789e3a34e77a6ff1497046
       imagePullPolicy: IfNotPresent
       env:
         - name: HOME
-          value: /home/node
+          value: /home/camofox
         - name: CAMOFOX_BIND_HOST
           value: 127.0.0.1
         - name: BROWSER_IDLE_TIMEOUT_MS
@@ -381,7 +347,7 @@ spec:
         runAsUser: 1000
       volumeMounts:
         - name: camofox-home
-          mountPath: /home/node
+          mountPath: /home/camofox
         - name: camofox-tmp
           mountPath: /tmp
         - name: camofox-shm
@@ -402,7 +368,7 @@ spec:
           readOnly: true
   config:
     raw:
-      _config_version: 52
+      _config_version: 53
       approvals:
         mode: "off"
       agent:
@@ -411,11 +377,12 @@ spec:
           - browser
         reasoning_effort: medium
       model:
-        default: gpt-6.1-sol
+        default: gpt-6.2-sol
+        context_length: 872000
         provider: openai-api
         api_mode: codex_responses
       delegation:
-        model: gpt-6-sol
+        model: gpt-6.2-sol
         provider: openai-api
         api_mode: codex_responses
         reasoning_effort: medium
@@ -425,13 +392,13 @@ spec:
             enabled: true
             reference_models:
               - provider: openai-api
-                model: gpt-6-sol
+                model: gpt-6.2-sol
                 reasoning_effort: medium
               - provider: gemini
                 model: gemini-3.8-flash
             aggregator:
               provider: openai-api
-              model: gpt-6-astra
+              model: gpt-6.2-astra
               reasoning_effort: medium
       mcp_servers:
         linear:
@@ -498,7 +465,7 @@ spec:
           model: gemini-3.8-flash
         compression:
           provider: main
-          model: gpt-6-sol
+          model: gpt-6.2-sol
           api_mode: codex_responses
           reasoning_effort: low
         title_generation:
@@ -511,27 +478,27 @@ spec:
           reasoning_effort: low
         background_review:
           provider: main
-          model: gpt-6-sol
+          model: gpt-6.2-sol
           api_mode: codex_responses
           reasoning_effort: low
         curator:
           provider: main
-          model: gpt-6-sol
+          model: gpt-6.2-sol
           api_mode: codex_responses
           reasoning_effort: medium
         goal_judge:
           provider: main
-          model: gpt-6-sol
+          model: gpt-6.2-sol
           api_mode: codex_responses
           reasoning_effort: high
         kanban_decomposer:
           provider: main
-          model: gpt-6-sol
+          model: gpt-6.2-sol
           api_mode: codex_responses
           reasoning_effort: medium
         triage_specifier:
           provider: main
-          model: gpt-6-sol
+          model: gpt-6.2-sol
           api_mode: codex_responses
           reasoning_effort: low
         profile_describer:
@@ -550,7 +517,7 @@ spec:
           reasoning_effort: low
         skills_hub:
           provider: main
-          model: gpt-6-sol
+          model: gpt-6.2-sol
           api_mode: codex_responses
           reasoning_effort: low
         tts_audio_tags:
@@ -566,7 +533,7 @@ spec:
           reasoning_effort: low
         review:
           provider: openai-api
-          model: gpt-6-astra
+          model: gpt-6.2-astra
           api_mode: codex_responses
   env:
     - name: HOME
