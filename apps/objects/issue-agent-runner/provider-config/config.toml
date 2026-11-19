@@ -4,6 +4,7 @@ model_provider = "issue-agent"
 # Authorization header, so Codex sends none (no env_key, no OpenAI auth).
 [model_providers.issue-agent]
 name = "Issue Agent provider"
-base_url = "http://127.0.0.1:8317/v1"
+base_url = "http://127.0.0.1:8317/backend-api/codex"
 wire_api = "responses"
 requires_openai_auth = false
+supports_websockets = true

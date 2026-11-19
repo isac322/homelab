@@ -1,13 +1,15 @@
 # Model proxy (native sidecar `model-proxy` in deployment-runner.yaml). Codex
-# talks to http://127.0.0.1:8317/v1 without credentials; this proxy replaces
-# any Authorization header with the provider key, read per request from a file
-# that only this container mounts, so a rotated key applies without a reload.
+# talks to http://127.0.0.1:8317/backend-api/codex (WebSocket GET + HTTP SSE POST)
+# without credentials; this proxy replaces any Authorization header with the
+# provider key, read per request from a file that only this container mounts, so
+# a rotated key applies without a reload.
 # Loopback only: other pods and Docker containers cannot reach it.
 #
-# Only the endpoints Codex uses are forwarded (Responses stream, model list,
-# memories summaries); everything else is 403. Every timeout below is longer
-# than Codex's stream idle timeout (300s), so Codex, not the proxy, decides
-# when a silent stream is dead; flush_interval -1 streams SSE unbuffered.
+# Only the endpoints Codex uses are forwarded (Responses WebSocket/SSE stream,
+# model list, memories summaries, alpha search); everything else is 403. Every
+# timeout below is longer than Codex's stream idle timeout (300s), so Codex, not
+# the proxy, decides when a silent stream is dead; flush_interval -1 streams SSE
+# unbuffered.
 {
 	admin off
 	auto_https off
@@ -30,7 +32,7 @@ http://127.0.0.1:8317 {
 
 	@model {
 		method GET POST
-		path /v1/responses /v1/responses/* /v1/models /v1/models/* /v1/memories /v1/memories/*
+		path /v1/responses /v1/responses/* /v1/models /v1/models/* /v1/memories /v1/memories/* /backend-api/codex/responses /backend-api/codex/responses/* /backend-api/codex/alpha/search
 	}
 	handle @model {
 		reverse_proxy {$MODEL_UPSTREAM} {

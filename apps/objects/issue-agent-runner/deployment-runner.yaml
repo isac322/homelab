@@ -35,7 +35,7 @@ spec:
         # from falling back to the upstream entrypoint's TCP listener.
         - name: dockerd
           restartPolicy: Always
-          image: ghcr.io/isac322/issue-agent-dockerd:29.9.3-20261110-dind@sha256:dbd86b2e1fdff8ce9824140712e49bcece481bfbf9b1fcfc8f88052cca61a375
+          image: ghcr.io/isac322/issue-agent-dockerd:29.10.0-20261119-dind@sha256:97f4f57402f20d5d2f7ca93f76b363d063bb908f5fb686194ad281824ceed26b
           command:
             - /opt/issue-agent/bin/dockerd-start
           env:
@@ -89,7 +89,7 @@ spec:
             - name: dri-render128
               mountPath: /run/issue-agent-dri/renderD128
         # Model proxy: the only container holding the provider key. Codex in
-        # the runner reaches the provider through http://127.0.0.1:8317/v1
+        # the runner reaches the provider through http://127.0.0.1:8317/backend-api/codex
         # without credentials; Caddy adds the Authorization header from a file
         # mounted only here and forwards just the Codex model endpoints
         # (model-proxy/Caddyfile). Bound to loopback, so other pods and Docker
@@ -99,7 +99,7 @@ spec:
         # the bounding set, even though 8317 needs none.
         - name: model-proxy
           restartPolicy: Always
-          image: docker.io/library/caddy:2.11.9-alpine@sha256:0bbb055bda6793c999bde78b1b5ce3e89f829fb031af2cf50056ea1246559fee
+          image: docker.io/library/caddy:2.11.9-alpine@sha256:003a97808e781aa9f7e75cc2f43d34d461099031faf5e20faefb9f61126836f
           command:
             - caddy
             - run
@@ -176,7 +176,7 @@ spec:
                       - rock5bp
       containers:
         - name: runner
-          image: ghcr.io/isac322/issue-agent-runner:0.34.4-codex0.167.0-20261112-exact-start-r2@sha256:07383ba9ca66379abe6a82b99e6882fcbbe4a9df1968b029fe33a0b4d82e306c
+          image: ghcr.io/isac322/issue-agent-runner:0.36.5-codex0.170.0-20261119@sha256:adaca99e45c1a755e117d606fd8923bc3711034975f79534707bb5ec4e67fa5a
           env:
             - name: HOME
               value: /home/agent
@@ -281,7 +281,7 @@ spec:
         # Same image as the runner; /checkout also marks the checkout and its
         # worktrees untrusted in CODEX_HOME (codex-untrust).
         - name: publisher
-          image: ghcr.io/isac322/issue-agent-runner:0.34.4-codex0.167.0-20261112-exact-start-r2@sha256:07383ba9ca66379abe6a82b99e6882fcbbe4a9df1968b029fe33a0b4d82e306c
+          image: ghcr.io/isac322/issue-agent-runner:0.36.5-codex0.170.0-20261119@sha256:adaca99e45c1a755e117d606fd8923bc3711034975f79534707bb5ec4e67fa5a
           command:
             - /usr/bin/tini
             - --

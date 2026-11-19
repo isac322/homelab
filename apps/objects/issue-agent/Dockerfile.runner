@@ -5,20 +5,20 @@
 # publisher sidecar clones repositories at runtime into the home PVC.
 
 # HAPI builder: same pinned source and patch as the hub image.
-FROM oven/bun:1.4.4@sha256:f2b798e7ce1c056cd2149a6be7f014b3fde68a0c7165a3011ce3896e8404a6cd AS hapi-builder
-ARG HAPI_SOURCE_SHA256=37284481f62e89fae264953adb914fe5a8a7e98bb5e6cb60b67621d578c10d20
+FROM oven/bun:1.4.4@sha256:1d22548f177f4ff38e0c15baa3c2c46c6c2060ba2d1bc573bb4720b407548f1d AS hapi-builder
+ARG HAPI_SOURCE_SHA256=ab211bec7c79aa9db8f8e283e6a4bba1726a505e7af7a111cdf5c6aed83885e2
 WORKDIR /src
 RUN apt-get update \
     && apt-get install -y --no-install-recommends ca-certificates curl patch \
     && rm -rf /var/lib/apt/lists/*
-RUN curl -fsSLo /tmp/hapi.tar.gz "https://github.com/tiann/hapi/archive/2161a9ff9652011b270dc135fe763dc4e52b7790.tar.gz" \
+RUN curl -fsSLo /tmp/hapi.tar.gz "https://github.com/tiann/hapi/archive/590a9533c9cd926a44e4d102c29076c7bdf82426.tar.gz" \
     && echo "${HAPI_SOURCE_SHA256}  /tmp/hapi.tar.gz" | sha256sum -c - \
     && tar -xzf /tmp/hapi.tar.gz --strip-components=1 -C /src \
     && rm /tmp/hapi.tar.gz
-COPY patches/hapi-0.34.0-lifecycle.patch /tmp/hapi-0.34.0-lifecycle.patch
-COPY patches/hapi-0.34.4-worktree-start-commit.patch /tmp/hapi-0.34.4-worktree-start-commit.patch
-RUN patch -p1 < /tmp/hapi-0.34.0-lifecycle.patch \
-    && patch -p1 < /tmp/hapi-0.34.4-worktree-start-commit.patch \
+COPY patches/hapi-0.36.5-lifecycle.patch /tmp/hapi-0.36.5-lifecycle.patch
+COPY patches/hapi-0.36.5-worktree-start-commit.patch /tmp/hapi-0.36.5-worktree-start-commit.patch
+RUN patch -p1 < /tmp/hapi-0.36.5-lifecycle.patch \
+    && patch -p1 < /tmp/hapi-0.36.5-worktree-start-commit.patch \
     && bun install --frozen-lockfile \
     && mkdir -p shared/tools/tunwg \
     && curl -fsSLo shared/tools/tunwg/tunwg-arm64-linux "https://github.com/tiann/tunwg/releases/download/v26.08.03%2B122a6d0/tunwg-arm64" \
@@ -29,32 +29,32 @@ RUN patch -p1 < /tmp/hapi-0.34.0-lifecycle.patch \
     && bun run --cwd hub generate:embedded-web-assets \
     && bun run --cwd cli build:exe:allinone --target bun-linux-arm64
 
-# docker:29.9.3-cli (linux/arm64): Docker CLI plus the buildx/compose plugins.
+# docker:29.10.0-cli (linux/arm64): Docker CLI plus the buildx/compose plugins.
 # Docker 29's `docker build` requires buildx; the daemon is the pod's dockerd
-# sidecar (docker:29.9.3-dind), reached through DOCKER_HOST.
-FROM docker:29.9.3-cli@sha256:035209e4a5ad108b3292d00313678a84b9887d7cca45ac0d3c93d5a5ddc47425 AS docker-cli
+# sidecar (docker:29.10.0-dind), reached through DOCKER_HOST.
+FROM docker:29.10.0-cli@sha256:34507eb5069d8be82c95dd3b6987d4250fd5fee49b82e2509b7d7a7030740d6d AS docker-cli
 
-# node:26.13.0-trixie-slim (linux/arm64). Node runs Codex's npm launcher.
-FROM node:26.13.0-trixie-slim@sha256:09d555867f72716747921204358450bf0cd9799f293541927fbdf97ce9aee750
+# node:26.13.1-trixie-slim (linux/arm64). Node runs Codex's npm launcher.
+FROM node:26.13.1-trixie-slim@sha256:e6bedef217677b276c591795e169840edd9096dbf13f29df8ef8d1856b8820bc
 
-# @openai/codex 0.167.0 (HAPI shared sessions require >= 0.154.0).
+# @openai/codex 0.170.0 (HAPI shared sessions require >= 0.154.0).
 # SHA-256 of the npm tarballs whose sha512 matched the registry `integrity`.
-ARG CODEX_VERSION=0.167.0
-ARG CODEX_SHA256=e858522a37b85b5bbe695919190cfb0974aee5ae739d84d8d629c39735fb03a9
-ARG CODEX_LINUX_ARM64_SHA256=e24d7b6f0af5695a36c04692c3a79672bdadebcac7c44005259cb3cad36ac40e
-# GitHub CLI 2.103.3; checksum = release checksums.txt = asset digest.
-ARG GH_VERSION=2.103.3
-ARG GH_SHA256=ee32df2323c8847f5fac6cb6b4b69ca75828e9329a8f22f677021f7b3306ce63
+ARG CODEX_VERSION=0.170.0
+ARG CODEX_SHA256=d050bdcc0015ed5680c84e227e4aeca17fbfdd5ef1a3401f46bd73deaf983720
+ARG CODEX_LINUX_ARM64_SHA256=72a1b05ee522eb7b57a96ad60d26056da8adda20c630f54079c53dd8c292613a
+# GitHub CLI 2.105.0; checksum = release checksums.txt = asset digest.
+ARG GH_VERSION=2.105.0
+ARG GH_SHA256=b1278c75107423d818f1937fd92cafc9e5e9b606631568f68d7fb816f5885a02
 # rustup 1.29.3 (versioned archive). Toolchains install lazily into the home PVC.
 ARG RUSTUP_VERSION=1.29.3
 ARG RUSTUP_SHA256=9f608c142e0e38a78957d0661ba1dfaf0b6fb37184cfaa4b9a0aa57af6184282
 # sccache 0.19.0 (static musl build); checksum = release .sha256 = asset digest.
 ARG SCCACHE_VERSION=0.19.0
 ARG SCCACHE_SHA256=3e47fc4a71b1ddd1b4294a0de9d34498922fdf41e3cd0bda5df3954e3d6deb9d
-# Go 1.27.3; checksum from https://go.dev/dl/?mode=json. A go.mod asking for a
+# Go 1.27.4; checksum from https://go.dev/dl/?mode=json. A go.mod asking for a
 # newer toolchain makes go download it into GOPATH (home PVC; GOTOOLCHAIN=auto).
-ARG GO_VERSION=1.27.3
-ARG GO_SHA256=a06e99309dbcbdca1a8ccd2282c3ee146e55930886e26b4f1193269587165f49
+ARG GO_VERSION=1.27.4
+ARG GO_SHA256=3392582988a273a87ab5043ee1b2c9c17a2c3c00580bf9326c47a2e0aaaeac92
 
 SHELL ["/bin/bash", "-o", "pipefail", "-c"]
 
@@ -87,12 +87,12 @@ RUN curl -fsSLo /tmp/gh.tar.gz "https://github.com/cli/cli/releases/download/v${
 # so repositories with <500 files (krema, kwin-mcp, flareway) also expose
 # callers/callees/impact alongside search/node/explore.
 COPY runner/tools/package.json runner/tools/package-lock.json /opt/issue-agent/tools/
-COPY patches/codegraph-1.6.2-cold-proxy.patch /tmp/codegraph-1.6.2-cold-proxy.patch
+COPY patches/codegraph-1.6.3-cold-proxy.patch /tmp/codegraph-1.6.3-cold-proxy.patch
 RUN cd /opt/issue-agent/tools \
     && npm ci --omit=dev --ignore-scripts --no-audit --no-fund \
-    && git -C node_modules/@colbymchenry/codegraph-linux-arm64 apply --check /tmp/codegraph-1.6.2-cold-proxy.patch \
-    && git -C node_modules/@colbymchenry/codegraph-linux-arm64 apply /tmp/codegraph-1.6.2-cold-proxy.patch \
-    && rm /tmp/codegraph-1.6.2-cold-proxy.patch \
+    && git -C node_modules/@colbymchenry/codegraph-linux-arm64 apply --check /tmp/codegraph-1.6.3-cold-proxy.patch \
+    && git -C node_modules/@colbymchenry/codegraph-linux-arm64 apply /tmp/codegraph-1.6.3-cold-proxy.patch \
+    && rm /tmp/codegraph-1.6.3-cold-proxy.patch \
     && rm -rf /root/.npm \
     && sed -i 's/const TINY_REPO_FILE_THRESHOLD = 500;/const TINY_REPO_FILE_THRESHOLD = 0;/' \
          /opt/issue-agent/tools/node_modules/@colbymchenry/codegraph-linux-arm64/lib/dist/mcp/tools.js \

@@ -3,21 +3,21 @@
 # Build context: apps/objects/issue-agent (see .dockerignore). linux/arm64 only.
 
 # Official Bun image tag; the arm64 build runs in the target architecture.
-FROM oven/bun:1.4.4@sha256:f2b798e7ce1c056cd2149a6be7f014b3fde68a0c7165a3011ce3896e8404a6cd AS hapi-builder
+FROM oven/bun:1.4.4@sha256:1d22548f177f4ff38e0c15baa3c2c46c6c2060ba2d1bc573bb4720b407548f1d AS hapi-builder
 
-ARG HAPI_SOURCE_SHA256=37284481f62e89fae264953adb914fe5a8a7e98bb5e6cb60b67621d578c10d20
+ARG HAPI_SOURCE_SHA256=ab211bec7c79aa9db8f8e283e6a4bba1726a505e7af7a111cdf5c6aed83885e2
 WORKDIR /src
 RUN apt-get update \
     && apt-get install -y --no-install-recommends ca-certificates curl patch \
     && rm -rf /var/lib/apt/lists/*
-RUN curl -fsSLo /tmp/hapi.tar.gz "https://github.com/tiann/hapi/archive/2161a9ff9652011b270dc135fe763dc4e52b7790.tar.gz" \
+RUN curl -fsSLo /tmp/hapi.tar.gz "https://github.com/tiann/hapi/archive/590a9533c9cd926a44e4d102c29076c7bdf82426.tar.gz" \
     && echo "${HAPI_SOURCE_SHA256}  /tmp/hapi.tar.gz" | sha256sum -c - \
     && tar -xzf /tmp/hapi.tar.gz --strip-components=1 -C /src \
     && rm /tmp/hapi.tar.gz
-COPY patches/hapi-0.34.0-lifecycle.patch /tmp/hapi-0.34.0-lifecycle.patch
-COPY patches/hapi-0.34.4-worktree-start-commit.patch /tmp/hapi-0.34.4-worktree-start-commit.patch
-RUN patch -p1 < /tmp/hapi-0.34.0-lifecycle.patch \
-    && patch -p1 < /tmp/hapi-0.34.4-worktree-start-commit.patch \
+COPY patches/hapi-0.36.5-lifecycle.patch /tmp/hapi-0.36.5-lifecycle.patch
+COPY patches/hapi-0.36.5-worktree-start-commit.patch /tmp/hapi-0.36.5-worktree-start-commit.patch
+RUN patch -p1 < /tmp/hapi-0.36.5-lifecycle.patch \
+    && patch -p1 < /tmp/hapi-0.36.5-worktree-start-commit.patch \
     && bun install --frozen-lockfile \
     && mkdir -p shared/tools/tunwg \
     && curl -fsSLo shared/tools/tunwg/tunwg-arm64-linux "https://github.com/tiann/tunwg/releases/download/v26.08.03%2B122a6d0/tunwg-arm64" \
@@ -29,7 +29,7 @@ RUN patch -p1 < /tmp/hapi-0.34.0-lifecycle.patch \
     && bun run --cwd cli build:exe:allinone --target bun-linux-arm64
 
 # debian:trixie-slim (linux/arm64)
-FROM debian:trixie-slim@sha256:24a01011d10eba3a023bc8585b9650b8b29021240d4217c05b905e09ef4a5232
+FROM debian:trixie-slim@sha256:a72b4433de1cf7d6bae0c4cee74d0547f58601a643b3375f070c51600d63b6b2
 COPY --from=hapi-builder /src/cli/dist-exe/bun-linux-arm64/hapi /usr/local/bin/hapi
 RUN chmod 0755 /usr/local/bin/hapi
 

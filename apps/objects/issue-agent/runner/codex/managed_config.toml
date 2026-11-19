@@ -6,9 +6,8 @@
 # Every mode (triage, implement, followup, review), including sub-agents.
 model_reasoning_effort = "high"
 
-# Bundled models.json defaults gpt-6.1-sol to a 272k window (258.4k usable,
-# 244.8k auto-compact) while capping model_context_window at 872k. Raise to
-# that ceiling (828.4k usable, 784.8k auto-compact); sub-agents inherit it.
+# Bundled models.json defaults gpt-6.2-sol to a 500k window while capping
+# model_context_window at 872k. Raise to that ceiling; sub-agents inherit it.
 model_context_window = 872000
 
 # Fast mode for every turn, sub-agents included: "fast" becomes the request

@@ -1,5 +1,5 @@
 diff --git a/cli/src/codex/shared/registry.test.ts b/cli/src/codex/shared/registry.test.ts
-index d702cfa8..cac7ed61 100644
+index 888d487..7a44cdb 100644
 --- a/cli/src/codex/shared/registry.test.ts
 +++ b/cli/src/codex/shared/registry.test.ts
 @@ -3,20 +3,50 @@ import { mkdtemp, mkdir, writeFile, rm } from 'node:fs/promises';
@@ -15,7 +15,7 @@ index d702cfa8..cac7ed61 100644
 +    getProcessStartMarker: (pid: number) => state.processes.get(pid),
 +    getPidNamespaceGeneration: () => state.namespaceGeneration
 +}));
- import { findRuntime, readRuntimes, runtimeAlive, runtimeAuthHash, runtimeMayBeAlive, saveRuntime, withThreadOwnership, type CodexRuntimeRecord } from './registry';
+ import { findAttachedBinding, findColdBinding, findRuntime, readRuntimes, runtimeAlive, runtimeAuthHash, runtimeMayBeAlive, saveRuntime, withThreadOwnership, type CodexRuntimeRecord } from './registry';
  
  const directories: string[] = [];
  afterEach(async () => { state.processes.clear(); state.auth = 'token'; await Promise.all(directories.splice(0).map(path => rm(path, { recursive: true, force: true }))); });
@@ -57,7 +57,7 @@ index d702cfa8..cac7ed61 100644
          const owner = await fixture();
          const probe = vi.spyOn(state.processes, 'has');
 diff --git a/cli/src/codex/shared/registry.ts b/cli/src/codex/shared/registry.ts
-index 190593e5..f536c830 100644
+index 5315a03..a34fee3 100644
 --- a/cli/src/codex/shared/registry.ts
 +++ b/cli/src/codex/shared/registry.ts
 @@ -5,12 +5,13 @@ import { randomUUID, createHash } from 'node:crypto';
@@ -72,11 +72,11 @@ index 190593e5..f536c830 100644
  const RuntimeSchema = z.object({
      id: z.string(), pid: z.number().int().positive(), marker: z.string(),
 +    namespaceGeneration: z.string().optional(),
+     kind: z.literal('attached').optional(), nativeEndpoint: z.string().optional(), attachedAt: z.number().optional(), supersedes: z.string().optional(),
      serverPid: z.number().int().positive().optional(), serverMarker: z.string().optional(),
      endpoint: z.string(), token: z.string().optional(),
-     command: z.string(), args: z.array(z.string()), codexHome: z.string(), hub: z.string(), authHash: z.string(),
-@@ -19,6 +20,11 @@ const RuntimeSchema = z.object({
- });
+@@ -21,6 +22,11 @@ const RuntimeSchema = z.object({
+     'An attached worker must not record an owned server or executable');
  export type CodexRuntimeRecord = z.infer<typeof RuntimeSchema>;
  
 +function currentNamespaceGenerationMatches(record: CodexRuntimeRecord): boolean {
@@ -87,7 +87,7 @@ index 190593e5..f536c830 100644
  export function runtimeDirectory(): string {
      return join(configuration.happyHomeDir, 'codex-runtimes');
  }
-@@ -30,6 +36,7 @@ export function codexHome(): string {
+@@ -32,6 +38,7 @@ export function codexHome(): string {
  }
  
  export function runtimeAlive(record: CodexRuntimeRecord): boolean {
@@ -95,15 +95,15 @@ index 190593e5..f536c830 100644
      return isProcessAlive(record.pid) && getProcessStartMarker(record.pid) === record.marker;
  }
  
-@@ -47,6 +54,7 @@ function generationMayBeAlive(pid: number, marker?: string, snapshot?: ReadonlyM
+@@ -49,6 +56,7 @@ function generationMayBeAlive(pid: number, marker?: string, snapshot?: ReadonlyM
      return !actual || !marker || actual === marker;
  }
  export function runtimeMayBeAlive(owner: CodexRuntimeRecord, snapshot?: ReadonlyMap<number, string | null> | WindowsProcessTable | null): boolean {
 +    if (!currentNamespaceGenerationMatches(owner)) return false;
      return generationMayBeAlive(owner.pid, owner.marker, snapshot)
-         || Boolean(owner.serverPid && generationMayBeAlive(owner.serverPid, owner.serverMarker, snapshot));
+         || Boolean(owner.kind !== 'attached' && owner.serverPid && generationMayBeAlive(owner.serverPid, owner.serverMarker, snapshot));
  }
-@@ -70,13 +78,17 @@ async function readRecords(directory: string, strict = false): Promise<CodexRunt
+@@ -72,13 +80,17 @@ async function readRecords(directory: string, strict = false): Promise<CodexRunt
  }
  
  export async function saveRuntime(record: CodexRuntimeRecord): Promise<void> {
@@ -124,7 +124,7 @@ index 190593e5..f536c830 100644
          await rename(temporary, target);
      }
  }
-@@ -90,6 +102,7 @@ export async function withThreadOwnership<T>(home: string, threadId: string, own
+@@ -92,6 +104,7 @@ export async function withThreadOwnership<T>(home: string, threadId: string, own
          try {
              for (const owner of await readRecords(directory, true)) {
                  if (owner.id === ownId || owner.codexHome !== home) continue;
@@ -133,7 +133,7 @@ index 190593e5..f536c830 100644
                      throw new Error(`Codex runtime ${owner.id} has an unconfirmed creation. Inspect/stop that runtime before cold resume; its thread ID may be unknown.`);
                  }
 diff --git a/cli/src/commands/runner.test.ts b/cli/src/commands/runner.test.ts
-index 706cbd16..0067654f 100644
+index 706cbd1..0067654 100644
 --- a/cli/src/commands/runner.test.ts
 +++ b/cli/src/commands/runner.test.ts
 @@ -11,7 +11,12 @@ const {
@@ -247,7 +247,7 @@ index 706cbd16..0067654f 100644
 +    })
 +})
 diff --git a/cli/src/commands/runner.ts b/cli/src/commands/runner.ts
-index 75caa109..840e8481 100644
+index 75caa10..840e848 100644
 --- a/cli/src/commands/runner.ts
 +++ b/cli/src/commands/runner.ts
 @@ -1,7 +1,9 @@
@@ -357,7 +357,7 @@ index 75caa109..840e8481 100644
  ${chalk.bold('Options:')}
 diff --git a/cli/src/persistence.runnerLock.test.ts b/cli/src/persistence.runnerLock.test.ts
 new file mode 100644
-index 00000000..3e3b4dce
+index 0000000..3e3b4dc
 --- /dev/null
 +++ b/cli/src/persistence.runnerLock.test.ts
 @@ -0,0 +1,57 @@
@@ -419,7 +419,7 @@ index 00000000..3e3b4dce
 +    })
 +})
 diff --git a/cli/src/persistence.test.ts b/cli/src/persistence.test.ts
-index ad4b9690..41c2b9cb 100644
+index ad4b969..41c2b9c 100644
 --- a/cli/src/persistence.test.ts
 +++ b/cli/src/persistence.test.ts
 @@ -23,7 +23,7 @@ vi.mock('@/configuration', () => ({
@@ -452,7 +452,7 @@ index ad4b9690..41c2b9cb 100644
 +    })
 +})
 diff --git a/cli/src/persistence.ts b/cli/src/persistence.ts
-index 81c6a761..313c64b6 100644
+index 81c6a76..313c64b 100644
 --- a/cli/src/persistence.ts
 +++ b/cli/src/persistence.ts
 @@ -9,7 +9,7 @@ import { readFile, writeFile, mkdir, open, unlink, rename, chmod } from 'node:fs
@@ -532,7 +532,7 @@ index 81c6a761..313c64b6 100644
        }
  
 diff --git a/cli/src/runner/run.stopSession.test.ts b/cli/src/runner/run.stopSession.test.ts
-index 58121682..33a7f3b6 100644
+index aa8094b..bd3bcca 100644
 --- a/cli/src/runner/run.stopSession.test.ts
 +++ b/cli/src/runner/run.stopSession.test.ts
 @@ -9,8 +9,12 @@ const mocks = vi.hoisted(() => ({
@@ -571,7 +571,7 @@ index 58121682..33a7f3b6 100644
      getProcessStartMarker: () => 'generation',
      killProcess: mocks.kill,
      killProcessTreeByPid: mocks.kill,
-@@ -81,8 +88,10 @@ describe('runner stop confirmation after shared Codex tracking loss', () => {
+@@ -84,8 +91,10 @@ describe('runner stop confirmation after shared Codex tracking loss', () => {
  
      beforeEach(() => {
          vi.clearAllMocks()
@@ -583,7 +583,7 @@ index 58121682..33a7f3b6 100644
              command: 'codex', args: [], codexHome: home,
              hub: configuration.apiUrl, authHash: 'test-auth',
              sessions: { target: { threadId: 'thread', namespace: 'test', active: false } },
-@@ -132,4 +141,23 @@ describe('runner stop confirmation after shared Codex tracking loss', () => {
+@@ -142,4 +151,23 @@ describe('runner stop confirmation after shared Codex tracking loss', () => {
          await expect(stopSession('PID-42')).resolves.toBe('unknown')
          expect(mocks.kill).not.toHaveBeenCalled()
      })
@@ -608,10 +608,10 @@ index 58121682..33a7f3b6 100644
 +    })
  })
 diff --git a/cli/src/runner/run.ts b/cli/src/runner/run.ts
-index 386c0799..ab713546 100644
+index 6c4b609..48baa97 100644
 --- a/cli/src/runner/run.ts
 +++ b/cli/src/runner/run.ts
-@@ -42,8 +42,9 @@ import { join } from 'path';
+@@ -45,8 +45,9 @@ import { join } from 'path';
  import { buildMachineMetadata } from '@/agent/sessionFactory';
  import { resolveWorkspaceRoots } from '@/utils/workspaceRoot';
  import { hashRunnerCliApiToken, hashRunnerExtraHeaders } from './runnerIdentity';
@@ -622,7 +622,7 @@ index 386c0799..ab713546 100644
  import { coalesceStopRequests } from './stopSessionRequests';
  import { scheduleCursorModelsPrewarm } from '@/modules/common/cursorModelsPrewarm';
  import { isLinkedGitWorktree } from '@/utils/isLinkedGitWorktree';
-@@ -1200,8 +1201,8 @@ export async function startRunner(options: { workspaceRoots?: string[] } = {}):
+@@ -1291,8 +1292,8 @@ export async function startRunner(options: { workspaceRoots?: string[] } = {}):
        // owner is conservative; caching a negative result could hide a new live
        // owner after PID reuse. Binding files are reread on EVERY decision.
        const possiblyLiveGenerations = new Set<string>();
@@ -633,7 +633,7 @@ index 386c0799..ab713546 100644
        const readLiveRuntimesForStop = async () => {
          try {
            const scanStarted = Date.now();
-@@ -1272,6 +1273,67 @@ export async function startRunner(options: { workspaceRoots?: string[] } = {}):
+@@ -1366,6 +1367,67 @@ export async function startRunner(options: { workspaceRoots?: string[] } = {}):
          return base;
        };
  
@@ -701,7 +701,7 @@ index 386c0799..ab713546 100644
        const { findRuntime } = await import('@/codex/shared/registry');
        const sharedRuntime = await findRuntime(sessionId);
        if (sharedRuntime) {
-@@ -1282,26 +1344,45 @@ export async function startRunner(options: { workspaceRoots?: string[] } = {}):
+@@ -1376,26 +1438,45 @@ export async function startRunner(options: { workspaceRoots?: string[] } = {}):
            if (tracked) {
              const detach = detachSharedRootFromWrapper(tracked, sessionId);
              if (detach.kind === 'keep_wrapper' || keepWrapperForSharedSiblings(tracked, sessionId)) {
@@ -754,10 +754,10 @@ index 386c0799..ab713546 100644
          const probeRuntimes = await readLiveRuntimesForStop();
          if (probeRuntimes === null) return 'still_alive';
 diff --git a/cli/src/utils/process.ts b/cli/src/utils/process.ts
-index cc4cb045..fe9d17bb 100644
+index 3ca42cd..46ca660 100644
 --- a/cli/src/utils/process.ts
 +++ b/cli/src/utils/process.ts
-@@ -88,6 +88,26 @@ export function getSystemBootId(): string | null {
+@@ -89,6 +89,26 @@ export function getSystemBootId(): string | null {
      return null;
    }
  }
@@ -785,7 +785,7 @@ index cc4cb045..fe9d17bb 100644
  export function getProcessThreadGroupId(pid: number): number | null {
    if (process.platform !== 'linux' || !Number.isSafeInteger(pid) || pid <= 0) return null;
 diff --git a/cli/src/utils/processGeneration.test.ts b/cli/src/utils/processGeneration.test.ts
-index 57c644cb..960f2671 100644
+index 57c644c..960f267 100644
 --- a/cli/src/utils/processGeneration.test.ts
 +++ b/cli/src/utils/processGeneration.test.ts
 @@ -1,12 +1,12 @@
@@ -839,10 +839,10 @@ index 57c644cb..960f2671 100644
          platform(value)
          expect(getSystemBootId()).toBeNull()
 diff --git a/hub/src/web/routes/sessions.ts b/hub/src/web/routes/sessions.ts
-index 6883e67b..4aa6453a 100644
+index f3e0b87..fe68aea 100644
 --- a/hub/src/web/routes/sessions.ts
 +++ b/hub/src/web/routes/sessions.ts
-@@ -999,7 +999,7 @@ export function createSessionsRoutes(getSyncEngine: () => SyncEngine | null): Ho
+@@ -985,7 +985,7 @@ export function createSessionsRoutes(
              return engine
          }
  

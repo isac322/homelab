@@ -1,7 +1,7 @@
 {
   "defaults": {
     "agent": "codex",
-    "model": "gpt-6.1-sol",
+    "model": "gpt-6.2-sol",
     "permission_mode": "yolo",
     "machine_id": null,
     "visual_paths": []

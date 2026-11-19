@@ -1,7 +1,8 @@
 diff --git a/cli/src/api/apiMachine.ts b/cli/src/api/apiMachine.ts
+index 0e5bf85..ea6ae59 100644
 --- a/cli/src/api/apiMachine.ts
 +++ b/cli/src/api/apiMachine.ts
-@@ -463,7 +463,7 @@
+@@ -577,7 +577,7 @@ export class ApiMachineClient {
              return forkArchivedCodex(request, () => this.pathPolicy.allowsSpawn(request.directory))
          })
          this.rpcHandlerManager.registerHandler(RPC_METHODS.SpawnHappySession, async (params: any) => {
@@ -10,7 +11,7 @@ diff --git a/cli/src/api/apiMachine.ts b/cli/src/api/apiMachine.ts
  
              if (!directory) {
                  throw new Error('Directory is required')
-@@ -500,6 +500,7 @@
+@@ -614,6 +614,7 @@ export class ApiMachineClient {
                  token,
                  sessionType,
                  worktreeName,
@@ -18,7 +19,7 @@ diff --git a/cli/src/api/apiMachine.ts b/cli/src/api/apiMachine.ts
                  startingMode,
                  forkSession: forkSession === true,
                  validateDirectory: async (path) => await this.pathPolicy.allowsSpawn(path),
-@@ -516,6 +517,7 @@
+@@ -630,6 +631,7 @@ export class ApiMachineClient {
                          errorMessage: result.errorMessage,
                          code: result.code,
                          agent: result.agent,
@@ -27,9 +28,10 @@ diff --git a/cli/src/api/apiMachine.ts b/cli/src/api/apiMachine.ts
              }
          })
 diff --git a/cli/src/modules/common/rpcTypes.ts b/cli/src/modules/common/rpcTypes.ts
+index 90a3eab..b1a3ae2 100644
 --- a/cli/src/modules/common/rpcTypes.ts
 +++ b/cli/src/modules/common/rpcTypes.ts
-@@ -24,6 +24,7 @@
+@@ -24,6 +24,7 @@ export interface SpawnSessionOptions {
      token?: string
      sessionType?: 'simple' | 'worktree'
      worktreeName?: string
@@ -38,6 +40,7 @@ diff --git a/cli/src/modules/common/rpcTypes.ts b/cli/src/modules/common/rpcType
      /** Claude: spawn with --fork-session after --resume. */
      forkSession?: boolean
 diff --git a/cli/src/runner/controlServer.ts b/cli/src/runner/controlServer.ts
+index 1a790ca..208acfc 100644
 --- a/cli/src/runner/controlServer.ts
 +++ b/cli/src/runner/controlServer.ts
 @@ -6,6 +6,7 @@
@@ -48,7 +51,7 @@ diff --git a/cli/src/runner/controlServer.ts b/cli/src/runner/controlServer.ts
  import { logger } from '@/ui/logger';
  import { Metadata } from '@/api/types';
  import { TrackedSession } from './types';
-@@ -110,8 +111,12 @@
+@@ -110,8 +111,12 @@ export function startRunnerControlServer({
            directory: z.string(),
            sessionId: z.string().optional(),
            sessionType: z.enum(['simple', 'worktree']).optional(),
@@ -63,7 +66,7 @@ diff --git a/cli/src/runner/controlServer.ts b/cli/src/runner/controlServer.ts
          response: {
            200: z.object({
              success: z.boolean(),
-@@ -131,10 +136,10 @@
+@@ -131,10 +136,10 @@ export function startRunnerControlServer({
          }
        }
      }, async (request, reply) => {
@@ -77,9 +80,10 @@ diff --git a/cli/src/runner/controlServer.ts b/cli/src/runner/controlServer.ts
        switch (result.type) {
          case 'success':
 diff --git a/cli/src/runner/run.ts b/cli/src/runner/run.ts
+index 48baa97..d5bbbe1 100644
 --- a/cli/src/runner/run.ts
 +++ b/cli/src/runner/run.ts
-@@ -656,6 +656,13 @@
+@@ -677,6 +677,13 @@ export async function startRunner(options: { workspaceRoots?: string[] } = {}):
        }
        const yolo = options.yolo === true;
        const sessionType = options.sessionType ?? 'simple';
@@ -93,7 +97,7 @@ diff --git a/cli/src/runner/run.ts b/cli/src/runner/run.ts
        const worktreeName = options.worktreeName;
        let directoryCreated = false;
        let spawnDirectory = directory;
-@@ -730,11 +737,10 @@
+@@ -751,11 +758,10 @@ export async function startRunner(options: { workspaceRoots?: string[] } = {}):
        }
  
        if (sessionType === 'worktree') {
@@ -109,7 +113,7 @@ diff --git a/cli/src/runner/run.ts b/cli/src/runner/run.ts
            spawnDirectory = directory;
            if (isLinkedGitWorktree(directory)) {
              logger.debug(
-@@ -746,7 +752,8 @@
+@@ -767,7 +773,8 @@ export async function startRunner(options: { workspaceRoots?: string[] } = {}):
          } else {
            const worktreeResult = await createWorktree({
              basePath: directory,
@@ -119,7 +123,7 @@ diff --git a/cli/src/runner/run.ts b/cli/src/runner/run.ts
            });
            if (!worktreeResult.ok) {
              logger.debug(`[RUNNER RUN] Worktree creation failed: ${worktreeResult.error}`);
-@@ -2233,7 +2240,7 @@
+@@ -2395,7 +2402,7 @@ export function buildCliArgs(
        args.push('--yolo');
      }
    }
@@ -130,6 +134,7 @@ diff --git a/cli/src/runner/run.ts b/cli/src/runner/run.ts
      if (!isLinkedGitWorktree(options.directory)) {
 diff --git a/cli/src/runner/run.worktreeStartCommit.test.ts b/cli/src/runner/run.worktreeStartCommit.test.ts
 new file mode 100644
+index 0000000..05cf518
 --- /dev/null
 +++ b/cli/src/runner/run.worktreeStartCommit.test.ts
 @@ -0,0 +1,234 @@
@@ -368,9 +373,10 @@ new file mode 100644
 +    })
 +})
 diff --git a/cli/src/runner/worktree.ts b/cli/src/runner/worktree.ts
+index 374d4da..6d1b20f 100644
 --- a/cli/src/runner/worktree.ts
 +++ b/cli/src/runner/worktree.ts
-@@ -3,6 +3,7 @@
+@@ -3,6 +3,7 @@ import { randomBytes } from 'node:crypto';
  import { access, mkdir } from 'node:fs/promises';
  import { basename, dirname, join } from 'node:path';
  import { promisify } from 'node:util';
@@ -378,7 +384,7 @@ diff --git a/cli/src/runner/worktree.ts b/cli/src/runner/worktree.ts
  
  const execFileAsync = promisify(execFile);
  
-@@ -101,8 +102,12 @@
+@@ -101,8 +102,12 @@ async function branchExists(repoRoot: string, branch: string): Promise<boolean>
  export async function createWorktree(options: {
    basePath: string;
    nameHint?: string;
@@ -392,7 +398,7 @@ diff --git a/cli/src/runner/worktree.ts b/cli/src/runner/worktree.ts
    let repoRoot: string;
  
    try {
-@@ -114,6 +119,20 @@
+@@ -114,6 +119,20 @@ export async function createWorktree(options: {
        error: `Path is not a Git repository: ${message}`
      };
    }
@@ -413,7 +419,7 @@ diff --git a/cli/src/runner/worktree.ts b/cli/src/runner/worktree.ts
  
    const repoParent = dirname(repoRoot);
    const repoName = basename(repoRoot);
-@@ -136,7 +155,21 @@
+@@ -136,7 +155,21 @@ export async function createWorktree(options: {
      }
  
      try {
@@ -437,9 +443,10 @@ diff --git a/cli/src/runner/worktree.ts b/cli/src/runner/worktree.ts
          ok: true,
          info: {
 diff --git a/hub/src/sync/rpcGateway.ts b/hub/src/sync/rpcGateway.ts
+index 6bb51cb..8606afd 100644
 --- a/hub/src/sync/rpcGateway.ts
 +++ b/hub/src/sync/rpcGateway.ts
-@@ -269,13 +269,14 @@
+@@ -330,13 +330,14 @@ export class RpcGateway {
          // latter is adopt-stub (create/getOrCreate with id), not reopen.
          forkSession?: boolean,
          /** Fresh machine-spawn stub — distinct from reopen existingSessionId. */
@@ -456,7 +463,7 @@ diff --git a/hub/src/sync/rpcGateway.ts b/hub/src/sync/rpcGateway.ts
              agent?: AgentFlavor
              /** Explicit false = no OS child; stub safe to delete (#1911 B3). */
              childStarted?: boolean
-@@ -294,6 +295,7 @@
+@@ -355,6 +356,7 @@ export class RpcGateway {
                      yolo,
                      sessionType,
                      worktreeName,
@@ -465,9 +472,10 @@ diff --git a/hub/src/sync/rpcGateway.ts b/hub/src/sync/rpcGateway.ts
                      effort,
                      permissionMode,
 diff --git a/hub/src/sync/syncEngine.ts b/hub/src/sync/syncEngine.ts
+index 1d1215b..0e6c1d9 100644
 --- a/hub/src/sync/syncEngine.ts
 +++ b/hub/src/sync/syncEngine.ts
-@@ -2641,8 +2641,22 @@
+@@ -4080,8 +4080,22 @@ export class SyncEngine {
          startingMode?: 'remote' | 'pty',
          // Required for fresh machine spawns so the runner stamps the HAPI id on
          // argv before the first webhook (#1911 Major: unreapable window).
@@ -491,7 +499,7 @@ diff --git a/hub/src/sync/syncEngine.ts b/hub/src/sync/syncEngine.ts
          // Fresh machine spawns historically omitted existingSessionId, so
          // buildCliArgs could not stamp --hapi-session-id / --existing-session-id.
          // A runner restart before the first webhook then left no persisted PID
-@@ -2696,7 +2710,8 @@
+@@ -4135,7 +4149,8 @@ export class SyncEngine {
                  copilotAgentMode,
                  startingMode,
                  undefined,
@@ -502,9 +510,10 @@ diff --git a/hub/src/sync/syncEngine.ts b/hub/src/sync/syncEngine.ts
          } catch (error) {
              // Ambiguous post-dispatch failure — keep the stub (child may exist).
 diff --git a/hub/src/sync/syncEngineSpawnPrealloc.test.ts b/hub/src/sync/syncEngineSpawnPrealloc.test.ts
+index 5b7e586..e3bbda5 100644
 --- a/hub/src/sync/syncEngineSpawnPrealloc.test.ts
 +++ b/hub/src/sync/syncEngineSpawnPrealloc.test.ts
-@@ -8,6 +8,31 @@
+@@ -8,6 +8,31 @@ import { SyncEngine } from './syncEngine'
   * to the runner so buildCliArgs can stamp argv before the first webhook.
   */
  describe('SyncEngine.spawnSession preallocates HAPI id for fresh machine spawns', () => {
@@ -537,6 +546,7 @@ diff --git a/hub/src/sync/syncEngineSpawnPrealloc.test.ts b/hub/src/sync/syncEng
          const store = new Store(':memory:')
          const engine = new SyncEngine(
 diff --git a/hub/src/web/routes/machines.test.ts b/hub/src/web/routes/machines.test.ts
+index 9a0fdc7..884e0d1 100644
 --- a/hub/src/web/routes/machines.test.ts
 +++ b/hub/src/web/routes/machines.test.ts
 @@ -1,10 +1,13 @@
@@ -547,14 +557,14 @@ diff --git a/hub/src/web/routes/machines.test.ts b/hub/src/web/routes/machines.t
  import type { WebAppEnv } from '../middleware/auth'
  import { createMachinesRoutes } from './machines'
  import { RpcTargetMissingError } from '../../sync/rpcGateway'
- import { MACHINE_CAPABILITIES, RPC_TARGET_MISSING_ERROR_CODE } from '@hapi/protocol'
+ import { DEFAULT_USAGE_QUERY_TEMPLATE, MACHINE_CAPABILITIES, RPC_TARGET_MISSING_ERROR_CODE } from '@hapi/protocol'
 +import { Store } from '../../store'
 +import { RpcRegistry } from '../../socket/rpcRegistry'
 +import type { Server } from 'socket.io'
  
  function createMachine(overrides?: Partial<Machine>): Machine {
      return {
-@@ -29,6 +32,79 @@
+@@ -29,6 +32,79 @@ function createMachine(overrides?: Partial<Machine>): Machine {
  }
  
  describe('machines routes', () => {
@@ -631,13 +641,14 @@ diff --git a/hub/src/web/routes/machines.test.ts b/hub/src/web/routes/machines.t
 +        expect(spawnSession).toHaveBeenCalledTimes(1)
 +    })
 +
-     it('blocks spawn and availability inspection when the runner needs an upgrade', async () => {
-         const machine = createMachine({
-             metadata: {
+     describe('usage query routes', () => {
+         function createUsageApp(engine: Partial<SyncEngine>, namespace = 'default', machineNamespace = namespace) {
+             const usageMachine = createMachine({
 diff --git a/hub/src/web/routes/machines.ts b/hub/src/web/routes/machines.ts
+index c914370..0392bde 100644
 --- a/hub/src/web/routes/machines.ts
 +++ b/hub/src/web/routes/machines.ts
-@@ -140,6 +140,16 @@
+@@ -251,6 +251,16 @@ export function createMachinesRoutes(
          if (!parsed.success) {
              return c.json({ error: 'Invalid body' }, 400)
          }
@@ -654,7 +665,7 @@ diff --git a/hub/src/web/routes/machines.ts b/hub/src/web/routes/machines.ts
          const startingMode = parsed.data.startingMode
          const namespace = c.get('namespace')
  
-@@ -224,7 +234,8 @@
+@@ -335,7 +345,8 @@ export function createMachinesRoutes(
              parsed.data.collaborationMode,
              parsed.data.copilotAgentMode,
              startingMode,
@@ -665,9 +676,10 @@ diff --git a/hub/src/web/routes/machines.ts b/hub/src/web/routes/machines.ts
          return c.json(result)
      })
 diff --git a/hub/src/web/server.ts b/hub/src/web/server.ts
+index 2785b16..e614172 100644
 --- a/hub/src/web/server.ts
 +++ b/hub/src/web/server.ts
-@@ -256,6 +256,7 @@
+@@ -359,6 +359,7 @@ export function createWebApp(options: {
          protocolVersion: PROTOCOL_VERSION,
          capabilities: {
              workGraph: true,
@@ -676,9 +688,10 @@ diff --git a/hub/src/web/server.ts b/hub/src/web/server.ts
          }
      }))
 diff --git a/shared/src/apiTypes.test.ts b/shared/src/apiTypes.test.ts
+index 95eaca2..57096db 100644
 --- a/shared/src/apiTypes.test.ts
 +++ b/shared/src/apiTypes.test.ts
-@@ -5,8 +5,30 @@
+@@ -5,9 +5,31 @@ import {
      ListCodexSessionsRpcResponseSchema,
      ListPiSessionsRpcResponseSchema,
      MessagesQuerySchema,
@@ -686,7 +699,7 @@ diff --git a/shared/src/apiTypes.test.ts b/shared/src/apiTypes.test.ts
 +    SendMessageRequestSchema,
 +    SpawnSessionRequestSchema
  } from './apiTypes'
-+
+ 
 +describe('SpawnSessionRequestSchema worktree commit', () => {
 +    const worktreeStartCommit = 'a'.repeat(40)
 +
@@ -707,13 +720,15 @@ diff --git a/shared/src/apiTypes.test.ts b/shared/src/apiTypes.test.ts
 +        expect(SpawnSessionRequestSchema.safeParse({ directory: '/repo', sessionType: 'simple' }).success).toBe(true)
 +    })
 +})
- 
++
  describe('ListCodexSessionsRpcResponseSchema', () => {
      it('preserves Codex session messages when parsing runner RPC responses', () => {
+         const parsed = ListCodexSessionsRpcResponseSchema.parse({
 diff --git a/shared/src/apiTypes.ts b/shared/src/apiTypes.ts
+index c64634f..e98f5a6 100644
 --- a/shared/src/apiTypes.ts
 +++ b/shared/src/apiTypes.ts
-@@ -754,6 +754,8 @@
+@@ -933,6 +933,8 @@ export type QueuedStateResponse = {
      }>
  }
  
@@ -722,7 +737,7 @@ diff --git a/shared/src/apiTypes.ts b/shared/src/apiTypes.ts
  export const SpawnSessionRequestSchema = z.object({
      directory: z.string().min(1),
      agent: AgentFlavorSchema.optional(),
-@@ -764,11 +766,15 @@
+@@ -943,11 +945,15 @@ export const SpawnSessionRequestSchema = z.object({
      permissionMode: PermissionModeSchema.optional(),
      sessionType: z.enum(['simple', 'worktree']).optional(),
      worktreeName: z.string().optional(),
@@ -740,9 +755,10 @@ diff --git a/shared/src/apiTypes.ts b/shared/src/apiTypes.ts
  export type SpawnSessionRequest = z.infer<typeof SpawnSessionRequestSchema>
  
 diff --git a/shared/src/runnerCapabilities.test.ts b/shared/src/runnerCapabilities.test.ts
+index ba4c7a4..12ed6e8 100644
 --- a/shared/src/runnerCapabilities.test.ts
 +++ b/shared/src/runnerCapabilities.test.ts
-@@ -15,6 +15,7 @@
+@@ -16,6 +16,7 @@ describe('runnerCapabilities', () => {
          expect(CURRENT_MACHINE_CAPABILITIES).toEqual(expect.arrayContaining([
              ...REQUIRED_MACHINE_CAPABILITIES,
              MACHINE_CAPABILITIES.WorkspaceFileAccess,
@@ -751,21 +767,22 @@ diff --git a/shared/src/runnerCapabilities.test.ts b/shared/src/runnerCapabiliti
      })
  
 diff --git a/shared/src/runnerCapabilities.ts b/shared/src/runnerCapabilities.ts
+index 6ea0a37..33ea537 100644
 --- a/shared/src/runnerCapabilities.ts
 +++ b/shared/src/runnerCapabilities.ts
-@@ -35,6 +35,8 @@
-     StopRunner: RPC_METHODS.StopRunner,
-     /** Read-only file/Git/search RPCs available on the long-lived runner. */
+@@ -39,6 +39,8 @@ export const MACHINE_CAPABILITIES = {
      WorkspaceFileAccess: 'workspace-file-access',
+     /** Normalized local-session import transcripts via ListLocalSessions. */
+     LocalSessionImport: 'local-session-import',
 +    /** Exact local commit selection for fresh HAPI-managed worktrees. */
 +    WorktreeStartCommit: 'worktree-start-commit',
  } as const
  
  export type MachineCapability =
-@@ -47,6 +49,7 @@
-     MACHINE_CAPABILITIES.CursorChatStoreStatus,
-     MACHINE_CAPABILITIES.StopRunner,
+@@ -54,6 +56,7 @@ export const CURRENT_MACHINE_CAPABILITIES: readonly MachineCapability[] = [
+     MACHINE_CAPABILITIES.UsageQuery,
      MACHINE_CAPABILITIES.WorkspaceFileAccess,
+     MACHINE_CAPABILITIES.LocalSessionImport,
 +    MACHINE_CAPABILITIES.WorktreeStartCommit,
  ]
  
