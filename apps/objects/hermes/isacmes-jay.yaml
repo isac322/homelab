@@ -199,6 +199,40 @@ spec:
           readOnly: true
         - name: hermes-patched-files
           mountPath: /patched
+    - name: prepare-camofox-home
+      image: ghcr.io/jo-inc/camofox-browser:1.19.0@sha256:49f8e02f9fb0e191b406845482745efc72f835db06789e3a34e77a6ff1497046
+      command:
+        - /bin/sh
+        - -ec
+      args:
+        - |
+          if [ -d /home/node/.cache/camoufox ]; then
+            chown 0:0 /home/node/.cache
+            chown -R 0:0 /home/node/.cache/camoufox
+            rm -rf /home/node/.cache/camoufox
+          fi
+          mkdir -p /home/node/.cache/camoufox
+          cp -R /root/.cache/camoufox/. /home/node/.cache/camoufox/
+          chown 1000:1000 /home/node /home/node/.cache
+          chown -R 1000:1000 /home/node/.cache/camoufox
+      resources:
+        requests:
+          cpu: 50m
+          memory: 640Mi
+        limits:
+          memory: 1Gi
+      securityContext:
+        allowPrivilegeEscalation: false
+        capabilities:
+          drop:
+            - ALL
+          add:
+            - CHOWN
+        readOnlyRootFilesystem: true
+        runAsUser: 0
+      volumeMounts:
+        - name: camofox-home
+          mountPath: /home/node
   extraVolumes:
     - name: hermes-lcm
       emptyDir: {}
@@ -259,7 +293,7 @@ spec:
       imagePullPolicy: IfNotPresent
       env:
         - name: HOME
-          value: /home/camofox
+          value: /home/node
         - name: CAMOFOX_BIND_HOST
           value: 127.0.0.1
         - name: BROWSER_IDLE_TIMEOUT_MS
@@ -345,7 +379,7 @@ spec:
         runAsUser: 1000
       volumeMounts:
         - name: camofox-home
-          mountPath: /home/camofox
+          mountPath: /home/node
         - name: camofox-tmp
           mountPath: /tmp
         - name: camofox-shm
@@ -377,6 +411,7 @@ spec:
       model:
         default: gpt-6.2-sol
         context_length: 872000
+        base_url: https://cliproxyapi.runbear.io/v1
         provider: openai-api
         api_mode: codex_responses
       delegation:
@@ -454,6 +489,7 @@ spec:
         compression:
           provider: main
           model: gpt-6.2-sol
+          context_length: 872000
           api_mode: codex_responses
           reasoning_effort: low
         title_generation:
