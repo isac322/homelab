@@ -635,6 +635,7 @@ CREATE TABLE IF NOT EXISTS {name} (
     updated_at  REAL NOT NULL,
     deadline_at REAL,
     consumed_id TEXT,
+    result_nonce TEXT,
     PRIMARY KEY (delivery_id, mode)
 )"""
 COLLABORATORS_DDL = """
@@ -691,7 +692,7 @@ SCHEMA = ";\n".join([
 # Issue session: none -> pending -> ready (pending may fall back to none)
 # Issue phase: none -> triaged -> implementing; pull requests: none -> reviewing
 # Turn: sending -> sent -> lost (session died mid-turn) -> sending under a fresh localId
-#       sent with an invalid result -> sent under <localId>-fix (one correction request) -> attention if still invalid
+#       sent with an invalid, malformed, or nonce-mismatched result -> sent under <localId>-fix (one correction request) -> attention if still invalid
 #       sent past its deadline_at while the agent is busy -> 'expired' (the workflow parks it as time_budget); a
 #       result it emits later is harvested under the same localId until session_turn hands it out (consumed_id)
 
@@ -703,6 +704,10 @@ class Store:
         self.path = path
         with closing(self._connect()) as conn:
             conn.executescript(SCHEMA)
+        with self.tx() as conn:
+            cols = {row["name"] for row in conn.execute("PRAGMA table_info(turns)")}
+            if "result_nonce" not in cols:
+                conn.execute("ALTER TABLE turns ADD COLUMN result_nonce TEXT")
             conn.execute(
                 "INSERT OR IGNORE INTO prs (repo, pr_number, issue_number, updated_at)"
                 " SELECT repo, pr_number, issue_number, updated_at FROM issues"
@@ -1150,16 +1155,25 @@ class Store:
         return rows[0] if rows else None
 
     def put_turn(self, delivery_id: str, mode: str, local_id: str, session_id: str, state: str,
-                 idle_polls: int = 0, *, deadline_at: float | None = None) -> None:
-        """Upsert a turn. ``deadline_at`` is set by a send; None keeps the recorded one."""
+                 idle_polls: int = 0, *, deadline_at: float | None = None,
+                 result_nonce: str | None = None) -> None:
+        """Upsert a turn. ``deadline_at`` is set by a send; None keeps the recorded one.
+
+        ``result_nonce`` when None keeps the existing nonce on same-localId updates and clears it when moving to a
+        new localId (for example ``resend_local_id``); passing a non-empty nonce sets it explicitly.
+        """
+        if result_nonce == "":
+            raise ValueError("result_nonce must not be empty")
         with self.tx() as conn:
             conn.execute(
                 "INSERT INTO turns (delivery_id, mode, local_id, session_id, state, idle_polls, updated_at,"
-                " deadline_at) VALUES (?, ?, ?, ?, ?, ?, ?, ?) ON CONFLICT(delivery_id, mode) DO UPDATE SET"
-                " local_id = excluded.local_id, session_id = excluded.session_id, state = excluded.state,"
-                " idle_polls = excluded.idle_polls, updated_at = excluded.updated_at,"
-                " deadline_at = COALESCE(excluded.deadline_at, turns.deadline_at)",
-                (delivery_id, mode, local_id, session_id, state, idle_polls, time.time(), deadline_at),
+                " deadline_at, result_nonce) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?) ON CONFLICT(delivery_id, mode)"
+                " DO UPDATE SET local_id = excluded.local_id, session_id = excluded.session_id,"
+                " state = excluded.state, idle_polls = excluded.idle_polls, updated_at = excluded.updated_at,"
+                " deadline_at = COALESCE(excluded.deadline_at, turns.deadline_at),"
+                " result_nonce = CASE WHEN excluded.result_nonce IS NOT NULL THEN excluded.result_nonce"
+                " WHEN excluded.local_id = turns.local_id THEN turns.result_nonce ELSE NULL END",
+                (delivery_id, mode, local_id, session_id, state, idle_polls, time.time(), deadline_at, result_nonce),
             )
 
     def anchor_turn_deadline(self, delivery_id: str, mode: str, deadline_at: float) -> float:
@@ -2024,6 +2038,17 @@ def resend_local_id(delivery_id: str, mode: str, current: str) -> str:
     return f"{base}-r{n + 1}"
 
 
+def result_nonce_for(local_id: str) -> str:
+    """Short, turn-unique nonce for the model's result line, decorrelated from UUIDv1 delivery IDs."""
+    return hashlib.sha256(f"issue-agent-result-nonce:{local_id}".encode()).hexdigest()[:12]
+
+
+def turn_nonce(turn: Mapping[str, Any] | sqlite3.Row) -> str:
+    """Result nonce expected for a stored turn (legacy rows before ``result_nonce`` used ``local_id``)."""
+    stored = turn["result_nonce"] if "result_nonce" in turn.keys() else None
+    return stored or turn["local_id"]
+
+
 def _fence(nonce: str, label: str, text: str) -> str:
     tag = "UNTRUSTED-" + hashlib.sha256(f"{nonce}:{label}".encode()).hexdigest()[:16]
     return f"<<<{tag} {label}\n{text.replace(tag, '')}\n{tag}>>>"
@@ -2167,6 +2192,11 @@ def build_message(ev: sqlite3.Row, mode: str, branch: str | None, default_branch
     lines.append(_fence(nonce, label, ev["body"]))
     if context is not None:
         lines.append(_fence(nonce, "CONTEXT_JSON", json.dumps(context, ensure_ascii=False, indent=1)))
+    lines += [
+        "",
+        "Final reply reminder — copy this exact turn nonce (never reuse a nonce from an earlier turn): "
+        f"{RESULT_TAG} {nonce} {{...}}",
+    ]
     return "\n".join(lines)
 
 
@@ -2179,6 +2209,7 @@ def build_correction(ev: sqlite3.Row, mode: str, error: str, nonce: str) -> str:
         "matches the schema, as exactly one final line: the tag, the new nonce, then the result JSON:",
         f"  {RESULT_TAG} {nonce} {{...}}",
         RESULT_SCHEMAS[mode].replace("<n>", str(int(ev["issue_number"]))),
+        f"Copy this exact correction nonce: {RESULT_TAG} {nonce} {{...}}",
     ])
 
 
@@ -3558,7 +3589,7 @@ class Bridge:
             texts = assistant_texts(m)
             if texts:
                 last_text = texts
-        state, raw = find_result(last_text, local_id)
+        state, raw = find_result(last_text, turn_nonce(turn))
         return ("answered", raw) if state == "decoded" else ("unanswered", None)
 
     def _other_parked(self, ev: sqlite3.Row) -> bool:
@@ -4326,9 +4357,11 @@ class Bridge:
                 # not trust anything from the interrupted run.
                 instructions += LOST_TURN_NOTICE
             deadline_at = time.time() + TURN_BUDGET_SECONDS[mode]
-            text = build_message(ev, mode, issue["branch"], default_branch, instructions, context, local_id,
+            nonce = result_nonce_for(local_id)
+            text = build_message(ev, mode, issue["branch"], default_branch, instructions, context, nonce,
                                  deadline_at=deadline_at)
-            self.store.put_turn(delivery, mode, local_id, session_id, "sending", deadline_at=deadline_at)
+            self.store.put_turn(delivery, mode, local_id, session_id, "sending", deadline_at=deadline_at,
+                                result_nonce=nonce)
             path = f"/api/sessions/{urllib.parse.quote(session_id, safe='')}/messages"
             try:
                 status, data = self.hapi.request("POST", path, body={"text": text, "localId": local_id,
@@ -4377,6 +4410,8 @@ class Bridge:
             if mode not in MODES:
                 raise OpError("turn predates per-mode results; operator must retry the event", needs_operator=True)
             local_id = turn["local_id"]
+            nonce = turn_nonce(turn)
+            legacy = (turn["result_nonce"] if "result_nonce" in turn.keys() else None) is None
             issue = self._ready_session(ev)
             session = self._follow(ev["repo"], ev["issue_number"], issue["session_id"])
             sid = session["id"]
@@ -4409,22 +4444,19 @@ class Bridge:
             last_message: Mapping[str, Any] = {}
             for m in later:
                 if message_role(m) == "user" and m.get("localId") != local_id and invoked(m):
-                    if find_result(last_text, local_id)[0] != "decoded":
+                    if find_result(last_text, nonce)[0] != "decoded":
                         return self._attention("another user message reached the agent before this step's result")
                     break
                 texts = assistant_texts(m)
                 if texts:
                     last_text, last_message = texts, m
-            result_state, raw = find_result(last_text, local_id)
-            if result_state == "mismatched":
-                return self._attention("agent result nonce does not match this turn")
+            result_state, raw = find_result(last_text, nonce)
             requests = (session.get("agentState") or {}).get("requests") or {}
             # HAPI clears `active` once the agent process is gone; `thinking` may then be stale.
             alive = session.get("active") is not False
             if alive and (session.get("thinking") or requests):
                 deadline_at = turn["deadline_at"]
-                if deadline_at is not None and time.time() >= deadline_at \
-                        and find_result(last_text, local_id)[0] != "decoded":
+                if deadline_at is not None and time.time() >= deadline_at and result_state != "decoded":
                     # The workflow stops waiting and parks the event (`time_budget`); the dispatcher harvests a
                     # result that still arrives, or stops the agent after TURN_GRACE_SECONDS.
                     return {"state": "expired", "session_id": sid,
@@ -4439,7 +4471,7 @@ class Bridge:
                         # cannot replay the same correction indefinitely.
                         self.store.consume_turn(ev["delivery_id"], mode, local_id)
                         return self._attention(f"invalid agent result after a correction request: {result}")
-                    return self._request_correction(ev, mode, sid, local_id, result)
+                    return self._request_correction(ev, mode, sid, local_id, result, legacy=legacy)
                 # The workflow takes a valid result now; a retry must re-run the step rather than harvest it again.
                 already_consumed = self._consumed(ev, turn)
                 self.store.consume_turn(ev["delivery_id"], mode, local_id)
@@ -4470,7 +4502,11 @@ class Bridge:
                 return {"state": "attention", "park_class": "provider_error",
                         "detail": f"model provider error ended the agent turn: {failure[:500]}"}
             if result_state == "malformed":
-                return self._request_correction(ev, mode, sid, local_id, "result line contains invalid JSON")
+                return self._request_correction(ev, mode, sid, local_id, "result line contains invalid JSON",
+                                                legacy=legacy)
+            if result_state == "mismatched":
+                return self._request_correction(ev, mode, sid, local_id,
+                                                "result line nonce does not match this turn", legacy=legacy)
             idle = turn["idle_polls"] + 1
             self.store.put_turn(ev["delivery_id"], mode, local_id, turn["session_id"], "sent", idle)
             if idle >= IDLE_WITHOUT_RESULT_LIMIT:
@@ -4478,18 +4514,20 @@ class Bridge:
             return {"state": "running", "session_id": sid, "pending_requests": 0}
 
     def _request_correction(self, ev: sqlite3.Row, mode: str, session_id: str, local_id: str,
-                            error: str) -> dict[str, Any]:
+                            error: str, *, legacy: bool = False) -> dict[str, Any]:
         """Send the validation error back once under ``<localId>-fix`` and poll that turn; attention otherwise."""
         if local_id.endswith(CORRECTION_SUFFIX):
             self.store.consume_turn(ev["delivery_id"], mode, local_id)
             return self._attention(f"invalid agent result after a correction request: {error}")
         fix_id = local_id + CORRECTION_SUFFIX
+        fix_nonce: str | None = result_nonce_for(fix_id)
         found = self._delivery(session_id, fix_id)  # a crash after an earlier send must not send it twice
         if found == "absent":
             path = f"/api/sessions/{urllib.parse.quote(session_id, safe='')}/messages"
             try:
                 status, data = self.hapi.request("POST", path, body={
-                    "text": build_correction(ev, mode, error, fix_id), "localId": fix_id, "deliveryMode": "queue"})
+                    "text": build_correction(ev, mode, error, fix_nonce), "localId": fix_id,
+                    "deliveryMode": "queue"})
             except TransportError as exc:
                 if exc.not_sent:
                     raise OpError(f"correction not sent: {exc}", retryable=True,
@@ -4503,9 +4541,20 @@ class Bridge:
                 if self._delivery(session_id, fix_id) != "present":
                     raise OpError(f"correction delivery unconfirmed (HTTP {status})", retryable=True,
                                   park_class=hub_park_class(status))
+        elif legacy:
+            # Rolling upgrade recovery: an earlier bridge may have sent fix_id with the legacy localId nonce and
+            # crashed before updating turns; preserve legacy nonce expectation if that message is in history.
+            history = self._history_from(session_id, fix_id)
+            if history:
+                content = history[0].get("content")
+                inner = content.get("content") if isinstance(content, dict) else None
+                utext = inner.get("text") if isinstance(inner, dict) else None
+                if isinstance(utext, str) and f"{RESULT_TAG} {fix_id}" in utext \
+                        and f"{RESULT_TAG} {fix_nonce}" not in utext:
+                    fix_nonce = None
         LOG.info("%s#%s event %s: asked the agent to correct its %s result: %s",
                  ev["repo"], ev["issue_number"], ev["delivery_id"], mode, error)
-        self.store.put_turn(ev["delivery_id"], mode, fix_id, session_id, "sent")
+        self.store.put_turn(ev["delivery_id"], mode, fix_id, session_id, "sent", result_nonce=fix_nonce)
         return {"state": "running", "session_id": session_id, "pending_requests": 0}
 
     @staticmethod
