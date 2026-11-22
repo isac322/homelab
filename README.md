@@ -235,7 +235,7 @@ K3s version과 순차 rollout은 기존 Rancher `system-upgrade-controller`가 �
 
 ### 공개 webhook ingress (Flareway)
 
-- `argocd/apps/flareway.yaml`은 chart `0.4.0`과 controller digest를 고정하며, `apps/objects/flareway/`는 전용 계정 권한·Tunnel·Gateway를 관리한다. 공개 listener는 `argocd-webhook.bhyoo.com/api/webhook`과 `issue-agent-webhook.bhyoo.com/webhooks/github`만 정확히 일치시킨다. 일반 앱과 NAS ingress는 계속 Cilium을 사용한다.
+- `argocd/apps/flareway.yaml`은 chart `0.4.1`과 controller digest를 고정하며, `apps/objects/flareway/`는 전용 계정 권한·Tunnel·Gateway를 관리한다. 공개 listener는 `argocd-webhook.bhyoo.com/api/webhook`과 `issue-agent-webhook.bhyoo.com/webhooks/github`만 정확히 일치시킨다. 일반 앱과 NAS ingress는 계속 Cilium을 사용한다.
 - Gateway API Standard `v1.6.3` CRD의 GitOps 소유자는 별도 `argocd/apps/gateway-api-crds.yaml`이다. Flareway 제거 시에도 Cilium이 쓰는 공용 CRD를 삭제하지 않는다.
 - 전용 Cloudflare 토큰은 Terraform이 계정 하나와 `bhyoo.com` zone에 한정해 발급하고, ESO가 SSM의 `/homelab/cluster/backbone/token/cloudflare/flareway`에서 가져온다. webhook hostname만 로그인 없이 허용하며, n8n의 원본 본문 서명 검증을 유지한다. 새 Tunnel은 복구 시 원격 리소스를 보존하도록 `Orphan` 정책을 사용한다.
 - Tier 1 초기 배정은 2026-11-03 사용자가 승인했다. controller `100m / 64Mi / 128Mi`, cloudflared 각 `100m / 24Mi / 48Mi`, Envoy 각 `100m / 128Mi / 256Mi`(CPU 요청 / 메모리 요청 / 메모리 상한)이며 데이터 경로는 2 replica다. CPU 상한은 없다. controller와 전용 Envoy의 14일 정상 이력이 쌓이면 다시 산정한다.
