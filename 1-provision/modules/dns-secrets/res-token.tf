@@ -132,3 +132,32 @@ resource "cloudflare_api_token" "flareway_e2e" {
     }
   }
 }
+
+resource "cloudflare_api_token" "cpa_gateway_tf" {
+  name = "${var.k8s_cluster_name}_cpa_gateway_tf"
+
+  policies = [
+    {
+      effect = "allow"
+      permission_groups = [
+        { id = local.account_permission_groups["Workers Scripts Write"] },
+        { id = local.account_permission_groups["Access: Apps and Policies Write"] },
+        { id = local.account_permission_groups["Access: Service Tokens Write"] },
+        { id = local.account_permission_groups["Account Settings Read"] },
+      ]
+      resources = jsonencode({
+        "com.cloudflare.api.account.${var.cloudflare_account_id}" = "*"
+      })
+    },
+    {
+      effect = "allow"
+      permission_groups = [
+        { id = local.zone_permission_groups["Zone Read"] },
+        { id = local.zone_permission_groups["DNS Write"] },
+      ]
+      resources = jsonencode({
+        "com.cloudflare.api.account.zone.${var.cloudflare_main_zone_id}" = "*"
+      })
+    },
+  ]
+}

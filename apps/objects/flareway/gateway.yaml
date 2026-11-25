@@ -23,6 +23,8 @@ spec:
       exposure: Public
     - name: issue-agent-webhook
       exposure: Public
+    - name: cpa-origin
+      exposure: Public
 ---
 apiVersion: gateway.networking.k8s.io/v1
 kind: Gateway
@@ -60,3 +62,15 @@ spec:
               - key: kubernetes.io/metadata.name
                 operator: In
                 values: [issue-agent]
+    - name: cpa-origin
+      hostname: cpa-origin.bhyoo.com
+      protocol: HTTP
+      port: 80
+      allowedRoutes:
+        namespaces:
+          from: Selector
+          selector:
+            matchExpressions:
+              - key: kubernetes.io/metadata.name
+                operator: In
+                values: [cpa-gateway]

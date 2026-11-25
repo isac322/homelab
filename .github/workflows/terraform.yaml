@@ -22,6 +22,7 @@ jobs:
         with:
           files: |
             1-provision/env/backbone/**/*.tf
+            1-provision/env/backbone/files/**
             1-provision/modules/dns-secrets/**/*.tf
       - name: Terraform
         if: steps.changed-files.outputs.any_changed == 'true' || (github.ref == 'refs/heads/master' && github.event_name == 'push')

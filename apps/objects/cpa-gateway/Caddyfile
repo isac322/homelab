@@ -1,0 +1,45 @@
+# Reverse proxy forwarding authenticated LLM traffic from Cloudflare Access/Flareway
+# to cliproxyapi.runbear.io with the real upstream Bearer key injected per request.
+{
+	admin off
+	auto_https off
+	persist_config off
+	servers {
+		timeouts {
+			read_body 10m
+			read_header 10m
+			idle 10m
+		}
+	}
+}
+
+http://:8317 {
+	handle /healthz {
+		respond "ok" 200
+	}
+
+	@model {
+		method GET POST
+		path /v1/responses /v1/responses/* /v1/models /v1/models/*
+	}
+	handle @model {
+		reverse_proxy {$MODEL_UPSTREAM} {
+			header_up Host {upstream_hostport}
+			header_up Authorization "Bearer {file./run/cpa-gateway/OPENAI_API_KEY}"
+			header_up -Cookie
+			header_up -CF-Access-Client-Id
+			header_up -CF-Access-Client-Secret
+			flush_interval -1
+			transport http {
+				dial_timeout 10s
+				response_header_timeout 10m
+				read_timeout 10m
+				write_timeout 10m
+			}
+		}
+	}
+
+	handle {
+		respond "forbidden" 403
+	}
+}

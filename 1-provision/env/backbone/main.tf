@@ -47,6 +47,10 @@ provider "cloudflare" {
   alias     = "flareway_e2e"
   api_token = module.dns_secrets.flareway_e2e.api_token
 }
+provider "cloudflare" {
+  alias     = "cpa_gateway"
+  api_token = module.dns_secrets.cpa_gateway_tf.api_token
+}
 provider "github" {
   owner = "isac322"
   token = var.github_personal_access_token

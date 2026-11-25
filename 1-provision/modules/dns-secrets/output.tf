@@ -14,3 +14,10 @@ output "flareway_e2e" {
   }
   sensitive = true
 }
+
+output "cpa_gateway_tf" {
+  value = {
+    api_token = cloudflare_api_token.cpa_gateway_tf.value
+  }
+  sensitive = true
+}
