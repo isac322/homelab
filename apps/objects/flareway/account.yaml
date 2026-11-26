@@ -17,6 +17,7 @@ spec:
       hostnames:
         - argocd-webhook.bhyoo.com
         - issue-agent-webhook.bhyoo.com
+        - cpa-origin.bhyoo.com
       zones: [bhyoo.com]
       exposures: [Public]
       accessCustomPageRefs: Denied
@@ -24,9 +25,13 @@ spec:
       accessStandaloneApplicationRefs: Denied
       devicePostureIntegrationRefs: Denied
       platformObjects: Denied
+      # UnprotectedHostnames only exempts these public listeners from Flareway-managed
+      # Cloudflare Access policies; cpa-origin.bhyoo.com enforces Cloudflare Access
+      # externally via Terraform (cloudflare_zero_trust_access_application.cpa_origin).
       unprotectedHostnames:
         - argocd-webhook.bhyoo.com
         - issue-agent-webhook.bhyoo.com
+        - cpa-origin.bhyoo.com
     - namespaceSelector:
         matchExpressions:
           - key: kubernetes.io/metadata.name
@@ -35,6 +40,21 @@ spec:
       hostnames:
         - argocd-webhook.bhyoo.com
         - issue-agent-webhook.bhyoo.com
+      zones: [bhyoo.com]
+      exposures: [Public]
+      accessCustomPageRefs: Denied
+      accessPolicyRefs: Denied
+      accessStandaloneApplicationRefs: Denied
+      devicePostureIntegrationRefs: Denied
+      platformObjects: Denied
+      backends:
+        namespaces: Same
+        kinds: [Service]
+    - namespaceSelector:
+        matchLabels:
+          kubernetes.io/metadata.name: cpa-gateway
+      hostnames:
+        - cpa-origin.bhyoo.com
       zones: [bhyoo.com]
       exposures: [Public]
       accessCustomPageRefs: Denied
