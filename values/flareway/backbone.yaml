@@ -1,5 +1,5 @@
 image:
-  digest: sha256:8865b32be899428c6afa6ee978357d6833db0412b6df5f71c4250f76c3fb3ac5
+  digest: sha256:8092309d39fee8122f4138ed708e671e0324bf8d33d8441498b660484d41a24d
 
 logging:
   level: debug
