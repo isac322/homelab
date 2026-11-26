@@ -100,7 +100,7 @@ resource "github_repository_ruleset" "flareway_default" {
     }
 
     required_status_checks {
-      strict_required_status_checks_policy = true
+      strict_required_status_checks_policy = false
       do_not_enforce_on_create             = false
 
       required_check {
