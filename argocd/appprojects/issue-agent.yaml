@@ -11,6 +11,8 @@ spec:
       name: backbone
     - namespace: issue-agent-runner
       name: backbone
+    - namespace: cpa-gateway
+      name: backbone
   clusterResourceWhitelist:
     - group: ''
       kind: Namespace

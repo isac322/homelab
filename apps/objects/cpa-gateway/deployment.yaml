@@ -1,0 +1,104 @@
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: cpa-gateway
+spec:
+  replicas: 1
+  selector:
+    matchLabels:
+      app: cpa-gateway
+  template:
+    metadata:
+      labels:
+        app: cpa-gateway
+    spec:
+      automountServiceAccountToken: false
+      enableServiceLinks: false
+      securityContext:
+        runAsNonRoot: true
+        runAsUser: 65532
+        runAsGroup: 65532
+        fsGroup: 65532
+        fsGroupChangePolicy: OnRootMismatch
+        seccompProfile:
+          type: RuntimeDefault
+      containers:
+        - name: caddy
+          image: docker.io/library/caddy:2.11.9-alpine@sha256:003a97808e781aa9f7e75cc2f43d34d461099031faf5e20faefb9f61126836f0
+          command:
+            - caddy
+            - run
+            - --config
+            - /etc/caddy/Caddyfile
+            - --adapter
+            - caddyfile
+          env:
+            - name: XDG_DATA_HOME
+              value: /tmp
+            - name: XDG_CONFIG_HOME
+              value: /tmp
+            - name: MODEL_UPSTREAM
+              valueFrom:
+                secretKeyRef:
+                  name: cpa-gateway-upstream
+                  key: MODEL_UPSTREAM
+          ports:
+            - name: http
+              containerPort: 8317
+          startupProbe:
+            httpGet:
+              path: /healthz
+              port: http
+            periodSeconds: 2
+            timeoutSeconds: 5
+            failureThreshold: 30
+          readinessProbe:
+            httpGet:
+              path: /healthz
+              port: http
+            periodSeconds: 10
+            timeoutSeconds: 5
+          livenessProbe:
+            httpGet:
+              path: /healthz
+              port: http
+            periodSeconds: 30
+            timeoutSeconds: 5
+            failureThreshold: 3
+          # Tier 3 — General Web and App (14d model-proxy Caddy P50 19.8Mi, Peak 29.7Mi, CPU P95 16.9m)
+          resources:
+            requests:
+              cpu: 10m
+              memory: 32Mi
+            limits:
+              memory: 64Mi
+          securityContext:
+            allowPrivilegeEscalation: false
+            readOnlyRootFilesystem: true
+            capabilities:
+              drop:
+                - ALL
+          volumeMounts:
+            - name: upstream-key
+              mountPath: /run/cpa-gateway
+              readOnly: true
+            - name: config
+              mountPath: /etc/caddy
+              readOnly: true
+            - name: tmp
+              mountPath: /tmp
+      volumes:
+        - name: upstream-key
+          secret:
+            secretName: cpa-gateway-upstream
+            items:
+              - key: OPENAI_API_KEY
+                path: OPENAI_API_KEY
+            defaultMode: 0440
+        - name: config
+          configMap:
+            name: cpa-gateway-config
+            defaultMode: 0444
+        - name: tmp
+          emptyDir:
+            sizeLimit: 16Mi
