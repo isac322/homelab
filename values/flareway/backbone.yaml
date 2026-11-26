@@ -1,15 +1,12 @@
 image:
-  digest: sha256:8092309d39fee8122f4138ed708e671e0324bf8d33d8441498b660484d41a24d
-
-logging:
-  level: debug
+  digest: sha256:926d3e71de78af114929ccd178f7d19cb5815d8b8c56043c154c30967170c3f8
 
 controllers:
   gateway: true
-  access: true
-  privateNetwork: true
-  device: true
-  organization: true
+  access: false
+  privateNetwork: false
+  device: false
+  organization: false
 
 # Tier 1. Initial sizing exception approved 2026-11-03; no Flareway history yet.
 # Revisit after 14 healthy days; cloudflared uses the previous tunnel's history.
